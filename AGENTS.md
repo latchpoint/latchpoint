@@ -4,8 +4,9 @@ This repo is a Django + React alarm panel that integrates with Home Assistant.
 Use this file to get oriented quickly and to follow the established “how we build features” patterns.
 
 ## TL;DR (first run)
-- Development: split `backend` (Django/Daphne) + `frontend` (Vite) services; `frontend` is exposed on `http://localhost:5427` and proxies `/api` and `/ws` to `backend`
-- Production: single combined `app` service (Nginx serves static files, proxies to Daphne)
+- Development: split `db` (Postgres) + `backend` (Django/Daphne) + `frontend` (Vite) services; `frontend` is exposed on `http://localhost:5427` and proxies `/api` and `/ws` to `backend`
+  - `backend` is not published to a host port by default (use the frontend proxy, or `docker compose run --rm backend ...`)
+- Production: single combined `app` service (Nginx serves built static files, proxies `/api` + `/ws` to Daphne)
 
 ### Configure env (required)
 ```bash
@@ -20,8 +21,14 @@ cp .env.example .env
 
 ### Tests (external integrations disabled by default)
 ```bash
+# Backend (Django)
 ./scripts/docker-test.sh
 ./scripts/docker-test-ha.sh
+
+# Frontend (Vitest) - run on host...
+cd frontend && npm test
+# ...or in Docker (uses the `frontend` service)
+./scripts/docker-shell.sh frontend sh -lc "npm ci && npm test"
 ```
 
 ### Shell into the backend container (for manage.py commands)
@@ -40,11 +47,13 @@ cp .env.example .env
   - Z-Wave JS integration: `backend/integrations_zwavejs/` (Z-Wave JS connection config, entity sync, set-value)
   - Frigate integration: `backend/integrations_frigate/` (Frigate video surveillance, MQTT detection events, rules conditions)
   - Zigbee2MQTT integration: `backend/integrations_zigbee2mqtt/` (Zigbee2MQTT device sync, event triggers)
+  - Notifications: `backend/notifications/` (providers, outbox/retries, delivery logs; rules `send_notification` action)
   - Locks + door codes: `backend/locks/` (door codes CRUD + HA lock discovery)
 - Frontend: `frontend/` (React + TS + Vite; API client uses cookies + CSRF)
 - Docs: `docs/` (active) and `docs/archived/` (completed/old)
 - ADRs: `docs/adr/` (architecture decisions; see `docs/adr/0000-adr-index.md` for status tracking)
 - Docker helpers: `scripts/`
+- Docker runtime config: `docker/` (entrypoints, supervisord configs, Nginx config)
 
 ## Features (what exists today)
 ### Backend features
@@ -104,9 +113,12 @@ cp .env.example .env
 - **System status monitoring** (real-time integration health):
   - WebSocket broadcast of status changes to `/ws/alarm/` clients
   - cached status for all integrations (MQTT, HA, Z-Wave JS, Frigate, Zigbee2MQTT)
-- **Notifications** (alarm event notifications via Home Assistant):
-  - settings stored in active profile (`home_assistant_notify`)
-  - configurable: service, cooldown, states to notify on
+- **Notifications** (rules-driven, async delivery; see ADR 0044):
+  - providers + logs: `GET/POST /api/notifications/providers/`, `GET /api/notifications/logs/`
+  - provider metadata: `GET /api/notifications/provider-types/`
+  - delivery semantics: rules `send_notification` action enqueues an outbox record and returns “accepted for delivery”
+  - worker: scheduled task `notifications_send_pending` processes outbox records with retry/backoff
+  - Home Assistant “system provider”: `POST /api/notifications/providers/ha-system-provider/test/` (virtual provider when HA configured)
 
 ### Frontend features
 - **Cookie + CSRF API client**: `frontend/src/services/api.ts` (`credentials: 'include'`, auto-CSRF priming).
@@ -136,6 +148,19 @@ cp .env.example .env
 ### Run a realistic demo dataset (backend container)
 ```bash
 ./scripts/docker-seed-test-home.sh
+```
+
+### Frontend tests (Vitest)
+```bash
+cd frontend
+npm run test            # full suite
+npm run test:features   # feature folders only
+npm run test:watch      # watch mode
+```
+
+### Frontend tests (via Docker)
+```bash
+./scripts/docker-shell.sh frontend sh -lc "npm ci && npm run test:features"
 ```
 
 ### Targeted tests
@@ -243,12 +268,18 @@ Use this checklist to keep changes consistent and easy to test.
 - Example env: `.env.example` (copy to `.env`)
 - Secrets at rest:
   - `SETTINGS_ENCRYPTION_KEY` is required to store/decrypt encrypted settings (Home Assistant token, MQTT password, Z-Wave JS token).
+- API response envelope (ADR 0025):
+  - `API_RESPONSE_ENVELOPE_ENABLED=true` (default) wraps success responses as `{ "data": ... }`
 - Home Assistant settings:
   - Runtime HA connection is stored in the active settings profile via `/api/alarm/home-assistant/settings/`.
 - MQTT settings:
   - Runtime MQTT connection is stored in the active settings profile via `/api/alarm/mqtt/settings/`.
 - Dev CSRF/CORS:
   - `DEBUG=True` and `ALLOWED_HOSTS` control dev-time trusted origins; see `backend/config/settings.py`.
+  - In `DEBUG=True`, `CSRF_TRUSTED_ORIGINS` is auto-populated for common dev ports (including `5427` and `3000`) if unset.
+- Test gating:
+  - `ALLOW_HOME_ASSISTANT_IN_TESTS=true` enables HA integration tests.
+  - `ALLOW_ZWAVEJS_IN_TESTS=true` enables Z-Wave JS integration tests.
 
 ## Docs workflow
 - Planning/working docs live in `docs/`.
