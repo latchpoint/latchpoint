@@ -2,9 +2,10 @@ name: CI Tests
 
 on:
   push:
-    branches:
-      - "**"
-    tags:
+    branches-ignore:
+      - main
+      - master
+    tags-ignore:
       - "**"
   pull_request: {}
 
