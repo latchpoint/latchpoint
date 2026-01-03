@@ -1,8 +1,22 @@
-import { describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { apiEndpoints } from './endpoints'
+
+const apiMock = vi.hoisted(() => ({
+  get: vi.fn(),
+}))
+
+vi.mock('./api', () => ({ default: apiMock, api: apiMock }))
+
+import { usersService } from './users'
 
 describe('users', () => {
-  it('imports', async () => {
-    const mod = await import('./users')
-    expect(mod).toBeTruthy()
+  beforeEach(() => {
+    apiMock.get.mockReset()
+  })
+
+  it('lists users', async () => {
+    apiMock.get.mockResolvedValue([])
+    await usersService.listUsers()
+    expect(apiMock.get).toHaveBeenCalledWith(apiEndpoints.users.all)
   })
 })
