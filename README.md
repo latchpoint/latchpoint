@@ -65,8 +65,8 @@ DATABASE_URL=postgresql://user:pass@host:5432/dbname
 
 3. Pull and run the production container (published to GHCR):
 ```bash
-docker pull ghcr.io/ljmerza/latchpoint:latest
-docker run -d -p 80:80 --env-file .env ghcr.io/ljmerza/latchpoint:latest
+docker pull ghcr.io/latchpoint/latchpoint:latest
+docker run -d -p 80:80 --env-file .env ghcr.io/latchpoint/latchpoint:latest
 ```
 Published tags include `latest` (default branch), `sha-...` (commit), and git tags.
 
@@ -83,7 +83,7 @@ services:
       - db_data:/var/lib/postgresql/data
 
   app:
-    image: ghcr.io/ljmerza/latchpoint:latest
+    image: ghcr.io/latchpoint/latchpoint:latest
     env_file:
       - .env
     ports:
