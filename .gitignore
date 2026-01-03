@@ -1,0 +1,24 @@
+# Environment
+.env
+.npm-cache/
+
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.Python
+venv/
+.venv/
+
+volumes/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Database
+*.sqlite3
+
+# Process
+supervisord.pid

@@ -1,0 +1,39 @@
+services:
+  db:
+    image: postgres:15
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-alarm_db}
+      POSTGRES_USER: ${POSTGRES_USER:-alarm}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-alarm}
+    volumes:
+      - ./volumes/db/:/var/lib/postgresql/data
+
+  backend:
+    build:
+      context: .
+      target: backend-development
+    environment:
+      LOCAL_UID: ${LOCAL_UID:-1000}
+      LOCAL_GID: ${LOCAL_GID:-1000}
+      HOME: /tmp
+    env_file:
+      - .env
+    depends_on:
+      - db
+    volumes:
+      - .:/app
+
+  frontend:
+    image: node:20-slim
+    environment:
+      VITE_API_PROXY_TARGET: ${VITE_API_PROXY_TARGET:-http://backend:8000}
+    working_dir: /app/frontend
+    command: sh -lc "if [ -d node_modules ]; then find node_modules -mindepth 1 -maxdepth 1 -exec rm -rf {} +; fi && npm ci && npm run dev -- --host 0.0.0.0 --port 3000"
+    ports:
+      - "5427:3000"
+    depends_on:
+      - backend
+    volumes:
+      - .:/app
+      - /app/frontend/node_modules  # Anonymous volume for node_modules

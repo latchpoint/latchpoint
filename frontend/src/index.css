@@ -1,0 +1,174 @@
+@import "tailwindcss";
+
+@theme inline {
+  /* shadcn/ui color system using CSS custom properties */
+  --color-background: hsl(var(--background));
+  --color-foreground: hsl(var(--foreground));
+  --color-card: hsl(var(--card));
+  --color-card-foreground: hsl(var(--card-foreground));
+  --color-popover: hsl(var(--popover));
+  --color-popover-foreground: hsl(var(--popover-foreground));
+  --color-primary: hsl(var(--primary));
+  --color-primary-foreground: hsl(var(--primary-foreground));
+  --color-secondary: hsl(var(--secondary));
+  --color-secondary-foreground: hsl(var(--secondary-foreground));
+  --color-muted: hsl(var(--muted));
+  --color-muted-foreground: hsl(var(--muted-foreground));
+  --color-accent: hsl(var(--accent));
+  --color-accent-foreground: hsl(var(--accent-foreground));
+  --color-destructive: hsl(var(--destructive));
+  --color-destructive-foreground: hsl(var(--destructive-foreground));
+  --color-border: hsl(var(--border));
+  --color-input: hsl(var(--input));
+  --color-ring: hsl(var(--ring));
+
+  /* Brand colors - https://coolors.co/palette/335c67-fff3b0-e09f3e-9e2a2b-540b0e */
+  --color-brand-teal: hsl(var(--brand-teal));
+  --color-brand-cream: hsl(var(--brand-cream));
+  --color-brand-amber: hsl(var(--brand-amber));
+  --color-brand-red: hsl(var(--brand-red));
+  --color-brand-burgundy: hsl(var(--brand-burgundy));
+
+  /* Semantic color aliases - change palette by updating these mappings */
+  --color-success: hsl(var(--success));
+  --color-warning: hsl(var(--warning));
+  --color-danger: hsl(var(--danger));
+  --color-critical: hsl(var(--critical));
+  --color-highlight: hsl(var(--highlight));
+  --color-info: hsl(var(--info));
+
+  /* Sidebar colors */
+  --color-sidebar: hsl(var(--sidebar));
+  --color-sidebar-foreground: hsl(var(--sidebar-foreground));
+
+  /* Alarm-specific colors */
+  --color-alarm-disarmed: hsl(var(--alarm-disarmed));
+  --color-alarm-armed-home: hsl(var(--alarm-armed-home));
+  --color-alarm-armed-away: hsl(var(--alarm-armed-away));
+  --color-alarm-armed-night: hsl(var(--alarm-armed-night));
+  --color-alarm-armed-vacation: hsl(var(--alarm-armed-vacation));
+  --color-alarm-pending: hsl(var(--alarm-pending));
+  --color-alarm-triggered: hsl(var(--alarm-triggered));
+  --color-alarm-arming: hsl(var(--alarm-arming));
+
+  /* Border radius */
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+}
+
+@layer base {
+  :root {
+    --background: 193 20% 96%;            /* light teal wash - reduces white */
+    --foreground: 222.2 84% 4.9%;
+    --card: 0 0% 100%;                    /* white cards pop against tinted bg */
+    --card-foreground: 222.2 84% 4.9%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 222.2 84% 4.9%;
+    --primary: 193 34% 30%;               /* brand-teal */
+    --primary-foreground: 0 0% 100%;      /* white */
+    --secondary: 193 15% 94%;             /* teal-tinted gray */
+    --secondary-foreground: 222.2 47.4% 11.2%;
+    --muted: 193 15% 94%;                 /* teal-tinted gray */
+    --muted-foreground: 193 20% 40%;      /* teal-tinted muted text */
+    --accent: 193 15% 92%;                /* teal-tinted hover */
+    --accent-foreground: 222.2 47.4% 11.2%;
+    --destructive: 359 58% 39%;           /* brand-red */
+    --destructive-foreground: 0 0% 100%;  /* white */
+    --border: 193 20% 88%;                /* teal-tinted border */
+    --input: 193 15% 92%;                 /* teal-tinted input bg */
+    --ring: 193 34% 30%;                  /* brand-teal */
+    --radius: 0.5rem;
+
+    /* Sidebar specific */
+    --sidebar: 193 25% 92%;               /* light teal sidebar */
+    --sidebar-foreground: 222.2 84% 4.9%;
+
+    /* Brand colors - https://coolors.co/palette/335c67-fff3b0-e09f3e-9e2a2b-540b0e */
+    --brand-teal: 193 34% 30%;        /* #335C67 - Deep Teal */
+    --brand-cream: 51 100% 85%;       /* #FFF3B0 - Cream */
+    --brand-amber: 36 72% 56%;        /* #E09F3E - Amber */
+    --brand-red: 359 58% 39%;         /* #9E2A2B - Dark Red */
+    --brand-burgundy: 357 77% 19%;    /* #540B0E - Burgundy */
+
+    /* Semantic color aliases - map to brand colors for easy palette swapping */
+    --success: var(--brand-teal);           /* Connected, enabled, valid */
+    --warning: var(--brand-amber);          /* Pending, connecting, caution */
+    --danger: var(--brand-red);             /* Errors, armed states */
+    --critical: var(--brand-burgundy);      /* Triggered, severe alerts */
+    --highlight: var(--brand-cream);        /* Accents, badges */
+    --info: 199 89% 48%;                    /* Informational, neutral actions */
+
+    /* Alarm state colors - using semantic aliases */
+    --alarm-disarmed: var(--success);           /* calm, secure */
+    --alarm-armed-home: var(--warning);         /* alert, active */
+    --alarm-armed-away: var(--danger);          /* high alert */
+    --alarm-armed-night: 262 83% 58%;           /* purple: night mode */
+    --alarm-armed-vacation: var(--info);        /* blue: vacation - reuse info */
+    --alarm-pending: var(--warning);            /* warning */
+    --alarm-triggered: var(--critical);         /* critical */
+    --alarm-arming: var(--warning);             /* transitioning */
+  }
+
+  .dark {
+    --background: 193 30% 8%;             /* dark teal-tinted background */
+    --foreground: 210 40% 98%;
+    --card: 193 25% 12%;                  /* slightly lighter card */
+    --card-foreground: 210 40% 98%;
+    --popover: 193 25% 12%;
+    --popover-foreground: 210 40% 98%;
+    --primary: 193 34% 45%;               /* brand-teal lighter for dark */
+    --primary-foreground: 0 0% 100%;      /* white */
+    --secondary: 193 20% 16%;             /* teal-tinted dark gray */
+    --secondary-foreground: 210 40% 98%;
+    --muted: 193 20% 16%;                 /* teal-tinted dark gray */
+    --muted-foreground: 193 15% 60%;      /* teal-tinted muted text */
+    --accent: 193 20% 18%;                /* teal-tinted hover */
+    --accent-foreground: 210 40% 98%;
+    --destructive: 359 58% 50%;           /* brand-red lighter for dark */
+    --destructive-foreground: 0 0% 100%;  /* white */
+    --border: 193 20% 20%;                /* teal-tinted border */
+    --input: 193 20% 16%;                 /* teal-tinted input bg */
+    --ring: 193 34% 45%;                  /* brand-teal */
+
+    /* Sidebar specific */
+    --sidebar: 193 30% 10%;               /* dark teal sidebar */
+    --sidebar-foreground: 210 40% 98%;
+
+    /* Brand colors - slightly adjusted for dark mode visibility */
+    --brand-teal: 193 34% 40%;        /* #335C67 - lighter for dark bg */
+    --brand-cream: 51 100% 85%;       /* #FFF3B0 - same */
+    --brand-amber: 36 72% 60%;        /* #E09F3E - slightly lighter */
+    --brand-red: 359 58% 50%;         /* #9E2A2B - lighter for dark bg */
+    --brand-burgundy: 357 77% 30%;    /* #540B0E - lighter for dark bg */
+
+    /* Semantic color aliases - map to brand colors for easy palette swapping */
+    --success: var(--brand-teal);           /* Connected, enabled, valid */
+    --warning: var(--brand-amber);          /* Pending, connecting, caution */
+    --danger: var(--brand-red);             /* Errors, armed states */
+    --critical: var(--brand-burgundy);      /* Triggered, severe alerts */
+    --highlight: var(--brand-cream);        /* Accents, badges */
+    --info: 199 89% 55%;                    /* Informational - lighter for dark */
+
+    /* Alarm state colors - using semantic aliases */
+    --alarm-disarmed: var(--success);           /* calm, secure */
+    --alarm-armed-home: var(--warning);         /* alert, active */
+    --alarm-armed-away: var(--danger);          /* high alert */
+    --alarm-armed-night: 262 83% 65%;           /* purple: night mode - lighter */
+    --alarm-armed-vacation: var(--info);        /* blue: vacation - reuse info */
+    --alarm-pending: var(--warning);            /* warning */
+    --alarm-triggered: var(--critical);         /* critical */
+    --alarm-arming: var(--warning);             /* transitioning */
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground;
+    font-feature-settings: "rlig" 1, "calt" 1;
+  }
+}

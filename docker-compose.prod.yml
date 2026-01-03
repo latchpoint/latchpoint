@@ -1,0 +1,23 @@
+services:
+  db:
+    image: postgres:15
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-alarm_db}
+      POSTGRES_USER: ${POSTGRES_USER:-alarm}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-alarm}
+    volumes:
+      - db_data:/var/lib/postgresql/data
+
+  app:
+    image: ghcr.io/ljmerza/latchpoint:latest
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "5427:80"
+    depends_on:
+      - db
+
+volumes:
+  db_data:
