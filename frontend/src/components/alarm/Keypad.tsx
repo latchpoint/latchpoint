@@ -97,6 +97,7 @@ export function Keypad({
                 variant="outline"
                 className="h-16"
                 onClick={handleDelete}
+                aria-label="Delete"
                 disabled={disabled || code.length === 0}
               >
                 <Delete className="h-6 w-6" />
