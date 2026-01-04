@@ -26,10 +26,6 @@ class Zigbee2mqttSettings:
     base_topic: str
     allowlist: list[object]
     denylist: list[object]
-    run_rules_on_event: bool
-    run_rules_debounce_seconds: int
-    run_rules_max_per_minute: int
-    run_rules_kinds: list[str]
 
 
 DEFAULT_SETTINGS: dict[str, Any] = {
@@ -37,10 +33,6 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "base_topic": "zigbee2mqtt",
     "allowlist": [],
     "denylist": [],
-    "run_rules_on_event": False,
-    "run_rules_debounce_seconds": 2,
-    "run_rules_max_per_minute": 30,
-    "run_rules_kinds": ["trigger"],
 }
 
 
@@ -55,39 +47,11 @@ def normalize_zigbee2mqtt_settings(raw: object) -> Zigbee2mqttSettings:
     allowlist = _as_list(data.get("allowlist"))
     denylist = _as_list(data.get("denylist"))
 
-    run_rules_on_event = bool(data.get("run_rules_on_event", DEFAULT_SETTINGS["run_rules_on_event"]))
-    debounce_raw = data.get("run_rules_debounce_seconds", DEFAULT_SETTINGS["run_rules_debounce_seconds"])
-    try:
-        run_rules_debounce_seconds = int(debounce_raw)
-    except Exception:
-        run_rules_debounce_seconds = int(DEFAULT_SETTINGS["run_rules_debounce_seconds"])
-    if run_rules_debounce_seconds < 0:
-        run_rules_debounce_seconds = 0
-
-    max_raw = data.get("run_rules_max_per_minute", DEFAULT_SETTINGS["run_rules_max_per_minute"])
-    try:
-        run_rules_max_per_minute = int(max_raw)
-    except Exception:
-        run_rules_max_per_minute = int(DEFAULT_SETTINGS["run_rules_max_per_minute"])
-    if run_rules_max_per_minute < 0:
-        run_rules_max_per_minute = 0
-
-    kinds_raw = data.get("run_rules_kinds", DEFAULT_SETTINGS["run_rules_kinds"])
-    run_rules_kinds: list[str] = []
-    if isinstance(kinds_raw, list):
-        run_rules_kinds = [str(k).strip() for k in kinds_raw if isinstance(k, str) and str(k).strip()]
-    if not run_rules_kinds:
-        run_rules_kinds = list(DEFAULT_SETTINGS["run_rules_kinds"])
-
     return Zigbee2mqttSettings(
         enabled=bool(data.get("enabled", False)),
         base_topic=base_topic,
         allowlist=allowlist,
         denylist=denylist,
-        run_rules_on_event=run_rules_on_event,
-        run_rules_debounce_seconds=run_rules_debounce_seconds,
-        run_rules_max_per_minute=run_rules_max_per_minute,
-        run_rules_kinds=run_rules_kinds,
     )
 
 
@@ -99,10 +63,6 @@ def mask_zigbee2mqtt_settings(raw: object) -> dict[str, Any]:
         "base_topic": normalized.base_topic,
         "allowlist": normalized.allowlist,
         "denylist": normalized.denylist,
-        "run_rules_on_event": normalized.run_rules_on_event,
-        "run_rules_debounce_seconds": normalized.run_rules_debounce_seconds,
-        "run_rules_max_per_minute": normalized.run_rules_max_per_minute,
-        "run_rules_kinds": normalized.run_rules_kinds,
     }
 
 

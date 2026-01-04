@@ -21,7 +21,6 @@ from integrations_frigate.config import normalize_frigate_settings
 from integrations_frigate.runtime import get_availability_state as frigate_availability_state
 from integrations_frigate.runtime import get_last_error as frigate_last_error
 from integrations_frigate.runtime import get_last_ingest_at as frigate_last_ingest_at
-from integrations_frigate.runtime import get_rules_run_stats as frigate_rules_run_stats
 from integrations_home_assistant.config import normalize_home_assistant_connection
 from integrations_zigbee2mqtt.config import normalize_zigbee2mqtt_settings
 from integrations_zigbee2mqtt.status_store import get_last_seen_at as z2m_last_seen_at
@@ -42,16 +41,8 @@ class _IntegrationSettingsSnapshot:
     frigate_enabled: bool
     frigate_events_topic: str
     frigate_retention_seconds: int
-    frigate_run_rules_on_event: bool
-    frigate_run_rules_debounce_seconds: int
-    frigate_run_rules_max_per_minute: int
-    frigate_run_rules_kinds: list[str]
     zigbee2mqtt_enabled: bool
     zigbee2mqtt_base_topic: str
-    zigbee2mqtt_run_rules_on_event: bool
-    zigbee2mqtt_run_rules_debounce_seconds: int
-    zigbee2mqtt_run_rules_max_per_minute: int
-    zigbee2mqtt_run_rules_kinds: list[str]
     home_assistant_enabled: bool
 
 
@@ -113,16 +104,8 @@ def _refresh_settings_snapshot_from_db() -> None:
         frigate_enabled=bool(frigate_settings.enabled),
         frigate_events_topic=str(frigate_settings.events_topic or ""),
         frigate_retention_seconds=int(frigate_settings.retention_seconds or 0),
-        frigate_run_rules_on_event=bool(frigate_settings.run_rules_on_event),
-        frigate_run_rules_debounce_seconds=int(frigate_settings.run_rules_debounce_seconds or 0),
-        frigate_run_rules_max_per_minute=int(frigate_settings.run_rules_max_per_minute or 0),
-        frigate_run_rules_kinds=list(frigate_settings.run_rules_kinds or []),
         zigbee2mqtt_enabled=bool(z2m_settings.enabled),
         zigbee2mqtt_base_topic=str(z2m_settings.base_topic or "zigbee2mqtt"),
-        zigbee2mqtt_run_rules_on_event=bool(z2m_settings.run_rules_on_event),
-        zigbee2mqtt_run_rules_debounce_seconds=int(z2m_settings.run_rules_debounce_seconds or 0),
-        zigbee2mqtt_run_rules_max_per_minute=int(z2m_settings.run_rules_max_per_minute or 0),
-        zigbee2mqtt_run_rules_kinds=list(z2m_settings.run_rules_kinds or []),
         home_assistant_enabled=ha_enabled,
     )
     with _settings_lock:
@@ -157,16 +140,8 @@ def _get_settings_snapshot() -> _IntegrationSettingsSnapshot:
             frigate_enabled=False,
             frigate_events_topic="",
             frigate_retention_seconds=0,
-            frigate_run_rules_on_event=False,
-            frigate_run_rules_debounce_seconds=0,
-            frigate_run_rules_max_per_minute=0,
-            frigate_run_rules_kinds=[],
             zigbee2mqtt_enabled=False,
             zigbee2mqtt_base_topic="zigbee2mqtt",
-            zigbee2mqtt_run_rules_on_event=False,
-            zigbee2mqtt_run_rules_debounce_seconds=0,
-            zigbee2mqtt_run_rules_max_per_minute=0,
-            zigbee2mqtt_run_rules_kinds=[],
             home_assistant_enabled=False,
         )
 
@@ -224,27 +199,18 @@ def _compute_system_status_payload(*, include_home_assistant: bool) -> dict[str,
         "connected": z2m_connected,
         "mqtt": mqtt,
         "sync": z2m_last_sync().as_dict(),
-        "run_rules_on_event": snap.zigbee2mqtt_run_rules_on_event,
-        "run_rules_debounce_seconds": snap.zigbee2mqtt_run_rules_debounce_seconds,
-        "run_rules_max_per_minute": snap.zigbee2mqtt_run_rules_max_per_minute,
-        "run_rules_kinds": snap.zigbee2mqtt_run_rules_kinds,
     }
 
     frigate = {
         "enabled": snap.frigate_enabled,
         "events_topic": snap.frigate_events_topic,
         "retention_seconds": snap.frigate_retention_seconds,
-        "run_rules_on_event": snap.frigate_run_rules_on_event,
-        "run_rules_debounce_seconds": snap.frigate_run_rules_debounce_seconds,
-        "run_rules_max_per_minute": snap.frigate_run_rules_max_per_minute,
-        "run_rules_kinds": snap.frigate_run_rules_kinds,
         "available": _frigate_available(
             enabled=snap.frigate_enabled,
             mqtt_connected=mqtt_connected,
         ),
         "mqtt": mqtt,
         "ingest": {"last_ingest_at": frigate_last_ingest_at(), "last_error": frigate_last_error()},
-        "rules_run": frigate_rules_run_stats(),
     }
 
     if include_home_assistant and snap.home_assistant_enabled:

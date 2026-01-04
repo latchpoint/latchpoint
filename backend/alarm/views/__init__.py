@@ -14,6 +14,7 @@ from .settings_profiles import (
 )
 from .system_config import SystemConfigDetailView, SystemConfigListView
 from .transitions import ArmAlarmView, CancelArmingView, DisarmAlarmView
+from .dispatcher import DispatcherConfigView, DispatcherStatusView, SuspendedRulesView
 
 __all__ = [
     "AlarmSettingsView",
@@ -37,4 +38,7 @@ __all__ = [
     "SensorsView",
     "SystemConfigDetailView",
     "SystemConfigListView",
+    "DispatcherConfigView",
+    "DispatcherStatusView",
+    "SuspendedRulesView",
 ]

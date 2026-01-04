@@ -152,15 +152,25 @@ class RuleUpsertSerializer(serializers.ModelSerializer):
 
     def create(self, validated_data):
         """Create a rule and sync its entity refs. Auto-derives kind from actions."""
-        entity_ids = validated_data.pop("entity_ids", [])
+        entity_ids = validated_data.pop("entity_ids", None)
 
         # Auto-derive kind from actions if not provided
+        definition = validated_data.get("definition", {})
         if "kind" not in validated_data or not validated_data.get("kind"):
-            definition = validated_data.get("definition", {})
             validated_data["kind"] = derive_kind_from_actions(definition)
+
+        # Auto-extract entity_ids from definition if not explicitly provided (ADR 0057)
+        if entity_ids is None:
+            from alarm.dispatcher.entity_extractor import extract_entity_ids_from_definition
+            entity_ids = list(extract_entity_ids_from_definition(definition))
 
         rule = super().create(validated_data)
         sync_rule_entity_refs(rule=rule, entity_ids=entity_ids)
+
+        # Invalidate dispatcher cache so new rule triggers immediately (ADR 0057)
+        from alarm.dispatcher import invalidate_entity_rule_cache
+        invalidate_entity_rule_cache()
+
         return rule
 
     def update(self, instance, validated_data):
@@ -168,11 +178,21 @@ class RuleUpsertSerializer(serializers.ModelSerializer):
         entity_ids = validated_data.pop("entity_ids", None)
 
         # Auto-derive kind from actions if not provided
+        definition = validated_data.get("definition", instance.definition)
         if "kind" not in validated_data or not validated_data.get("kind"):
-            definition = validated_data.get("definition", instance.definition)
             validated_data["kind"] = derive_kind_from_actions(definition)
 
         rule = super().update(instance, validated_data)
+
+        # Auto-extract entity_ids from definition if not explicitly provided and definition changed (ADR 0057)
+        if entity_ids is None and "definition" in validated_data:
+            from alarm.dispatcher.entity_extractor import extract_entity_ids_from_definition
+            entity_ids = list(extract_entity_ids_from_definition(definition))
+
         if entity_ids is not None:
             sync_rule_entity_refs(rule=rule, entity_ids=entity_ids)
+            # Invalidate dispatcher cache so updated rule triggers immediately (ADR 0057)
+            from alarm.dispatcher import invalidate_entity_rule_cache
+            invalidate_entity_rule_cache()
+
         return rule

@@ -208,6 +208,44 @@ class ZwavejsConnectionManager:
             except Exception:
                 continue
 
+        # Notify dispatcher if this is a value update (ADR 0057)
+        self._maybe_notify_dispatcher(msg)
+
+    def _maybe_notify_dispatcher(self, msg: dict[str, Any]) -> None:
+        """Notify the dispatcher of Z-Wave JS value changes (ADR 0057)."""
+        try:
+            from alarm.dispatcher import notify_entities_changed
+
+            event = msg.get("event", {})
+            if not isinstance(event, dict):
+                return
+
+            event_name = event.get("event")
+            if event_name not in ("value updated", "value added", "value notification"):
+                return
+
+            # Extract node_id and value_id to build entity ID
+            node_id = event.get("nodeId")
+            args = event.get("args", {})
+            if not isinstance(args, dict):
+                return
+
+            value_id = args.get("valueId", {})
+            if not isinstance(value_id, dict):
+                return
+
+            with self._lock:
+                home_id = self._home_id or 0
+
+            if not node_id or not home_id:
+                return
+
+            entity_id = build_zwavejs_entity_id(home_id=home_id, node_id=node_id, value_id=value_id)
+            notify_entities_changed(source="zwavejs", entity_ids=[entity_id])
+
+        except Exception as exc:
+            self._logger.debug("Dispatcher notification failed: %s", exc)
+
     def _coerce_event_message(self, event: Any) -> dict[str, Any] | None:
         """
         Attempt to coerce various zwave-js-server-python event shapes into a dict.

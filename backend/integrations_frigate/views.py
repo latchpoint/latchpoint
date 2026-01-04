@@ -22,7 +22,6 @@ from integrations_frigate.runtime import (
     apply_runtime_settings_from_active_profile,
     get_last_error,
     get_last_ingest_at,
-    get_rules_run_stats,
     is_available,
 )
 from integrations_frigate.serializers import (
@@ -53,14 +52,9 @@ class FrigateStatusView(APIView):
                 "enabled": settings_obj.enabled,
                 "events_topic": settings_obj.events_topic,
                 "retention_seconds": settings_obj.retention_seconds,
-                "run_rules_on_event": settings_obj.run_rules_on_event,
-                "run_rules_debounce_seconds": settings_obj.run_rules_debounce_seconds,
-                "run_rules_max_per_minute": settings_obj.run_rules_max_per_minute,
-                "run_rules_kinds": settings_obj.run_rules_kinds,
                 "available": is_available(),
                 "mqtt": mqtt_connection_manager.get_status().as_dict(),
                 "ingest": {"last_ingest_at": get_last_ingest_at(), "last_error": get_last_error()},
-                "rules_run": get_rules_run_stats(),
             },
             status=status.HTTP_200_OK,
         )

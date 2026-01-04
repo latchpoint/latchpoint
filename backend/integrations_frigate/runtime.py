@@ -23,11 +23,6 @@ _CACHE_LAST_INGEST_AT = f"{_PREFIX}last_ingest_at"
 _CACHE_LAST_ERROR = f"{_PREFIX}last_error"
 _CACHE_AVAILABILITY_STATE = f"{_PREFIX}availability_state"
 _CACHE_LAST_PRUNE_AT = f"{_PREFIX}last_prune_at"
-_CACHE_LAST_RULES_RUN_AT = f"{_PREFIX}last_rules_run_at"
-_CACHE_RULES_RUNS_PER_MINUTE = f"{_PREFIX}rules_runs_per_minute"
-_CACHE_RULES_RUNS_TRIGGERED = f"{_PREFIX}rules_runs_triggered"
-_CACHE_RULES_RUNS_SKIPPED_DEBOUNCE = f"{_PREFIX}rules_runs_skipped_debounce"
-_CACHE_RULES_RUNS_SKIPPED_RATE_LIMIT = f"{_PREFIX}rules_runs_skipped_rate_limit"
 
 _init_lock = threading.Lock()
 _initialized = False
@@ -80,16 +75,6 @@ def get_availability_state() -> str | None:
     """Return the last known Frigate availability state, if any."""
     val = cache.get(_CACHE_AVAILABILITY_STATE)
     return val if isinstance(val, str) else None
-
-
-def get_rules_run_stats() -> dict[str, object]:
-    """Return coarse rules-run counters for UI/debug."""
-    return {
-        "last_rules_run_at": cache.get(_CACHE_LAST_RULES_RUN_AT),
-        "triggered": cache.get(_CACHE_RULES_RUNS_TRIGGERED) or 0,
-        "skipped_debounce": cache.get(_CACHE_RULES_RUNS_SKIPPED_DEBOUNCE) or 0,
-        "skipped_rate_limit": cache.get(_CACHE_RULES_RUNS_SKIPPED_RATE_LIMIT) or 0,
-    }
 
 
 def is_available(*, now=None) -> bool:
@@ -159,104 +144,16 @@ def prune_old_detections(*, retention_seconds: int, min_interval_seconds: int = 
     cache.set(_CACHE_LAST_PRUNE_AT, timezone.now().isoformat(), timeout=None)
 
 
-def _incr_cache_counter(key: str, *, ttl_seconds: int | None = None) -> int:
-    """Increment an integer cache counter and return the new value (best-effort)."""
+def _notify_dispatcher(*, camera: str, event_id: str) -> None:
+    """Notify the dispatcher of Frigate detection (ADR 0057)."""
     try:
-        value = cache.get(key)
-        if isinstance(value, int):
-            next_val = value + 1
-        else:
-            next_val = 1
-        cache.set(key, next_val, timeout=ttl_seconds)
-        return next_val
-    except Exception:
-        return 0
+        from alarm.dispatcher import notify_entities_changed
 
-
-def _maybe_trigger_rules_run(*, settings: FrigateSettings, camera: str, event_id: str) -> None:
-    """Optionally run the rules engine in response to an event, with dedupe/debounce/rate limits."""
-    if not settings.run_rules_on_event:
-        return
-    camera = (camera or "").strip()
-    event_id = (event_id or "").strip()
-
-    if event_id:
-        dedupe_key = f"{_PREFIX}rules_ran_for_event:{event_id}"
-        if cache.get(dedupe_key):
-            return
-        cache.set(dedupe_key, True, timeout=max(60, int(settings.retention_seconds)))
-
-    debounce = int(settings.run_rules_debounce_seconds or 0)
-    if debounce < 0:
-        debounce = 0
-
-    now = timezone.now()
-    if debounce:
-        if camera:
-            last_cam_key = f"{_PREFIX}last_rules_run_at:{camera}"
-            last_cam = cache.get(last_cam_key)
-            if isinstance(last_cam, str):
-                try:
-                    last_dt = timezone.datetime.fromisoformat(last_cam)
-                    last_dt = timezone.make_aware(last_dt) if timezone.is_naive(last_dt) else last_dt
-                    if now - last_dt < timezone.timedelta(seconds=debounce):
-                        _incr_cache_counter(_CACHE_RULES_RUNS_SKIPPED_DEBOUNCE, ttl_seconds=None)
-                        return
-                except Exception:
-                    pass
-            cache.set(last_cam_key, now.isoformat(), timeout=None)
-
-        last = cache.get(_CACHE_LAST_RULES_RUN_AT)
-        if isinstance(last, str):
-            try:
-                last_dt = timezone.datetime.fromisoformat(last)
-                last_dt = timezone.make_aware(last_dt) if timezone.is_naive(last_dt) else last_dt
-                if now - last_dt < timezone.timedelta(seconds=debounce):
-                    _incr_cache_counter(_CACHE_RULES_RUNS_SKIPPED_DEBOUNCE, ttl_seconds=None)
-                    return
-            except Exception:
-                pass
-        cache.set(_CACHE_LAST_RULES_RUN_AT, now.isoformat(), timeout=None)
-
-    max_per_min = int(settings.run_rules_max_per_minute or 0)
-    if max_per_min > 0:
-        current = _incr_cache_counter(_CACHE_RULES_RUNS_PER_MINUTE, ttl_seconds=60)
-        if current > max_per_min:
-            _incr_cache_counter(_CACHE_RULES_RUNS_SKIPPED_RATE_LIMIT, ttl_seconds=None)
-            return
-
-    def _run() -> None:
-        """Background worker that runs rules (filtered by allowed kinds if configured)."""
-        close_old_connections()
-        try:
-            from alarm import rules_engine
-            from alarm.rules.repositories import RuleEngineRepositories, default_rule_engine_repositories
-
-            repos = default_rule_engine_repositories()
-            allowed_kinds = set(settings.run_rules_kinds or [])
-            if allowed_kinds:
-                original = repos
-
-                def _list_enabled_rules_filtered():
-                    """Filter enabled rules to only those whose kind is allowed by settings."""
-                    return [r for r in original.list_enabled_rules() if getattr(r, "kind", None) in allowed_kinds]
-
-                repos = RuleEngineRepositories(
-                    list_enabled_rules=_list_enabled_rules_filtered,
-                    entity_state_map=original.entity_state_map,
-                    due_runtimes=original.due_runtimes,
-                    ensure_runtime=original.ensure_runtime,
-                    frigate_is_available=original.frigate_is_available,
-                    list_frigate_detections=original.list_frigate_detections,
-                    get_alarm_state=original.get_alarm_state,
-                )
-
-            rules_engine.run_rules(actor_user=None, repos=repos)
-            _incr_cache_counter(_CACHE_RULES_RUNS_TRIGGERED, ttl_seconds=None)
-        except Exception as exc:
-            logger.warning("Failed to run rules on Frigate event ingest: %s", exc)
-
-    threading.Thread(target=_run, daemon=True).start()
+        # Use synthetic entity ID for Frigate detection routing
+        synthetic_entity_id = f"__frigate_detection:{camera}:{event_id or 'unknown'}"
+        notify_entities_changed(source="frigate:detection", entity_ids=[synthetic_entity_id])
+    except Exception as exc:
+        logger.debug("Dispatcher notification failed: %s", exc)
 
 
 def _subscribe(*, settings: FrigateSettings) -> None:
@@ -345,7 +242,5 @@ def _handle_frigate_message(*, settings: FrigateSettings, topic: str, payload: s
     except Exception:
         return
 
-    try:
-        _maybe_trigger_rules_run(settings=settings, camera=parsed.camera, event_id=parsed.event_id)
-    except Exception:
-        return
+    # Notify dispatcher of Frigate detection (ADR 0057).
+    _notify_dispatcher(camera=parsed.camera, event_id=parsed.event_id)
