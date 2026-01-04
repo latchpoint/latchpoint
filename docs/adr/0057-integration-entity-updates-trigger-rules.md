@@ -49,13 +49,41 @@ Introduce a centralized, debounced “rule trigger dispatcher” that receives e
 - Requires observability (counters, last-run timestamps, skipped/debounced counts) to debug and tune.
 
 ## Todos
-- Add a backend “rule trigger dispatcher” that accepts `changed_entity_ids` and runs only impacted rules.
-- Ensure rule save/update maintains `RuleEntityRef` accurately for all entity-referencing condition nodes.
-- Add a periodic task to process due rule runtimes (“for: …” timers) independent of integration events.
-- Integration wiring (enabled + connected):
-  - Home Assistant: on `Entity` state changes (via WS subscription when available; polling as fallback), trigger dispatcher for changed entity IDs.
-  - Z-Wave JS: on value/entity state updates, trigger dispatcher for changed entity IDs.
-  - Zigbee2MQTT: on entity state updates, trigger dispatcher (replace global rule runs with targeted runs).
-  - Frigate: on detection ingest, trigger dispatcher for the subset of rules that depend on Frigate conditions (initially via rule kind filtering; later via a dedicated dependency index if needed).
-- Add metrics/debug counters per integration and for the dispatcher: triggered, debounced, rate-limited, rules evaluated/fired.
+### Backend: rule trigger dispatcher
+- Add a centralized dispatcher entrypoint (e.g. `notify_entities_changed(source, entity_ids, changed_at=...)`).
+- Debounce + dedupe in cache to handle bursts:
+  - Avoid repeated runs for the same entity within a short window.
+  - Batch multiple entity changes into a single evaluation pass.
+- Run in a background worker (thread) to avoid blocking ingest loops.
 
+### Backend: evaluate only impacted rules
+- Resolve impacted rule IDs via `RuleEntityRef` for the changed entities and only evaluate those enabled rules.
+- Keep ordering semantics (priority) within the impacted set.
+- In the same run, process due “for: … seconds” runtimes so timers fire reliably.
+
+### Backend: maintain dependency index (`RuleEntityRef`)
+- On rule create/update, extract referenced entities from the rule definition and keep `RuleEntityRef` in sync:
+  - Add missing refs, delete stale refs, in the same transaction as the rule update.
+- Add a management command to backfill/repair refs for existing rules.
+
+### Backend: timer execution independent of ingest
+- Add a periodic scheduled task to process due rule runtimes (`RuleRuntimeState.scheduled_for <= now`) even when no integration events arrive.
+- Keep this task lightweight and bounded (only due runtimes).
+
+### Integration wiring (enabled + connected only)
+- Home Assistant:
+  - Preferred: WS subscription updates `Entity` on `state_changed` and notifies dispatcher for changed entity IDs.
+  - Fallback: polling/sync task notifies dispatcher when it detects actual state changes.
+- Z-Wave JS:
+  - Translate value updates to `Entity` state updates and notify dispatcher for changed entity IDs.
+- Zigbee2MQTT:
+  - Replace “run all rules” behavior with “notify dispatcher with changed entity IDs”.
+- Frigate:
+  - If ingest updates `Entity` state, use the dispatcher like other integrations.
+  - If rules depend on Frigate detections via repository calls (not entity refs), route through dispatcher with:
+    - an interim filter (e.g. by rule kind), and/or
+    - a dedicated dependency index for Frigate-backed conditions (longer-term).
+
+### Observability
+- Add per-source dispatcher counters: triggered, deduped, debounced, rate-limited, last-run timestamp.
+- Add rules-run summary counters for targeted runs: rules evaluated/fired/scheduled/errors.
