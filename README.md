@@ -2,7 +2,7 @@
   <img src="frontend/public/latchpoint_brand.png" alt="LatchPoint" width="240" />
 </p>
 
-A home security alarm panel system built with Django and React. Integrates with Home Assistant, MQTT, Z-Wave JS, Frigate, and Zigbee2MQTT.
+A home security alarm panel system built with Django and React. Integrates with Home Assistant, MQTT, Z-Wave JS, and Frigate.
 
 ## Features
 
@@ -34,7 +34,6 @@ A home security alarm panel system built with Django and React. Integrates with 
 - MQTT: Broker connection with TLS support
 - Z-Wave JS: Device control, entity sync, Ring Keypad v2 support
 - Frigate: Video surveillance with person/vehicle detection rules
-- Zigbee2MQTT: Device sync and control
 
 ### Door Locks
 - Door code management separate from alarm codes
