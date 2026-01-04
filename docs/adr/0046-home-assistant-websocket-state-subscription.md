@@ -1,7 +1,7 @@
 # ADR-0046: Home Assistant WebSocket State Subscription
 
 ## Status
-Proposed
+Superseded by ADR 0057
 
 ## Context
 

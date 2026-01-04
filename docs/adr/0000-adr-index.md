@@ -62,7 +62,7 @@ This document tracks all Architecture Decision Records (ADRs) and their implemen
 | [0043](0043-notification-delivery-outbox-and-retries.md) | Notification Delivery Outbox + Retries | **Implemented** |
 | [0044](0044-notifications-architecture-consolidation.md) | Notifications Architecture (Consolidated) | **Implemented** |
 | [0045](0045-slack-notification-provider.md) | Slack Notification Provider | **Implemented** |
-| [0046](0046-home-assistant-websocket-state-subscription.md) | Home Assistant WebSocket State Subscription | Proposed |
+| [0046](0046-home-assistant-websocket-state-subscription.md) | Home Assistant WebSocket State Subscription | **Superseded** |
 | [0047](0047-legacy-code-deprecation-and-removal.md) | Legacy Code Deprecation and Removal | **Partially Implemented** |
 | [0048](0048-zigbee2mqtt-mappings-user-friendly-editor.md) | User-Friendly Zigbee2MQTT Mappings Editor | Superseded by 0049 |
 | [0049](0049-zigbee2mqtt-entity-first-rules-driven-automation.md) | Zigbee2MQTT Entity-First, Rules-Driven Automation | **Implemented** |
@@ -73,6 +73,7 @@ This document tracks all Architecture Decision Records (ADRs) and their implemen
 | [0054](0054-frontend-testing.md) | Frontend Testing Strategy | **Implemented** |
 | [0055](0055-github-actions-ci-and-ghcr-image.md) | GitHub Actions CI + GHCR Image Publishing | **Implemented** |
 | [0056](0056-door-codes-ui-simplification.md) | Door Codes UI Simplification | **Implemented** |
+| [0057](0057-integration-entity-updates-trigger-rules.md) | Integration Entity Updates Trigger Rules (Efficiently) | Proposed |
 
 ---
 
@@ -83,9 +84,9 @@ This document tracks all Architecture Decision Records (ADRs) and their implemen
 | **Implemented** | 45 |
 | **Partially Implemented** | 1 |
 | **Proposed** | 1 |
-| **Superseded** | 9 |
-| **Total** | 56 |
+| **Superseded** | 10 |
+| **Total** | 57 |
 
 ---
 
-*Last updated: 2026-01-03* (Marked ADR 0054 Frontend Testing Strategy as Implemented)
+*Last updated: 2026-01-04* (Added ADR 0057; superseded ADR 0046)
