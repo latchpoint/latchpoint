@@ -1,4 +1,6 @@
-# LatchPoint
+<p align="center">
+  <img src="frontend/public/latchpoint_brand.png" alt="LatchPoint" width="240" />
+</p>
 
 A home security alarm panel system built with Django and React. Integrates with Home Assistant, MQTT, Z-Wave JS, Frigate, and Zigbee2MQTT.
 
