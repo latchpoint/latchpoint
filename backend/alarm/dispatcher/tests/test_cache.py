@@ -1,14 +1,10 @@
 """Tests for entity→rule cache invalidation."""
 
+import threading
 from unittest import TestCase
-from unittest.mock import patch
 
+import alarm.dispatcher.dispatcher as dispatcher_module
 from alarm.dispatcher import invalidate_entity_rule_cache
-from alarm.dispatcher.dispatcher import (
-    _entity_rule_cache,
-    _entity_rule_cache_lock,
-    _entity_rule_cache_updated_at,
-)
 
 
 class TestCacheInvalidation(TestCase):
@@ -16,8 +12,6 @@ class TestCacheInvalidation(TestCase):
 
     def test_invalidate_clears_timestamp(self):
         """invalidate_entity_rule_cache sets timestamp to None."""
-        import alarm.dispatcher.dispatcher as dispatcher_module
-
         # Set a timestamp
         dispatcher_module._entity_rule_cache_updated_at = "some_time"
 
@@ -27,11 +21,7 @@ class TestCacheInvalidation(TestCase):
 
     def test_invalidate_is_thread_safe(self):
         """invalidate_entity_rule_cache acquires the lock."""
-        import alarm.dispatcher.dispatcher as dispatcher_module
-
         # This test verifies the function doesn't crash with concurrent access
-        import threading
-
         results = []
 
         def invalidate_many():

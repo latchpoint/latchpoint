@@ -271,14 +271,13 @@ def cleanup_orphan_rule_entity_refs() -> int:
     """
     Remove RuleEntityRef rows pointing to non-existent entities.
 
-    Weekly cleanup for stale references as part of ADR 0057.
+    Daily cleanup for stale references as part of ADR 0057.
 
     Returns the count of deleted records.
     """
     # Find refs where entity no longer exists
-    # Using a subquery to find orphaned refs
-    existing_entity_ids = Entity.objects.values_list("id", flat=True)
-    orphan_refs = RuleEntityRef.objects.exclude(entity_id__in=existing_entity_ids)
+    # Using a subquery approach that Django optimizes to avoid loading all IDs into memory
+    orphan_refs = RuleEntityRef.objects.exclude(entity_id__in=Entity.objects.values("id"))
 
     count = orphan_refs.count()
     if count > 0:

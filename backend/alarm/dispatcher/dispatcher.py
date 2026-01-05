@@ -104,12 +104,6 @@ class RuleDispatcher:
         if not entity_ids:
             return
 
-        if not self._config.enabled:
-            return
-
-        if not is_integration_enabled(source, self._config):
-            return
-
         now = changed_at or timezone.now()
         debounce_ms = self._config.debounce_ms
 
@@ -427,28 +421,23 @@ class RuleDispatcher:
             )
 
             # Run evaluation
-            if self._config.shadow_mode:
-                # Shadow mode: evaluate but don't execute actions
-                logger.info("Shadow mode: would evaluate rule %s (%s)", rule.id, rule.name)
-                self._stats.record_rules_result(evaluated=1)
-            else:
-                result = rules_engine.run_rules(now=now, repos=repos)
-                self._stats.record_rules_result(
-                    evaluated=result.evaluated,
-                    fired=result.fired,
-                    scheduled=result.scheduled,
-                    errors=result.errors,
-                )
+            result = rules_engine.run_rules(now=now, repos=repos)
+            self._stats.record_rules_result(
+                evaluated=result.evaluated,
+                fired=result.fired,
+                scheduled=result.scheduled,
+                errors=result.errors,
+            )
 
-                if result.errors > 0:
-                    record_rule_failure(
-                        rule=rule,
-                        runtime=runtime,
-                        error="Evaluation error (see logs)",
-                        now=now,
-                    )
-                else:
-                    record_rule_success(runtime=runtime)
+            if result.errors > 0:
+                record_rule_failure(
+                    rule=rule,
+                    runtime=runtime,
+                    error="Evaluation error (see logs)",
+                    now=now,
+                )
+            else:
+                record_rule_success(runtime=runtime)
 
         except Exception as exc:
             logger.exception("Rule %s evaluation failed: %s", rule.id, exc)
@@ -479,14 +468,12 @@ class RuleDispatcher:
         """Get dispatcher status and statistics."""
         with self._lock:
             return {
-                "enabled": self._config.enabled,
+                "enabled": True,  # Dispatcher is always enabled (ADR 0057)
                 "config": {
                     "debounce_ms": self._config.debounce_ms,
                     "batch_size_limit": self._config.batch_size_limit,
                     "rate_limit_per_sec": self._config.rate_limit_per_sec,
                     "worker_concurrency": self._config.worker_concurrency,
-                    "enabled_integrations": list(self._config.enabled_integrations),
-                    "shadow_mode": self._config.shadow_mode,
                 },
                 "pending_entities": len(self._pending_entities),
                 "pending_batches": len(self._pending_batches),
