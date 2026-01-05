@@ -1,0 +1,53 @@
+name: Tests
+
+on:
+  workflow_call: {}
+
+jobs:
+  backend-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Write CI .env (SQLite fallback)
+        run: |
+          cat > .env <<'EOF'
+          SECRET_KEY=ci
+          SETTINGS_ENCRYPTION_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+          DEBUG=True
+          API_RESPONSE_ENVELOPE_ENABLED=True
+          LOG_LEVEL=INFO
+          ALLOWED_HOSTS=localhost,127.0.0.1
+          EOF
+
+      - name: Build backend image
+        run: docker compose build backend
+
+      - name: Run Django tests
+        run: docker compose run --rm --no-deps --entrypoint sh backend -c "cd backend && python manage.py test"
+
+      - name: Cleanup
+        if: always()
+        run: docker compose down -v --remove-orphans
+
+  frontend-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Run frontend tests
+        working-directory: frontend
+        run: npm test
