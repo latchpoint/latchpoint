@@ -235,9 +235,10 @@ class ZwavejsConnectionManager:
                 return
 
             with self._lock:
-                home_id = self._home_id or 0
+                home_id = self._home_id
 
-            if not node_id or not home_id:
+            # Check for None specifically since node_id 0 can be valid in some Z-Wave networks
+            if node_id is None or home_id is None:
                 return
 
             entity_id = build_zwavejs_entity_id(home_id=home_id, node_id=node_id, value_id=value_id)

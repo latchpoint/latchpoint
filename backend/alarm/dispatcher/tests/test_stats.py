@@ -1,6 +1,5 @@
 """Tests for dispatcher statistics."""
 
-from datetime import datetime
 from unittest import TestCase
 
 from django.utils import timezone

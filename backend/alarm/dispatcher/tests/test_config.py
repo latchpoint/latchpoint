@@ -2,10 +2,7 @@
 
 from django.test import TestCase
 
-from alarm.dispatcher.config import (
-    DispatcherConfig,
-    normalize_dispatcher_config,
-)
+from alarm.dispatcher.config import normalize_dispatcher_config
 
 
 class TestNormalizeDispatcherConfig(TestCase):

@@ -165,11 +165,13 @@ class RuleUpsertSerializer(serializers.ModelSerializer):
             entity_ids = list(extract_entity_ids_from_definition(definition))
 
         rule = super().create(validated_data)
-        sync_rule_entity_refs(rule=rule, entity_ids=entity_ids)
 
-        # Invalidate dispatcher cache so new rule triggers immediately (ADR 0057)
+        # Invalidate dispatcher cache before syncing entity refs so the new rule
+        # triggers immediately even if dispatcher runs between these operations (ADR 0057)
         from alarm.dispatcher import invalidate_entity_rule_cache
         invalidate_entity_rule_cache()
+
+        sync_rule_entity_refs(rule=rule, entity_ids=entity_ids)
 
         return rule
 
@@ -189,10 +191,11 @@ class RuleUpsertSerializer(serializers.ModelSerializer):
             from alarm.dispatcher.entity_extractor import extract_entity_ids_from_definition
             entity_ids = list(extract_entity_ids_from_definition(definition))
 
+        # Always invalidate dispatcher cache on update to ensure rule changes take effect (ADR 0057)
+        from alarm.dispatcher import invalidate_entity_rule_cache
+        invalidate_entity_rule_cache()
+
         if entity_ids is not None:
             sync_rule_entity_refs(rule=rule, entity_ids=entity_ids)
-            # Invalidate dispatcher cache so updated rule triggers immediately (ADR 0057)
-            from alarm.dispatcher import invalidate_entity_rule_cache
-            invalidate_entity_rule_cache()
 
         return rule

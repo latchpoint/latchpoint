@@ -58,10 +58,15 @@ def record_rule_failure(
     """
     runtime.consecutive_failures += 1
     runtime.last_failure_at = now
-    runtime.last_error = error[:500] if error else ""
+    # Truncate error message and indicate truncation if needed
+    if error and len(error) > 500:
+        runtime.last_error = error[:497] + "..."
+    else:
+        runtime.last_error = error or ""
 
     if runtime.consecutive_failures >= CIRCUIT_BREAKER_THRESHOLD:
         runtime.error_suspended = True
+        runtime.status = "error_suspended"  # Sync status field with error_suspended flag
         runtime.next_allowed_at = now + timedelta(seconds=AUTO_RECOVERY_SECONDS)
         logger.warning(
             "Rule %s (id=%s) suspended after %d consecutive failures: %s",
@@ -87,6 +92,7 @@ def record_rule_failure(
             "last_failure_at",
             "last_error",
             "error_suspended",
+            "status",
             "next_allowed_at",
             "updated_at",
         ]

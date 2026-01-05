@@ -67,7 +67,8 @@ class RuleDispatcher:
         """
         self._config = config or get_dispatcher_config()
         self._lock = threading.Lock()
-        self._pending_entities: dict[str, datetime] = {}  # entity_id -> first_seen
+        # entity_id -> (first_seen, source) to track which integration notified
+        self._pending_entities: dict[str, tuple[datetime, str]] = {}
         self._pending_batches: deque[EntityChangeBatch] = deque(
             maxlen=self._config.queue_max_depth
         )
@@ -136,7 +137,7 @@ class RuleDispatcher:
             # Add to pending entities for batch dispatch
             for entity_id in unique_ids:
                 if entity_id not in self._pending_entities:
-                    self._pending_entities[entity_id] = now
+                    self._pending_entities[entity_id] = (now, source)
 
             # Check batch size limit
             if len(self._pending_entities) >= self._config.batch_size_limit:
@@ -154,7 +155,10 @@ class RuleDispatcher:
             with self._lock:
                 self._debounce_timer = None
                 if self._pending_entities:
-                    self._flush_batch_locked(source, timezone.now())
+                    # Determine source: use original if all from same source, else "mixed"
+                    sources = {s for _, s in self._pending_entities.values()}
+                    flush_source = sources.pop() if len(sources) == 1 else "mixed"
+                    self._flush_batch_locked(flush_source, timezone.now())
 
         delay_sec = self._config.debounce_ms / 1000.0
         self._debounce_timer = threading.Timer(delay_sec, _flush)
@@ -185,11 +189,11 @@ class RuleDispatcher:
             changed_at=now,
         )
 
-        # Check queue depth
+        # Append batch to queue (deque with maxlen handles overflow automatically,
+        # but we want to log when it happens for visibility)
         if len(self._pending_batches) >= self._config.queue_max_depth:
             self._stats.record_dropped_batch()
-            logger.warning("Dispatcher queue full, dropping oldest batch")
-            self._pending_batches.popleft()
+            logger.warning("Dispatcher queue full, oldest batch will be dropped")
 
         self._pending_batches.append(batch)
         self._pending_entities.clear()
@@ -200,7 +204,11 @@ class RuleDispatcher:
         # Dispatch to worker pool
         self._ensure_worker_pool()
         if self._worker_pool:
-            self._worker_pool.submit(self._dispatch_batch, batch)
+            try:
+                self._worker_pool.submit(self._dispatch_batch, batch)
+            except RuntimeError as exc:
+                # Pool may be shutting down
+                logger.warning("Failed to submit batch to worker pool: %s", exc)
 
     def _ensure_worker_pool(self) -> None:
         """Ensure worker pool is initialized."""
@@ -254,6 +262,7 @@ class RuleDispatcher:
                 try:
                     self._pending_batches.remove(batch)
                 except ValueError:
+                    # Batch was already removed (e.g., by queue overflow or shutdown)
                     pass
 
     def _resolve_impacted_rules(self, entity_ids: set[str]) -> list[Rule]:
@@ -294,10 +303,12 @@ class RuleDispatcher:
 
         # Check if cache needs refresh
         with _entity_rule_cache_lock:
-            if (
-                _entity_rule_cache_updated_at is None
-                or (now - _entity_rule_cache_updated_at).total_seconds() > _ENTITY_RULE_CACHE_TTL_SECONDS
-            ):
+            last_updated = _entity_rule_cache_updated_at
+            needs_refresh = (
+                last_updated is None
+                or (now - last_updated).total_seconds() > _ENTITY_RULE_CACHE_TTL_SECONDS
+            )
+            if needs_refresh:
                 self._refresh_entity_rule_cache()
 
             # Look up rule IDs for all entity_ids
@@ -458,8 +469,13 @@ class RuleDispatcher:
                     error=str(exc),
                     now=timezone.now(),
                 )
-            except Exception:
-                pass
+            except Exception as recording_exc:
+                # Best-effort: failure to record should not break dispatcher flow
+                logger.warning(
+                    "Failed to record failure state for rule %s: %s",
+                    rule.id,
+                    recording_exc,
+                )
 
         finally:
             cache.delete(lock_key)
