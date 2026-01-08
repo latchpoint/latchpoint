@@ -7,7 +7,7 @@ from datetime import timedelta
 
 from django.utils import timezone
 
-from alarm.models import AlarmEvent, Entity, RuleActionLog, SystemConfig
+from alarm.models import AlarmEvent, Entity, RuleActionLog, RuleEntityRef, SystemConfig
 from alarm.settings_registry import SYSTEM_CONFIG_SETTINGS_BY_KEY
 from scheduler import DailyAt, Every, register
 
@@ -199,6 +199,15 @@ def sync_entity_states() -> dict:
         logger.info("Entity sync: updated %d entities with changed states", updated)
         broadcast_entity_sync(entities=changed_entities)
 
+        # Notify dispatcher of changed entities (ADR 0057)
+        try:
+            from alarm.dispatcher import notify_entities_changed
+
+            changed_entity_ids = [e["entity_id"] for e in changed_entities]
+            notify_entities_changed(source="home_assistant", entity_ids=changed_entity_ids)
+        except Exception as e:
+            logger.debug("Dispatcher notification skipped: %s", e)
+
     return {"synced": synced, "updated": updated, "errors": 0}
 
 
@@ -216,3 +225,63 @@ def check_home_assistant() -> None:
     from alarm.system_status import recompute_and_broadcast_system_status
 
     recompute_and_broadcast_system_status(include_home_assistant=True)
+
+
+@register("process_due_rule_runtimes", schedule=Every(seconds=5, jitter=1))
+def process_due_rule_runtimes() -> dict:
+    """
+    Process rule runtimes with scheduled_for <= now.
+
+    This ensures "for: N seconds" rules fire even without new integration events.
+    Part of ADR 0057 implementation.
+
+    Returns dict with counts: {"processed": N, "fired": N, "errors": N}
+    """
+    from alarm import rules_engine
+    from alarm.models import RuleRuntimeState
+    from alarm.rules.repositories import default_rule_engine_repositories
+
+    now = timezone.now()
+
+    # Check if any due runtimes exist (quick check to avoid full evaluation)
+    due_count = RuleRuntimeState.objects.filter(
+        scheduled_for__lte=now,
+        status="satisfied",
+    ).count()
+
+    if due_count == 0:
+        return {"processed": 0, "fired": 0, "errors": 0}
+
+    # Run the rules engine to process due runtimes
+    repos = default_rule_engine_repositories()
+    try:
+        result = rules_engine.run_rules(now=now, repos=repos)
+        return {
+            "processed": due_count,
+            "fired": result.fired,
+            "errors": result.errors,
+        }
+    except Exception as e:
+        logger.exception("Failed to process due rule runtimes: %s", e)
+        return {"processed": 0, "fired": 0, "errors": 1}
+
+
+@register("cleanup_orphan_rule_entity_refs", schedule=DailyAt(hour=4, minute=30))
+def cleanup_orphan_rule_entity_refs() -> int:
+    """
+    Remove RuleEntityRef rows pointing to non-existent entities.
+
+    Daily cleanup for stale references as part of ADR 0057.
+
+    Returns the count of deleted records.
+    """
+    # Find refs where entity no longer exists
+    # Using a subquery approach that Django optimizes to avoid loading all IDs into memory
+    orphan_refs = RuleEntityRef.objects.exclude(entity_id__in=Entity.objects.values("id"))
+
+    count = orphan_refs.count()
+    if count > 0:
+        orphan_refs.delete()
+        logger.info("Cleaned up %d orphan RuleEntityRef rows", count)
+
+    return count

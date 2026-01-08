@@ -16,10 +16,6 @@ class FrigateRuntimeIngestTests(TestCase):
             enabled=True,
             events_topic="frigate/events",
             retention_seconds=3600,
-            run_rules_on_event=False,
-            run_rules_debounce_seconds=2,
-            run_rules_max_per_minute=30,
-            run_rules_kinds=["trigger"],
             known_cameras=[],
             known_zones_by_camera={},
         )
@@ -51,10 +47,6 @@ class FrigateRuntimeIngestTests(TestCase):
             enabled=True,
             events_topic="frigate/events",
             retention_seconds=3600,
-            run_rules_on_event=False,
-            run_rules_debounce_seconds=2,
-            run_rules_max_per_minute=30,
-            run_rules_kinds=["trigger"],
             known_cameras=[],
             known_zones_by_camera={},
         )

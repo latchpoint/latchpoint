@@ -288,6 +288,7 @@ class RuleRuntimeStatus(models.TextChoices):
     PENDING = "pending", "Pending"
     SATISFIED = "satisfied", "Satisfied"
     COOLDOWN = "cooldown", "Cooldown"
+    ERROR_SUSPENDED = "error_suspended", "Error Suspended"
 
 
 class RuleRuntimeState(models.Model):
@@ -303,12 +304,21 @@ class RuleRuntimeState(models.Model):
     fingerprint = models.CharField(max_length=64, blank=True)
     updated_at = models.DateTimeField(auto_now=True)
 
+    # Failure tracking for circuit breaker (ADR 0057)
+    consecutive_failures = models.PositiveIntegerField(default=0)
+    last_failure_at = models.DateTimeField(null=True, blank=True)
+    next_allowed_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    error_suspended = models.BooleanField(default=False, db_index=True)
+    last_error = models.TextField(blank=True)
+
     class Meta:
         constraints = [
             models.UniqueConstraint(fields=["rule", "node_id"], name="rule_node_unique"),
         ]
         indexes = [
             models.Index(fields=["rule", "node_id"]),
+            models.Index(fields=["error_suspended"]),
+            models.Index(fields=["next_allowed_at"]),
         ]
 
     def __str__(self) -> str:  # pragma: no cover - simple representation

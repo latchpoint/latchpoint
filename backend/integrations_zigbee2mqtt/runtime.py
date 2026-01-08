@@ -26,11 +26,6 @@ _CACHE_KEY_LAST_DEVICES_RESPONSE_AT = "zigbee2mqtt:last_devices_response_at"
 _CACHE_KEY_LAST_DEVICES_RESPONSE = "zigbee2mqtt:last_devices_response"
 _CACHE_KEY_LAST_DEVICES_RESPONSE_TRANSACTION = "zigbee2mqtt:last_devices_response_transaction"
 _CACHE_KEY_IEEE_ENTITY_IDS_PREFIX = "zigbee2mqtt:ieee_entity_ids:"
-_CACHE_KEY_LAST_RULES_RUN_AT = "zigbee2mqtt:last_rules_run_at"
-_CACHE_KEY_RULES_RUNS_PER_MINUTE = "zigbee2mqtt:rules_runs_per_minute"
-_CACHE_KEY_RULES_RUNS_TRIGGERED = "zigbee2mqtt:rules_runs_triggered"
-_CACHE_KEY_RULES_RUNS_SKIPPED_DEBOUNCE = "zigbee2mqtt:rules_runs_skipped_debounce"
-_CACHE_KEY_RULES_RUNS_SKIPPED_RATE_LIMIT = "zigbee2mqtt:rules_runs_skipped_rate_limit"
 
 _init_lock = threading.Lock()
 _initialized = False
@@ -103,17 +98,7 @@ def get_settings() -> Zigbee2mqttSettings:
     """Read and normalize Zigbee2MQTT settings from the active settings profile."""
     profile = get_active_settings_profile()
     raw = get_setting_json(profile, "zigbee2mqtt") or {}
-    normalized = normalize_zigbee2mqtt_settings(raw)
-    return Zigbee2mqttSettings(
-        enabled=normalized.enabled,
-        base_topic=normalized.base_topic,
-        allowlist=normalized.allowlist,
-        denylist=normalized.denylist,
-        run_rules_on_event=normalized.run_rules_on_event,
-        run_rules_debounce_seconds=normalized.run_rules_debounce_seconds,
-        run_rules_max_per_minute=normalized.run_rules_max_per_minute,
-        run_rules_kinds=normalized.run_rules_kinds,
-    )
+    return normalize_zigbee2mqtt_settings(raw)
 
 
 def _topic(*, base_topic: str, suffix: str) -> str:
@@ -347,68 +332,16 @@ def _incr_cache_counter(key: str, *, ttl_seconds: int | None = None) -> int:
         return 0
 
 
-def _maybe_trigger_rules_run(*, settings: Zigbee2mqttSettings, ieee: str) -> None:
-    """Optionally run the rules engine, with debounce and per-minute rate limiting."""
-    if not settings.run_rules_on_event:
+def _notify_dispatcher(*, entity_ids: list[str]) -> None:
+    """Notify the dispatcher of entity changes (ADR 0057)."""
+    if not entity_ids:
         return
 
-    debounce = int(settings.run_rules_debounce_seconds or 0)
-    if debounce < 0:
-        debounce = 0
-
-    now = timezone.now()
-    if debounce:
-        last = cache.get(_CACHE_KEY_LAST_RULES_RUN_AT)
-        if isinstance(last, str):
-            try:
-                last_dt = timezone.datetime.fromisoformat(last)
-                last_dt = timezone.make_aware(last_dt) if timezone.is_naive(last_dt) else last_dt
-                if now - last_dt < timezone.timedelta(seconds=debounce):
-                    _incr_cache_counter(_CACHE_KEY_RULES_RUNS_SKIPPED_DEBOUNCE, ttl_seconds=None)
-                    return
-            except Exception:
-                pass
-        cache.set(_CACHE_KEY_LAST_RULES_RUN_AT, now.isoformat(), timeout=None)
-
-    max_per_min = int(settings.run_rules_max_per_minute or 0)
-    if max_per_min > 0:
-        current = _incr_cache_counter(_CACHE_KEY_RULES_RUNS_PER_MINUTE, ttl_seconds=60)
-        if current > max_per_min:
-            _incr_cache_counter(_CACHE_KEY_RULES_RUNS_SKIPPED_RATE_LIMIT, ttl_seconds=None)
-            return
-
-    def _run() -> None:
-        """Background worker that runs rules (filtered by allowed kinds if configured)."""
-        close_old_connections()
-        try:
-            from alarm import rules_engine
-            from alarm.rules.repositories import RuleEngineRepositories, default_rule_engine_repositories
-
-            repos = default_rule_engine_repositories()
-            allowed_kinds = set(settings.run_rules_kinds or [])
-            if allowed_kinds:
-                original = repos
-
-                def _list_enabled_rules_filtered():
-                    """Filter enabled rules to only those whose kind is allowed by settings."""
-                    return [r for r in original.list_enabled_rules() if getattr(r, "kind", None) in allowed_kinds]
-
-                repos = RuleEngineRepositories(
-                    list_enabled_rules=_list_enabled_rules_filtered,
-                    entity_state_map=original.entity_state_map,
-                    due_runtimes=original.due_runtimes,
-                    ensure_runtime=original.ensure_runtime,
-                    frigate_is_available=original.frigate_is_available,
-                    list_frigate_detections=original.list_frigate_detections,
-                    get_alarm_state=original.get_alarm_state,
-                )
-
-            rules_engine.run_rules(actor_user=None, repos=repos)
-            _incr_cache_counter(_CACHE_KEY_RULES_RUNS_TRIGGERED, ttl_seconds=None)
-        except Exception as exc:
-            logger.warning("Failed to run rules on Zigbee2MQTT ingest: %s", exc)
-
-    threading.Thread(target=_run, daemon=True).start()
+    try:
+        from alarm.dispatcher import notify_entities_changed
+        notify_entities_changed(source="zigbee2mqtt", entity_ids=entity_ids)
+    except Exception as exc:
+        logger.debug("Dispatcher notification failed: %s", exc)
 
 
 def _handle_z2m_message(*, settings: Zigbee2mqttSettings, topic: str, payload: str) -> None:
@@ -454,12 +387,7 @@ def _handle_z2m_message(*, settings: Zigbee2mqttSettings, topic: str, payload: s
     now = timezone.now()
 
     known_entity_ids = _known_entity_ids_for_ieee(ieee=ieee)
-
-    # Best-effort: allow Z2M state/action changes to drive rules in near real-time.
-    try:
-        _maybe_trigger_rules_run(settings=settings, ieee=ieee)
-    except Exception:
-        pass
+    changed_entity_ids: list[str] = []
 
     # Update action entity if present.
     action = data.get("action")
@@ -471,6 +399,7 @@ def _handle_z2m_message(*, settings: Zigbee2mqttSettings, topic: str, payload: s
                 last_changed=now,
                 last_seen=now,
             )
+            changed_entity_ids.append(action_entity_id)
 
     # Update entities for known keys.
     for key, value in data.items():
@@ -495,6 +424,11 @@ def _handle_z2m_message(*, settings: Zigbee2mqttSettings, topic: str, payload: s
                 last_changed=now,
                 last_seen=now,
             )
+            changed_entity_ids.append(entity_id)
+
+    # Notify dispatcher of entity changes (ADR 0057).
+    if changed_entity_ids:
+        _notify_dispatcher(entity_ids=changed_entity_ids)
 
 
 def sync_devices_via_mqtt(*, timeout_seconds: float = 3.0) -> dict[str, Any]:

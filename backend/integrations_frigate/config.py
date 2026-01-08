@@ -16,10 +16,6 @@ class FrigateSettings:
     enabled: bool
     events_topic: str
     retention_seconds: int
-    run_rules_on_event: bool
-    run_rules_debounce_seconds: int
-    run_rules_max_per_minute: int
-    run_rules_kinds: list[str]
     known_cameras: list[str]
     known_zones_by_camera: dict[str, list[str]]
 
@@ -28,10 +24,6 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "enabled": False,
     "events_topic": "frigate/events",
     "retention_seconds": 3600,
-    "run_rules_on_event": True,
-    "run_rules_debounce_seconds": 2,
-    "run_rules_max_per_minute": 30,
-    "run_rules_kinds": ["trigger"],
     "known_cameras": [],
     "known_zones_by_camera": {},
 }
@@ -54,33 +46,6 @@ def normalize_frigate_settings(raw: object) -> FrigateSettings:
     if retention_seconds <= 0:
         retention_seconds = int(DEFAULT_SETTINGS["retention_seconds"])
 
-    run_rules_on_event = bool(data.get("run_rules_on_event", DEFAULT_SETTINGS["run_rules_on_event"]))
-    run_rules_debounce_raw = data.get(
-        "run_rules_debounce_seconds",
-        DEFAULT_SETTINGS["run_rules_debounce_seconds"],
-    )
-    try:
-        run_rules_debounce_seconds = int(run_rules_debounce_raw)
-    except Exception:
-        run_rules_debounce_seconds = int(DEFAULT_SETTINGS["run_rules_debounce_seconds"])
-    if run_rules_debounce_seconds < 0:
-        run_rules_debounce_seconds = 0
-
-    run_rules_max_raw = data.get("run_rules_max_per_minute", DEFAULT_SETTINGS["run_rules_max_per_minute"])
-    try:
-        run_rules_max_per_minute = int(run_rules_max_raw)
-    except Exception:
-        run_rules_max_per_minute = int(DEFAULT_SETTINGS["run_rules_max_per_minute"])
-    if run_rules_max_per_minute < 0:
-        run_rules_max_per_minute = 0
-
-    run_rules_kinds_raw = data.get("run_rules_kinds", DEFAULT_SETTINGS["run_rules_kinds"])
-    run_rules_kinds: list[str] = []
-    if isinstance(run_rules_kinds_raw, list):
-        run_rules_kinds = [str(k).strip() for k in run_rules_kinds_raw if isinstance(k, str) and str(k).strip()]
-    if not run_rules_kinds:
-        run_rules_kinds = list(DEFAULT_SETTINGS["run_rules_kinds"])
-
     known_cameras_raw = data.get("known_cameras", DEFAULT_SETTINGS["known_cameras"])
     known_cameras: list[str] = []
     if isinstance(known_cameras_raw, list):
@@ -102,10 +67,6 @@ def normalize_frigate_settings(raw: object) -> FrigateSettings:
         enabled=enabled,
         events_topic=events_topic,
         retention_seconds=retention_seconds,
-        run_rules_on_event=run_rules_on_event,
-        run_rules_debounce_seconds=run_rules_debounce_seconds,
-        run_rules_max_per_minute=run_rules_max_per_minute,
-        run_rules_kinds=run_rules_kinds,
         known_cameras=known_cameras,
         known_zones_by_camera=known_zones_by_camera,
     )

@@ -163,12 +163,8 @@ ALARM_PROFILE_SETTINGS: list[SettingDefinition] = [
             "base_topic": "zigbee2mqtt",
             "allowlist": [],
             "denylist": [],
-            "run_rules_on_event": False,
-            "run_rules_debounce_seconds": 2,
-            "run_rules_max_per_minute": 30,
-            "run_rules_kinds": ["trigger"],
         },
-        description="Zigbee2MQTT integration settings (inventory sync, ingest, and rules triggers).",
+        description="Zigbee2MQTT integration settings (inventory sync and ingest).",
     ),
     SettingDefinition(
         key="frigate",
@@ -178,10 +174,6 @@ ALARM_PROFILE_SETTINGS: list[SettingDefinition] = [
             "enabled": False,
             "events_topic": "frigate/events",
             "retention_seconds": 3600,
-            "run_rules_on_event": True,
-            "run_rules_debounce_seconds": 2,
-            "run_rules_max_per_minute": 30,
-            "run_rules_kinds": ["trigger"],
             "known_cameras": [],
             "known_zones_by_camera": {},
         },
@@ -213,6 +205,21 @@ SYSTEM_CONFIG_SETTINGS: list[SettingDefinition] = [
         value_type=SystemConfigValueType.INTEGER,
         default=300,
         description="How often to sync entity states from Home Assistant (0 to disable).",
+    ),
+    SettingDefinition(
+        key="dispatcher",
+        name="Rule trigger dispatcher",
+        value_type=SystemConfigValueType.JSON,
+        default={
+            "debounce_ms": 200,
+            "batch_size_limit": 100,
+            "rate_limit_per_sec": 10,
+            "rate_limit_burst": 50,
+            "worker_concurrency": 4,
+            "queue_max_depth": 1000,
+        },
+        description="Centralized rule trigger dispatcher settings (ADR 0057). "
+        "Dispatcher is always enabled - these are tuning parameters.",
     ),
 ]
 
