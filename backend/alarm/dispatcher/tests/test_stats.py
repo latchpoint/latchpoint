@@ -106,17 +106,41 @@ class TestDispatcherStats(TestCase):
         self.assertEqual(stats.rules_scheduled, 2)
         self.assertEqual(stats.rules_errors, 1)
 
+    def test_record_entity_state_snapshot(self):
+        stats = DispatcherStats()
+
+        stats.record_entity_state_snapshot(size=12, query_ms=3.5)
+
+        self.assertEqual(stats.entity_state_snapshot_size_last, 12)
+        self.assertEqual(stats.entity_state_snapshot_size_total, 12)
+        self.assertEqual(stats.snapshot_query_ms_last, 3.5)
+        self.assertEqual(stats.snapshot_query_ms_total, 3.5)
+
+    def test_record_rule_eval_time(self):
+        stats = DispatcherStats()
+
+        stats.record_rule_eval_time(eval_ms=7.25)
+        stats.record_rule_eval_time(eval_ms=2.0)
+
+        self.assertEqual(stats.rule_eval_ms_last, 2.0)
+        self.assertEqual(stats.rule_eval_ms_total, 9.25)
+
     def test_as_dict(self):
         """as_dict serializes all fields correctly."""
         stats = DispatcherStats()
         now = timezone.now()
         stats.record_trigger("zigbee2mqtt", 5, now)
         stats.record_dedupe(2)
+        stats.record_entity_state_snapshot(size=1, query_ms=1.0)
+        stats.record_rule_eval_time(eval_ms=2.0)
 
         result = stats.as_dict()
 
         self.assertEqual(result["triggered"], 1)
         self.assertEqual(result["deduped"], 2)
+        self.assertEqual(result["entity_state_snapshot_size_last"], 1)
+        self.assertEqual(result["snapshot_query_ms_last"], 1.0)
+        self.assertEqual(result["rule_eval_ms_last"], 2.0)
         self.assertIn("by_source", result)
         self.assertIn("zigbee2mqtt", result["by_source"])
 
@@ -125,11 +149,16 @@ class TestDispatcherStats(TestCase):
         stats = DispatcherStats()
         stats.record_trigger("zigbee2mqtt", 5, timezone.now())
         stats.record_dedupe(10)
+        stats.record_entity_state_snapshot(size=3, query_ms=1.0)
+        stats.record_rule_eval_time(eval_ms=1.0)
 
         stats.reset()
 
         self.assertEqual(stats.triggered, 0)
         self.assertEqual(stats.deduped, 0)
+        self.assertEqual(stats.entity_state_snapshot_size_last, 0)
+        self.assertEqual(stats.snapshot_query_ms_last, 0.0)
+        self.assertEqual(stats.rule_eval_ms_last, 0.0)
         self.assertEqual(stats.by_source, {})
         self.assertIsNone(stats.last_dispatch_at)
 

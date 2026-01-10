@@ -91,6 +91,8 @@ This document tracks all Architecture Decision Records (ADRs) and their implemen
 | **Superseded** | 10 |
 | **Total** | 61 |
 
+Note: **Superseded** includes entries marked as “Superseded by …” in the table above.
+
 ---
 
 *Last updated: 2026-01-10* (Marked ADR 0059 and ADR 0061 implemented)

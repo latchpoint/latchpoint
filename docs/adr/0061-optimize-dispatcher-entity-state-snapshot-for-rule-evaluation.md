@@ -4,7 +4,7 @@
 Implemented
 
 ## Context
-The ADR 0057 dispatcher evaluates only rules impacted by entity changes, but it currently snapshots *all* entity states on each dispatched batch:
+The ADR 0057 dispatcher evaluates only rules impacted by entity changes, but the original evaluation path snapshotted *all* entity states on each dispatched batch:
 
 - `RuleDispatcher._get_entity_state_map()` uses `Entity.objects.values_list("entity_id", "last_state")` for the entire table.
 - This is consistent and simple, but it becomes increasingly expensive as the number of entities grows (especially if only a small subset of entities are referenced by rules).
@@ -55,14 +55,23 @@ If further optimization is required, consider a second stage:
 - Slightly more complexity in the dispatcher due to “required entity IDs” calculation.
 - Requires care for non-entity operators (e.g., alarm state, frigate detections): those should not rely on the entity-state map anyway.
 
+## Implementation Notes
+- Dispatcher implementation: `RuleDispatcher._get_entity_state_map_for_rules()` computes `required` entity IDs from:
+  - `RuleEntityRef` (primary dependency index), plus
+  - a best-effort walk of `rule.definition` (defensive if refs are stale).
+- Evaluation uses a DB-consistent snapshot of `Entity.last_state` for the computed `required` set.
+- Non-entity operators that need dispatcher routing (e.g., alarm state, frigate detections) are handled via synthetic dependency IDs (see ADR 0059); their evaluation does not rely on the entity-state snapshot.
+
 ## Todos
-- Add a helper to compute required entity IDs for an impacted rule set:
-  - Use `RuleEntityRef` for impacted rules (efficient query).
-  - Include changed entity IDs (defensive).
-- Update dispatcher batch execution to fetch `Entity.last_state` only for required entity IDs.
-- Add tests:
-  - Dispatcher does not query all entities when only one rule is impacted.
-  - Correct behavior when an entity ID is changed but missing from `RuleEntityRef`.
+- [x] Add a helper to compute required entity IDs for an impacted rule set:
+  - [x] Use `RuleEntityRef` for impacted rules (efficient query).
+  - [x] Include changed entity IDs (defensive).
+- [x] Update dispatcher batch execution to fetch `Entity.last_state` only for required entity IDs.
+- [x] Add tests:
+  - [x] Dispatcher does not query all entities when only one rule is impacted.
+  - [x] Correct behavior when an entity ID is changed but missing from `RuleEntityRef`.
+
+### Follow-up (optional)
 - Add metrics:
   - `entity_state_snapshot_size` per batch
   - timing for snapshot query and rule evaluation

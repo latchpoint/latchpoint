@@ -42,6 +42,14 @@ class DispatcherStats:
     rules_errors: int = 0
     last_dispatch_at: datetime | None = None
 
+    # Snapshot / evaluation metrics (ADR 0061 follow-up).
+    entity_state_snapshot_size_last: int = 0
+    entity_state_snapshot_size_total: int = 0
+    snapshot_query_ms_last: float = 0.0
+    snapshot_query_ms_total: float = 0.0
+    rule_eval_ms_last: float = 0.0
+    rule_eval_ms_total: float = 0.0
+
     by_source: dict[str, SourceStats] = field(default_factory=dict)
 
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
@@ -92,6 +100,29 @@ class DispatcherStats:
             self.rules_scheduled += scheduled
             self.rules_errors += errors
 
+    def record_entity_state_snapshot(self, *, size: int, query_ms: float) -> None:
+        """Record entity-state snapshot size and query duration (ms)."""
+        size_i = int(size) if isinstance(size, int) else 0
+        query_f = float(query_ms) if isinstance(query_ms, (int, float)) else 0.0
+        if size_i < 0:
+            size_i = 0
+        if query_f < 0:
+            query_f = 0.0
+        with self._lock:
+            self.entity_state_snapshot_size_last = size_i
+            self.entity_state_snapshot_size_total += size_i
+            self.snapshot_query_ms_last = query_f
+            self.snapshot_query_ms_total += query_f
+
+    def record_rule_eval_time(self, *, eval_ms: float) -> None:
+        """Record rule evaluation duration (ms)."""
+        eval_f = float(eval_ms) if isinstance(eval_ms, (int, float)) else 0.0
+        if eval_f < 0:
+            eval_f = 0.0
+        with self._lock:
+            self.rule_eval_ms_last = eval_f
+            self.rule_eval_ms_total += eval_f
+
     def as_dict(self) -> dict[str, Any]:
         """Serialize to dictionary for API/monitoring."""
         with self._lock:
@@ -108,6 +139,12 @@ class DispatcherStats:
                 "last_dispatch_at": (
                     self.last_dispatch_at.isoformat() if self.last_dispatch_at else None
                 ),
+                "entity_state_snapshot_size_last": self.entity_state_snapshot_size_last,
+                "entity_state_snapshot_size_total": self.entity_state_snapshot_size_total,
+                "snapshot_query_ms_last": self.snapshot_query_ms_last,
+                "snapshot_query_ms_total": self.snapshot_query_ms_total,
+                "rule_eval_ms_last": self.rule_eval_ms_last,
+                "rule_eval_ms_total": self.rule_eval_ms_total,
                 "by_source": {k: v.as_dict() for k, v in self.by_source.items()},
             }
 
@@ -124,4 +161,10 @@ class DispatcherStats:
             self.rules_scheduled = 0
             self.rules_errors = 0
             self.last_dispatch_at = None
+            self.entity_state_snapshot_size_last = 0
+            self.entity_state_snapshot_size_total = 0
+            self.snapshot_query_ms_last = 0.0
+            self.snapshot_query_ms_total = 0.0
+            self.rule_eval_ms_last = 0.0
+            self.rule_eval_ms_total = 0.0
             self.by_source.clear()

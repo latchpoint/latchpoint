@@ -9,6 +9,7 @@ from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime
+from time import perf_counter
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
@@ -252,7 +253,12 @@ class RuleDispatcher:
             )
 
             # Snapshot only the entity states required to evaluate the impacted rules.
-            entity_state_map = self._get_entity_state_map_for_rules(rules=rules, changed_entity_ids=batch.entity_ids)
+            snapshot_started = perf_counter()
+            entity_state_map = self._get_entity_state_map_for_rules(
+                rules=rules, changed_entity_ids=batch.entity_ids
+            )
+            snapshot_ms = (perf_counter() - snapshot_started) * 1000.0
+            self._stats.record_entity_state_snapshot(size=len(entity_state_map), query_ms=snapshot_ms)
 
             for rule in rules:
                 self._evaluate_rule_with_lock(rule, entity_state_map, batch)
@@ -502,7 +508,10 @@ class RuleDispatcher:
             )
 
             # Run evaluation
+            eval_started = perf_counter()
             result = rules_engine.run_rules(now=now, repos=repos)
+            eval_ms = (perf_counter() - eval_started) * 1000.0
+            self._stats.record_rule_eval_time(eval_ms=eval_ms)
             self._stats.record_rules_result(
                 evaluated=result.evaluated,
                 fired=result.fired,
