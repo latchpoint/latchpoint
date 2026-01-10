@@ -204,7 +204,7 @@ def sync_entity_states() -> dict:
             from alarm.dispatcher import notify_entities_changed
 
             changed_entity_ids = [e["entity_id"] for e in changed_entities]
-            notify_entities_changed(source="home_assistant", entity_ids=changed_entity_ids)
+            notify_entities_changed(source="home_assistant", entity_ids=changed_entity_ids, changed_at=now)
         except Exception as e:
             logger.debug("Dispatcher notification skipped: %s", e)
 

@@ -58,6 +58,13 @@ class RuleDetailView(ObjectPermissionMixin, APIView):
             pk=rule_id,
         )
         rule.delete()
+        # Ensure dispatcher sees the updated dependency index immediately (ADR 0057).
+        try:
+            from alarm.dispatcher import invalidate_entity_rule_cache
+
+            invalidate_entity_rule_cache()
+        except Exception:
+            pass
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 

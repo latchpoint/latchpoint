@@ -14,10 +14,12 @@ class TestCacheInvalidation(TestCase):
         """invalidate_entity_rule_cache sets timestamp to None."""
         # Set a timestamp
         dispatcher_module._entity_rule_cache_updated_at = "some_time"
+        dispatcher_module._entity_rule_cache_version = "some_version"
 
         invalidate_entity_rule_cache()
 
         self.assertIsNone(dispatcher_module._entity_rule_cache_updated_at)
+        self.assertIsNone(dispatcher_module._entity_rule_cache_version)
 
     def test_invalidate_is_thread_safe(self):
         """invalidate_entity_rule_cache acquires the lock."""
@@ -37,3 +39,4 @@ class TestCacheInvalidation(TestCase):
 
         self.assertEqual(len(results), 5)
         self.assertIsNone(dispatcher_module._entity_rule_cache_updated_at)
+        self.assertIsNone(dispatcher_module._entity_rule_cache_version)

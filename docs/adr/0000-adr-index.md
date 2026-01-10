@@ -73,7 +73,10 @@ This document tracks all Architecture Decision Records (ADRs) and their implemen
 | [0054](0054-frontend-testing.md) | Frontend Testing Strategy | **Implemented** |
 | [0055](0055-github-actions-ci-and-ghcr-image.md) | GitHub Actions CI + GHCR Image Publishing | **Implemented** |
 | [0056](0056-door-codes-ui-simplification.md) | Door Codes UI Simplification | **Implemented** |
-| [0057](0057-integration-entity-updates-trigger-rules.md) | Integration Entity Updates Trigger Rules (Efficiently) | Proposed |
+| [0057](0057-integration-entity-updates-trigger-rules.md) | Integration Entity Updates Trigger Rules (Efficiently) | **Implemented** |
+| [0058](0058-home-assistant-realtime-entity-updates-via-websocket.md) | Home Assistant Realtime Entity Updates via WebSocket (Dispatcher-Based) | Proposed |
+| [0059](0059-rule-triggering-accuracy-and-realtime-semantics.md) | Rule Triggering Accuracy and Realtime Semantics | Proposed |
+| [0060](0060-evaluate-django-cron-library.md) | Evaluate django-cron Library vs Custom Scheduler | Proposed |
 
 ---
 
@@ -83,10 +86,10 @@ This document tracks all Architecture Decision Records (ADRs) and their implemen
 |--------|-------|
 | **Implemented** | 45 |
 | **Partially Implemented** | 1 |
-| **Proposed** | 1 |
+| **Proposed** | 3 |
 | **Superseded** | 10 |
-| **Total** | 57 |
+| **Total** | 60 |
 
 ---
 
-*Last updated: 2026-01-04* (Added ADR 0057; superseded ADR 0046)
+*Last updated: 2026-01-10* (Added ADR 0060 evaluating django-cron)

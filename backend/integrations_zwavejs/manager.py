@@ -242,7 +242,9 @@ class ZwavejsConnectionManager:
                 return
 
             entity_id = build_zwavejs_entity_id(home_id=home_id, node_id=node_id, value_id=value_id)
-            notify_entities_changed(source="zwavejs", entity_ids=[entity_id])
+            from django.utils import timezone as dj_timezone
+
+            notify_entities_changed(source="zwavejs", entity_ids=[entity_id], changed_at=dj_timezone.now())
 
         except Exception as exc:
             self._logger.debug("Dispatcher notification failed: %s", exc)

@@ -71,11 +71,25 @@ class IntegrationsHomeAssistantConfig(AppConfig):
                 apply_from_profile_id(profile_id=profile_id)
             except Exception:
                 return
+            try:
+                from integrations_home_assistant import state_stream
+
+                state_stream.apply_runtime_settings_from_active_profile()
+            except Exception:
+                return
 
         settings_profile_changed.connect(_on_ha_connection_profile_changed, dispatch_uid="ha_connection_profile_changed")
 
         # Best-effort warm-up so requests don't need DB lookups for HA connection settings.
         try:
             apply_from_active_profile_if_exists()
+        except Exception:
+            pass
+
+        # Best-effort: start/stop realtime HA entity updates based on current settings.
+        try:
+            from integrations_home_assistant import state_stream
+
+            state_stream.apply_runtime_settings_from_active_profile()
         except Exception:
             pass

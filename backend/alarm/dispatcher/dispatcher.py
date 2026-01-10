@@ -10,6 +10,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
+from uuid import uuid4
 
 from django.core.cache import cache
 from django.db import close_old_connections
@@ -29,6 +30,7 @@ logger = logging.getLogger(__name__)
 _CACHE_PREFIX = "dispatcher:"
 _CACHE_DEBOUNCE_KEY = f"{_CACHE_PREFIX}debounce:"
 _CACHE_RULE_LOCK_KEY = f"{_CACHE_PREFIX}rule_lock:"
+_CACHE_ENTITY_RULE_VERSION_KEY = f"{_CACHE_PREFIX}entity_rule_cache_version"
 
 # Lock TTL for rule evaluation
 _RULE_LOCK_TTL_SECONDS = 30
@@ -37,6 +39,7 @@ _RULE_LOCK_TTL_SECONDS = 30
 _entity_rule_cache: dict[str, set[int]] = {}
 _entity_rule_cache_lock = threading.Lock()
 _entity_rule_cache_updated_at: datetime | None = None
+_entity_rule_cache_version: str | None = None
 _ENTITY_RULE_CACHE_TTL_SECONDS = 60  # Refresh every 60 seconds
 
 
@@ -298,13 +301,15 @@ class RuleDispatcher:
         Refreshes the cache if it's stale (older than TTL).
         """
         global _entity_rule_cache, _entity_rule_cache_updated_at
+        global _entity_rule_cache_version
 
         now = timezone.now()
 
         # Check if cache needs refresh
         with _entity_rule_cache_lock:
+            shared_version = self._get_or_init_shared_entity_rule_cache_version()
             last_updated = _entity_rule_cache_updated_at
-            needs_refresh = (
+            needs_refresh = shared_version != _entity_rule_cache_version or (
                 last_updated is None
                 or (now - last_updated).total_seconds() > _ENTITY_RULE_CACHE_TTL_SECONDS
             )
@@ -326,6 +331,7 @@ class RuleDispatcher:
         Must be called with _entity_rule_cache_lock held.
         """
         global _entity_rule_cache, _entity_rule_cache_updated_at
+        global _entity_rule_cache_version
 
         from alarm.models import RuleEntityRef
 
@@ -343,7 +349,27 @@ class RuleDispatcher:
 
         _entity_rule_cache = new_cache
         _entity_rule_cache_updated_at = timezone.now()
+        _entity_rule_cache_version = self._get_or_init_shared_entity_rule_cache_version()
         logger.debug("Refreshed entity-rule cache: %d entities mapped", len(new_cache))
+
+    def _get_or_init_shared_entity_rule_cache_version(self) -> str:
+        """
+        Read the shared entity-rule cache version, initializing it if unset.
+
+        Note: this is best-effort; on a per-process cache backend (LocMem), the
+        version is effectively in-process, but the logic remains correct.
+        """
+        try:
+            current = cache.get(_CACHE_ENTITY_RULE_VERSION_KEY)
+            if isinstance(current, str) and current.strip():
+                return current.strip()
+            # Initialize once so invalidation has a shared key to bump.
+            version = uuid4().hex
+            cache.set(_CACHE_ENTITY_RULE_VERSION_KEY, version, timeout=None)
+            return version
+        except Exception:
+            # Fall back to a local-only version; TTL refresh still applies.
+            return uuid4().hex
 
     def _resolve_impacted_rules_uncached(self, entity_ids: set[str]) -> list[Rule]:
         """
@@ -409,7 +435,9 @@ class RuleDispatcher:
             )
 
             # Check if rule is allowed (not suspended/backoff)
-            now = timezone.now()
+            now = batch.changed_at or timezone.now()
+            if timezone.is_naive(now):
+                now = timezone.make_aware(now)
             allowed, reason = is_rule_allowed(runtime=runtime, now=now)
             if not allowed:
                 logger.debug("Rule %s skipped: %s", rule.id, reason)
@@ -583,6 +611,13 @@ def invalidate_entity_rule_cache() -> None:
     the cache is refreshed on the next dispatch.
     """
     global _entity_rule_cache_updated_at
+    global _entity_rule_cache_version
     with _entity_rule_cache_lock:
         _entity_rule_cache_updated_at = None
+        _entity_rule_cache_version = None
+        # Best-effort: bump the shared version to force refresh in other processes.
+        try:
+            cache.set(_CACHE_ENTITY_RULE_VERSION_KEY, uuid4().hex, timeout=None)
+        except Exception:
+            pass
     logger.debug("Entity-rule cache invalidated")

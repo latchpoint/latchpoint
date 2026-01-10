@@ -332,14 +332,14 @@ def _incr_cache_counter(key: str, *, ttl_seconds: int | None = None) -> int:
         return 0
 
 
-def _notify_dispatcher(*, entity_ids: list[str]) -> None:
+def _notify_dispatcher(*, entity_ids: list[str], changed_at=None) -> None:
     """Notify the dispatcher of entity changes (ADR 0057)."""
     if not entity_ids:
         return
 
     try:
         from alarm.dispatcher import notify_entities_changed
-        notify_entities_changed(source="zigbee2mqtt", entity_ids=entity_ids)
+        notify_entities_changed(source="zigbee2mqtt", entity_ids=entity_ids, changed_at=changed_at)
     except Exception as exc:
         logger.debug("Dispatcher notification failed: %s", exc)
 
@@ -428,7 +428,7 @@ def _handle_z2m_message(*, settings: Zigbee2mqttSettings, topic: str, payload: s
 
     # Notify dispatcher of entity changes (ADR 0057).
     if changed_entity_ids:
-        _notify_dispatcher(entity_ids=changed_entity_ids)
+        _notify_dispatcher(entity_ids=changed_entity_ids, changed_at=now)
 
 
 def sync_devices_via_mqtt(*, timeout_seconds: float = 3.0) -> dict[str, Any]:

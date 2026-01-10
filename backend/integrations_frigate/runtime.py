@@ -144,14 +144,18 @@ def prune_old_detections(*, retention_seconds: int, min_interval_seconds: int = 
     cache.set(_CACHE_LAST_PRUNE_AT, timezone.now().isoformat(), timeout=None)
 
 
-def _notify_dispatcher(*, camera: str, event_id: str) -> None:
+def _notify_dispatcher(*, camera: str, event_id: str, changed_at=None) -> None:
     """Notify the dispatcher of Frigate detection (ADR 0057)."""
     try:
         from alarm.dispatcher import notify_entities_changed
 
         # Use synthetic entity ID for Frigate detection routing
         synthetic_entity_id = f"__frigate_detection:{camera}:{event_id or 'unknown'}"
-        notify_entities_changed(source="frigate:detection", entity_ids=[synthetic_entity_id])
+        notify_entities_changed(
+            source="frigate:detection",
+            entity_ids=[synthetic_entity_id],
+            changed_at=changed_at,
+        )
     except Exception as exc:
         logger.debug("Dispatcher notification failed: %s", exc)
 
@@ -243,4 +247,4 @@ def _handle_frigate_message(*, settings: FrigateSettings, topic: str, payload: s
         return
 
     # Notify dispatcher of Frigate detection (ADR 0057).
-    _notify_dispatcher(camera=parsed.camera, event_id=parsed.event_id)
+    _notify_dispatcher(camera=parsed.camera, event_id=parsed.event_id, changed_at=timezone.now())
