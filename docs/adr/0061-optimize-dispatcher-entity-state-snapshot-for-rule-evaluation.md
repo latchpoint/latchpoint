@@ -25,6 +25,15 @@ Change the dispatcher evaluation flow to build a *minimal* entity-state snapshot
 
 This keeps the “evaluate against a DB-consistent snapshot” property, while reducing query volume and per-batch work.
 
+## Priority
+**High priority.** This optimization targets the current hot-path bottleneck for “state change → rule evaluation” latency.
+
+It is especially impactful when:
+- the system has a large entity registry (e.g., ~1000+ entities synced from Home Assistant), and
+- only a small subset of entities are referenced by rules (e.g., ~50 entities).
+
+In that scenario, the current “snapshot all entities” behavior does ~20× more DB reads and Python work per batch than necessary.
+
 ### Follow-up (optional)
 If further optimization is required, consider a second stage:
 - Cache enabled rule definitions (and pre-parsed condition trees) in-memory with a shared-cache version bump on rule CRUD.
@@ -57,4 +66,3 @@ If further optimization is required, consider a second stage:
 - Add metrics:
   - `entity_state_snapshot_size` per batch
   - timing for snapshot query and rule evaluation
-
