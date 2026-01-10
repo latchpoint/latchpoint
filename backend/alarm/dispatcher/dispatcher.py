@@ -20,6 +20,7 @@ from .config import DispatcherConfig, get_dispatcher_config
 from .failure_handler import is_rule_allowed, record_rule_failure, record_rule_success
 from .rate_limiter import TokenBucket
 from .stats import DispatcherStats
+from .entity_extractor import extract_entity_ids_from_definition
 
 if TYPE_CHECKING:
     from alarm.models import Rule
@@ -250,8 +251,8 @@ class RuleDispatcher:
                 batch.source,
             )
 
-            # Snapshot entity states at batch start for consistency
-            entity_state_map = self._get_entity_state_map()
+            # Snapshot only the entity states required to evaluate the impacted rules.
+            entity_state_map = self._get_entity_state_map_for_rules(rules=rules, changed_entity_ids=batch.entity_ids)
 
             for rule in rules:
                 self._evaluate_rule_with_lock(rule, entity_state_map, batch)
@@ -396,6 +397,47 @@ class RuleDispatcher:
         from alarm.models import Entity
 
         return dict(Entity.objects.values_list("entity_id", "last_state"))
+
+    def _get_entity_state_map_for_rules(
+        self,
+        *,
+        rules: list[Rule],
+        changed_entity_ids: set[str],
+    ) -> dict[str, str | None]:
+        """
+        Build an entity-state snapshot for evaluating the given rules.
+
+        Optimization (ADR 0061): fetch only the entity IDs required by impacted rules,
+        rather than loading the full Entity table on every batch.
+        """
+        from alarm.models import Entity, RuleEntityRef
+
+        required: set[str] = set(changed_entity_ids or set())
+
+        # Prefer the dependency index (RuleEntityRef) and augment with a best-effort
+        # extraction from the in-memory rule definitions (defensive if refs are stale).
+        rule_ids = [int(getattr(r, "id")) for r in rules if getattr(r, "id", None) is not None]
+        if rule_ids:
+            try:
+                ref_entity_ids = RuleEntityRef.objects.filter(rule_id__in=rule_ids).values_list(
+                    "entity__entity_id", flat=True
+                )
+                required.update(str(eid).strip() for eid in ref_entity_ids if str(eid).strip())
+            except Exception:
+                pass
+
+        for rule in rules:
+            try:
+                definition = getattr(rule, "definition", None)
+                required.update(extract_entity_ids_from_definition(definition))
+            except Exception:
+                continue
+
+        if not required:
+            return {}
+
+        qs = Entity.objects.filter(entity_id__in=sorted(required)).values_list("entity_id", "last_state")
+        return dict(qs)
 
     def _evaluate_rule_with_lock(
         self,
