@@ -159,6 +159,9 @@ class RuleUpsertSerializer(serializers.ModelSerializer):
         if "kind" not in validated_data or not validated_data.get("kind"):
             validated_data["kind"] = derive_kind_from_actions(definition)
 
+        from alarm.dispatcher.entity_extractor import extract_entity_sources_from_definition
+        entity_sources = extract_entity_sources_from_definition(definition)
+
         # Auto-extract entity_ids from definition if not explicitly provided (ADR 0057)
         if entity_ids is None:
             from alarm.dispatcher.entity_extractor import extract_entity_ids_from_definition
@@ -171,7 +174,7 @@ class RuleUpsertSerializer(serializers.ModelSerializer):
         from alarm.dispatcher import invalidate_entity_rule_cache
         invalidate_entity_rule_cache()
 
-        sync_rule_entity_refs(rule=rule, entity_ids=entity_ids)
+        sync_rule_entity_refs(rule=rule, entity_ids=entity_ids, entity_sources=entity_sources)
 
         return rule
 
@@ -183,6 +186,9 @@ class RuleUpsertSerializer(serializers.ModelSerializer):
         definition = validated_data.get("definition", instance.definition)
         if "kind" not in validated_data or not validated_data.get("kind"):
             validated_data["kind"] = derive_kind_from_actions(definition)
+
+        from alarm.dispatcher.entity_extractor import extract_entity_sources_from_definition
+        entity_sources = extract_entity_sources_from_definition(definition)
 
         rule = super().update(instance, validated_data)
 
@@ -196,6 +202,6 @@ class RuleUpsertSerializer(serializers.ModelSerializer):
         invalidate_entity_rule_cache()
 
         if entity_ids is not None:
-            sync_rule_entity_refs(rule=rule, entity_ids=entity_ids)
+            sync_rule_entity_refs(rule=rule, entity_ids=entity_ids, entity_sources=entity_sources)
 
         return rule

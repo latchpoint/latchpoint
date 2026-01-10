@@ -29,6 +29,33 @@ def extract_entity_ids_from_definition(definition: Any) -> set[str]:
     return entity_ids
 
 
+def extract_entity_sources_from_definition(definition: Any) -> dict[str, str]:
+    """
+    Walk the 'when' condition tree and extract entity_id -> source hints.
+
+    The rule DSL may optionally include a `source` field on `entity_state` nodes.
+    This is primarily a UI hint (preserve the selected dropdown), but it is also
+    used by the backend to backfill `Entity.source` when an entity row is created
+    via rule refs before an integration sync has populated it.
+
+    Notes:
+    - Only returns concrete integration sources (e.g. "home_assistant", "zwavejs",
+      "zigbee2mqtt"). The special UI value "all" is ignored.
+    - If the same entity_id appears multiple times, the first concrete source
+      wins (subsequent values are ignored).
+    """
+    entity_sources: dict[str, str] = {}
+
+    if not isinstance(definition, dict):
+        return entity_sources
+
+    when_node = definition.get("when")
+    if when_node:
+        _extract_sources_from_node(when_node, entity_sources)
+
+    return entity_sources
+
+
 def _extract_from_node(node: Any, entity_ids: set[str]) -> None:
     """
     Recursively extract entity_ids from a condition node.
@@ -69,6 +96,47 @@ def _extract_from_node(node: Any, entity_ids: set[str]) -> None:
 
     # Note: frigate_detection, alarm_state_in, etc. don't reference entities directly
     # They're handled differently (frigate via synthetic source, alarm via global state)
+
+
+def _extract_sources_from_node(node: Any, entity_sources: dict[str, str]) -> None:
+    """Recursively extract entity source hints from a condition node."""
+    if not isinstance(node, dict):
+        return
+
+    op = node.get("op")
+
+    if op == "entity_state":
+        entity_id = node.get("entity_id")
+        raw_source = node.get("source")
+        if not isinstance(entity_id, str) or not entity_id.strip():
+            return
+        if not isinstance(raw_source, str) or not raw_source.strip():
+            return
+        source = raw_source.strip()
+        if source == "all":
+            return
+        # Only record the first concrete source hint for a given entity_id.
+        entity_sources.setdefault(entity_id.strip(), source)
+        return
+
+    if op in ("all", "any"):
+        children = node.get("children", [])
+        if isinstance(children, list):
+            for child in children:
+                _extract_sources_from_node(child, entity_sources)
+        return
+
+    if op == "not":
+        child = node.get("child")
+        if child:
+            _extract_sources_from_node(child, entity_sources)
+        return
+
+    if op == "for":
+        child = node.get("child")
+        if child:
+            _extract_sources_from_node(child, entity_sources)
+        return
 
 
 def validate_entity_ids_exist(entity_ids: set[str]) -> tuple[set[str], set[str]]:

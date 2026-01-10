@@ -3,19 +3,25 @@ from __future__ import annotations
 from alarm.models import Entity, Rule, RuleEntityRef
 
 
-def sync_rule_entity_refs(*, rule: Rule, entity_ids: list[str]) -> None:
+def sync_rule_entity_refs(*, rule: Rule, entity_ids: list[str], entity_sources: dict[str, str] | None = None) -> None:
     """Sync a rule's referenced entities from a list of entity_id strings."""
     entities: list[Entity] = []
     for entity_id in entity_ids:
         domain = entity_id.split(".", 1)[0]
+        source_hint = (entity_sources or {}).get(entity_id)
         entity, _ = Entity.objects.get_or_create(
             entity_id=entity_id,
             defaults={
                 "domain": domain,
                 "name": entity_id,
                 "attributes": {},
+                "source": source_hint or "",
             },
         )
+        # Backfill source if the entity exists but was created without an integration sync.
+        if source_hint and not (entity.source or "").strip():
+            entity.source = source_hint
+            entity.save(update_fields=["source"])
         entities.append(entity)
 
     RuleEntityRef.objects.filter(rule=rule).exclude(entity__in=entities).delete()
