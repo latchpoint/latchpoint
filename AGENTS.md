@@ -51,6 +51,7 @@ cd frontend && npm test
   - Locks + door codes: `backend/locks/` (door codes CRUD + HA lock discovery)
 - Frontend: `frontend/` (React + TS + Vite; API client uses cookies + CSRF)
 - Docs: `docs/` (active) and `docs/archived/` (completed/old)
+- Onboarding: `docs/onboarding/` (detailed onboarding guides for specific subsystems)
 - ADRs: `docs/adr/` (architecture decisions; see `docs/adr/0000-adr-index.md` for status tracking)
 - Docker helpers: `scripts/`
 - Docker runtime config: `docker/` (entrypoints, supervisord configs, Nginx config)
@@ -172,6 +173,7 @@ python manage.py test alarm.tests.test_mqtt_api
 ```
 
 ### Scheduled tasks
+See [`docs/onboarding/scheduled-tasks.md`](docs/onboarding/scheduled-tasks.md) for full documentation.
 ```bash
 ./scripts/docker-shell.sh
 python manage.py list_tasks       # List registered tasks
