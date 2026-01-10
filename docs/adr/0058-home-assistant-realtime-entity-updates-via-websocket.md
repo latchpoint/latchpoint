@@ -1,7 +1,7 @@
 # ADR 0058: Home Assistant Realtime Entity Updates via WebSocket (Dispatcher-Based)
 
 ## Status
-Proposed
+Accepted (Implemented)
 
 ## Context
 We currently learn about Home Assistant (HA) entity state changes via periodic polling in `sync_entity_states` (`backend/alarm/tasks.py`), which adds latency to rules that depend on HA entities.
@@ -43,16 +43,7 @@ In production, multiple Django/Daphne processes may exist. To avoid N duplicated
 - Polling remains necessary as a safety net; realtime alone is not sufficient for correctness.
 
 ## Todos
-- Implement HA WebSocket manager under `backend/integrations_home_assistant/`:
-  - Connect/auth/subscribe to `state_changed`
-  - Reconnect/backoff
-  - Shared-cache leader lock
-- Wire event handler to:
-  - Update `Entity` state/timestamps
-  - Call `notify_entities_changed(..., changed_at=...)`
-- Add tests:
-  - Event → `Entity` update + dispatcher notification
-  - Leader lock prevents duplicate connections
-- Update docs/config:
-  - Clarify polling is fallback-only when realtime subscription is enabled.
-
+- [x] Implement HA WebSocket manager under `backend/integrations_home_assistant/`
+- [x] Wire event handler to update `Entity` + call `notify_entities_changed(..., changed_at=...)`
+- [ ] Add tests for HA state stream (event ingest + leader lock behavior)
+- [ ] Update docs/config to clarify polling is fallback-only when realtime subscription is enabled
