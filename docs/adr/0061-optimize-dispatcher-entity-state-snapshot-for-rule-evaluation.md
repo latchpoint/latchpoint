@@ -1,7 +1,7 @@
 # ADR 0061: Optimize Dispatcher Entity-State Snapshot for Faster Rule Evaluation
 
 ## Status
-Proposed
+Implemented
 
 ## Context
 The ADR 0057 dispatcher evaluates only rules impacted by entity changes, but it currently snapshots *all* entity states on each dispatched batch:

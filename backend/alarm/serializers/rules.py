@@ -33,7 +33,7 @@ class RuleSerializer(serializers.ModelSerializer):
         if isinstance(entity_ids_by_rule_id, dict):
             value = entity_ids_by_rule_id.get(obj.id)
             if isinstance(value, (list, tuple, set)):
-                return sorted({str(x) for x in value if str(x).strip()})
+                return sorted({str(x) for x in value if str(x).strip() and not str(x).strip().startswith("__")})
 
         prefetched = getattr(obj, "_prefetched_objects_cache", {}) or {}
         if "entity_refs" in prefetched:
@@ -42,12 +42,13 @@ class RuleSerializer(serializers.ModelSerializer):
                 entity = getattr(ref, "entity", None)
                 entity_id = getattr(entity, "entity_id", "") if entity is not None else ""
                 entity_id = (entity_id or "").strip()
-                if entity_id:
+                if entity_id and not entity_id.startswith("__"):
                     entity_ids.add(entity_id)
             return sorted(entity_ids)
 
         return list(
             RuleEntityRef.objects.filter(rule=obj)
+            .exclude(entity__entity_id__startswith="__")
             .select_related("entity")
             .values_list("entity__entity_id", flat=True)
         )
@@ -162,10 +163,15 @@ class RuleUpsertSerializer(serializers.ModelSerializer):
         from alarm.dispatcher.entity_extractor import extract_entity_sources_from_definition
         entity_sources = extract_entity_sources_from_definition(definition)
 
-        # Auto-extract entity_ids from definition if not explicitly provided (ADR 0057)
+        from alarm.dispatcher.entity_extractor import extract_entity_ids_from_definition
+        extracted_entity_ids = set(extract_entity_ids_from_definition(definition))
         if entity_ids is None:
-            from alarm.dispatcher.entity_extractor import extract_entity_ids_from_definition
-            entity_ids = list(extract_entity_ids_from_definition(definition))
+            # Auto-extract dependencies from definition (ADR 0057/0059).
+            entity_ids = sorted(extracted_entity_ids)
+        else:
+            # Preserve explicit entity_ids but always include definition-derived dependencies
+            # so the dispatcher can route non-entity operators (ADR 0059).
+            entity_ids = sorted(set(entity_ids) | extracted_entity_ids)
 
         rule = super().create(validated_data)
 
@@ -192,10 +198,14 @@ class RuleUpsertSerializer(serializers.ModelSerializer):
 
         rule = super().update(instance, validated_data)
 
-        # Auto-extract entity_ids from definition if not explicitly provided and definition changed (ADR 0057)
+        from alarm.dispatcher.entity_extractor import extract_entity_ids_from_definition
+        extracted_entity_ids = set(extract_entity_ids_from_definition(definition))
         if entity_ids is None and "definition" in validated_data:
-            from alarm.dispatcher.entity_extractor import extract_entity_ids_from_definition
-            entity_ids = list(extract_entity_ids_from_definition(definition))
+            # Auto-extract dependencies from definition (ADR 0057/0059).
+            entity_ids = sorted(extracted_entity_ids)
+        elif entity_ids is not None:
+            # Preserve explicit entity_ids but always include definition-derived dependencies.
+            entity_ids = sorted(set(entity_ids) | extracted_entity_ids)
 
         # Always invalidate dispatcher cache on update to ensure rule changes take effect (ADR 0057)
         from alarm.dispatcher import invalidate_entity_rule_cache

@@ -60,9 +60,19 @@ class RulesCooldownTests(TestCase):
         result1 = run_rules()
         self.assertEqual(result1.fired, 1)
 
-        # Run again immediately
+        # Run again immediately: edge-triggered rules should not refire while the
+        # condition remains true.
         result2 = run_rules()
-        self.assertEqual(result2.fired, 1)
+        self.assertEqual(result2.fired, 0)
+
+        # False -> true transition should fire again.
+        Entity.objects.filter(entity_id="binary_sensor.test").update(last_state="off")
+        result3 = run_rules()
+        self.assertEqual(result3.fired, 0)
+
+        Entity.objects.filter(entity_id="binary_sensor.test").update(last_state="on")
+        result4 = run_rules()
+        self.assertEqual(result4.fired, 1)
 
     def test_cooldown_resets_after_period(self):
         rule = Rule.objects.create(

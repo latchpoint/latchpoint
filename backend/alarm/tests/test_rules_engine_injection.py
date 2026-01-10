@@ -15,6 +15,8 @@ class _FakeRuntime:
     last_fired_at: object | None = None
     scheduled_for: object | None = None
     became_true_at: object | None = None
+    last_when_matched: object | None = None
+    last_when_transition_at: object | None = None
 
     def save(self, **kwargs) -> None:  # pragma: no cover - trivial
         return
@@ -44,6 +46,64 @@ class _FakeRepos:
 
 
 class RulesEngineInjectionTests(TestCase):
+    def test_run_rules_immediate_rule_is_edge_triggered(self):
+        rule = Rule(
+            id=10,
+            name="Trigger when door on",
+            kind="trigger",
+            enabled=True,
+            priority=1,
+            schema_version=1,
+            cooldown_seconds=None,
+            definition={
+                "when": {"op": "entity_state", "entity_id": "binary_sensor.front_door", "equals": "on"},
+                "then": [{"type": "alarm_trigger"}],
+            },
+        )
+        repos = _FakeRepos(rules=[rule], entity_state={"binary_sensor.front_door": "on"})
+
+        executed: list[dict] = []
+
+        def _exec(**kwargs):
+            executed.append(kwargs)
+            return {}
+
+        now = timezone.now()
+
+        result = run_rules(now=now, actor_user=None, repos=repos, execute_actions_func=_exec, log_action_func=lambda **_: None)
+        self.assertEqual(result.fired, 1)
+
+        # Condition remains true; repeated evaluation should not re-fire.
+        result = run_rules(
+            now=now + timezone.timedelta(seconds=1),
+            actor_user=None,
+            repos=repos,
+            execute_actions_func=_exec,
+            log_action_func=lambda **_: None,
+        )
+        self.assertEqual(result.fired, 0)
+
+        # Condition goes false then true; should fire again on the transition.
+        repos._entity_state = {"binary_sensor.front_door": "off"}
+        result = run_rules(
+            now=now + timezone.timedelta(seconds=2),
+            actor_user=None,
+            repos=repos,
+            execute_actions_func=_exec,
+            log_action_func=lambda **_: None,
+        )
+        self.assertEqual(result.fired, 0)
+
+        repos._entity_state = {"binary_sensor.front_door": "on"}
+        result = run_rules(
+            now=now + timezone.timedelta(seconds=3),
+            actor_user=None,
+            repos=repos,
+            execute_actions_func=_exec,
+            log_action_func=lambda **_: None,
+        )
+        self.assertEqual(result.fired, 1)
+
     def test_run_rules_uses_injected_executor_and_logger(self):
         rule = Rule(
             id=1,
@@ -116,4 +176,3 @@ class RulesEngineInjectionTests(TestCase):
         runtime = repos.runtimes[2]
         self.assertIsNotNone(runtime.became_true_at)
         self.assertIsNotNone(runtime.scheduled_for)
-

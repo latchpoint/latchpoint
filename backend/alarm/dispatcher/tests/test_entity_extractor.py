@@ -2,7 +2,11 @@
 
 from unittest import TestCase
 
-from alarm.dispatcher.entity_extractor import extract_entity_ids_from_definition
+from alarm.dispatcher.entity_extractor import (
+    SYSTEM_ALARM_STATE_ENTITY_ID,
+    extract_entity_ids_from_definition,
+    frigate_person_detected_entity_id,
+)
 
 
 class TestExtractEntityIds(TestCase):
@@ -110,21 +114,28 @@ class TestExtractEntityIds(TestCase):
         result = extract_entity_ids_from_definition(definition)
         self.assertEqual(result, {"sensor.a", "sensor.b", "sensor.c"})
 
-    def test_non_entity_ops_ignored(self):
-        """Non-entity operators (alarm_state_in, frigate_detection) are ignored."""
+    def test_non_entity_ops_include_synthetic_dependency_ids(self):
+        """Non-entity operators contribute synthetic dependency IDs for dispatcher routing."""
         definition = {
             "when": {
                 "op": "all",
                 "children": [
                     {"op": "alarm_state_in", "states": ["armed_home", "armed_away"]},
-                    {"op": "frigate_detection", "camera": "front", "label": "person"},
+                    {"op": "frigate_person_detected", "cameras": ["front"], "zones": [], "within_seconds": 60, "min_confidence_pct": 60},
                     {"op": "entity_state", "entity_id": "sensor.real", "equals": "on"},
                 ],
             },
             "then": [],
         }
         result = extract_entity_ids_from_definition(definition)
-        self.assertEqual(result, {"sensor.real"})
+        self.assertEqual(
+            result,
+            {
+                SYSTEM_ALARM_STATE_ENTITY_ID,
+                frigate_person_detected_entity_id("front"),
+                "sensor.real",
+            },
+        )
 
     def test_whitespace_trimmed(self):
         """Entity IDs have whitespace trimmed."""

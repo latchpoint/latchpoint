@@ -67,3 +67,9 @@ class RuleEngineForTests(TestCase):
         self.assertGreaterEqual(result.fired, 1)
         snapshot = services.get_current_snapshot(process_timers=False)
         self.assertEqual(snapshot.current_state, AlarmState.TRIGGERED)
+
+        # Condition remains true; do not schedule or fire again until it goes false.
+        again = later + timedelta(seconds=1)
+        result = rules_engine.run_rules(now=again, actor_user=self.user)
+        self.assertEqual(result.scheduled, 0)
+        self.assertEqual(result.fired, 0)

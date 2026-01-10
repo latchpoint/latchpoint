@@ -132,18 +132,41 @@ def run_rules(
                     runtime.save(update_fields=["became_true_at", "scheduled_for", "updated_at"])
                 continue
 
-            if runtime.became_true_at is None or runtime.scheduled_for is None:
+            if runtime.became_true_at is None:
                 runtime.became_true_at = now
                 runtime.scheduled_for = now + timedelta(seconds=seconds)
                 runtime.save(update_fields=["became_true_at", "scheduled_for", "updated_at"])
                 scheduled += 1
+                continue
+
+            # If we already fired during the current true-streak, do not reschedule.
+            if runtime.last_fired_at and runtime.became_true_at and runtime.last_fired_at >= runtime.became_true_at:
+                continue
+
+            # Defensive: if we have a known true-streak but no schedule (e.g. cleared during
+            # cooldown/backoff), reschedule based on the original transition time.
+            if runtime.scheduled_for is None and runtime.became_true_at:
+                runtime.scheduled_for = runtime.became_true_at + timedelta(seconds=seconds)
+                runtime.save(update_fields=["scheduled_for", "updated_at"])
             continue
 
         matched = eval_condition_with_context(when_node, entity_state=entity_state, now=now, repos=repos)
         if not matched:
+            runtime = repos.ensure_runtime(rule)
+            if runtime.last_when_matched is not False:
+                runtime.last_when_matched = False
+                runtime.last_when_transition_at = now
+                runtime.save(update_fields=["last_when_matched", "last_when_transition_at", "updated_at"])
             continue
 
         runtime = repos.ensure_runtime(rule)
+        previous_matched = runtime.last_when_matched if runtime.last_when_matched is not None else False
+        if previous_matched is not True:
+            runtime.last_when_matched = True
+            runtime.last_when_transition_at = now
+            runtime.save(update_fields=["last_when_matched", "last_when_transition_at", "updated_at"])
+        if previous_matched is True:
+            continue
         if cooldown_active(rule=rule, runtime=runtime, now=now):
             skipped_cooldown += 1
             continue

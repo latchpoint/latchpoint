@@ -299,6 +299,8 @@ class RuleRuntimeState(models.Model):
     )
     became_true_at = models.DateTimeField(null=True, blank=True)
     scheduled_for = models.DateTimeField(null=True, blank=True, db_index=True)
+    last_when_matched = models.BooleanField(null=True, blank=True)
+    last_when_transition_at = models.DateTimeField(null=True, blank=True)
     last_evaluated_at = models.DateTimeField(null=True, blank=True)
     last_fired_at = models.DateTimeField(null=True, blank=True)
     fingerprint = models.CharField(max_length=64, blank=True)

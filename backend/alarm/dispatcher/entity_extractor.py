@@ -5,9 +5,20 @@ from __future__ import annotations
 from typing import Any
 
 
+SYSTEM_ALARM_STATE_ENTITY_ID = "__system.alarm_state"
+
+
+def frigate_person_detected_entity_id(camera: str) -> str:
+    camera = (camera or "").strip()
+    return f"__frigate.person_detected:{camera}" if camera else "__frigate.person_detected"
+
+
 def extract_entity_ids_from_definition(definition: Any) -> set[str]:
     """
     Walk the 'when' condition tree and extract all entity_id references.
+
+    Note: this includes synthetic dependency IDs for non-entity operators so the
+    dispatcher can route evaluations without falling back to "evaluate all rules".
 
     Handles operators: entity_state, all, any, not, for
 
@@ -75,6 +86,20 @@ def _extract_from_node(node: Any, entity_ids: set[str]) -> None:
         if isinstance(entity_id, str) and entity_id.strip():
             entity_ids.add(entity_id.strip())
 
+    elif op == "alarm_state_in":
+        # Synthetic dependency to route alarm-state-based rules.
+        entity_ids.add(SYSTEM_ALARM_STATE_ENTITY_ID)
+
+    elif op == "frigate_person_detected":
+        # Synthetic per-camera dependencies to route Frigate-triggered rules.
+        cameras = node.get("cameras", [])
+        if isinstance(cameras, list) and cameras:
+            for camera in cameras:
+                if isinstance(camera, str) and camera.strip():
+                    entity_ids.add(frigate_person_detected_entity_id(camera))
+        else:
+            entity_ids.add(frigate_person_detected_entity_id(""))
+
     elif op in ("all", "any"):
         # Logical operators with children array
         children = node.get("children", [])
@@ -94,8 +119,7 @@ def _extract_from_node(node: Any, entity_ids: set[str]) -> None:
         if child:
             _extract_from_node(child, entity_ids)
 
-    # Note: frigate_detection, alarm_state_in, etc. don't reference entities directly
-    # They're handled differently (frigate via synthetic source, alarm via global state)
+    # Other operators don't contribute to dispatcher dependencies.
 
 
 def _extract_sources_from_node(node: Any, entity_sources: dict[str, str]) -> None:

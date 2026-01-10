@@ -1,7 +1,7 @@
 # ADR 0059: Rule Triggering Accuracy and Realtime Semantics
 
 ## Status
-Accepted (Partially Implemented)
+Implemented
 
 ## Context
 ADR 0057 introduced a centralized dispatcher that evaluates only rules impacted by integration entity changes. This substantially improves performance and consistency, but there are known gaps that impact “realtime correctness”:
@@ -47,11 +47,11 @@ Make rule firing more accurate and more immediate by adding the following enhanc
 ## Todos
 - [x] Implement event-time evaluation in dispatcher/rules engine (`changed_at` → `run_rules(now=...)`)
 - [x] Implement shared-cache invalidation/versioning for entity→rule mapping
-- Add transition-based runtime tracking:
-  - Persist per-rule `when` match state and last transition timestamp.
-  - Define behavior for restarts (default to “unknown → evaluate without firing until stable” or similar).
-- Add a dependency indexing strategy for non-entity operators and update dispatcher routing accordingly.
+- [x] Add transition-based runtime tracking:
+  - [x] Persist per-rule `when` match state and last transition timestamp.
+  - [x] Define behavior for restarts (persisted state prevents refires while `when` remains true).
+- [x] Add a dependency indexing strategy for non-entity operators and update dispatcher routing accordingly.
 - Add tests for:
-  - “for” timing with delayed dispatch
-  - No refire on repeated evaluations while `when` remains true
-  - Cross-process invalidation behavior (version bump triggers refresh)
+  - [x] “for” timing with delayed dispatch
+  - [x] No refire on repeated evaluations while `when` remains true
+  - [x] Cross-process invalidation behavior (version bump triggers refresh)

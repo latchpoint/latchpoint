@@ -19,3 +19,15 @@ def _on_alarm_state_change_committed(sender, *, state_to: str, **kwargs) -> None
         logger.warning("WS alarm_state_change_committed: no snapshot found (state_to=%s)", state_to)
         return
     broadcast_alarm_state(snapshot=snapshot)
+    try:
+        from alarm.dispatcher import notify_entities_changed
+        from alarm.dispatcher.entity_extractor import SYSTEM_ALARM_STATE_ENTITY_ID
+
+        notify_entities_changed(
+            source="alarm_state",
+            entity_ids=[SYSTEM_ALARM_STATE_ENTITY_ID],
+            changed_at=snapshot.entered_at,
+        )
+    except Exception:
+        # Best-effort; alarm state WS broadcast is the primary side effect here.
+        pass

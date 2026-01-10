@@ -149,8 +149,12 @@ def _notify_dispatcher(*, camera: str, event_id: str, changed_at=None) -> None:
     try:
         from alarm.dispatcher import notify_entities_changed
 
-        # Use synthetic entity ID for Frigate detection routing
-        synthetic_entity_id = f"__frigate_detection:{camera}:{event_id or 'unknown'}"
+        # Use synthetic entity ID for Frigate detection routing (ADR 0059).
+        # Per-camera allows dispatcher to route only impacted rules.
+        camera_key = (camera or "").strip()
+        synthetic_entity_id = (
+            f"__frigate.person_detected:{camera_key}" if camera_key else "__frigate.person_detected"
+        )
         notify_entities_changed(
             source="frigate:detection",
             entity_ids=[synthetic_entity_id],
@@ -247,4 +251,5 @@ def _handle_frigate_message(*, settings: FrigateSettings, topic: str, payload: s
         return
 
     # Notify dispatcher of Frigate detection (ADR 0057).
-    _notify_dispatcher(camera=parsed.camera, event_id=parsed.event_id, changed_at=timezone.now())
+    observed_at = parsed.observed_at if getattr(parsed, "observed_at", None) is not None else timezone.now()
+    _notify_dispatcher(camera=parsed.camera, event_id=parsed.event_id, changed_at=observed_at)
