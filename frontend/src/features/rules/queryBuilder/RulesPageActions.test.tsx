@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest'
 
-describe('WhenConditionRow', () => {
+describe('RulesPageActions', () => {
   it('imports', async () => {
-    const mod = await import('./WhenConditionRow')
+    const mod = await import('./RulesPageActions')
     expect(mod).toBeTruthy()
   })
 })

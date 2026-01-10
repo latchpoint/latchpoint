@@ -11,7 +11,7 @@ type Props = {
   onRefresh: () => void
 }
 
-export function RulesBuilderPageActions({
+export function RulesPageActions({
   isBusy,
   onSyncHaEntities,
   onSyncZwaveEntities,

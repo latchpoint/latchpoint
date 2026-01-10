@@ -31,18 +31,28 @@ export interface AlarmDslToRqbResult {
 }
 
 /**
+ * Entity info for source lookup during conversion
+ */
+interface EntityInfo {
+  entityId: string
+  source?: string
+}
+
+/**
  * Convert our alarm DSL WhenNode to React Query Builder format
  * Returns both the query and any "for" duration wrapper
  */
-export function alarmDslToRqb(when: WhenNode): RuleGroupType {
-  const result = alarmDslToRqbWithFor(when)
+export function alarmDslToRqb(when: WhenNode, entities?: EntityInfo[]): RuleGroupType {
+  const result = alarmDslToRqbWithFor(when, entities)
   return result.query
 }
 
 /**
  * Convert alarm DSL to RQB format, extracting ForNode if present
+ * @param when - The WhenNode from the rule definition
+ * @param entities - Optional list of entities for source lookup
  */
-export function alarmDslToRqbWithFor(when: WhenNode): AlarmDslToRqbResult {
+export function alarmDslToRqbWithFor(when: WhenNode, entities?: EntityInfo[]): AlarmDslToRqbResult {
   // Handle empty when node
   if (!when || Object.keys(when).length === 0) {
     return {
@@ -58,7 +68,7 @@ export function alarmDslToRqbWithFor(when: WhenNode): AlarmDslToRqbResult {
   // Handle ForNode wrapper - extract seconds and recurse on child
   if ('op' in when && when.op === 'for') {
     const forNode = when as ForNode
-    const childResult = alarmDslToRqbWithFor(forNode.child)
+    const childResult = alarmDslToRqbWithFor(forNode.child, entities)
     return {
       query: childResult.query,
       forSeconds: forNode.seconds,
@@ -72,7 +82,7 @@ export function alarmDslToRqbWithFor(when: WhenNode): AlarmDslToRqbResult {
       query: {
         id: generateId(),
         combinator: logicalNode.op === 'all' ? 'and' : 'or',
-        rules: logicalNode.children.map((child) => conditionNodeToRqbRule(child)),
+        rules: logicalNode.children.map((child) => conditionNodeToRqbRule(child, entities)),
       },
       forSeconds: null,
     }
@@ -80,7 +90,7 @@ export function alarmDslToRqbWithFor(when: WhenNode): AlarmDslToRqbResult {
 
   // Handle single condition (wrap in a group)
   if ('op' in when) {
-    const rule = conditionNodeToRqbRule(when as ConditionNode)
+    const rule = conditionNodeToRqbRule(when as ConditionNode, entities)
     return {
       query: {
         id: generateId(),
@@ -103,29 +113,90 @@ export function alarmDslToRqbWithFor(when: WhenNode): AlarmDslToRqbResult {
 }
 
 /**
- * Convert a single condition node to an RQB rule
+ * Map entity source to RQB field name
  */
-function conditionNodeToRqbRule(node: ConditionNode): RuleType {
+function sourceToFieldName(source?: string): string {
+  switch (source) {
+    case 'home_assistant':
+      return 'entity_state_ha'
+    case 'zwavejs':
+      return 'entity_state_zwavejs'
+    case 'zigbee2mqtt':
+      return 'entity_state_z2m'
+    case 'all':
+      return 'entity_state'
+    default:
+      return 'entity_state'
+  }
+}
+
+function fieldNameToSource(field?: string): string | undefined {
+  switch (field) {
+    case 'entity_state':
+      return 'all'
+    case 'entity_state_ha':
+      return 'home_assistant'
+    case 'entity_state_zwavejs':
+      return 'zwavejs'
+    case 'entity_state_z2m':
+      return 'zigbee2mqtt'
+    default:
+      return undefined
+  }
+}
+
+/**
+ * Convert a single condition node to an RQB rule or group
+ * Handles nested logical groups (all/any) by returning RuleGroupType
+ * @param node - The condition node to convert (can be a nested LogicalNode at runtime)
+ * @param entities - Optional list of entities for source lookup
+ */
+function conditionNodeToRqbRule(node: ConditionNode | LogicalNode, entities?: EntityInfo[]): RuleType | RuleGroupType {
+  // Handle nested logical groups (all/any)
+  if ('children' in node && (node.op === 'all' || node.op === 'any')) {
+    const logicalNode = node as LogicalNode
+    return {
+      id: generateId(),
+      combinator: logicalNode.op === 'all' ? 'and' : 'or',
+      rules: logicalNode.children.map((child) => conditionNodeToRqbRule(child, entities)),
+    }
+  }
+
   // Handle NOT wrapper
   if (node.op === 'not') {
     const notNode = node as NotNode
-    const innerRule = conditionNodeToRqbRule(notNode.child as ConditionNode)
-    return {
-      ...innerRule,
-      operator: innerRule.operator === '=' ? '!=' : innerRule.operator,
+    const innerRule = conditionNodeToRqbRule(notNode.child as ConditionNode, entities)
+    // Only negate if it's a simple rule, not a group
+    if ('field' in innerRule) {
+      return {
+        ...innerRule,
+        operator: innerRule.operator === '=' ? '!=' : innerRule.operator,
+      }
     }
+    // For negated groups, just return the group (RQB doesn't support NOT on groups directly)
+    return innerRule
   }
 
   // Handle entity_state
   if (node.op === 'entity_state') {
-    const esNode = node as EntityStateNode
-    const value: EntityStateValue = {
-      entityId: esNode.entity_id,
-      equals: esNode.equals,
+    const esNode = node as EntityStateNode & {
+      // API client camel-cases response keys; support both shapes on read.
+      entityId?: string
     }
+    const entityId = (esNode.entity_id || esNode.entityId || '').trim()
+    const equals = (esNode.equals || '').trim()
+    const value: EntityStateValue = {
+      entityId,
+      equals,
+    }
+    // Prefer explicitly saved rule source (preserves UI dropdown selection),
+    // otherwise fall back to entity registry lookup.
+    const savedSource = typeof esNode.source === 'string' ? esNode.source : undefined
+    const entity = entities?.find((e) => e.entityId === entityId)
+    const field = sourceToFieldName(savedSource || entity?.source)
     return {
       id: generateId(),
-      field: 'entity_state',
+      field,
       operator: '=',
       value,
     }
@@ -133,7 +204,10 @@ function conditionNodeToRqbRule(node: ConditionNode): RuleType {
 
   // Handle alarm_state_in
   if (node.op === 'alarm_state_in') {
-    const asNode = node as AlarmStateInNode
+    const asNode = node as AlarmStateInNode & {
+      // API client camel-cases response keys; support both shapes on read.
+      states?: string[]
+    }
     const value: AlarmStateValue = {
       states: asNode.states,
     }
@@ -147,15 +221,20 @@ function conditionNodeToRqbRule(node: ConditionNode): RuleType {
 
   // Handle frigate_person_detected
   if (node.op === 'frigate_person_detected') {
-    const fpNode = node as FrigatePersonDetectedNode
+    const fpNode = node as FrigatePersonDetectedNode & {
+      // API client camel-cases response keys; support both shapes on read.
+      withinSeconds?: number
+      minConfidencePct?: number
+      onUnavailable?: string
+    }
     const value: FrigatePersonValue = {
       cameras: fpNode.cameras,
       zones: fpNode.zones || [],
-      withinSeconds: fpNode.within_seconds,
-      minConfidencePct: fpNode.min_confidence_pct,
+      withinSeconds: fpNode.within_seconds ?? fpNode.withinSeconds,
+      minConfidencePct: fpNode.min_confidence_pct ?? fpNode.minConfidencePct,
       aggregation: fpNode.aggregation || 'max',
       percentile: fpNode.percentile,
-      onUnavailable: fpNode.on_unavailable || 'treat_as_no_match',
+      onUnavailable: (fpNode.on_unavailable || fpNode.onUnavailable) as any || 'treat_as_no_match',
     }
     return {
       id: generateId(),
@@ -248,6 +327,7 @@ function rqbRuleToConditionNode(rule: RuleType): ConditionNode | null {
       op: 'entity_state',
       entity_id: esValue.entityId.trim(),
       equals: esValue.equals?.trim() || 'on',
+      source: fieldNameToSource(field) as EntityStateNode['source'],
     }
 
     if (isNegated) {

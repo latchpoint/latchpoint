@@ -17,6 +17,12 @@ export interface EntityStateNode {
   op: 'entity_state'
   entity_id: string
   equals: string
+  /**
+   * UI hint for which entity-source dropdown was selected when the rule was authored.
+   * This is also used server-side to help backfill `Entity.source` when a referenced entity
+   * is created via rule refs before an integration sync has populated it.
+   */
+  source?: 'home_assistant' | 'zwavejs' | 'zigbee2mqtt' | 'all'
 }
 
 export type FrigateAggregation = 'latest' | 'max' | 'percentile'

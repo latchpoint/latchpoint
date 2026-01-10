@@ -1,5 +1,5 @@
 /**
- * Rule Builder V2 - Complete rule builder using React Query Builder
+ * Rule Builder - Complete rule builder using React Query Builder
  * Combines metadata, conditions (via RQB), and actions into a single form
  * Note: 'kind' is auto-derived from actions by the backend
  */
@@ -18,7 +18,7 @@ import { RuleQueryBuilder } from './RuleQueryBuilder'
 import { ActionsEditor } from './ActionsEditor'
 import { alarmDslToRqbWithFor, rqbToAlarmDsl, createEmptyQuery } from './converters'
 
-interface RuleBuilderV2Props {
+interface RuleBuilderProps {
   rule?: Rule | null
   entities: Entity[]
   frigateConfig?: {
@@ -39,7 +39,7 @@ interface RuleBuilderV2Props {
   isSaving: boolean
 }
 
-export function RuleBuilderV2({
+export function RuleBuilder({
   rule,
   entities,
   frigateConfig,
@@ -47,7 +47,7 @@ export function RuleBuilderV2({
   onCancel,
   onDelete,
   isSaving,
-}: RuleBuilderV2Props) {
+}: RuleBuilderProps) {
   // Form state (kind is auto-derived from actions by backend)
   const [name, setName] = useState(rule?.name || '')
   const [enabled, setEnabled] = useState(rule?.enabled ?? true)
@@ -62,16 +62,17 @@ export function RuleBuilderV2({
   const [jsonError, setJsonError] = useState<string | null>(null)
 
   // Condition state (RQB format) and forSeconds
+  // Pass entities to converter for source lookup
   const [query, setQuery] = useState<RuleGroupType>(() => {
     if (rule?.definition?.when) {
-      return alarmDslToRqbWithFor(rule.definition.when).query
+      return alarmDslToRqbWithFor(rule.definition.when, entities).query
     }
     return createEmptyQuery()
   })
 
   const [forSeconds, setForSeconds] = useState<string>(() => {
     if (rule?.definition?.when) {
-      const result = alarmDslToRqbWithFor(rule.definition.when)
+      const result = alarmDslToRqbWithFor(rule.definition.when, entities)
       return result.forSeconds?.toString() || ''
     }
     return ''
@@ -81,27 +82,6 @@ export function RuleBuilderV2({
   const [actions, setActions] = useState<ActionNode[]>(() => {
     return rule?.definition?.then || [{ type: 'alarm_trigger' }]
   })
-
-  // Derive entity IDs from the query for the rule's entityIds field
-  const derivedEntityIds = useMemo(() => {
-    const entityIds = new Set<string>()
-
-    const extractEntityIds = (group: RuleGroupType) => {
-      for (const item of group.rules) {
-        if ('combinator' in item) {
-          extractEntityIds(item as RuleGroupType)
-        } else if (item.field === 'entity_state' && item.value) {
-          const val = item.value as { entityId?: string }
-          if (val.entityId) {
-            entityIds.add(val.entityId)
-          }
-        }
-      }
-    }
-
-    extractEntityIds(query)
-    return Array.from(entityIds)
-  }, [query])
 
   // Parse forSeconds to number
   const forSecondsNum = useMemo(() => {
@@ -132,7 +112,7 @@ export function RuleBuilderV2({
         try {
           const parsed = JSON.parse(definitionText) as RuleDefinition
           if (parsed.when) {
-            const result = alarmDslToRqbWithFor(parsed.when)
+            const result = alarmDslToRqbWithFor(parsed.when, entities)
             setQuery(result.query)
             setForSeconds(result.forSeconds?.toString() || '')
           }
@@ -148,7 +128,7 @@ export function RuleBuilderV2({
       }
       return next
     })
-  }, [builderDefinitionText, definitionText])
+  }, [builderDefinitionText, definitionText, entities])
 
   const handleSubmit = useCallback(
     (e: React.FormEvent) => {
@@ -181,10 +161,9 @@ export function RuleBuilderV2({
         schemaVersion: 1,
         definition,
         cooldownSeconds: cooldownSeconds ? parseInt(cooldownSeconds, 10) : null,
-        entityIds: derivedEntityIds,
       })
     },
-    [query, actions, name, enabled, priority, cooldownSeconds, derivedEntityIds, onSave, advanced, definitionText, forSecondsNum]
+    [query, actions, name, enabled, priority, cooldownSeconds, onSave, advanced, definitionText, forSecondsNum]
   )
 
   const isEditing = rule?.id != null

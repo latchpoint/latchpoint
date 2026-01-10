@@ -1,21 +1,21 @@
 import React from 'react'
 import { describe, expect, it, vi, beforeEach } from 'vitest'
+import { renderWithProviders } from '@/test/render'
 import { screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { renderWithProviders } from '@/test/render'
 import RulesPage from '@/pages/RulesPage'
 
-let model: any
+let rulesLoading = false
+let entitiesLoading = false
 
-vi.mock('@/features/rules/hooks/useRulesPageModel', () => {
-  return { useRulesPageModel: () => model }
-})
+const syncHa = vi.fn().mockResolvedValue({ notice: 'synced' })
 
-vi.mock('@/features/rules/components/RulesPageActions', () => {
+vi.mock('@/features/rules/queryBuilder', () => {
   return {
+    RuleBuilder: () => <div>RuleBuilder</div>,
     RulesPageActions: (props: any) => (
       <div>
-        <button type="button" onClick={props.onSyncEntities}>
+        <button type="button" onClick={props.onSyncHaEntities}>
           Sync HA
         </button>
       </div>
@@ -23,91 +23,47 @@ vi.mock('@/features/rules/components/RulesPageActions', () => {
   }
 })
 
+vi.mock('@/hooks/useRulesQueries', () => {
+  return {
+    useRulesQuery: () => ({ data: [{ id: 1, name: 'R1', kind: 'trigger', enabled: true }], isLoading: rulesLoading, error: null }),
+    useEntitiesQuery: () => ({ data: [{ entityId: 'binary_sensor.door', name: 'Door' }], isLoading: entitiesLoading, error: null }),
+    useSaveRuleMutation: () => ({ isPending: false, mutateAsync: vi.fn() }),
+    useDeleteRuleMutation: () => ({ isPending: false, mutateAsync: vi.fn() }),
+    useSyncEntitiesMutation: () => ({ isPending: false, mutateAsync: syncHa }),
+    useRunRulesMutation: () => ({ isPending: false, mutateAsync: vi.fn() }),
+  }
+})
+
+vi.mock('@/hooks/useZwavejs', () => {
+  return {
+    useSyncZwavejsEntitiesMutation: () => ({ isPending: false, mutateAsync: vi.fn() }),
+  }
+})
+
 vi.mock('@/features/rules/components/RulesPageNotices', () => {
   return { RulesPageNotices: () => <div>RulesPageNotices</div> }
 })
 
-vi.mock('@/features/rules/components/RuleEditorCard', () => {
-  return { RuleEditorCard: () => <div>RuleEditorCard</div> }
-})
-
-vi.mock('@/features/rules/components/RulesListCard', () => {
-  return { RulesListCard: () => <div>RulesListCard</div> }
-})
-
 describe('RulesPage', () => {
   beforeEach(() => {
-    model = {
-      isSaving: false,
-      onSyncEntities: vi.fn(),
-      onSyncZwavejsEntities: vi.fn(),
-      onRunRules: vi.fn(),
-      onRefresh: vi.fn(),
-      notice: null,
-      displayedError: null,
-      editingId: null,
-      ruleKinds: [],
-      name: '',
-      setName: vi.fn(),
-      kind: '',
-      setKind: vi.fn(),
-      enabled: true,
-      setEnabled: vi.fn(),
-      priority: 0,
-      setPriority: vi.fn(),
-      advanced: false,
-      setAdvanced: vi.fn(),
-      cooldownSeconds: null,
-      setCooldownSeconds: vi.fn(),
-      entityIdsText: '',
-      setEntityIdsText: vi.fn(),
-      derivedEntityIds: [],
-      derivedEntityIdsText: '',
-      builderDefinitionText: '',
-      definitionText: '',
-      setDefinitionText: vi.fn(),
-      entitiesLength: 0,
-      whenOperator: 'any',
-      setWhenOperator: vi.fn(),
-      forSecondsText: '',
-      setForSecondsText: vi.fn(),
-      entitySourceFilter: 'all',
-      setEntitySourceFilter: vi.fn(),
-      conditions: [],
-      setConditions: vi.fn(),
-      alarmStatePickerByConditionId: new Map(),
-      setAlarmStatePickerByConditionId: vi.fn(),
-      frigateCameraPickerByConditionId: new Map(),
-      setFrigateCameraPickerByConditionId: vi.fn(),
-      frigateZonePickerByConditionId: new Map(),
-      setFrigateZonePickerByConditionId: vi.fn(),
-      actions: [],
-      setActions: vi.fn(),
-      targetEntityPickerByActionId: new Map(),
-      setTargetEntityPickerByActionId: vi.fn(),
-      updateHaActionTargetEntityIds: vi.fn(),
-      entityIdOptions: [],
-      entityIdSet: new Set(),
-      frigateOptions: null,
-      onSubmit: vi.fn(),
-      onCancel: vi.fn(),
-      onDelete: vi.fn(),
-      isLoading: false,
-      rules: [],
-      onStartEdit: vi.fn(),
-    }
+    rulesLoading = false
+    entitiesLoading = false
+    syncHa.mockReset().mockResolvedValue({ notice: 'synced' })
+    vi.stubGlobal('confirm', vi.fn(() => true))
   })
 
-  it('wires actions to the model', async () => {
+  it('renders builder and wires Sync HA action', async () => {
     const user = userEvent.setup()
     renderWithProviders(<RulesPage />)
 
-    expect(screen.getByText('RulesPageNotices')).toBeInTheDocument()
-    expect(screen.getByText('RuleEditorCard')).toBeInTheDocument()
-    expect(screen.getByText('RulesListCard')).toBeInTheDocument()
-
+    expect(screen.getByText('RuleBuilder')).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: /sync ha/i }))
-    expect(model.onSyncEntities).toHaveBeenCalled()
+    expect(syncHa).toHaveBeenCalled()
+  })
+
+  it('shows loading page while queries are loading', () => {
+    rulesLoading = true
+    renderWithProviders(<RulesPage />)
+    expect(screen.getByText(/loading/i)).toBeInTheDocument()
   })
 })
-

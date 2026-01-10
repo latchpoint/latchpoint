@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest'
 
-describe('RuleCooldownAndEntitiesFields', () => {
+describe('RuleBuilder', () => {
   it('imports', async () => {
-    const mod = await import('./RuleCooldownAndEntitiesFields')
+    const mod = await import('./RuleBuilder')
     expect(mod).toBeTruthy()
   })
 })
