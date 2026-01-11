@@ -56,6 +56,34 @@ class RegistryTests(TestCase):
         self.assertIsNotNone(task)
         self.assertFalse(task.enabled)
 
+    def test_register_applies_settings_overrides(self):
+        """register() applies settings SCHEDULER_TASK_OVERRIDES."""
+        with self.settings(
+            SCHEDULER_TASK_OVERRIDES={
+                "overridden": {
+                    "enabled": False,
+                    "max_runtime_seconds": 12,
+                    "failure_backoff_base_seconds": 5,
+                    "failure_backoff_max_seconds": 60,
+                    "failure_suspend_after": 3,
+                    "failure_suspend_seconds": 600,
+                }
+            }
+        ):
+
+            @register("overridden", schedule=DailyAt())
+            def overridden():
+                pass
+
+        task = get_task("overridden")
+        self.assertIsNotNone(task)
+        self.assertFalse(task.enabled)
+        self.assertEqual(task.max_runtime_seconds, 12)
+        self.assertEqual(task.failure_backoff_base_seconds, 5)
+        self.assertEqual(task.failure_backoff_max_seconds, 60)
+        self.assertEqual(task.failure_suspend_after, 3)
+        self.assertEqual(task.failure_suspend_seconds, 600)
+
     def test_get_tasks_returns_copy(self):
         """get_tasks returns a copy, not the original dict."""
 

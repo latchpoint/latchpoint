@@ -169,6 +169,17 @@ python manage.py run_task cleanup_old_events
 
 ### Environment Variables
 - `SCHEDULER_ENABLED`: Set to `false` to disable all scheduled tasks (default: `true`)
+- `SCHEDULER_TASK_OVERRIDES`: JSON map of per-task overrides (default: `{}`)
+  - Example: `{"broadcast_system_status":{"enabled":false},"notifications_send_pending":{"failure_backoff_base_seconds":5,"failure_backoff_max_seconds":300}}`
+  - Supported keys per task:
+    - `enabled` (bool)
+    - `max_runtime_seconds` (int, watchdog will mark task as stuck if exceeded)
+    - `failure_backoff_base_seconds` (int, 0 disables backoff)
+    - `failure_backoff_max_seconds` (int, cap for backoff)
+    - `failure_suspend_after` (int, consecutive failures threshold)
+    - `failure_suspend_seconds` (int, suspend duration once threshold reached)
+- `SCHEDULER_LEADER_LOCK_ENABLED`: Best-effort Postgres advisory lock to ensure only one process runs tasks (default: `false`)
+- `SCHEDULER_LEADER_LOCK_ID`: Advisory lock ID when leader lock is enabled (default: `4242001`)
 
 ### SystemConfig Settings
 These can be changed at runtime via the API:

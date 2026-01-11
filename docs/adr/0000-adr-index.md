@@ -76,8 +76,9 @@ This document tracks all Architecture Decision Records (ADRs) and their implemen
 | [0057](0057-integration-entity-updates-trigger-rules.md) | Integration Entity Updates Trigger Rules (Efficiently) | **Implemented** |
 | [0058](0058-home-assistant-realtime-entity-updates-via-websocket.md) | Home Assistant Realtime Entity Updates via WebSocket (Dispatcher-Based) | **Implemented** |
 | [0059](0059-rule-triggering-accuracy-and-realtime-semantics.md) | Rule Triggering Accuracy and Realtime Semantics | **Implemented** |
-| [0060](0060-evaluate-django-cron-library.md) | Evaluate django-cron Library vs Custom Scheduler | Proposed |
+| [0060](0060-evaluate-django-cron-library.md) | Evaluate django-cron Library vs Custom Scheduler | Superseded |
 | [0061](0061-optimize-dispatcher-entity-state-snapshot-for-rule-evaluation.md) | Optimize Dispatcher Entity-State Snapshot for Faster Rule Evaluation | **Implemented** |
+| [0062](0062-scheduler-resilience-improvements.md) | Scheduler Resilience Improvements | **Proposed** |
 
 ---
 
@@ -87,12 +88,12 @@ This document tracks all Architecture Decision Records (ADRs) and their implemen
 |--------|-------|
 | **Implemented** | 49 |
 | **Partially Implemented** | 1 |
-| **Proposed** | 1 |
+| **Proposed** | 2 |
 | **Superseded** | 10 |
-| **Total** | 61 |
+| **Total** | 62 |
 
 Note: **Superseded** includes entries marked as “Superseded by …” in the table above.
 
 ---
 
-*Last updated: 2026-01-10* (Marked ADR 0059 and ADR 0061 implemented)
+*Last updated: 2026-01-11* (Added ADR 0062)

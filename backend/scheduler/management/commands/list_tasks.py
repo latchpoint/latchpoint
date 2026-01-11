@@ -30,6 +30,8 @@ class Command(BaseCommand):
             self.stdout.write(f"  {name}")
             self.stdout.write(f"    Schedule: {schedule_str}")
             self.stdout.write(f"    Status:   {status}")
+            if task.max_runtime_seconds:
+                self.stdout.write(f"    Max run:  {task.max_runtime_seconds}s")
             self.stdout.write(f"    Function: {task.func.__module__}.{task.func.__name__}")
             self.stdout.write("")
 

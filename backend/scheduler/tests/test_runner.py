@@ -66,6 +66,17 @@ class ComputeNextRunTests(TestCase):
         expected = now + timedelta(seconds=65)  # 60 + 5 jitter
         self.assertEqual(next_run, expected)
 
+    def test_every_with_negative_jitter(self):
+        """Every with jitter can run earlier (negative jitter offset)."""
+        now = timezone.now()
+        schedule = Every(seconds=60, jitter=10)
+
+        with patch("scheduler.runner.random.randint", return_value=-5):
+            next_run = _compute_next_run(schedule, now)
+
+        expected = now + timedelta(seconds=55)  # 60 - 5 jitter
+        self.assertEqual(next_run, expected)
+
     def test_every_zero_jitter(self):
         """Every with zero jitter doesn't add randomness."""
         now = timezone.now()

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import sys
+import json
 from pathlib import Path
 
 import environ
@@ -166,6 +167,18 @@ ALLOW_HOME_ASSISTANT_IN_TESTS = env.bool("ALLOW_HOME_ASSISTANT_IN_TESTS", defaul
 
 # Z-Wave JS integration (configured via alarm-profile settings; connectivity should be test-gated)
 ALLOW_ZWAVEJS_IN_TESTS = env.bool("ALLOW_ZWAVEJS_IN_TESTS", default=False)
+
+# Scheduler
+SCHEDULER_ENABLED = env.bool("SCHEDULER_ENABLED", default=True)
+SCHEDULER_LEADER_LOCK_ENABLED = env.bool("SCHEDULER_LEADER_LOCK_ENABLED", default=False)
+SCHEDULER_LEADER_LOCK_ID = env.int("SCHEDULER_LEADER_LOCK_ID", default=4242001)
+_SCHEDULER_TASK_OVERRIDES_RAW = env.str("SCHEDULER_TASK_OVERRIDES", default="{}").strip()
+try:
+    SCHEDULER_TASK_OVERRIDES = (
+        json.loads(_SCHEDULER_TASK_OVERRIDES_RAW) if _SCHEDULER_TASK_OVERRIDES_RAW else {}
+    )
+except Exception:
+    SCHEDULER_TASK_OVERRIDES = {}
 
 HA_LOG_LEVEL = env.str("HA_LOG_LEVEL", default=env.str("LOG_LEVEL", default="INFO")).upper()
 if IS_TESTING and not ALLOW_HOME_ASSISTANT_IN_TESTS:
