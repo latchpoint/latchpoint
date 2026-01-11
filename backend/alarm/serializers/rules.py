@@ -4,6 +4,7 @@ from rest_framework import serializers
 
 from alarm.models import Rule, RuleEntityRef
 from alarm.rules.action_schemas import ADMIN_ONLY_ACTION_TYPES, validate_action
+from alarm.rules.conditions import validate_when_node
 from alarm.use_cases.rule_entity_refs import sync_rule_entity_refs
 
 
@@ -101,6 +102,11 @@ class RuleUpsertSerializer(serializers.ModelSerializer):
         """Validate the rule definition schema, including THEN action validation."""
         if not isinstance(value, dict):
             raise serializers.ValidationError("definition must be an object.")
+
+        when_node = value.get("when")
+        when_errors = validate_when_node(when_node)
+        if when_errors:
+            raise serializers.ValidationError({"when": when_errors})
 
         # Validate "then" actions if present
         then_actions = value.get("then")

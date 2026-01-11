@@ -16,6 +16,7 @@ import {
   AlarmStateValueEditor,
   EntityStateValueEditor,
   FrigateValueEditor,
+  TimeInRangeValueEditor,
 } from './valueEditors'
 import type { Entity } from '@/types/rules'
 
@@ -89,6 +90,15 @@ const fields: Field[] = [
     ],
     defaultOperator: 'detected',
   },
+  {
+    name: 'time_in_range',
+    label: 'Time of day',
+    operators: [
+      { name: 'between', label: 'is between' },
+      { name: '!=', label: 'is NOT between' },
+    ],
+    defaultOperator: 'between',
+  },
 ]
 
 // Map field names to entity sources for filtering
@@ -160,6 +170,11 @@ export function RuleQueryBuilder({
       // Handle frigate
       if (field === 'frigate_person_detected') {
         return <FrigateValueEditor {...props} context={context} />
+      }
+
+      // Handle time of day
+      if (field === 'time_in_range') {
+        return <TimeInRangeValueEditor {...props} />
       }
 
       return null

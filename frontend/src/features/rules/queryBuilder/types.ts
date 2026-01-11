@@ -4,7 +4,7 @@
 import type { RuleGroupType, RuleType, Field, OptionGroup } from 'react-querybuilder'
 
 // Field names that map to our condition operators
-export type ConditionFieldName = 'alarm_state_in' | 'entity_state' | 'frigate_person_detected'
+export type ConditionFieldName = 'alarm_state_in' | 'entity_state' | 'frigate_person_detected' | 'time_in_range'
 
 // Custom rule value types
 export interface AlarmStateValue {
@@ -26,10 +26,17 @@ export interface FrigatePersonValue {
   onUnavailable: 'treat_as_match' | 'treat_as_no_match'
 }
 
+export interface TimeInRangeValue {
+  start: string
+  end: string
+  days: string[] // mon..sun
+  tz: string // 'system' or IANA id
+}
+
 // Extended rule type with our custom values
 export interface AlarmRule extends Omit<RuleType, 'value'> {
   field: ConditionFieldName
-  value: AlarmStateValue | EntityStateValue | FrigatePersonValue | unknown
+  value: AlarmStateValue | EntityStateValue | FrigatePersonValue | TimeInRangeValue | unknown
 }
 
 export interface AlarmRuleGroup extends Omit<RuleGroupType, 'rules'> {

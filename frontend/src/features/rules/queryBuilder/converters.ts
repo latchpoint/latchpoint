@@ -8,11 +8,12 @@ import type {
   EntityStateNode,
   AlarmStateInNode,
   FrigatePersonDetectedNode,
+  TimeInRangeNode,
   NotNode,
   ConditionNode,
   ForNode,
 } from '@/types/ruleDefinition'
-import type { AlarmStateValue, EntityStateValue, FrigatePersonValue } from './types'
+import type { AlarmStateValue, EntityStateValue, FrigatePersonValue, TimeInRangeValue } from './types'
 
 /**
  * Generate a unique ID for RQB rules
@@ -244,6 +245,23 @@ function conditionNodeToRqbRule(node: ConditionNode | LogicalNode, entities?: En
     }
   }
 
+  // Handle time_in_range
+  if (node.op === 'time_in_range') {
+    const trNode = node as TimeInRangeNode
+    const value: TimeInRangeValue = {
+      start: trNode.start || '22:00',
+      end: trNode.end || '06:00',
+      days: (trNode.days as any) || ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'],
+      tz: trNode.tz || 'system',
+    }
+    return {
+      id: generateId(),
+      field: 'time_in_range',
+      operator: 'between',
+      value,
+    }
+  }
+
   // Fallback: unknown condition type
   return {
     id: generateId(),
@@ -374,6 +392,33 @@ function rqbRuleToConditionNode(rule: RuleType): ConditionNode | null {
     return baseNode
   }
 
+  // Handle time_in_range
+  if (field === 'time_in_range') {
+    const trValue = value as TimeInRangeValue
+    if (!trValue?.start?.trim() || !trValue?.end?.trim()) return null
+
+    const allDays = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun']
+    const days = Array.isArray(trValue.days) ? trValue.days : allDays
+    const normalizedDays = Array.from(new Set(days.map((d) => (d || '').toLowerCase()).filter(Boolean)))
+
+    const baseNode: TimeInRangeNode = {
+      op: 'time_in_range',
+      start: trValue.start.trim(),
+      end: trValue.end.trim(),
+      days: normalizedDays.length === allDays.length ? undefined : (normalizedDays as any),
+      tz: (trValue.tz || 'system').trim() || 'system',
+    }
+
+    if (baseNode.tz === 'system') {
+      delete (baseNode as any).tz
+    }
+
+    if (isNegated) {
+      return { op: 'not', child: baseNode as any }
+    }
+    return baseNode as any
+  }
+
   return null
 }
 
@@ -427,6 +472,19 @@ export function createDefaultRule(field: string): RuleType {
           aggregation: 'max',
           onUnavailable: 'treat_as_no_match',
         } as FrigatePersonValue,
+      }
+
+    case 'time_in_range':
+      return {
+        id,
+        field: 'time_in_range',
+        operator: 'between',
+        value: {
+          start: '22:00',
+          end: '06:00',
+          days: ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'],
+          tz: 'system',
+        } as TimeInRangeValue,
       }
 
     default:

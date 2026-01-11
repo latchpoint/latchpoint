@@ -1,7 +1,7 @@
 # ADR 0065: Rule Builder WHEN Time Ranges
 
 ## Status
-**Proposed**
+**Implemented**
 
 ## Context
 The rules UI supports building `definition.when` conditions for alarm state, entity state, and Frigate detections (ADR 0033), but it cannot express a very common guardrail: “only run this rule during certain hours.”

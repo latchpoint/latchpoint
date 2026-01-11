@@ -99,6 +99,32 @@ export function RuleBuilder({
     return JSON.stringify(definition, null, 2)
   }, [query, actions, forSecondsNum])
 
+  const builderGuardrailError = useMemo(() => {
+    if (!query?.rules?.length) return null
+
+    let hasTime = false
+    let hasTriggerable = false
+
+    const walk = (group: RuleGroupType) => {
+      for (const r of group.rules) {
+        if ('combinator' in r) {
+          walk(r as RuleGroupType)
+          continue
+        }
+        const field = (r as any).field as string | undefined
+        if (!field) continue
+        if (field === 'time_in_range') hasTime = true
+        else hasTriggerable = true
+      }
+    }
+
+    walk(query)
+    if (hasTime && !hasTriggerable) {
+      return 'Time of day must be combined with at least one entity/alarm/Frigate condition (time-only rules do not fire yet).'
+    }
+    return null
+  }, [query])
+
   // Handle toggling between builder and advanced modes
   const handleToggleAdvanced = useCallback(() => {
     setAdvanced((prev) => {
@@ -146,6 +172,9 @@ export function RuleBuilder({
           return
         }
       } else {
+        if (builderGuardrailError) {
+          return
+        }
         // In builder mode, convert RQB query to our DSL
         const whenNode = rqbToAlarmDsl(query, forSecondsNum) as WhenNode
         definition = {
@@ -163,7 +192,7 @@ export function RuleBuilder({
         cooldownSeconds: cooldownSeconds ? parseInt(cooldownSeconds, 10) : null,
       })
     },
-    [query, actions, name, enabled, priority, cooldownSeconds, onSave, advanced, definitionText, forSecondsNum]
+    [query, actions, name, enabled, priority, cooldownSeconds, onSave, advanced, definitionText, forSecondsNum, builderGuardrailError]
   )
 
   const isEditing = rule?.id != null
@@ -302,6 +331,9 @@ export function RuleBuilder({
                 frigateConfig={frigateConfig}
                 disabled={isSaving}
               />
+              {builderGuardrailError && (
+                <p className="text-sm text-destructive">{builderGuardrailError}</p>
+              )}
             </CardContent>
           </Card>
 
@@ -359,7 +391,7 @@ export function RuleBuilder({
             <Button type="button" variant="outline" onClick={onCancel} disabled={isSaving}>
               Cancel
             </Button>
-            <Button type="submit" disabled={isSaving}>
+            <Button type="submit" disabled={isSaving || (!advanced && !!builderGuardrailError)}>
               {isSaving ? 'Saving...' : isEditing ? 'Update Rule' : 'Create Rule'}
             </Button>
           </div>

@@ -81,7 +81,7 @@ This document tracks all Architecture Decision Records (ADRs) and their implemen
 | [0062](0062-scheduler-resilience-improvements.md) | Scheduler Resilience Improvements | **Proposed** |
 | [0063](0063-scheduler-status-ui-and-health-monitoring.md) | Scheduler Status UI and Health Monitoring | **Proposed** |
 | [0064](0064-integration-gated-scheduler-tasks.md) | Integration-Gated Scheduler Tasks | **Partially Implemented** |
-| [0065](0065-rule-builder-when-time-ranges.md) | Rule Builder WHEN Time Ranges | **Proposed** |
+| [0065](0065-rule-builder-when-time-ranges.md) | Rule Builder WHEN Time Ranges | **Implemented** |
 | [0066](0066-retention-cleanup-notifications-and-door-code-events.md) | Retention Cleanup Tasks for Notifications and Door Code Events | **Proposed** |
 | [0067](0067-backend-endpoint-test-coverage-gaps.md) | Backend Endpoint Test Coverage Gaps | **Proposed** |
 
@@ -91,9 +91,9 @@ This document tracks all Architecture Decision Records (ADRs) and their implemen
 
 | Status | Count |
 |--------|-------|
-| **Implemented** | 49 |
+| **Implemented** | 50 |
 | **Partially Implemented** | 2 |
-| **Proposed** | 5 |
+| **Proposed** | 4 |
 | **Superseded** | 11 |
 | **Total** | 67 |
 
@@ -101,4 +101,4 @@ Note: **Superseded** includes entries marked as “Superseded by …” in the t
 
 ---
 
-*Last updated: 2026-01-11* (Added ADR 0066; added ADR 0067)
+*Last updated: 2026-01-11* (Added ADR 0066; added ADR 0067; implemented ADR 0065)

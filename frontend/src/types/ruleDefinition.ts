@@ -44,6 +44,17 @@ export interface AlarmStateInNode {
   states: string[]
 }
 
+export type TimeInRangeTz = 'system' | string
+export type TimeInRangeDay = 'mon' | 'tue' | 'wed' | 'thu' | 'fri' | 'sat' | 'sun'
+
+export interface TimeInRangeNode {
+  op: 'time_in_range'
+  start: string
+  end: string
+  days?: TimeInRangeDay[]
+  tz?: TimeInRangeTz
+}
+
 /**
  * Negation wrapper
  */
@@ -72,7 +83,12 @@ export interface ForNode {
 /**
  * Union of all condition node types
  */
-export type ConditionNode = EntityStateNode | FrigatePersonDetectedNode | AlarmStateInNode | NotNode
+export type ConditionNode =
+  | EntityStateNode
+  | FrigatePersonDetectedNode
+  | AlarmStateInNode
+  | TimeInRangeNode
+  | NotNode
 
 /**
  * Union of all when node types
@@ -222,6 +238,18 @@ export function isFrigatePersonDetectedNode(node: unknown): node is FrigatePerso
   return true
 }
 
+export function isTimeInRangeNode(node: unknown): node is TimeInRangeNode {
+  if (!isRecord(node)) return false
+  if (node.op !== 'time_in_range') return false
+  if (typeof node.start !== 'string') return false
+  if (typeof node.end !== 'string') return false
+  if ('days' in node && node.days != null) {
+    if (!Array.isArray(node.days) || !node.days.every((d) => typeof d === 'string')) return false
+  }
+  if ('tz' in node && node.tz != null && typeof node.tz !== 'string') return false
+  return true
+}
+
 /**
  * Check if node is a NotNode
  */
@@ -233,7 +261,13 @@ export function isNotNode(node: unknown): node is NotNode {
  * Check if node is a ConditionNode
  */
 export function isConditionNode(node: unknown): node is ConditionNode {
-  return isEntityStateNode(node) || isFrigatePersonDetectedNode(node) || isAlarmStateInNode(node) || isNotNode(node)
+  return (
+    isEntityStateNode(node) ||
+    isFrigatePersonDetectedNode(node) ||
+    isAlarmStateInNode(node) ||
+    isTimeInRangeNode(node) ||
+    isNotNode(node)
+  )
 }
 
 /**

@@ -113,4 +113,67 @@ describe('converters', () => {
     expect(rule.field).toBe('entity_state_ha')
     expect(rule.value.entityId).toBe('binary_sensor.front_door_window_door_is_open')
   })
+
+  it('round-trips time_in_range with defaults omitted in DSL', () => {
+    const query: RuleGroupType = {
+      id: 'g1',
+      combinator: 'and',
+      rules: [
+        {
+          id: 'r1',
+          field: 'time_in_range',
+          operator: 'between',
+          value: {
+            start: '22:00',
+            end: '06:00',
+            days: ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'],
+            tz: 'system',
+          },
+        },
+      ],
+    }
+
+    const when = rqbToAlarmDsl(query)
+    const json = JSON.stringify(when)
+    expect(json).toContain('"op":"time_in_range"')
+    expect(json).not.toContain('"days"')
+    expect(json).not.toContain('"tz"')
+
+    const roundTrip = alarmDslToRqbWithFor(when)
+    const rule = roundTrip.query.rules[0] as any
+    expect(rule.field).toBe('time_in_range')
+    expect(rule.value.tz).toBe('system')
+    expect(rule.value.days).toHaveLength(7)
+  })
+
+  it('preserves time_in_range days and tz when customized', () => {
+    const query: RuleGroupType = {
+      id: 'g1',
+      combinator: 'and',
+      rules: [
+        {
+          id: 'r1',
+          field: 'time_in_range',
+          operator: 'between',
+          value: {
+            start: '09:00',
+            end: '17:00',
+            days: ['mon', 'tue'],
+            tz: 'America/New_York',
+          },
+        },
+      ],
+    }
+
+    const when = rqbToAlarmDsl(query) as any
+    expect(when.op).toBe('all')
+    expect(when.children[0].op).toBe('time_in_range')
+    expect(when.children[0].days).toEqual(['mon', 'tue'])
+    expect(when.children[0].tz).toBe('America/New_York')
+
+    const roundTrip = alarmDslToRqbWithFor(when)
+    const rule = roundTrip.query.rules[0] as any
+    expect(rule.value.tz).toBe('America/New_York')
+    expect(rule.value.days).toEqual(['mon', 'tue'])
+  })
 })
