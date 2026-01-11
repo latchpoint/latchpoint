@@ -11,6 +11,8 @@ from .schedules import Schedule
 
 _tasks: dict[str, "ScheduledTask"] = {}
 
+EnabledWhenPredicate = Callable[[], bool]
+
 
 @dataclass
 class ScheduledTask:
@@ -21,6 +23,7 @@ class ScheduledTask:
     schedule: Schedule
     enabled: bool = True
     description: str | None = None
+    enabled_when: EnabledWhenPredicate | None = None
     max_runtime_seconds: int | None = None
     failure_backoff_base_seconds: int = 0
     failure_backoff_max_seconds: int = 0
@@ -33,6 +36,7 @@ def register(
     schedule: Schedule,
     enabled: bool = True,
     description: str | None = None,
+    enabled_when: EnabledWhenPredicate | None = None,
 ) -> Callable[[Callable[[], None]], Callable[[], None]]:
     """Decorator to register a scheduled task.
 
@@ -77,6 +81,7 @@ def register(
             schedule=schedule,
             enabled=resolved_enabled,
             description=resolved_description,
+            enabled_when=enabled_when,
             max_runtime_seconds=max_runtime_seconds,
             failure_backoff_base_seconds=failure_backoff_base_seconds,
             failure_backoff_max_seconds=failure_backoff_max_seconds,
@@ -96,3 +101,25 @@ def get_tasks() -> dict[str, ScheduledTask]:
 def get_task(name: str) -> ScheduledTask | None:
     """Return a specific task by name, or None if not found."""
     return _tasks.get(name)
+
+
+def evaluate_task_enabled(task: ScheduledTask) -> tuple[bool, str | None]:
+    """
+    Return (enabled, reason).
+
+    Reasons are best-effort, intended for status/UI:
+    - None: enabled
+    - "disabled": explicitly disabled (static config / overrides)
+    - "gated": disabled by enabled_when predicate
+    - "gating_error": enabled_when raised
+    """
+    if not bool(task.enabled):
+        return False, "disabled"
+
+    if task.enabled_when is None:
+        return True, None
+
+    try:
+        return (True, None) if bool(task.enabled_when()) else (False, "gated")
+    except Exception:
+        return False, "gating_error"

@@ -80,6 +80,7 @@ This document tracks all Architecture Decision Records (ADRs) and their implemen
 | [0061](0061-optimize-dispatcher-entity-state-snapshot-for-rule-evaluation.md) | Optimize Dispatcher Entity-State Snapshot for Faster Rule Evaluation | **Implemented** |
 | [0062](0062-scheduler-resilience-improvements.md) | Scheduler Resilience Improvements | **Proposed** |
 | [0063](0063-scheduler-status-ui-and-health-monitoring.md) | Scheduler Status UI and Health Monitoring | **Proposed** |
+| [0064](0064-integration-gated-scheduler-tasks.md) | Integration-Gated Scheduler Tasks | **Partially Implemented** |
 
 ---
 
@@ -88,13 +89,13 @@ This document tracks all Architecture Decision Records (ADRs) and their implemen
 | Status | Count |
 |--------|-------|
 | **Implemented** | 49 |
-| **Partially Implemented** | 1 |
-| **Proposed** | 3 |
-| **Superseded** | 10 |
-| **Total** | 63 |
+| **Partially Implemented** | 2 |
+| **Proposed** | 2 |
+| **Superseded** | 11 |
+| **Total** | 64 |
 
 Note: **Superseded** includes entries marked as “Superseded by …” in the table above.
 
 ---
 
-*Last updated: 2026-01-11* (Added ADR 0063)
+*Last updated: 2026-01-11* (Added ADR 0064; marked partially implemented)

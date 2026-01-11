@@ -11,7 +11,7 @@ from rest_framework.views import APIView
 
 from accounts.permissions import IsAdminRole
 from config.pagination import EnvelopePagination
-from scheduler.registry import get_tasks
+from scheduler.registry import evaluate_task_enabled, get_tasks
 from scheduler.runner import get_scheduler_status
 from scheduler.runner import _compute_next_run
 
@@ -74,7 +74,8 @@ class SchedulerStatusView(APIView):
             row = health_by_task_name.get(task_name)
             observed = row is not None
 
-            enabled = bool(task.enabled)
+            enabled, enabled_reason = evaluate_task_enabled(task)
+            enabled = bool(enabled)
             max_runtime_seconds = task.max_runtime_seconds
 
             next_run_at = None
@@ -99,9 +100,12 @@ class SchedulerStatusView(APIView):
                     max_runtime_seconds = row.max_runtime_seconds
             else:
                 try:
-                    next_run_at = _compute_next_run(task.schedule, now)
+                    next_run_at = _compute_next_run(task.schedule, now) if enabled else None
                 except Exception:
                     next_run_at = None
+
+            if not enabled and not is_running:
+                next_run_at = None
 
             is_stuck = False
             stuck_for_seconds = None
@@ -112,12 +116,12 @@ class SchedulerStatusView(APIView):
                     stuck_for_seconds = int(runtime)
 
             derived_status = "ok"
-            if not enabled:
-                derived_status = "disabled"
-            elif is_stuck:
+            if is_stuck:
                 derived_status = "stuck"
             elif is_running:
                 derived_status = "running"
+            elif not enabled:
+                derived_status = "disabled"
             elif consecutive_failures > 0:
                 derived_status = "failing"
             elif not observed:
@@ -131,6 +135,7 @@ class SchedulerStatusView(APIView):
                     "instance_id": instance_id,
                     "observed": observed,
                     "enabled": enabled,
+                    "enabled_reason": enabled_reason,
                     "schedule_type": schedule_type,
                     "schedule_payload": schedule_payload,
                     "max_runtime_seconds": max_runtime_seconds,

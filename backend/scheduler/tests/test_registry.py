@@ -7,6 +7,7 @@ from django.test import TestCase
 from scheduler.registry import (
     ScheduledTask,
     _tasks,
+    evaluate_task_enabled,
     get_task,
     get_tasks,
     register,
@@ -155,3 +156,45 @@ class RegistryTests(TestCase):
         self.assertIn("task_a", tasks)
         self.assertIn("task_b", tasks)
         self.assertIn("task_c", tasks)
+
+    def test_evaluate_task_enabled_static_disabled(self):
+        """evaluate_task_enabled returns disabled when task.enabled is False."""
+
+        @register("disabled_static", schedule=DailyAt(), enabled=False)
+        def disabled_static():
+            pass
+
+        task = get_task("disabled_static")
+        self.assertIsNotNone(task)
+        enabled, reason = evaluate_task_enabled(task)
+        self.assertFalse(enabled)
+        self.assertEqual(reason, "disabled")
+
+    def test_evaluate_task_enabled_gated(self):
+        """evaluate_task_enabled returns gated when enabled_when is False."""
+
+        @register("gated_task", schedule=Every(seconds=60), enabled_when=lambda: False)
+        def gated_task():
+            pass
+
+        task = get_task("gated_task")
+        self.assertIsNotNone(task)
+        enabled, reason = evaluate_task_enabled(task)
+        self.assertFalse(enabled)
+        self.assertEqual(reason, "gated")
+
+    def test_evaluate_task_enabled_gating_error(self):
+        """evaluate_task_enabled returns gating_error when enabled_when raises."""
+
+        def _boom() -> bool:
+            raise RuntimeError("boom")
+
+        @register("gated_error", schedule=Every(seconds=60), enabled_when=_boom)
+        def gated_error():
+            pass
+
+        task = get_task("gated_error")
+        self.assertIsNotNone(task)
+        enabled, reason = evaluate_task_enabled(task)
+        self.assertFalse(enabled)
+        self.assertEqual(reason, "gating_error")

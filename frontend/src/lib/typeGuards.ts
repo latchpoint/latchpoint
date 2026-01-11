@@ -78,6 +78,8 @@ const EVENT_TYPES = [
   'sensor_triggered',
   'failed_code',
   'state_changed',
+  'scheduler_task_failed',
+  'scheduler_task_stuck',
 ] as const
 
 export function isEventTypeType(value: unknown): value is EventTypeType {

@@ -64,9 +64,22 @@ function statusBadgeVariant(status: SchedulerTaskHealth['status']): 'default' | 
   return 'destructive'
 }
 
-function formatStatusLabel(status: SchedulerTaskHealth['status']): string {
+function formatEnabledReason(reason: string | null | undefined): string | null {
+  if (!reason) return null
+  if (reason === 'gated') return 'gated (integration inactive)'
+  if (reason === 'gating_error') return 'gating error'
+  if (reason === 'disabled') return 'disabled'
+  return reason
+}
+
+function formatStatusLabel(status: SchedulerTaskHealth['status'], enabledReason: string | null | undefined): string {
   if (status === 'never_ran') return 'never ran'
   if (status === 'orphaned') return 'orphaned'
+  if (status === 'disabled') {
+    if (enabledReason === 'gated') return 'gated'
+    if (enabledReason === 'gating_error') return 'gating error'
+    return 'disabled'
+  }
   return status
 }
 
@@ -148,6 +161,8 @@ export function SchedulerPage() {
                     task.description ||
                     'No description available.'
                   const name = task.displayName || formatTaskName(task.taskName)
+                  const enabledReason = formatEnabledReason(task.enabledReason)
+                  const statusLabel = formatStatusLabel(task.status, task.enabledReason)
                   return (
                     <button
                       key={`${task.instanceId}:${task.taskName}`}
@@ -172,7 +187,10 @@ export function SchedulerPage() {
                           </Tooltip>
                         </div>
                         <div className="sm:col-span-2">
-                          <Badge variant={statusBadgeVariant(task.status)}>{formatStatusLabel(task.status)}</Badge>
+                          <Badge variant={statusBadgeVariant(task.status)}>{statusLabel}</Badge>
+                          {task.status === 'disabled' && enabledReason ? (
+                            <div className="text-xs text-muted-foreground mt-1">{enabledReason}</div>
+                          ) : null}
                         </div>
                         <div className="sm:col-span-2 text-sm">{formatDateTime(task.nextRunAt)}</div>
                         <div className="sm:col-span-2 text-sm">{formatDateTime(task.lastFinishedAt)}</div>
@@ -200,13 +218,20 @@ export function SchedulerPage() {
                   <div className="min-w-0 truncate text-sm">
                     {selectedTask.displayName || formatTaskName(selectedTask.taskName)}
                   </div>
-                  <Badge variant={statusBadgeVariant(selectedTask.status)}>{formatStatusLabel(selectedTask.status)}</Badge>
+                  <Badge variant={statusBadgeVariant(selectedTask.status)}>
+                    {formatStatusLabel(selectedTask.status, selectedTask.enabledReason)}
+                  </Badge>
                 </div>
                 <div className="text-muted-foreground text-xs">
                   {TASK_DESCRIPTION_OVERRIDES[selectedTask.taskName] ||
                     selectedTask.description ||
                     'No description available.'}
                 </div>
+                {selectedTask.status === 'disabled' && formatEnabledReason(selectedTask.enabledReason) ? (
+                  <div className="text-muted-foreground text-xs">
+                    Disabled reason: {formatEnabledReason(selectedTask.enabledReason)}
+                  </div>
+                ) : null}
                 {selectedTask.lastErrorMessage ? (
                   <div className="text-sm">
                     <div className="text-muted-foreground text-xs mb-1">Last error</div>

@@ -23,6 +23,7 @@ export type SchedulerTaskHealth = {
   instanceId: string
   observed: boolean
   enabled: boolean
+  enabledReason: string | null
   scheduleType: string
   schedulePayload: Record<string, unknown>
   maxRuntimeSeconds: number | null

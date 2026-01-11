@@ -13,11 +13,19 @@ from scheduler import Every, register
 
 logger = logging.getLogger(__name__)
 
+def _is_frigate_active() -> bool:
+    """Return True if Frigate integration is enabled (scheduler gating predicate)."""
+    try:
+        return bool(get_settings().enabled)
+    except Exception:
+        return False
+
 
 @register(
     "cleanup_frigate_detections",
     schedule=Every(seconds=3600, jitter=60),
     description="Deletes old camera detections based on your configured retention settings.",
+    enabled_when=_is_frigate_active,
 )
 def cleanup_frigate_detections() -> int:
     """

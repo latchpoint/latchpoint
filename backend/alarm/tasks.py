@@ -13,6 +13,30 @@ from scheduler import DailyAt, Every, register
 
 logger = logging.getLogger(__name__)
 
+def _is_home_assistant_active() -> bool:
+    """
+    Return True if Home Assistant is enabled and minimally configured.
+
+    Must not perform network IO (scheduler gating predicate).
+    """
+    try:
+        from integrations_home_assistant.connection import (
+            get_cached_connection,
+            warm_up_cached_connection_if_needed,
+        )
+
+        cached = get_cached_connection()
+        if cached is None:
+            warm_up_cached_connection_if_needed()
+            cached = get_cached_connection()
+        if cached is None:
+            return False
+        if cached.error:
+            return False
+        return bool(cached.enabled and cached.base_url and cached.token)
+    except Exception:
+        return False
+
 
 def _get_retention_days() -> int:
     """Read events.retention_days from SystemConfig, fallback to default."""
@@ -144,6 +168,7 @@ def _get_entity_sync_interval() -> int:
     "sync_entity_states",
     schedule=Every(seconds=300, jitter=30),
     description="Refreshes device states from Home Assistant when available.",
+    enabled_when=_is_home_assistant_active,
 )
 def sync_entity_states() -> dict:
     """
@@ -243,6 +268,7 @@ def broadcast_system_status() -> None:
     "check_home_assistant",
     schedule=Every(seconds=30, jitter=5),
     description="Checks whether Home Assistant is reachable, so the app can show an accurate status.",
+    enabled_when=_is_home_assistant_active,
 )
 def check_home_assistant() -> None:
     """Check Home Assistant status and broadcast if changed."""

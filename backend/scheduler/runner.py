@@ -13,7 +13,7 @@ from django.db import close_old_connections
 from django.db import connection
 from django.utils import timezone
 
-from .registry import ScheduledTask, get_tasks
+from .registry import ScheduledTask, evaluate_task_enabled, get_tasks
 from .schedules import DailyAt, Every, Schedule
 
 logger = logging.getLogger(__name__)
@@ -21,6 +21,7 @@ logger = logging.getLogger(__name__)
 _WATCHDOG_INTERVAL = 60  # Check threads every 60 seconds
 _lock = threading.Lock()  # Protect shared state
 _threads: dict[str, threading.Thread] = {}
+_stop_events: dict[str, threading.Event] = {}
 _running: set[str] = set()  # Track currently executing tasks
 _watchdog_started = False
 _task_status: dict[str, dict[str, object]] = {}
@@ -78,6 +79,16 @@ def _failure_delay_seconds(*, task: ScheduledTask, consecutive_failures: int) ->
     return max(0, int(delay_seconds)), is_suspended
 
 
+def _task_enabled_now(task: ScheduledTask) -> tuple[bool, str | None]:
+    """
+    Return (enabled_now, reason).
+
+    This must be side-effect free (no network IO). Predicates may read cached state/DB.
+    """
+    enabled, reason = evaluate_task_enabled(task)
+    return bool(enabled), reason
+
+
 def _maybe_acquire_leader_lock() -> bool:
     """
     Best-effort leader lock for multi-process deployments (Postgres only).
@@ -117,7 +128,7 @@ def _maybe_acquire_leader_lock() -> bool:
         logger.exception("Scheduler leader lock acquisition failed; scheduler will not start")
         return False
 
-def _run_task_loop(task: ScheduledTask) -> None:
+def _run_task_loop(*, task: ScheduledTask, stop_event: threading.Event) -> None:
     """Run a task on its schedule forever."""
     try:
         from . import telemetry
@@ -127,6 +138,13 @@ def _run_task_loop(task: ScheduledTask) -> None:
         pass
 
     while True:
+        if stop_event.is_set():
+            logger.info("Task %s stopping (disabled/gated)", task.name)
+            with _lock:
+                _task_status.setdefault(task.name, {})
+                _task_status[task.name].update({"next_run_at": None, "stopping": False})
+            return
+
         close_old_connections()
         now = timezone.now()
         next_run = _compute_next_run(task.schedule, now)
@@ -171,7 +189,13 @@ def _run_task_loop(task: ScheduledTask) -> None:
             next_run.isoformat(),
             sleep_seconds,
         )
-        time.sleep(max(0, sleep_seconds))
+        stop_event.wait(timeout=max(0, sleep_seconds))
+        if stop_event.is_set():
+            logger.info("Task %s stopping before execution (disabled/gated)", task.name)
+            with _lock:
+                _task_status.setdefault(task.name, {})
+                _task_status[task.name].update({"next_run_at": None, "stopping": False})
+            return
 
         # Prevent overlapping executions
         with _lock:
@@ -302,7 +326,24 @@ def _run_watchdog() -> None:
             pass
 
         for name, task in get_tasks().items():
-            if not task.enabled:
+            enabled_now, enabled_reason = _task_enabled_now(task)
+            with _lock:
+                _task_status.setdefault(name, {})
+                _task_status[name].update(
+                    {
+                        "enabled": bool(enabled_now),
+                        "enabled_reason": enabled_reason,
+                    }
+                )
+
+            if not enabled_now:
+                with _lock:
+                    thread = _threads.get(name)
+                    stop = _stop_events.get(name)
+                    if thread is not None and thread.is_alive() and stop is not None and not stop.is_set():
+                        _task_status.setdefault(name, {})
+                        _task_status[name]["stopping"] = True
+                        stop.set()
                 continue
 
             now = timezone.now()
@@ -353,14 +394,16 @@ def _run_watchdog() -> None:
                     if thread is not None:
                         logger.warning("Task %s thread died, restarting...", name)
 
+                    stop_event = threading.Event()
                     new_thread = threading.Thread(
                         target=_run_task_loop,
-                        args=(task,),
+                        kwargs={"task": task, "stop_event": stop_event},
                         name=f"task-{name}",
                         daemon=True,
                     )
                     new_thread.start()
                     _threads[name] = new_thread
+                    _stop_events[name] = stop_event
                     logger.info("Started task thread: %s", name)
 
 
@@ -377,16 +420,27 @@ def start_scheduler() -> None:
 
         # Start task threads
         for name, task in get_tasks().items():
-            if not task.enabled:
+            enabled_now, enabled_reason = _task_enabled_now(task)
+            _task_status.setdefault(name, {})
+            _task_status[name].update(
+                {
+                    "enabled": bool(enabled_now),
+                    "enabled_reason": enabled_reason,
+                }
+            )
+
+            if not enabled_now:
                 continue
+            stop_event = threading.Event()
             thread = threading.Thread(
                 target=_run_task_loop,
-                args=(task,),
+                kwargs={"task": task, "stop_event": stop_event},
                 name=f"task-{name}",
                 daemon=True,
             )
             thread.start()
             _threads[name] = thread
+            _stop_events[name] = stop_event
             logger.info("Started task thread: %s", name)
 
     # Start watchdog (outside lock - it will acquire lock when needed)
