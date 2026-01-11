@@ -119,6 +119,13 @@ def _maybe_acquire_leader_lock() -> bool:
 
 def _run_task_loop(task: ScheduledTask) -> None:
     """Run a task on its schedule forever."""
+    try:
+        from . import telemetry
+
+        telemetry.touch_task_health_registered(task=task)
+    except Exception:
+        pass
+
     while True:
         close_old_connections()
         now = timezone.now()
@@ -151,6 +158,13 @@ def _run_task_loop(task: ScheduledTask) -> None:
                 }
             )
 
+        try:
+            from . import telemetry
+
+            telemetry.update_task_health_scheduling(task=task, next_run_at=next_run)
+        except Exception:
+            pass
+
         logger.info(
             "Task %s scheduled for %s (in %.0fs)",
             task.name,
@@ -168,10 +182,11 @@ def _run_task_loop(task: ScheduledTask) -> None:
                 )
                 continue
             _running.add(task.name)
+            started_at = timezone.now()
             _task_status.setdefault(task.name, {})
             _task_status[task.name].update(
                 {
-                    "last_started_at": timezone.now().isoformat(),
+                    "last_started_at": started_at.isoformat(),
                     "last_error": None,
                     "backoff_until_at": None,
                     "backoff_seconds": 0,
@@ -180,6 +195,18 @@ def _run_task_loop(task: ScheduledTask) -> None:
                 }
             )
 
+        try:
+            from . import telemetry
+
+            telemetry.update_task_health_started(
+                task=task,
+                started_at=started_at,
+                consecutive_failures_at_start=consecutive_failures,
+                thread_name=threading.current_thread().name,
+            )
+        except Exception:
+            pass
+
         start_time = time.monotonic()
         try:
             close_old_connections()
@@ -187,24 +214,73 @@ def _run_task_loop(task: ScheduledTask) -> None:
             task.func()
             duration = time.monotonic() - start_time
             logger.info("Task %s completed in %.2fs", task.name, duration)
+            finished_at = timezone.now()
             with _lock:
                 status = _task_status.setdefault(task.name, {})
-                status["last_finished_at"] = timezone.now().isoformat()
+                status["last_finished_at"] = finished_at.isoformat()
                 status["last_duration_seconds"] = round(duration, 6)
                 status["consecutive_failures"] = 0
-        except Exception:
+
+            try:
+                from . import telemetry
+
+                telemetry.update_task_health_finished_success(
+                    task=task,
+                    finished_at=finished_at,
+                    duration_seconds=duration,
+                )
+                telemetry.record_task_run_success_if_slow(
+                    task=task,
+                    started_at=started_at,
+                    finished_at=finished_at,
+                    duration_seconds=duration,
+                    consecutive_failures_at_start=consecutive_failures,
+                    thread_name=threading.current_thread().name,
+                )
+            except Exception:
+                pass
+        except Exception as exc:
             duration = time.monotonic() - start_time
             logger.exception(
                 "Task %s failed after %.2fs",
                 task.name,
                 duration,
             )
+            finished_at = timezone.now()
+            next_consecutive_failures = consecutive_failures + 1
             with _lock:
                 status = _task_status.setdefault(task.name, {})
-                status["last_finished_at"] = timezone.now().isoformat()
+                status["last_finished_at"] = finished_at.isoformat()
                 status["last_duration_seconds"] = round(duration, 6)
                 status["last_error"] = "exception"
-                status["consecutive_failures"] = int(status.get("consecutive_failures") or 0) + 1
+                status["consecutive_failures"] = next_consecutive_failures
+
+            try:
+                from . import telemetry
+
+                telemetry.update_task_health_finished_failure(
+                    task=task,
+                    finished_at=finished_at,
+                    duration_seconds=duration,
+                    consecutive_failures=next_consecutive_failures,
+                    error_message=str(exc),
+                )
+                telemetry.record_task_run_failure(
+                    task=task,
+                    started_at=started_at,
+                    finished_at=finished_at,
+                    duration_seconds=duration,
+                    consecutive_failures_at_start=consecutive_failures,
+                    thread_name=threading.current_thread().name,
+                    exc=exc,
+                )
+                telemetry.maybe_emit_failure_event(
+                    task_name=task.name,
+                    consecutive_failures=next_consecutive_failures,
+                    error_message=str(exc),
+                )
+            except Exception:
+                pass
         finally:
             close_old_connections()
             with _lock:
@@ -215,6 +291,15 @@ def _run_watchdog() -> None:
     """Monitor task threads and restart any that died."""
     while True:
         time.sleep(_WATCHDOG_INTERVAL)
+
+        with _lock:
+            running_task_names = list(_running)
+        try:
+            from . import telemetry
+
+            telemetry.update_running_task_heartbeats(task_names=running_task_names)
+        except Exception:
+            pass
 
         for name, task in get_tasks().items():
             if not task.enabled:
@@ -249,6 +334,16 @@ def _run_watchdog() -> None:
                             runtime_seconds,
                             task.max_runtime_seconds,
                         )
+                        try:
+                            from . import telemetry
+
+                            telemetry.maybe_emit_stuck_event(
+                                task_name=name,
+                                runtime_seconds=runtime_seconds,
+                                max_runtime_seconds=int(task.max_runtime_seconds),
+                            )
+                        except Exception:
+                            pass
                 except Exception:
                     pass
 

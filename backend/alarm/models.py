@@ -27,6 +27,8 @@ class AlarmEventType(models.TextChoices):
     STATE_CHANGED = "state_changed", "State changed"
     INTEGRATION_OFFLINE = "integration_offline", "Integration offline"
     INTEGRATION_RECOVERED = "integration_recovered", "Integration recovered"
+    SCHEDULER_TASK_FAILED = "scheduler_task_failed", "Scheduler task failed"
+    SCHEDULER_TASK_STUCK = "scheduler_task_stuck", "Scheduler task stuck"
 
 
 class SystemConfigValueType(models.TextChoices):

@@ -28,7 +28,11 @@ def _get_retention_days() -> int:
         return default
 
 
-@register("cleanup_old_events", schedule=DailyAt(hour=3, minute=0))
+@register(
+    "cleanup_old_events",
+    schedule=DailyAt(hour=3, minute=0),
+    description="Deletes old alarm history entries based on your retention settings.",
+)
 def cleanup_old_events() -> int:
     """
     Delete AlarmEvent records older than the configured retention period.
@@ -67,7 +71,11 @@ def _get_rule_log_retention_days() -> int:
         return default
 
 
-@register("cleanup_rule_action_logs", schedule=DailyAt(hour=3, minute=30))
+@register(
+    "cleanup_rule_action_logs",
+    schedule=DailyAt(hour=3, minute=30),
+    description="Deletes old rule activity logs based on your retention settings.",
+)
 def cleanup_rule_action_logs() -> int:
     """
     Delete RuleActionLog records older than the configured retention period.
@@ -90,7 +98,11 @@ def cleanup_rule_action_logs() -> int:
     return deleted_count
 
 
-@register("cleanup_expired_sessions", schedule=DailyAt(hour=4, minute=0))
+@register(
+    "cleanup_expired_sessions",
+    schedule=DailyAt(hour=4, minute=0),
+    description="Removes expired login sessions to keep things running smoothly.",
+)
 def cleanup_expired_sessions() -> int:
     """
     Delete expired Django sessions from the database.
@@ -128,7 +140,11 @@ def _get_entity_sync_interval() -> int:
         return default
 
 
-@register("sync_entity_states", schedule=Every(seconds=300, jitter=30))
+@register(
+    "sync_entity_states",
+    schedule=Every(seconds=300, jitter=30),
+    description="Refreshes device states from Home Assistant when available.",
+)
 def sync_entity_states() -> dict:
     """
     Refresh entity states from Home Assistant.
@@ -211,7 +227,11 @@ def sync_entity_states() -> dict:
     return {"synced": synced, "updated": updated, "errors": 0}
 
 
-@register("broadcast_system_status", schedule=Every(seconds=2))
+@register(
+    "broadcast_system_status",
+    schedule=Every(seconds=2),
+    description="Keeps the app up to date with the latest connection status of your integrations.",
+)
 def broadcast_system_status() -> None:
     """Broadcast integration status to websocket clients (local integrations)."""
     from alarm.system_status import recompute_and_broadcast_system_status
@@ -219,7 +239,11 @@ def broadcast_system_status() -> None:
     recompute_and_broadcast_system_status(include_home_assistant=False)
 
 
-@register("check_home_assistant", schedule=Every(seconds=30, jitter=5))
+@register(
+    "check_home_assistant",
+    schedule=Every(seconds=30, jitter=5),
+    description="Checks whether Home Assistant is reachable, so the app can show an accurate status.",
+)
 def check_home_assistant() -> None:
     """Check Home Assistant status and broadcast if changed."""
     from alarm.system_status import recompute_and_broadcast_system_status
@@ -227,7 +251,11 @@ def check_home_assistant() -> None:
     recompute_and_broadcast_system_status(include_home_assistant=True)
 
 
-@register("process_due_rule_runtimes", schedule=Every(seconds=5, jitter=1))
+@register(
+    "process_due_rule_runtimes",
+    schedule=Every(seconds=5, jitter=1),
+    description='Completes “wait for X seconds” rule timers and triggers any rules that become due.',
+)
 def process_due_rule_runtimes() -> dict:
     """
     Process rule runtimes with scheduled_for <= now.
@@ -266,7 +294,11 @@ def process_due_rule_runtimes() -> dict:
         return {"processed": 0, "fired": 0, "errors": 1}
 
 
-@register("cleanup_orphan_rule_entity_refs", schedule=DailyAt(hour=4, minute=30))
+@register(
+    "cleanup_orphan_rule_entity_refs",
+    schedule=DailyAt(hour=4, minute=30),
+    description="Cleans up stale rule references to devices that no longer exist.",
+)
 def cleanup_orphan_rule_entity_refs() -> int:
     """
     Remove RuleEntityRef rows pointing to non-existent entities.

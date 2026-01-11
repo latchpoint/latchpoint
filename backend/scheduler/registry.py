@@ -20,6 +20,7 @@ class ScheduledTask:
     func: Callable[[], None]
     schedule: Schedule
     enabled: bool = True
+    description: str | None = None
     max_runtime_seconds: int | None = None
     failure_backoff_base_seconds: int = 0
     failure_backoff_max_seconds: int = 0
@@ -31,6 +32,7 @@ def register(
     name: str,
     schedule: Schedule,
     enabled: bool = True,
+    description: str | None = None,
 ) -> Callable[[Callable[[], None]], Callable[[], None]]:
     """Decorator to register a scheduled task.
 
@@ -45,6 +47,16 @@ def register(
         override = overrides.get(name) if isinstance(overrides, dict) else None
         if not isinstance(override, dict):
             override = {}
+
+        resolved_description = description
+        if not resolved_description:
+            doc = getattr(func, "__doc__", None)
+            if isinstance(doc, str):
+                for line in doc.strip().splitlines():
+                    line = line.strip()
+                    if line:
+                        resolved_description = line[:500]
+                        break
 
         resolved_enabled = enabled
         if "enabled" in override:
@@ -64,6 +76,7 @@ def register(
             func=func,
             schedule=schedule,
             enabled=resolved_enabled,
+            description=resolved_description,
             max_runtime_seconds=max_runtime_seconds,
             failure_backoff_base_seconds=failure_backoff_base_seconds,
             failure_backoff_max_seconds=failure_backoff_max_seconds,

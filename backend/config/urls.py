@@ -22,6 +22,7 @@ urlpatterns = [
     path("api/events/", alarm_views.AlarmEventsView.as_view(), name="events"),
     path("api/system-config/", alarm_views.SystemConfigListView.as_view(), name="system-config-list"),
     path("api/system-config/<str:key>/", alarm_views.SystemConfigDetailView.as_view(), name="system-config-detail"),
+    path("api/scheduler/", include("scheduler.urls")),
     path("api/", include("accounts.urls")),
     path("api/", include("locks.urls")),
 ]

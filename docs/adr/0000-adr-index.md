@@ -79,6 +79,7 @@ This document tracks all Architecture Decision Records (ADRs) and their implemen
 | [0060](0060-evaluate-django-cron-library.md) | Evaluate django-cron Library vs Custom Scheduler | Superseded |
 | [0061](0061-optimize-dispatcher-entity-state-snapshot-for-rule-evaluation.md) | Optimize Dispatcher Entity-State Snapshot for Faster Rule Evaluation | **Implemented** |
 | [0062](0062-scheduler-resilience-improvements.md) | Scheduler Resilience Improvements | **Proposed** |
+| [0063](0063-scheduler-status-ui-and-health-monitoring.md) | Scheduler Status UI and Health Monitoring | **Proposed** |
 
 ---
 
@@ -88,12 +89,12 @@ This document tracks all Architecture Decision Records (ADRs) and their implemen
 |--------|-------|
 | **Implemented** | 49 |
 | **Partially Implemented** | 1 |
-| **Proposed** | 2 |
+| **Proposed** | 3 |
 | **Superseded** | 10 |
-| **Total** | 62 |
+| **Total** | 63 |
 
 Note: **Superseded** includes entries marked as “Superseded by …” in the table above.
 
 ---
 
-*Last updated: 2026-01-11* (Added ADR 0062)
+*Last updated: 2026-01-11* (Added ADR 0063)

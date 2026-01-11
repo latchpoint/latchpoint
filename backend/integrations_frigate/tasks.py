@@ -14,7 +14,11 @@ from scheduler import Every, register
 logger = logging.getLogger(__name__)
 
 
-@register("cleanup_frigate_detections", schedule=Every(seconds=3600, jitter=60))
+@register(
+    "cleanup_frigate_detections",
+    schedule=Every(seconds=3600, jitter=60),
+    description="Deletes old camera detections based on your configured retention settings.",
+)
 def cleanup_frigate_detections() -> int:
     """
     Delete FrigateDetection records older than the configured retention period.

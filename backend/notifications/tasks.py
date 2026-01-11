@@ -65,7 +65,11 @@ def _compute_backoff_seconds(*, attempt: int, error_code: str | None) -> int:
     return seconds + jitter
 
 
-@register("notifications_send_pending", schedule=Every(seconds=5, jitter=1))
+@register(
+    "notifications_send_pending",
+    schedule=Every(seconds=5, jitter=1),
+    description="Sends pending notifications and retries temporary failures.",
+)
 def notifications_send_pending() -> int:
     """
     Process due NotificationDelivery rows.

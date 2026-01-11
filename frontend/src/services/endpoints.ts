@@ -66,6 +66,11 @@ export const apiEndpoints = {
     all: '/api/system-config/',
     key: (key: string) => `/api/system-config/${encodeURIComponent(key)}/`,
   },
+  scheduler: {
+    status: '/api/scheduler/status/',
+    taskRuns: (taskName: string) =>
+      `/api/scheduler/tasks/${encodeURIComponent(taskName)}/runs/`,
+  },
   homeAssistant: {
     status: '/api/alarm/home-assistant/status/',
     settings: '/api/alarm/home-assistant/settings/',

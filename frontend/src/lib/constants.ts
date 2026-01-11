@@ -77,6 +77,8 @@ export const EventType = {
   SENSOR_TRIGGERED: 'sensor_triggered',
   FAILED_CODE: 'failed_code',
   STATE_CHANGED: 'state_changed',
+  SCHEDULER_TASK_FAILED: 'scheduler_task_failed',
+  SCHEDULER_TASK_STUCK: 'scheduler_task_stuck',
 } as const
 
 export type EventTypeType = (typeof EventType)[keyof typeof EventType]
@@ -97,6 +99,7 @@ export const Routes = {
   DOOR_CODES: '/door-codes',
   EVENTS: '/events',
   CONTROL_PANELS: '/control-panels',
+  SCHEDULER: '/scheduler',
   SETTINGS: '/settings',
 } as const
 
