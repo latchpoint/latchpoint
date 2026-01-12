@@ -12,6 +12,27 @@ from alarm.tasks import cleanup_rule_action_logs, _get_rule_log_retention_days
 
 
 class CleanupRuleActionLogsTests(TestCase):
+    def test_disabled_retention_does_not_delete(self):
+        """Retention <= 0 disables cleanup to avoid deleting all rows."""
+        now = timezone.now()
+
+        SystemConfig.objects.create(
+            key="rule_logs.retention_days",
+            name="Rule log retention (days)",
+            value_type="integer",
+            value=0,
+        )
+
+        old = RuleActionLog.objects.create(
+            kind=RuleKind.TRIGGER,
+            fired_at=now - timedelta(days=365),
+        )
+
+        deleted = cleanup_rule_action_logs()
+
+        self.assertEqual(deleted, 0)
+        self.assertTrue(RuleActionLog.objects.filter(pk=old.pk).exists())
+
     def test_deletes_logs_older_than_default_retention(self):
         """Logs older than 14 days (default) are deleted."""
         now = timezone.now()

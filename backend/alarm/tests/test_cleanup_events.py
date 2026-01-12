@@ -14,6 +14,27 @@ from alarm.tasks import cleanup_old_events, _get_retention_days
 
 
 class CleanupOldEventsTests(TestCase):
+    def test_disabled_retention_does_not_delete(self):
+        """Retention <= 0 disables cleanup to avoid deleting all rows."""
+        now = timezone.now()
+
+        SystemConfig.objects.create(
+            key="events.retention_days",
+            name="Event retention (days)",
+            value_type="integer",
+            value=0,
+        )
+
+        old = AlarmEvent.objects.create(
+            event_type=AlarmEventType.DISARMED,
+            timestamp=now - timedelta(days=365),
+        )
+
+        deleted = cleanup_old_events()
+
+        self.assertEqual(deleted, 0)
+        self.assertTrue(AlarmEvent.objects.filter(pk=old.pk).exists())
+
     def test_deletes_events_older_than_default_retention(self):
         """Events older than 30 days (default) are deleted."""
         now = timezone.now()

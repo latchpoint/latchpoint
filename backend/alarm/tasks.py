@@ -7,8 +7,8 @@ from datetime import timedelta
 
 from django.utils import timezone
 
-from alarm.models import AlarmEvent, Entity, RuleActionLog, RuleEntityRef, SystemConfig
-from alarm.settings_registry import SYSTEM_CONFIG_SETTINGS_BY_KEY
+from alarm.models import AlarmEvent, Entity, RuleActionLog, RuleEntityRef
+from alarm.system_config_utils import get_int_system_config_value
 from scheduler import DailyAt, Every, register
 
 logger = logging.getLogger(__name__)
@@ -40,16 +40,7 @@ def _is_home_assistant_active() -> bool:
 
 def _get_retention_days() -> int:
     """Read events.retention_days from SystemConfig, fallback to default."""
-    default = SYSTEM_CONFIG_SETTINGS_BY_KEY["events.retention_days"].default
-
-    try:
-        config = SystemConfig.objects.get(key="events.retention_days")
-        return int(config.value)
-    except SystemConfig.DoesNotExist:
-        return default
-    except (TypeError, ValueError):
-        logger.warning("Invalid events.retention_days value, using default %d", default)
-        return default
+    return get_int_system_config_value(key="events.retention_days")
 
 
 @register(
@@ -64,6 +55,8 @@ def cleanup_old_events() -> int:
     Returns the count of deleted records.
     """
     retention_days = _get_retention_days()
+    if retention_days <= 0:
+        return 0
     cutoff = timezone.now() - timedelta(days=retention_days)
 
     deleted_count, _ = AlarmEvent.objects.filter(timestamp__lt=cutoff).delete()
@@ -81,18 +74,7 @@ def cleanup_old_events() -> int:
 
 def _get_rule_log_retention_days() -> int:
     """Read rule_logs.retention_days from SystemConfig, fallback to default."""
-    default = SYSTEM_CONFIG_SETTINGS_BY_KEY["rule_logs.retention_days"].default
-
-    try:
-        config = SystemConfig.objects.get(key="rule_logs.retention_days")
-        return int(config.value)
-    except SystemConfig.DoesNotExist:
-        return default
-    except (TypeError, ValueError):
-        logger.warning(
-            "Invalid rule_logs.retention_days value, using default %d", default
-        )
-        return default
+    return get_int_system_config_value(key="rule_logs.retention_days")
 
 
 @register(
@@ -107,6 +89,8 @@ def cleanup_rule_action_logs() -> int:
     Returns the count of deleted records.
     """
     retention_days = _get_rule_log_retention_days()
+    if retention_days <= 0:
+        return 0
     cutoff = timezone.now() - timedelta(days=retention_days)
 
     deleted_count, _ = RuleActionLog.objects.filter(fired_at__lt=cutoff).delete()
@@ -150,18 +134,7 @@ def cleanup_expired_sessions() -> int:
 
 def _get_entity_sync_interval() -> int:
     """Read entity_sync.interval_seconds from SystemConfig, fallback to default."""
-    default = SYSTEM_CONFIG_SETTINGS_BY_KEY["entity_sync.interval_seconds"].default
-
-    try:
-        config = SystemConfig.objects.get(key="entity_sync.interval_seconds")
-        return int(config.value)
-    except SystemConfig.DoesNotExist:
-        return default
-    except (TypeError, ValueError):
-        logger.warning(
-            "Invalid entity_sync.interval_seconds value, using default %d", default
-        )
-        return default
+    return get_int_system_config_value(key="entity_sync.interval_seconds")
 
 
 @register(
