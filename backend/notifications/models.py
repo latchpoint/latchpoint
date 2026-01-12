@@ -85,6 +85,9 @@ class NotificationLog(models.Model):
 
     class Meta:
         ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["created_at"]),
+        ]
         verbose_name = "Notification Log"
         verbose_name_plural = "Notification Logs"
 
@@ -153,6 +156,7 @@ class NotificationDelivery(models.Model):
         ordering = ["-created_at"]
         indexes = [
             models.Index(fields=["status", "next_attempt_at"]),
+            models.Index(fields=["status", "created_at"]),
         ]
 
     def __str__(self) -> str:

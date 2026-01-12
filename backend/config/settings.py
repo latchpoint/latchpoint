@@ -65,7 +65,7 @@ INSTALLED_APPS = [
     "integrations_zigbee2mqtt.apps.IntegrationsZigbee2mqttConfig",
     "integrations_frigate.apps.IntegrationsFrigateConfig",
     "notifications.apps.NotificationsConfig",
-    "locks",
+    "locks.apps.LocksConfig",
 ]
 
 MIDDLEWARE = [

@@ -9,10 +9,11 @@ from datetime import timedelta
 from django.db import transaction
 from django.utils import timezone
 
-from scheduler import Every, register
+from alarm.system_config_utils import get_int_system_config_value
+from scheduler import DailyAt, Every, register
 
 from .dispatcher import get_dispatcher
-from .models import NotificationDelivery
+from .models import NotificationDelivery, NotificationLog
 
 logger = logging.getLogger(__name__)
 
@@ -186,3 +187,74 @@ def notifications_send_pending() -> int:
             )
 
     return sent_count
+
+
+def _get_notification_log_retention_days() -> int:
+    """Read notification_logs.retention_days from SystemConfig, fallback to default."""
+    return get_int_system_config_value(key="notification_logs.retention_days")
+
+
+@register(
+    "cleanup_notification_logs",
+    schedule=DailyAt(hour=3, minute=5),
+    description="Deletes old notification audit logs based on your retention settings.",
+)
+def cleanup_notification_logs() -> int:
+    """
+    Delete NotificationLog records older than the configured retention period.
+
+    Returns the count of deleted records.
+    """
+    retention_days = _get_notification_log_retention_days()
+    if retention_days <= 0:
+        return 0
+
+    cutoff = timezone.now() - timedelta(days=retention_days)
+    deleted_count, _ = NotificationLog.objects.filter(created_at__lt=cutoff).delete()
+
+    if deleted_count > 0:
+        logger.info(
+            "Cleaned up %d notification logs older than %d days (cutoff: %s)",
+            deleted_count,
+            retention_days,
+            cutoff.isoformat(),
+        )
+
+    return deleted_count
+
+
+def _get_notification_delivery_retention_days() -> int:
+    """Read notification_deliveries.retention_days from SystemConfig, fallback to default."""
+    return get_int_system_config_value(key="notification_deliveries.retention_days")
+
+
+@register(
+    "cleanup_notification_deliveries",
+    schedule=DailyAt(hour=3, minute=7),
+    description="Deletes old sent/dead notification deliveries based on your retention settings.",
+)
+def cleanup_notification_deliveries() -> int:
+    """
+    Delete sent/dead NotificationDelivery records older than the configured retention period.
+
+    Returns the count of deleted records.
+    """
+    retention_days = _get_notification_delivery_retention_days()
+    if retention_days <= 0:
+        return 0
+
+    cutoff = timezone.now() - timedelta(days=retention_days)
+    deleted_count, _ = NotificationDelivery.objects.filter(
+        status__in=[NotificationDelivery.Status.SENT, NotificationDelivery.Status.DEAD],
+        created_at__lt=cutoff,
+    ).delete()
+
+    if deleted_count > 0:
+        logger.info(
+            "Cleaned up %d notification deliveries older than %d days (cutoff: %s)",
+            deleted_count,
+            retention_days,
+            cutoff.isoformat(),
+        )
+
+    return deleted_count
