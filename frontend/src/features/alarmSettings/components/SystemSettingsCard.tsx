@@ -3,51 +3,104 @@ import { Button } from '@/components/ui/button'
 import { FormField } from '@/components/ui/form-field'
 import { Input } from '@/components/ui/input'
 import { SectionCard } from '@/components/ui/section-card'
-import { useSystemConfigQuery, useUpdateSystemConfigMutation } from '@/hooks/useSettingsQueries'
+import { useBatchUpdateSystemConfigMutation, useSystemConfigQuery } from '@/hooks/useSettingsQueries'
 import { getErrorMessage } from '@/types/errors'
 
 type Props = {
   isAdmin: boolean
 }
 
+export type IntegerSetting = {
+  key: string
+  defaultValue: number
+  min: number
+  max: number
+}
+
+export const SYSTEM_SETTINGS: IntegerSetting[] = [
+  {
+    key: 'events.retention_days',
+    defaultValue: 30,
+    min: 0,
+    max: 3650,
+  },
+  {
+    key: 'notification_logs.retention_days',
+    defaultValue: 30,
+    min: 0,
+    max: 3650,
+  },
+  {
+    key: 'notification_deliveries.retention_days',
+    defaultValue: 30,
+    min: 0,
+    max: 3650,
+  },
+  {
+    key: 'door_code_events.retention_days',
+    defaultValue: 90,
+    min: 0,
+    max: 3650,
+  },
+]
+
 export function SystemSettingsCard({ isAdmin }: Props) {
   const systemConfigQuery = useSystemConfigQuery()
-  const updateMutation = useUpdateSystemConfigMutation()
+  const updateMutation = useBatchUpdateSystemConfigMutation()
 
-  const [localRetention, setLocalRetention] = useState<string | null>(null)
+  const [localValues, setLocalValues] = useState<Record<string, string>>({})
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
 
-  const retentionConfig = systemConfigQuery.data?.find((c) => c.key === 'events.retention_days')
-  const currentRetention = retentionConfig?.value ?? 30
-  const displayValue = localRetention ?? String(currentRetention)
-  const hasChanges = localRetention !== null && localRetention !== String(currentRetention)
+  const getCurrentValue = (key: string, defaultValue: number): number => {
+    const row = systemConfigQuery.data?.find((c) => c.key === key)
+    const value = row?.value
+    return typeof value === 'number' ? value : defaultValue
+  }
+
+  const hasChanges = SYSTEM_SETTINGS.some((s) => {
+    const current = getCurrentValue(s.key, s.defaultValue)
+    const local = localValues[s.key]
+    return local !== undefined && local !== String(current)
+  })
 
   const handleSave = async () => {
-    if (!localRetention) return
     setError(null)
     setNotice(null)
 
-    const parsed = parseInt(localRetention, 10)
-    if (isNaN(parsed) || parsed < 1 || parsed > 365) {
-      setError('Retention must be between 1 and 365 days')
-      return
+    const changes = SYSTEM_SETTINGS.flatMap((s) => {
+      const current = getCurrentValue(s.key, s.defaultValue)
+      const local = localValues[s.key]
+      if (local === undefined || local === String(current)) return []
+      return [{ setting: s, raw: local }]
+    })
+    if (changes.length === 0) return
+
+    for (const { setting, raw } of changes) {
+      const parsed = parseInt(raw, 10)
+      if (isNaN(parsed) || parsed < setting.min || parsed > setting.max) {
+        const name = systemConfigQuery.data?.find((c) => c.key === setting.key)?.name ?? setting.key
+        setError(`${name} must be between ${setting.min} and ${setting.max}`)
+        return
+      }
     }
 
     try {
-      await updateMutation.mutateAsync({
-        key: 'events.retention_days',
-        changes: { value: parsed },
-      })
-      setLocalRetention(null)
-      setNotice('Saved retention setting.')
+      await updateMutation.mutateAsync(
+        changes.map(({ setting, raw }) => ({
+          key: setting.key,
+          changes: { value: parseInt(raw, 10) },
+        })),
+      )
+      setLocalValues({})
+      setNotice('Saved system settings.')
     } catch (err) {
-      setError(getErrorMessage(err) || 'Failed to save retention setting')
+      setError(getErrorMessage(err) || 'Failed to save system settings')
     }
   }
 
   const handleReset = () => {
-    setLocalRetention(null)
+    setLocalValues({})
     setError(null)
     setNotice(null)
   }
@@ -75,19 +128,28 @@ export function SystemSettingsCard({ isAdmin }: Props) {
       {notice && <p className="mb-4 text-sm text-muted-foreground">{notice}</p>}
 
       <div className="grid gap-4 md:grid-cols-2">
-        <FormField
-          label="Event retention (days)"
-          help="Events older than this will be automatically deleted."
-        >
-          <Input
-            type="number"
-            min={1}
-            max={365}
-            value={displayValue}
-            onChange={(e) => setLocalRetention(e.target.value)}
-            disabled={!isAdmin || updateMutation.isPending || systemConfigQuery.isLoading}
-          />
-        </FormField>
+        {SYSTEM_SETTINGS.map((s) => {
+          const currentValue = getCurrentValue(s.key, s.defaultValue)
+          const displayValue = localValues[s.key] ?? String(currentValue)
+          const row = systemConfigQuery.data?.find((c) => c.key === s.key)
+          const label = row?.name ?? s.key
+          const help = row?.description ?? ''
+          const inputId = `system-setting-${s.key}`
+
+          return (
+            <FormField key={s.key} label={label} help={help} htmlFor={inputId}>
+              <Input
+                id={inputId}
+                type="number"
+                min={s.min}
+                max={s.max}
+                value={displayValue}
+                onChange={(e) => setLocalValues((prev) => ({ ...prev, [s.key]: e.target.value }))}
+                disabled={!isAdmin || updateMutation.isPending || systemConfigQuery.isLoading}
+              />
+            </FormField>
+          )
+        })}
       </div>
     </SectionCard>
   )

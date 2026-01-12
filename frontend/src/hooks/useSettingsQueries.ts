@@ -102,4 +102,20 @@ export function useUpdateSystemConfigMutation() {
   })
 }
 
+export function useBatchUpdateSystemConfigMutation() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (updates: Array<{ key: string; changes: { value?: unknown; description?: string } }>) =>
+      Promise.all(updates.map((u) => systemConfigService.update(u.key, u.changes))),
+    onSuccess: async (rows: SystemConfigRow[]) => {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.systemConfig.all })
+      await queryClient.setQueryData<SystemConfigRow[] | undefined>(queryKeys.systemConfig.all, (prev) => {
+        if (!prev) return prev
+        const byKey = new Map(rows.map((r) => [r.key, r]))
+        return prev.map((r) => byKey.get(r.key) ?? r)
+      })
+    },
+  })
+}
+
 export type { AlarmSettingsProfileMeta, AlarmSettingsProfileDetail }
