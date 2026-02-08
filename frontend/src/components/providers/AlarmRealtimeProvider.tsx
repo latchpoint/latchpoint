@@ -1,10 +1,10 @@
 import { useEffect, useRef } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { wsManager } from '@/services'
-import type { AlarmEvent, AlarmWebSocketMessage, WebSocketStatus } from '@/types'
+import type { AlarmEvent, AlarmWebSocketMessage, WebSocketStatus, Entity } from '@/types'
 import { queryKeys } from '@/types'
 import { useAuthSessionQuery } from '@/hooks/useAuthQueries'
-import { isAlarmStatePayload, isAlarmEventPayload, isCountdownPayload, isSystemStatusPayload } from '@/lib/typeGuards'
+import { isAlarmStatePayload, isAlarmEventPayload, isCountdownPayload, isSystemStatusPayload, isEntitySyncPayload } from '@/lib/typeGuards'
 import { DEFAULT_RECENT_EVENTS_LIMIT } from '@/lib/constants'
 
 let unsubscribeMessages: (() => void) | null = null
@@ -103,6 +103,26 @@ export function AlarmRealtimeProvider() {
             queryClient.setQueryData(queryKeys.zwavejs.status, message.payload.zwavejs)
             queryClient.setQueryData(queryKeys.zigbee2mqtt.status, message.payload.zigbee2mqtt)
             queryClient.setQueryData(queryKeys.frigate.status, message.payload.frigate)
+            break
+          }
+          case 'entity_sync': {
+            if (!isEntitySyncPayload(message.payload)) {
+              console.error('Invalid entity_sync payload', message.payload)
+              break
+            }
+            queryClient.setQueryData<Entity[]>(queryKeys.entities.all, (prev) => {
+              if (!prev) return prev
+              const changed = new Map(
+                message.payload.entities.map((e) => [e.entityId, e.newState])
+              )
+              return prev.map((entity) => {
+                const newState = changed.get(entity.entityId)
+                if (newState !== undefined) {
+                  return { ...entity, lastState: newState }
+                }
+                return entity
+              })
+            })
             break
           }
         }

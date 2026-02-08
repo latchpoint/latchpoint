@@ -100,6 +100,7 @@ export const Routes = {
   EVENTS: '/events',
   CONTROL_PANELS: '/control-panels',
   SCHEDULER: '/scheduler',
+  DEBUG: '/debug',
   SETTINGS: '/settings',
 } as const
 
