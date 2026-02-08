@@ -17,7 +17,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { HelpTip } from '@/components/ui/help-tip'
 import { cn } from '@/lib/utils'
 import { Trash2, ChevronDown, ChevronUp } from 'lucide-react'
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useRef } from 'react'
 import { useHomeAssistantStatus, useHomeAssistantNotifyServices } from '@/hooks/useHomeAssistant'
 import { useEnabledNotificationProviders } from '@/features/notifications/hooks/useNotificationProviders'
 import { useZwavejsStatusQuery } from '@/hooks/useZwavejs'
@@ -48,7 +48,7 @@ interface ActionsEditorProps {
 }
 
 interface ActionRowProps {
-  action: ActionNode & { _id?: string }
+  action: ActionNode
   index: number
   onUpdate: (action: ActionNode) => void
   onRemove: () => void
@@ -59,7 +59,6 @@ interface ActionRowProps {
 
 function ActionRow({ action, onUpdate, onRemove, disabled, canRemove, availableActionTypes }: ActionRowProps) {
   const actionType = action.type
-  const [expanded, setExpanded] = useState(false)
 
   // Check if this action type has expandable details
   const hasDetails =
@@ -67,6 +66,8 @@ function ActionRow({ action, onUpdate, onRemove, disabled, canRemove, availableA
     actionType === 'zwavejs_set_value' ||
     actionType === 'zigbee2mqtt_set_value' ||
     actionType === 'send_notification'
+
+  const [expanded, setExpanded] = useState(hasDetails)
 
   const handleTypeChange = (newType: string) => {
     // Determine if the new action type has expandable details
@@ -94,7 +95,7 @@ function ActionRow({ action, onUpdate, onRemove, disabled, canRemove, availableA
       case 'send_notification':
         onUpdate({
           type: 'send_notification',
-          provider_id: '',
+          providerId: '',
           message: '',
           title: '',
         })
@@ -103,15 +104,15 @@ function ActionRow({ action, onUpdate, onRemove, disabled, canRemove, availableA
         onUpdate({
           type: 'ha_call_service',
           action: '',
-          target: { entity_ids: [] },
+          target: { entityIds: [] },
           data: {},
         })
         break
       case 'zwavejs_set_value':
         onUpdate({
           type: 'zwavejs_set_value',
-          node_id: 0,
-          value_id: {
+          nodeId: 0,
+          valueId: {
             commandClass: 0,
             property: '',
           },
@@ -121,7 +122,7 @@ function ActionRow({ action, onUpdate, onRemove, disabled, canRemove, availableA
       case 'zigbee2mqtt_set_value':
         onUpdate({
           type: 'zigbee2mqtt_set_value',
-          entity_id: '',
+          entityId: '',
           value: null,
         })
         break
@@ -191,14 +192,14 @@ function ActionRow({ action, onUpdate, onRemove, disabled, canRemove, availableA
         {/* Quick summary for Z-Wave set value */}
         {actionType === 'zwavejs_set_value' && (
           <span className="text-sm text-muted-foreground">
-            {(action as ZwavejsSetValueAction).node_id ? `Node ${(action as ZwavejsSetValueAction).node_id}` : 'Configure node'}
+            {(action as ZwavejsSetValueAction).nodeId ? `Node ${(action as ZwavejsSetValueAction).nodeId}` : 'Configure node'}
           </span>
         )}
 
         {/* Quick summary for Zigbee2MQTT set value */}
         {actionType === 'zigbee2mqtt_set_value' && (
           <span className="text-sm text-muted-foreground">
-            {(action as Zigbee2mqttSetValueAction).entity_id || 'Select entity'}
+            {(action as Zigbee2mqttSetValueAction).entityId || 'Select entity'}
           </span>
         )}
 
@@ -343,7 +344,7 @@ function HaCallServiceFields({
           Target Entity IDs (comma-separated)
         </label>
         <Input
-          value={action.target?.entity_ids?.join(', ') || ''}
+          value={action.target?.entityIds?.join(', ') || ''}
           onChange={(e) => {
             const entityIds = e.target.value
               .split(',')
@@ -351,7 +352,7 @@ function HaCallServiceFields({
               .filter(Boolean)
             onUpdate({
               ...action,
-              target: { entity_ids: entityIds },
+              target: { entityIds },
             })
           }}
           placeholder="e.g., light.living_room, switch.kitchen"
@@ -386,7 +387,7 @@ function SendNotificationSummary({ action }: { action: SendNotificationAction })
   const providersQuery = useEnabledNotificationProviders()
 
   // Handle HA system provider
-  if (action.provider_id === HA_SYSTEM_PROVIDER_ID) {
+  if (action.providerId === HA_SYSTEM_PROVIDER_ID) {
     const service = action.data?.service as string
     if (service) {
       return <span className="text-sm text-muted-foreground">via {service}</span>
@@ -394,7 +395,7 @@ function SendNotificationSummary({ action }: { action: SendNotificationAction })
     return <span className="text-sm text-destructive">No service selected</span>
   }
 
-  const provider = providersQuery.data?.find((p) => p.id === action.provider_id)
+  const provider = providersQuery.data?.find((p) => p.id === action.providerId)
   if (provider) {
     return <span className="text-sm text-muted-foreground">via {provider.name}</span>
   }
@@ -419,7 +420,7 @@ function SendNotificationFields({
 
   const providers = providersQuery.data ?? []
   const isHaConfigured = haStatus.data?.configured ?? false
-  const isHaProvider = action.provider_id === HA_SYSTEM_PROVIDER_ID
+  const isHaProvider = action.providerId === HA_SYSTEM_PROVIDER_ID
   const haServices = haNotifyServices.data ?? []
 
   // Get current HA service from action.data
@@ -428,10 +429,10 @@ function SendNotificationFields({
   const handleProviderChange = (providerId: string) => {
     if (providerId === HA_SYSTEM_PROVIDER_ID) {
       // When switching to HA, initialize data with service
-      onUpdate({ ...action, provider_id: providerId, data: { service: '' } })
+      onUpdate({ ...action, providerId, data: { service: '' } })
     } else {
       // When switching away from HA, clear data
-      onUpdate({ ...action, provider_id: providerId, data: undefined })
+      onUpdate({ ...action, providerId, data: undefined })
     }
   }
 
@@ -447,7 +448,7 @@ function SendNotificationFields({
           <HelpTip content="Select a configured notification provider" className="ml-1" />
         </label>
         <Select
-          value={action.provider_id}
+          value={action.providerId}
           onChange={(e) => handleProviderChange(e.target.value)}
           disabled={disabled}
         >
@@ -574,8 +575,8 @@ function ZwavejsSetValueFields({
           </label>
           <Input
             type="number"
-            value={action.node_id || ''}
-            onChange={(e) => onUpdate({ ...action, node_id: parseInt(e.target.value) || 0 })}
+            value={action.nodeId || ''}
+            onChange={(e) => onUpdate({ ...action, nodeId: parseInt(e.target.value) || 0 })}
             placeholder="e.g., 5"
             disabled={disabled}
           />
@@ -587,11 +588,11 @@ function ZwavejsSetValueFields({
           </label>
           <Input
             type="number"
-            value={action.value_id.commandClass || ''}
+            value={action.valueId.commandClass || ''}
             onChange={(e) =>
               onUpdate({
                 ...action,
-                value_id: { ...action.value_id, commandClass: parseInt(e.target.value) || 0 },
+                valueId: { ...action.valueId, commandClass: parseInt(e.target.value) || 0 },
               })
             }
             placeholder="e.g., 37"
@@ -605,13 +606,13 @@ function ZwavejsSetValueFields({
           </label>
           <Input
             type="number"
-            value={action.value_id.endpoint ?? ''}
+            value={action.valueId.endpoint ?? ''}
             onChange={(e) => {
               const val = e.target.value
               onUpdate({
                 ...action,
-                value_id: {
-                  ...action.value_id,
+                valueId: {
+                  ...action.valueId,
                   endpoint: val === '' ? undefined : parseInt(val) || 0,
                 },
               })
@@ -626,11 +627,11 @@ function ZwavejsSetValueFields({
             <HelpTip content="The property name to set. Common: 'targetValue' for switches, 'currentValue' for sensors." className="ml-1" />
           </label>
           <Input
-            value={String(action.value_id.property || '')}
+            value={String(action.valueId.property || '')}
             onChange={(e) =>
               onUpdate({
                 ...action,
-                value_id: { ...action.value_id, property: e.target.value },
+                valueId: { ...action.valueId, property: e.target.value },
               })
             }
             placeholder="e.g., targetValue"
@@ -646,13 +647,13 @@ function ZwavejsSetValueFields({
             <HelpTip content="Optional sub-property key. Used for properties with multiple values like color components." className="ml-1" />
           </label>
           <Input
-            value={action.value_id.propertyKey != null ? String(action.value_id.propertyKey) : ''}
+            value={action.valueId.propertyKey != null ? String(action.valueId.propertyKey) : ''}
             onChange={(e) => {
               const val = e.target.value
               onUpdate({
                 ...action,
-                value_id: {
-                  ...action.value_id,
+                valueId: {
+                  ...action.valueId,
                   propertyKey: val === '' ? undefined : val,
                 },
               })
@@ -708,8 +709,8 @@ function Zigbee2mqttSetValueFields({
       <div className="space-y-1">
         <label className="text-xs text-muted-foreground">Entity ID</label>
         <Input
-          value={action.entity_id}
-          onChange={(e) => onUpdate({ ...action, entity_id: e.target.value })}
+          value={action.entityId}
+          onChange={(e) => onUpdate({ ...action, entityId: e.target.value })}
           placeholder="e.g., z2m_switch.0x..._state"
           disabled={disabled}
         />
@@ -754,13 +755,19 @@ export function ActionsEditor({ actions, onChange, disabled = false }: ActionsEd
     })
   }, [isHaConfigured, isZwavejsConfigured, isZigbee2mqttConfigured, hasNotificationProviders])
 
-  // Ensure actions have internal IDs for React keys
-  const actionsWithIds = actions.map((action, i) => ({
-    ...action,
-    _id: `action-${i}`,
-  }))
+  // Stable keys for React reconciliation (avoid index-based keys)
+  const nextActionId = useRef(0)
+  const actionKeysRef = useRef<string[]>(
+    actions.map(() => `action-${nextActionId.current++}`)
+  )
+
+  // Sync if actions changed externally (e.g., loading a saved rule)
+  if (actionKeysRef.current.length !== actions.length) {
+    actionKeysRef.current = actions.map(() => `action-${nextActionId.current++}`)
+  }
 
   const handleAddAction = () => {
+    actionKeysRef.current.push(`action-${nextActionId.current++}`)
     onChange([...actions, { type: 'alarm_trigger' }])
   }
 
@@ -771,6 +778,7 @@ export function ActionsEditor({ actions, onChange, disabled = false }: ActionsEd
   }
 
   const handleRemoveAction = (index: number) => {
+    actionKeysRef.current.splice(index, 1)
     const newActions = actions.filter((_, i) => i !== index)
     onChange(newActions)
   }
@@ -788,21 +796,21 @@ export function ActionsEditor({ actions, onChange, disabled = false }: ActionsEd
         <CardDescription>What happens when the rule fires</CardDescription>
       </CardHeader>
       <CardContent className="space-y-3">
-        {actionsWithIds.length === 0 ? (
+        {actions.length === 0 ? (
           <div className="rounded-md border border-dashed p-4 text-center text-sm text-muted-foreground">
             No actions configured. Add an action to define what happens when the rule fires.
           </div>
         ) : (
           <div className="space-y-2">
-            {actionsWithIds.map((action, index) => (
+            {actions.map((action, index) => (
               <ActionRow
-                key={action._id}
+                key={actionKeysRef.current[index]}
                 action={action}
                 index={index}
                 onUpdate={(updated) => handleUpdateAction(index, updated)}
                 onRemove={() => handleRemoveAction(index)}
                 disabled={disabled}
-                canRemove={actionsWithIds.length > 1}
+                canRemove={actions.length > 1}
                 availableActionTypes={availableActionTypes}
               />
             ))}

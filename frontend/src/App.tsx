@@ -26,6 +26,7 @@ const DoorCodesPage = lazy(() => import('@/pages/DoorCodesPage'))
 const EventsPage = lazy(() => import('@/pages/EventsPage'))
 const ControlPanelsPage = lazy(() => import('@/pages/ControlPanelsPage'))
 const SchedulerPage = lazy(() => import('@/pages/SchedulerPage'))
+const DebugPage = lazy(() => import('@/pages/DebugPage'))
 const SettingsLayout = lazy(() => import('@/pages/settings/SettingsLayout'))
 const SettingsIndexRedirect = lazy(() => import('@/pages/settings/SettingsIndexRedirect'))
 const SettingsAlarmTab = lazy(() => import('@/pages/settings/SettingsAlarmTab'))
@@ -113,6 +114,7 @@ function AppContent() {
             <Route path={AppRoutes.EVENTS} element={<EventsPage />} />
             <Route path={AppRoutes.CONTROL_PANELS} element={<ControlPanelsPage />} />
             <Route path={AppRoutes.SCHEDULER} element={<SchedulerPage />} />
+            <Route path={AppRoutes.DEBUG} element={<DebugPage />} />
             <Route path={AppRoutes.SETTINGS} element={<SettingsLayout />}>
               <Route index element={<SettingsIndexRedirect />} />
               <Route path="alarm" element={<SettingsAlarmTab />} />

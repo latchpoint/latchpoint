@@ -86,6 +86,7 @@ This document tracks all Architecture Decision Records (ADRs) and their implemen
 | [0067](0067-backend-endpoint-test-coverage-gaps.md) | Backend Endpoint Test Coverage Gaps | **Proposed** |
 | [0068](0068-zwavejs-lock-config-sync.md) | Z-Wave JS Lock Config Sync (Codes & Schedules) | **Implemented** |
 | [0069](0069-lock-config-sync-operational-concerns.md) | Lock Config Sync — Operational, Security & UX Concerns | **Partially Implemented** |
+| [0070](0070-entity-state-debug-page.md) | Entity State Debug Page | **Proposed** |
 
 ---
 
@@ -95,12 +96,12 @@ This document tracks all Architecture Decision Records (ADRs) and their implemen
 |--------|-------|
 | **Implemented** | 52 |
 | **Partially Implemented** | 3 |
-| **Proposed** | 3 |
+| **Proposed** | 4 |
 | **Superseded** | 11 |
-| **Total** | 69 |
+| **Total** | 70 |
 
 Note: **Superseded** includes entries marked as "Superseded by …" in the table above.
 
 ---
 
-*Last updated: 2026-02-08* (Implemented ADR 0068; core items from ADR 0069 shipped)
+*Last updated: 2026-02-08* (Implemented ADR 0068; core items from ADR 0069 shipped; added ADR 0070)
