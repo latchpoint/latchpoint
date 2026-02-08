@@ -100,8 +100,8 @@ This document tracks all Architecture Decision Records (ADRs) and their implemen
 | **Superseded** | 11 |
 | **Total** | 70 |
 
-Note: **Superseded** includes entries marked as “Superseded by …” in the table above.
+Note: **Superseded** includes entries marked as "Superseded by …" in the table above.
 
 ---
 
-*Last updated: 2026-02-08* (Added ADR 0070: Entity State Debug Page)
+*Last updated: 2026-02-08* (Implemented ADR 0068; core items from ADR 0069 shipped; added ADR 0070)

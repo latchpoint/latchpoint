@@ -60,6 +60,8 @@ def validate_door_code(
         candidates = candidates.filter(lock_assignments__lock_entity_id=lock_entity_id)
 
     for candidate in candidates:
+        if not candidate.code_hash:
+            continue
         if check_password(raw_code, candidate.code_hash):
             if candidate.max_uses is not None and candidate.uses_count >= candidate.max_uses:
                 raise CodeExhaustedError("Code has reached maximum uses.")

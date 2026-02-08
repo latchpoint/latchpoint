@@ -259,6 +259,36 @@ class DoorCodesApiTests(APITestCase):
         self.assertEqual(response.status_code, 204)
         self.assertFalse(DoorCode.objects.filter(id=code.id).exists())
 
+    def test_deleting_synced_door_code_dismisses_slot_instead_of_hard_delete(self):
+        code = DoorCode.objects.create(
+            user=self.user,
+            source=DoorCode.Source.SYNCED,
+            code_hash=None,
+            label="Slot 1",
+            code_type=DoorCode.CodeType.PERMANENT,
+            pin_length=None,
+            is_active=True,
+        )
+        DoorCodeLockAssignment.objects.create(
+            door_code=code,
+            lock_entity_id="lock.front_door",
+            slot_index=1,
+        )
+
+        url = reverse("door-code-detail", args=[code.id])
+        response = self.client.delete(url, {"reauth_password": "pass"}, format="json")
+        self.assertEqual(response.status_code, 204)
+
+        code.refresh_from_db()
+        self.assertFalse(code.is_active)
+        assignment = DoorCodeLockAssignment.objects.get(door_code=code, lock_entity_id="lock.front_door")
+        self.assertTrue(assignment.sync_dismissed)
+
+        list_url = reverse("door-codes")
+        list_resp = self.client.get(list_url, {"user_id": str(self.user.id)})
+        self.assertEqual(list_resp.status_code, 200)
+        self.assertEqual(list_resp.json()["data"], [])
+
     def test_non_admin_cannot_delete_door_code(self):
         code = DoorCode.objects.create(
             user=self.user,

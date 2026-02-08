@@ -166,6 +166,23 @@ class DoorCodeValidationTests(TestCase):
         result = code_validation.validate_door_code(user=self.user, raw_code=self.raw_code, now=now)
         self.assertEqual(result.code.id, self.code.id)
 
+    def test_synced_code_with_unknown_pin_does_not_crash_validation(self):
+        self.code.is_active = False
+        self.code.save(update_fields=["is_active"])
+        DoorCode.objects.create(
+            user=self.user,
+            source=DoorCode.Source.SYNCED,
+            code_hash=None,
+            label="Synced (unknown PIN)",
+            code_type=DoorCode.CodeType.PERMANENT,
+            pin_length=None,
+            is_active=True,
+        )
+
+        now = datetime(2025, 1, 1, 12, 0, tzinfo=dt_timezone.utc)
+        with self.assertRaises(code_validation.InvalidCodeError):
+            code_validation.validate_door_code(user=self.user, raw_code=self.raw_code, now=now)
+
 
 class DoorCodeUsageRecordingTests(TestCase):
     def setUp(self):

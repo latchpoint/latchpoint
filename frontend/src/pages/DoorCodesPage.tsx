@@ -20,6 +20,7 @@ import { SectionCard } from '@/components/ui/section-card'
 import { DoorCodeCard } from '@/features/doorCodes/components/DoorCodeCard'
 import { DoorCodeCreateCard } from '@/features/doorCodes/components/DoorCodeCreateCard'
 import { DoorCodesOwnerSelector } from '@/features/doorCodes/components/DoorCodesOwnerSelector'
+import { LockConfigSyncCard } from '@/features/doorCodes/components/LockConfigSyncCard'
 
 function isAdminRole(role: string | undefined): boolean {
   return role === UserRole.ADMIN
@@ -70,26 +71,44 @@ export function DoorCodesPage() {
   return (
     <Page title="Door Codes">
       {isAdmin ? (
-        <SectionCard title="Manage Door Codes" contentClassName="space-y-4">
-          <DoorCodesOwnerSelector
-            users={usersForSelect}
-            value={selectedUserIdOrDefault}
-            onChange={setSelectedUserId}
-            isLoading={usersQuery.isLoading}
-            error={usersQuery.isError ? usersQuery.error : null}
-          />
+        <>
+          <SectionCard title="Manage Door Codes" contentClassName="space-y-4">
+            <DoorCodesOwnerSelector
+              users={usersForSelect}
+              value={selectedUserIdOrDefault}
+              onChange={setSelectedUserId}
+              isLoading={usersQuery.isLoading}
+              error={usersQuery.isError ? usersQuery.error : null}
+            />
 
-          <DoorCodeCreateCard
-            userId={targetUserId}
-            locks={lockEntities}
-            locksIsLoading={entitiesQuery.isLoading}
-            locksError={entitiesQuery.isError ? entitiesQuery.error : null}
-            syncHa={{ onClick: () => syncEntitiesMutation.mutate(), isPending: syncEntitiesMutation.isPending }}
-            syncZwave={{ onClick: () => syncZwavejsEntitiesMutation.mutate(), isPending: syncZwavejsEntitiesMutation.isPending }}
-            isPending={createMutation.isPending}
-            onCreate={(req) => createMutation.mutateAsync(req)}
-          />
-        </SectionCard>
+            <DoorCodeCreateCard
+              userId={targetUserId}
+              locks={lockEntities}
+              locksIsLoading={entitiesQuery.isLoading}
+              locksError={entitiesQuery.isError ? entitiesQuery.error : null}
+              syncHa={{ onClick: () => syncEntitiesMutation.mutate(), isPending: syncEntitiesMutation.isPending }}
+              syncZwave={{
+                onClick: () => syncZwavejsEntitiesMutation.mutate(),
+                isPending: syncZwavejsEntitiesMutation.isPending,
+              }}
+              isPending={createMutation.isPending}
+              onCreate={(req) => createMutation.mutateAsync(req)}
+            />
+          </SectionCard>
+
+          <SectionCard
+            title="Sync Codes from Lock"
+            description="Pull existing user codes and supported schedules from a Z-Wave JS lock into LatchPoint."
+            contentClassName="space-y-4"
+          >
+            <LockConfigSyncCard
+              userId={targetUserId}
+              locks={lockEntities}
+              locksIsLoading={entitiesQuery.isLoading}
+              locksError={entitiesQuery.isError ? entitiesQuery.error : null}
+            />
+          </SectionCard>
+        </>
       ) : (
         <SectionCard title="Your Door Codes" description="Ask an admin to create or update door codes for your account." />
       )}

@@ -9,6 +9,10 @@ from accounts.models import User
 class DoorCode(models.Model):
     """Door lock access code."""
 
+    class Source(models.TextChoices):
+        MANUAL = "manual", "Manual"
+        SYNCED = "synced", "Synced"
+
     class CodeType(models.TextChoices):
         PERMANENT = "permanent", "Permanent"
         TEMPORARY = "temporary", "Temporary"
@@ -17,11 +21,14 @@ class DoorCode(models.Model):
 
     id = models.BigAutoField(primary_key=True)
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="door_codes")
-    code_hash = models.TextField()
+    source = models.CharField(max_length=16, choices=Source.choices, default=Source.MANUAL)
+    code_hash = models.TextField(null=True, blank=True)
     label = models.CharField(max_length=150, blank=True)
     code_type = models.CharField(max_length=16, choices=CodeType.choices)
     pin_length = models.PositiveSmallIntegerField(
-        validators=[MinValueValidator(4), MaxValueValidator(8)]
+        null=True,
+        blank=True,
+        validators=[MinValueValidator(4), MaxValueValidator(8)],
     )
     is_active = models.BooleanField(default=True)
     max_uses = models.PositiveIntegerField(null=True, blank=True)
@@ -82,6 +89,8 @@ class DoorCodeLockAssignment(models.Model):
         DoorCode, on_delete=models.CASCADE, related_name="lock_assignments"
     )
     lock_entity_id = models.CharField(max_length=255)
+    slot_index = models.PositiveSmallIntegerField(null=True, blank=True)
+    sync_dismissed = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -91,6 +100,11 @@ class DoorCodeLockAssignment(models.Model):
             models.UniqueConstraint(
                 fields=["door_code", "lock_entity_id"],
                 name="door_code_lock_assignments_unique_code_lock",
+            ),
+            models.UniqueConstraint(
+                fields=["lock_entity_id", "slot_index"],
+                condition=Q(slot_index__isnull=False),
+                name="door_code_lock_assignments_unique_lock_slot",
             ),
         ]
         indexes = [

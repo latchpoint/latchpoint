@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from django.contrib.auth.hashers import make_password
+from django.db.models import Exists, OuterRef, Q
 from django.db.models import QuerySet
 
 from accounts.models import User
@@ -61,10 +62,15 @@ def resolve_create_target_user(*, actor_user: User, requested_user_id: str | Non
 
 def list_door_codes_for_user(*, user: User) -> QuerySet[DoorCode]:
     """Return a queryset of `DoorCode` rows for `user`, with common relations prefetched."""
+    has_active_assignment = Exists(
+        DoorCodeLockAssignment.objects.filter(door_code=OuterRef("pk"), sync_dismissed=False)
+    )
     return (
         DoorCode.objects.select_related("user")
         .prefetch_related("lock_assignments")
         .filter(user=user)
+        .annotate(_has_active_assignment=has_active_assignment)
+        .filter(Q(source=DoorCode.Source.MANUAL) | Q(_has_active_assignment=True))
         .order_by("-created_at")
     )
 
@@ -234,6 +240,35 @@ def delete_door_code(
     code_id = code.id
     label = code.label
     user = code.user
+
+    if code.source == DoorCode.Source.SYNCED:
+        from django.utils import timezone as django_timezone
+
+        now = django_timezone.now()
+        assignments = list(DoorCodeLockAssignment.objects.filter(door_code=code))
+        dismissed_slots = [
+            {"lock_entity_id": a.lock_entity_id, "slot_index": int(a.slot_index)}
+            for a in assignments
+            if a.slot_index is not None
+        ]
+        DoorCodeLockAssignment.objects.filter(door_code=code).update(sync_dismissed=True, updated_at=now)
+        if code.is_active:
+            code.is_active = False
+            code.save(update_fields=["is_active", "updated_at"])
+
+        DoorCodeEvent.objects.create(
+            door_code=None,
+            user=actor_user,
+            event_type=DoorCodeEvent.EventType.CODE_DELETED,
+            metadata={
+                "code_id": code_id,
+                "label": label,
+                "user_id": str(user.id),
+                "dismissed": True,
+                "dismissed_slots": dismissed_slots,
+            },
+        )
+        return
 
     DoorCodeEvent.objects.create(
         door_code=None,
