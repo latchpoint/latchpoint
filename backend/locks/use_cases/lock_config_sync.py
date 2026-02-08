@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, time, timedelta, timezone
 from typing import Any
 
-from django.contrib.auth.hashers import make_password
+from django.contrib.auth.hashers import check_password, make_password
 from django.db import IntegrityError, connection, transaction
 from django.utils import timezone as django_timezone
 
@@ -370,6 +370,11 @@ def _extract_weekday_schedule_windows(
         if ("yearday" in prop_l and "schedule" in prop_l) or ("daily" in prop_l and "schedule" in prop_l):
             unsupported_value_ids.append(value_id)
 
+    # If no weekday schedule value IDs exist at all, the lock doesn't support CC 76
+    # weekday schedules. Treat all slots as unsupported to avoid erasing existing schedules.
+    if not weekday_value_ids and not unsupported_value_ids:
+        return {si: None for si in slot_indices}, {si: "Lock does not expose CC 76 schedule value IDs." for si in slot_indices}
+
     # Weekday windows aggregated by slot -> weekday -> list[(start,end)]
     windows: dict[int, dict[int, list[tuple[time, time]]]] = {}
     unsupported_by_slot: dict[int, str] = {}
@@ -568,7 +573,7 @@ def sync_lock_config(
         occupied_slots: set[int] = set()
         slot_active: dict[int, bool | None] = {}
         pin_known_by_slot: dict[int, bool] = {}
-        pin_hash_by_slot: dict[int, str | None] = {}
+        pin_by_slot: dict[int, str | None] = {}
         pin_length_by_slot: dict[int, int | None] = {}
 
         for slot_index in range(1, int(max_slots) + 1):
@@ -610,12 +615,8 @@ def sync_lock_config(
 
             known, pin = _normalize_pin(code_value)
             pin_known_by_slot[slot_index] = bool(known)
-            if known and pin is not None:
-                pin_hash_by_slot[slot_index] = make_password(pin)
-                pin_length_by_slot[slot_index] = len(pin)
-            else:
-                pin_hash_by_slot[slot_index] = None
-                pin_length_by_slot[slot_index] = None
+            pin_by_slot[slot_index] = pin if known else None
+            pin_length_by_slot[slot_index] = len(pin) if known and pin is not None else None
 
         logger.info(
             "Lock %s (node %d): %d occupied slots out of %d", lock_entity_id, node_id, len(occupied_slots), max_slots,
@@ -631,18 +632,6 @@ def sync_lock_config(
 
         # Import occupied slots.
         for slot_index in sorted(occupied_slots):
-            if slot_index == 0:
-                logger.debug("Skipping master code slot 0 on %s", lock_entity_id)
-                result.skipped += 1
-                result.slots.append(
-                    SlotSyncResult(
-                        slot_index=slot_index,
-                        action="skipped",
-                        warnings=["master_code_slot"],
-                    )
-                )
-                continue
-
             existing = (
                 DoorCodeLockAssignment.objects.select_related("door_code")
                 .filter(lock_entity_id=lock_entity_id, slot_index=slot_index)
@@ -656,7 +645,7 @@ def sync_lock_config(
 
             pin_known = bool(pin_known_by_slot.get(slot_index))
             is_active = slot_active.get(slot_index)
-            code_hash = pin_hash_by_slot.get(slot_index)
+            raw_pin = pin_by_slot.get(slot_index)
             pin_length = pin_length_by_slot.get(slot_index)
 
             schedule_obj = schedule_by_slot.get(slot_index)
@@ -679,8 +668,12 @@ def sync_lock_config(
                     code.source = DoorCode.Source.SYNCED
                     updated_fields.append("source")
 
-                if code.code_hash != code_hash:
-                    code.code_hash = code_hash
+                if raw_pin is not None:
+                    if not code.code_hash or not check_password(raw_pin, code.code_hash):
+                        code.code_hash = make_password(raw_pin)
+                        updated_fields.append("code_hash")
+                elif code.code_hash is not None:
+                    code.code_hash = None
                     updated_fields.append("code_hash")
                 if code.pin_length != pin_length:
                     code.pin_length = pin_length
@@ -740,12 +733,6 @@ def sync_lock_config(
                     result.unchanged += 1
                     logger.debug("Slot %d on %s: unchanged", slot_index, lock_entity_id)
 
-                if existing.slot_index != slot_index:
-                    existing.slot_index = slot_index
-                if existing.sync_dismissed:
-                    existing.sync_dismissed = False
-                existing.save(update_fields=["slot_index", "sync_dismissed", "updated_at"])
-
                 DoorCodeEvent.objects.create(
                     door_code=code,
                     user=actor_user,
@@ -789,6 +776,7 @@ def sync_lock_config(
                 window_end = time.fromisoformat(str(schedule_obj["window_end"]))
                 code_type = DoorCode.CodeType.TEMPORARY
 
+            code_hash = make_password(raw_pin) if raw_pin is not None else None
             code = DoorCode(
                 user=target_user,
                 source=DoorCode.Source.SYNCED,
@@ -825,7 +813,7 @@ def sync_lock_config(
                 if existing:
                     code.delete()
                     existing_code = existing.door_code
-                    existing_code.code_hash = code_hash
+                    existing_code.code_hash = make_password(raw_pin) if raw_pin is not None else None
                     existing_code.pin_length = pin_length
                     if is_active is not None:
                         existing_code.is_active = bool(is_active)
