@@ -130,15 +130,15 @@ export interface HaCallServiceAction {
   type: 'ha_call_service'
   action: string
   target?: {
-    entity_ids: string[]
+    entityIds: string[]
   }
   data?: Record<string, unknown>
 }
 
 export interface ZwavejsSetValueAction {
   type: 'zwavejs_set_value'
-  node_id: number
-  value_id: {
+  nodeId: number
+  valueId: {
     commandClass: number
     endpoint?: number
     property: string | number
@@ -149,19 +149,19 @@ export interface ZwavejsSetValueAction {
 
 export interface Zigbee2mqttSetValueAction {
   type: 'zigbee2mqtt_set_value'
-  entity_id: string
+  entityId: string
   value: unknown
 }
 
 export interface Zigbee2mqttSwitchAction {
   type: 'zigbee2mqtt_switch'
-  entity_id: string
+  entityId: string
   state: 'on' | 'off'
 }
 
 export interface Zigbee2mqttLightAction {
   type: 'zigbee2mqtt_light'
-  entity_id: string
+  entityId: string
   state: 'on' | 'off'
   brightness?: number
 }
@@ -171,7 +171,7 @@ export interface Zigbee2mqttLightAction {
  */
 export interface SendNotificationAction {
   type: 'send_notification'
-  provider_id: string
+  providerId: string
   message: string
   title?: string
   data?: Record<string, unknown>
@@ -350,7 +350,7 @@ export function isHaCallServiceAction(action: unknown): action is HaCallServiceA
   if ('target' in action) {
     const target = action.target
     if (!isRecord(target)) return false
-    if ('entity_ids' in target && !Array.isArray(target.entity_ids)) return false
+    if ('entityIds' in target && !Array.isArray(target.entityIds)) return false
   }
 
   if ('data' in action && !isRecord(action.data)) return false
@@ -361,8 +361,8 @@ export function isHaCallServiceAction(action: unknown): action is HaCallServiceA
 export function isZwavejsSetValueAction(action: unknown): action is ZwavejsSetValueAction {
   if (!isRecord(action)) return false
   if (action.type !== 'zwavejs_set_value') return false
-  if (typeof action.node_id !== 'number') return false
-  const valueId = action.value_id
+  if (typeof action.nodeId !== 'number') return false
+  const valueId = action.valueId
   if (!isRecord(valueId)) return false
   if (typeof valueId.commandClass !== 'number') return false
   if ('endpoint' in valueId && typeof valueId.endpoint !== 'number') return false
@@ -376,7 +376,7 @@ export function isZwavejsSetValueAction(action: unknown): action is ZwavejsSetVa
 export function isZigbee2mqttSetValueAction(action: unknown): action is Zigbee2mqttSetValueAction {
   if (!isRecord(action)) return false
   if (action.type !== 'zigbee2mqtt_set_value') return false
-  if (typeof action.entity_id !== 'string' || action.entity_id.trim() === '') return false
+  if (typeof action.entityId !== 'string' || action.entityId.trim() === '') return false
   if (!('value' in action)) return false
   return true
 }
@@ -384,7 +384,7 @@ export function isZigbee2mqttSetValueAction(action: unknown): action is Zigbee2m
 export function isZigbee2mqttSwitchAction(action: unknown): action is Zigbee2mqttSwitchAction {
   if (!isRecord(action)) return false
   if (action.type !== 'zigbee2mqtt_switch') return false
-  if (typeof action.entity_id !== 'string' || action.entity_id.trim() === '') return false
+  if (typeof action.entityId !== 'string' || action.entityId.trim() === '') return false
   if (action.state !== 'on' && action.state !== 'off') return false
   return true
 }
@@ -392,7 +392,7 @@ export function isZigbee2mqttSwitchAction(action: unknown): action is Zigbee2mqt
 export function isZigbee2mqttLightAction(action: unknown): action is Zigbee2mqttLightAction {
   if (!isRecord(action)) return false
   if (action.type !== 'zigbee2mqtt_light') return false
-  if (typeof action.entity_id !== 'string' || action.entity_id.trim() === '') return false
+  if (typeof action.entityId !== 'string' || action.entityId.trim() === '') return false
   if (action.state !== 'on' && action.state !== 'off') return false
   if ('brightness' in action && action.brightness !== undefined && typeof action.brightness !== 'number') return false
   return true
@@ -404,7 +404,7 @@ export function isZigbee2mqttLightAction(action: unknown): action is Zigbee2mqtt
 export function isSendNotificationAction(action: unknown): action is SendNotificationAction {
   if (!isRecord(action)) return false
   if (action.type !== 'send_notification') return false
-  if (typeof action.provider_id !== 'string') return false
+  if (typeof action.providerId !== 'string') return false
   if (typeof action.message !== 'string') return false
   if ('title' in action && action.title !== undefined && typeof action.title !== 'string') return false
   if ('data' in action && action.data !== undefined && !isRecord(action.data)) return false
