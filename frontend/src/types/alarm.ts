@@ -136,6 +136,23 @@ export type AlarmWebSocketMessage =
       payload: SystemStatusPayload
       sequence: number
     }
+  | {
+      type: 'entity_sync'
+      timestamp: string
+      payload: EntitySyncPayload
+      sequence: number
+    }
+
+export interface EntitySyncEntity {
+  entityId: string
+  oldState: string | null
+  newState: string | null
+}
+
+export interface EntitySyncPayload {
+  entities: EntitySyncEntity[]
+  count: number
+}
 
 export interface AlarmStatePayload {
   state: AlarmStateSnapshot

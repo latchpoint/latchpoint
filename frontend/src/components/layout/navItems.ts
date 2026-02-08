@@ -1,5 +1,5 @@
 import type { LucideIcon } from 'lucide-react'
-import { Shield, Gavel, Key, Clock, DoorClosed, Settings, Keyboard, Activity } from 'lucide-react'
+import { Shield, Gavel, Key, Clock, DoorClosed, Settings, Keyboard, Activity, Bug } from 'lucide-react'
 import { Routes } from '@/lib/constants'
 
 export type NavItem = {
@@ -16,5 +16,6 @@ export const navItems: NavItem[] = [
   { path: Routes.EVENTS, label: 'Events', icon: Clock },
   { path: Routes.CONTROL_PANELS, label: 'Control Panels', icon: Keyboard },
   { path: Routes.SCHEDULER, label: 'Scheduler', icon: Activity },
+  { path: Routes.DEBUG, label: 'Debug', icon: Bug },
   { path: Routes.SETTINGS, label: 'Settings', icon: Settings },
 ]

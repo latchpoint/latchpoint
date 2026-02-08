@@ -11,6 +11,7 @@ import type {
   CountdownPayload,
   HealthPayload,
   SystemStatusPayload,
+  EntitySyncPayload,
 } from '@/types/alarm'
 import type { AlarmStateType, EventTypeType } from '@/lib/constants'
 
@@ -218,6 +219,23 @@ export function isSystemStatusPayload(payload: unknown): payload is SystemStatus
   }
 
   return true
+}
+
+/**
+ * Check if payload is an EntitySyncPayload
+ */
+export function isEntitySyncPayload(payload: unknown): payload is EntitySyncPayload {
+  if (!isRecord(payload)) return false
+  if (!Array.isArray(payload.entities)) return false
+  if (typeof payload.count !== 'number') return false
+
+  return payload.entities.every(
+    (e: unknown) =>
+      isRecord(e) &&
+      typeof e.entityId === 'string' &&
+      (e.oldState === null || typeof e.oldState === 'string') &&
+      (e.newState === null || typeof e.newState === 'string')
+  )
 }
 
 // ============================================================================
