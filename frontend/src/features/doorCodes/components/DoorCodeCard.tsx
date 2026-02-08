@@ -48,6 +48,7 @@ export function DoorCodeCard({
   onUpdate,
   onDelete,
 }: Props) {
+  const pinLengthLabel = code.pinLength == null ? 'unknown' : String(code.pinLength)
   return (
     <div className="rounded-md border border-input p-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -55,9 +56,10 @@ export function DoorCodeCard({
           <div className="flex items-center gap-2">
             <div className="font-medium">{code.label || 'Untitled door code'}</div>
             <Badge variant={code.isActive ? 'secondary' : 'outline'}>{code.isActive ? 'Active' : 'Inactive'}</Badge>
+            {code.source === 'synced' ? <Badge variant="outline">Synced</Badge> : null}
           </div>
           <div className="text-sm text-muted-foreground">
-            PIN length: {code.pinLength} • Type: {code.codeType}
+            PIN length: {pinLengthLabel} • Type: {code.codeType}
             {code.maxUses != null ? ` • Max uses: ${code.maxUses}` : ''}
           </div>
           {code.codeType === 'temporary' ? (
@@ -107,4 +109,3 @@ export function DoorCodeCard({
     </div>
   )
 }
-

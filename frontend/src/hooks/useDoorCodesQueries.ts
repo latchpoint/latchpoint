@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { doorCodesService } from '@/services'
+import { doorCodesService, locksService } from '@/services'
 import { queryKeys } from '@/types'
-import type { CreateDoorCodeRequest, DoorCode, UpdateDoorCodeRequest } from '@/types'
+import type { CreateDoorCodeRequest, DoorCode, LockConfigSyncRequest, LockConfigSyncResult, UpdateDoorCodeRequest } from '@/types'
 
 export function useDoorCodesQuery(params: { userId: string; isAdmin: boolean }) {
   const { userId, isAdmin } = params
@@ -40,6 +40,17 @@ export function useDeleteDoorCodeMutation(targetUserId: string) {
       doorCodesService.deleteDoorCode(id, { reauthPassword }),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: queryKeys.doorCodes.byUser(targetUserId) })
+    },
+  })
+}
+
+export function useSyncLockConfigMutation() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ lockEntityId, req }: { lockEntityId: string; req: LockConfigSyncRequest }) =>
+      locksService.syncConfig(lockEntityId, req),
+    onSuccess: async (_data: LockConfigSyncResult, variables) => {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.doorCodes.byUser(variables.req.userId) })
     },
   })
 }

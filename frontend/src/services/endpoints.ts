@@ -61,6 +61,7 @@ export const apiEndpoints = {
   },
   locks: {
     available: '/api/locks/available/',
+    syncConfig: (lockEntityId: string) => `/api/locks/${encodeURIComponent(lockEntityId)}/sync-config/`,
   },
   systemConfig: {
     all: '/api/system-config/',

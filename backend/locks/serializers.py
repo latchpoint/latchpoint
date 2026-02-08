@@ -26,6 +26,7 @@ class DoorCodeSerializer(serializers.ModelSerializer):
             "id",
             "user_id",
             "user_display_name",
+            "source",
             "label",
             "code_type",
             "pin_length",
@@ -238,3 +239,8 @@ class DoorCodeUpdateSerializer(serializers.Serializer):
             )
 
         return attrs
+
+
+class LockConfigSyncRequestSerializer(serializers.Serializer):
+    reauth_password = serializers.CharField(write_only=True)
+    user_id = serializers.UUIDField()

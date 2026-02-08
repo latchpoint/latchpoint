@@ -38,6 +38,7 @@ vi.mock('@/hooks/useDoorCodesQueries', () => {
     useCreateDoorCodeMutation: () => ({ isPending: false, mutateAsync: vi.fn() }),
     useUpdateDoorCodeMutation: () => ({ isPending: false, mutateAsync: vi.fn() }),
     useDeleteDoorCodeMutation: () => ({ isPending: false, mutateAsync: vi.fn() }),
+    useSyncLockConfigMutation: () => ({ isPending: false, mutateAsync: vi.fn() }),
   }
 })
 
@@ -49,6 +50,9 @@ vi.mock('@/features/doorCodes/components/DoorCodeCreateCard', () => {
 })
 vi.mock('@/features/doorCodes/components/DoorCodesOwnerSelector', () => {
   return { DoorCodesOwnerSelector: () => <div>DoorCodesOwnerSelector</div> }
+})
+vi.mock('@/features/doorCodes/components/LockConfigSyncCard', () => {
+  return { LockConfigSyncCard: () => <div>LockConfigSyncCard</div> }
 })
 
 describe('DoorCodesPage', () => {
@@ -67,6 +71,6 @@ describe('DoorCodesPage', () => {
     expect(screen.getByText(/manage door codes/i)).toBeInTheDocument()
     expect(screen.getByText('DoorCodesOwnerSelector')).toBeInTheDocument()
     expect(screen.getByText('DoorCodeCreateCard')).toBeInTheDocument()
+    expect(screen.getByText(/sync codes from lock/i)).toBeInTheDocument()
   })
 })
-

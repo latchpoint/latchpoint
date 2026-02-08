@@ -84,6 +84,8 @@ This document tracks all Architecture Decision Records (ADRs) and their implemen
 | [0065](0065-rule-builder-when-time-ranges.md) | Rule Builder WHEN Time Ranges | **Implemented** |
 | [0066](0066-retention-cleanup-notifications-and-door-code-events.md) | Retention Cleanup Tasks for Notifications and Door Code Events | **Implemented** |
 | [0067](0067-backend-endpoint-test-coverage-gaps.md) | Backend Endpoint Test Coverage Gaps | **Proposed** |
+| [0068](0068-zwavejs-lock-config-sync.md) | Z-Wave JS Lock Config Sync (Codes & Schedules) | **Implemented** |
+| [0069](0069-lock-config-sync-operational-concerns.md) | Lock Config Sync — Operational, Security & UX Concerns | **Partially Implemented** |
 
 ---
 
@@ -91,14 +93,14 @@ This document tracks all Architecture Decision Records (ADRs) and their implemen
 
 | Status | Count |
 |--------|-------|
-| **Implemented** | 51 |
-| **Partially Implemented** | 2 |
+| **Implemented** | 52 |
+| **Partially Implemented** | 3 |
 | **Proposed** | 3 |
 | **Superseded** | 11 |
-| **Total** | 67 |
+| **Total** | 69 |
 
-Note: **Superseded** includes entries marked as “Superseded by …” in the table above.
+Note: **Superseded** includes entries marked as "Superseded by …" in the table above.
 
 ---
 
-*Last updated: 2026-01-12* (Implemented ADR 0066)
+*Last updated: 2026-02-08* (Implemented ADR 0068; core items from ADR 0069 shipped)

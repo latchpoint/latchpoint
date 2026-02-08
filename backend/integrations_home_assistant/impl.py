@@ -233,18 +233,32 @@ def list_entities(
                     continue
                 if not isinstance(attributes, dict):
                     attributes = {}
+
+                zwavejs: dict[str, Any] = {}
+                node_id = attributes.get("node_id") or attributes.get("nodeId") or attributes.get("nodeID")
+                if isinstance(node_id, str) and node_id.isdigit():
+                    node_id = int(node_id)
+                if isinstance(node_id, int):
+                    zwavejs["node_id"] = node_id
+                home_id = attributes.get("home_id") or attributes.get("homeId") or attributes.get("homeID")
+                if isinstance(home_id, str) and home_id.isdigit():
+                    home_id = int(home_id)
+                if isinstance(home_id, int):
+                    zwavejs["home_id"] = home_id
+
                 domain = entity_id.split(".", 1)[0] if "." in entity_id else "unknown"
-                entities.append(
-                    {
-                        "entity_id": entity_id,
-                        "domain": domain,
-                        "state": state,
-                        "name": attributes.get("friendly_name") or entity_id,
-                        "device_class": attributes.get("device_class"),
-                        "unit_of_measurement": attributes.get("unit_of_measurement"),
-                        "last_changed": last_changed,
-                    }
-                )
+                row: dict[str, Any] = {
+                    "entity_id": entity_id,
+                    "domain": domain,
+                    "state": state,
+                    "name": attributes.get("friendly_name") or entity_id,
+                    "device_class": attributes.get("device_class"),
+                    "unit_of_measurement": attributes.get("unit_of_measurement"),
+                    "last_changed": last_changed,
+                }
+                if zwavejs:
+                    row["zwavejs"] = zwavejs
+                entities.append(row)
             return entities
 
     url = _build_url(base_url=base_url, path="/api/states")
@@ -299,18 +313,31 @@ def list_entities(
         if not isinstance(entity_id, str) or not isinstance(state, str):
             continue
 
+        zwavejs: dict[str, Any] = {}
+        node_id = attributes.get("node_id") or attributes.get("nodeId") or attributes.get("nodeID")
+        if isinstance(node_id, str) and node_id.isdigit():
+            node_id = int(node_id)
+        if isinstance(node_id, int):
+            zwavejs["node_id"] = node_id
+        home_id = attributes.get("home_id") or attributes.get("homeId") or attributes.get("homeID")
+        if isinstance(home_id, str) and home_id.isdigit():
+            home_id = int(home_id)
+        if isinstance(home_id, int):
+            zwavejs["home_id"] = home_id
+
         domain = entity_id.split(".", 1)[0] if "." in entity_id else "unknown"
-        entities.append(
-            {
-                "entity_id": entity_id,
-                "domain": domain,
-                "state": state,
-                "name": attributes.get("friendly_name") or entity_id,
-                "device_class": attributes.get("device_class"),
-                "unit_of_measurement": attributes.get("unit_of_measurement"),
-                "last_changed": item.get("last_changed"),
-            }
-        )
+        row: dict[str, Any] = {
+            "entity_id": entity_id,
+            "domain": domain,
+            "state": state,
+            "name": attributes.get("friendly_name") or entity_id,
+            "device_class": attributes.get("device_class"),
+            "unit_of_measurement": attributes.get("unit_of_measurement"),
+            "last_changed": item.get("last_changed"),
+        }
+        if zwavejs:
+            row["zwavejs"] = zwavejs
+        entities.append(row)
     return entities
 
 

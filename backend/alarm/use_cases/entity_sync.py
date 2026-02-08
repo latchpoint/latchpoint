@@ -28,6 +28,26 @@ def sync_entities_from_home_assistant(*, items: list[dict], now=None) -> dict:
         last_changed_raw = item.get("last_changed")
         last_changed = parse_datetime(last_changed_raw) if isinstance(last_changed_raw, str) else None
 
+        attributes: dict = {
+            "unit_of_measurement": item.get("unit_of_measurement"),
+        }
+        zwavejs = item.get("zwavejs")
+        if isinstance(zwavejs, dict):
+            # Keep this small: just enough to link HA lock entities back to a Z-Wave JS node.
+            node_id = zwavejs.get("node_id")
+            if isinstance(node_id, str) and node_id.isdigit():
+                node_id = int(node_id)
+            home_id = zwavejs.get("home_id")
+            if isinstance(home_id, str) and home_id.isdigit():
+                home_id = int(home_id)
+            zwavejs_out = {}
+            if isinstance(node_id, int):
+                zwavejs_out["node_id"] = node_id
+            if isinstance(home_id, int):
+                zwavejs_out["home_id"] = home_id
+            if zwavejs_out:
+                attributes["zwavejs"] = zwavejs_out
+
         defaults = {
             "domain": domain,
             "name": name,
@@ -35,9 +55,7 @@ def sync_entities_from_home_assistant(*, items: list[dict], now=None) -> dict:
             "last_state": item.get("state") if isinstance(item.get("state"), str) else None,
             "last_changed": last_changed,
             "last_seen": now,
-            "attributes": {
-                "unit_of_measurement": item.get("unit_of_measurement"),
-            },
+            "attributes": attributes,
             "source": "home_assistant",
         }
 
