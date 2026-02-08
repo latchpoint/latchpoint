@@ -17,7 +17,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { HelpTip } from '@/components/ui/help-tip'
 import { cn } from '@/lib/utils'
 import { Trash2, ChevronDown, ChevronUp } from 'lucide-react'
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useRef } from 'react'
 import { useHomeAssistantStatus, useHomeAssistantNotifyServices } from '@/hooks/useHomeAssistant'
 import { useEnabledNotificationProviders } from '@/features/notifications/hooks/useNotificationProviders'
 import { useZwavejsStatusQuery } from '@/hooks/useZwavejs'
@@ -48,7 +48,7 @@ interface ActionsEditorProps {
 }
 
 interface ActionRowProps {
-  action: ActionNode & { _id?: string }
+  action: ActionNode
   index: number
   onUpdate: (action: ActionNode) => void
   onRemove: () => void
@@ -755,13 +755,19 @@ export function ActionsEditor({ actions, onChange, disabled = false }: ActionsEd
     })
   }, [isHaConfigured, isZwavejsConfigured, isZigbee2mqttConfigured, hasNotificationProviders])
 
-  // Ensure actions have internal IDs for React keys
-  const actionsWithIds = actions.map((action, i) => ({
-    ...action,
-    _id: `action-${i}`,
-  }))
+  // Stable keys for React reconciliation (avoid index-based keys)
+  const nextActionId = useRef(0)
+  const actionKeysRef = useRef<string[]>(
+    actions.map(() => `action-${nextActionId.current++}`)
+  )
+
+  // Sync if actions changed externally (e.g., loading a saved rule)
+  if (actionKeysRef.current.length !== actions.length) {
+    actionKeysRef.current = actions.map(() => `action-${nextActionId.current++}`)
+  }
 
   const handleAddAction = () => {
+    actionKeysRef.current.push(`action-${nextActionId.current++}`)
     onChange([...actions, { type: 'alarm_trigger' }])
   }
 
@@ -772,6 +778,7 @@ export function ActionsEditor({ actions, onChange, disabled = false }: ActionsEd
   }
 
   const handleRemoveAction = (index: number) => {
+    actionKeysRef.current.splice(index, 1)
     const newActions = actions.filter((_, i) => i !== index)
     onChange(newActions)
   }
@@ -789,21 +796,21 @@ export function ActionsEditor({ actions, onChange, disabled = false }: ActionsEd
         <CardDescription>What happens when the rule fires</CardDescription>
       </CardHeader>
       <CardContent className="space-y-3">
-        {actionsWithIds.length === 0 ? (
+        {actions.length === 0 ? (
           <div className="rounded-md border border-dashed p-4 text-center text-sm text-muted-foreground">
             No actions configured. Add an action to define what happens when the rule fires.
           </div>
         ) : (
           <div className="space-y-2">
-            {actionsWithIds.map((action, index) => (
+            {actions.map((action, index) => (
               <ActionRow
-                key={action._id}
+                key={actionKeysRef.current[index]}
                 action={action}
                 index={index}
                 onUpdate={(updated) => handleUpdateAction(index, updated)}
                 onRemove={() => handleRemoveAction(index)}
                 disabled={disabled}
-                canRemove={actionsWithIds.length > 1}
+                canRemove={actions.length > 1}
                 availableActionTypes={availableActionTypes}
               />
             ))}
