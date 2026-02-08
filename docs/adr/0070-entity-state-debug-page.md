@@ -17,7 +17,7 @@ We will add a **Debug** page to the frontend, initially containing an **Entity S
 
 **Core functionality:**
 1. **Entity picker** — searchable dropdown listing all known entities, filterable by domain and source
-2. **Live state display** — shows the selected entity's current `last_state`, `attributes` (full JSON), `domain`, `device_class`, `unit_of_measurement`, `source`, `last_changed`, and `last_seen`
+2. **Live state display** — shows the selected entity's current `last_state`, `attributes` (full JSON), `domain`, attribute-derived fields like `device_class` (`attributes.device_class`) and `unit_of_measurement` (`attributes.unit_of_measurement`), `source`, `last_changed`, and `last_seen`
 3. **Real-time updates** — state refreshes automatically via WebSocket `entity_sync` messages so users see changes as they happen (e.g., toggling a light and watching the state flip)
 
 **UI design:**
@@ -28,7 +28,7 @@ We will add a **Debug** page to the frontend, initially containing an **Entity S
 - Timestamp display for `last_changed` and `last_seen` in relative format ("2 seconds ago")
 
 **Data flow:**
-- Entity list sourced from `GET /api/entities/` via `useEntitiesQuery()` (existing)
+- Entity list sourced from `GET /api/alarm/entities/` via `useEntitiesQuery()` (existing)
 - Initial entity detail loaded from entity list cache or a dedicated endpoint
 - Live updates via existing WebSocket `entity_sync` messages on the `alarm` channel
 - Frontend filters WebSocket updates to only display changes for the selected entity
