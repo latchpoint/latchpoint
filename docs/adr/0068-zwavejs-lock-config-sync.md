@@ -348,13 +348,13 @@ If reading 3 out of 30 slots fails (WebSocket timeout), does the whole sync fail
 
 ### Test scenarios (mocked Z-Wave JS gateway)
 - [x] **First sync — multiple occupied slots**: some with exposed PINs, some with masked PINs → correct `DoorCode` + assignment creation, `code_hash=None` for masked.
-- [ ] **Re-sync same lock — slot unchanged**: no new `DoorCode` created, no fields overwritten → idempotent no-op.
-- [ ] **Re-sync — slot PIN changed**: `code_hash` updated on existing `DoorCode`, conflict recorded in `SyncResult.conflicts`.
-- [ ] **Re-sync — slot emptied on lock**: existing `DoorCode` deactivated (`is_active=False`), reported in `SyncResult.codes_deactivated`.
-- [ ] **Re-sync — new slot appeared**: new `DoorCode` created alongside existing synced codes.
-- [ ] **Slot 0 (master code)**: skipped, reported in `SyncResult.skipped_slots`.
+- [x] **Re-sync same lock — slot unchanged**: no new `DoorCode` created, no fields overwritten → idempotent no-op.
+- [x] **Re-sync — slot PIN changed**: `code_hash` updated on existing `DoorCode`, conflict recorded in `SyncResult.conflicts`.
+- [x] **Re-sync — slot emptied on lock**: existing `DoorCode` deactivated (`is_active=False`), reported in `SyncResult.codes_deactivated`.
+- [x] **Re-sync — new slot appeared**: new `DoorCode` created alongside existing synced codes.
+- [x] **Slot 0 (master code)**: skipped, reported in `SyncResult.skipped_slots`.
 - [x] **Dismissed slot**: user deletes synced code, re-syncs → slot skipped, reported in `SyncResult.dismissed_slots`.
-- [ ] **Node doesn't support CC 0x63**: endpoint returns 400 with clear error message.
-- [ ] **Mid-sync WebSocket failure**: partial results returned with failed slots in `SyncResult.errors`.
+- [x] **Node doesn't support CC 0x63**: endpoint returns 400 with clear error message.
+- [x] **Mid-sync WebSocket failure**: partial results returned with failed slots in `SyncResult.errors`.
 - [x] **Concurrent sync**: second request returns 409 while first is in-flight.
-- [ ] **PIN normalization**: `node_get_value()` returns int, bytes, or string → all coerced to string before hashing.
+- [x] **PIN normalization**: `node_get_value()` returns int, bytes, or string → all coerced to string before hashing.

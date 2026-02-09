@@ -241,6 +241,24 @@ class DoorCodeUpdateSerializer(serializers.Serializer):
         return attrs
 
 
+class DismissedAssignmentSerializer(serializers.ModelSerializer):
+    door_code_label = serializers.CharField(source="door_code.label", read_only=True)
+    door_code_source = serializers.CharField(source="door_code.source", read_only=True)
+    door_code_is_active = serializers.BooleanField(source="door_code.is_active", read_only=True)
+
+    class Meta:
+        model = DoorCodeLockAssignment
+        fields = (
+            "id",
+            "lock_entity_id",
+            "slot_index",
+            "sync_dismissed",
+            "door_code_label",
+            "door_code_source",
+            "door_code_is_active",
+        )
+
+
 class LockConfigSyncRequestSerializer(serializers.Serializer):
     reauth_password = serializers.CharField(write_only=True)
     user_id = serializers.UUIDField()

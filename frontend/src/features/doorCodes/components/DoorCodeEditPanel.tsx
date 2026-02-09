@@ -9,6 +9,17 @@ import { DoorCodeLocksSection } from '@/features/doorCodes/components/DoorCodeLo
 import { DoorCodeTemporaryRestrictionsFields } from '@/features/doorCodes/components/DoorCodeTemporaryRestrictionsFields'
 import type { DoorCode, Entity } from '@/types'
 
+function SyncedFieldsWarning() {
+  return (
+    <Alert variant="warning" layout="inline">
+      <AlertDescription>
+        This code is synced from the lock. The PIN, active status, and schedule are controlled by the lock and will be
+        overwritten on the next sync. Only the label, max uses, and lock assignments can be edited here.
+      </AlertDescription>
+    </Alert>
+  )
+}
+
 type Props = {
   code: DoorCode
   editLabel: string
@@ -89,10 +100,13 @@ export function DoorCodeEditPanel({
   isDeleting,
 }: Props) {
   const isBusy = isSaving || isDeleting
+  const isSynced = code.source === 'synced'
   const isTemporary = code.codeType === 'temporary'
 
   return (
     <div className="mt-4 space-y-4 border-t border-input pt-4">
+      {isSynced && <SyncedFieldsWarning />}
+
       <DoorCodeEditBasicsFields
         codeId={code.id}
         label={editLabel}
@@ -102,6 +116,7 @@ export function DoorCodeEditPanel({
         maxUses={editMaxUses}
         onMaxUsesChange={onEditMaxUsesChange}
         isBusy={isBusy}
+        isSynced={isSynced}
       />
 
       {isTemporary && (
@@ -137,7 +152,7 @@ export function DoorCodeEditPanel({
         disabled={isBusy}
       />
 
-      <DoorCodeActiveToggle id={`door-code-active-label-${code.id}`} checked={editIsActive} onCheckedChange={onEditIsActiveChange} disabled={isBusy} />
+      <DoorCodeActiveToggle id={`door-code-active-label-${code.id}`} checked={editIsActive} onCheckedChange={isSynced ? undefined : onEditIsActiveChange} disabled={isBusy || isSynced} hint={isSynced ? 'Controlled by lock sync' : undefined} />
 
       <ReauthPasswordField
         id={`door-code-edit-password-${code.id}`}

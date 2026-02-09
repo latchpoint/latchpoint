@@ -85,7 +85,7 @@ This document tracks all Architecture Decision Records (ADRs) and their implemen
 | [0066](0066-retention-cleanup-notifications-and-door-code-events.md) | Retention Cleanup Tasks for Notifications and Door Code Events | **Implemented** |
 | [0067](0067-backend-endpoint-test-coverage-gaps.md) | Backend Endpoint Test Coverage Gaps | **Proposed** |
 | [0068](0068-zwavejs-lock-config-sync.md) | Z-Wave JS Lock Config Sync (Codes & Schedules) | **Implemented** |
-| [0069](0069-lock-config-sync-operational-concerns.md) | Lock Config Sync — Operational, Security & UX Concerns | **Partially Implemented** |
+| [0069](0069-lock-config-sync-operational-concerns.md) | Lock Config Sync — Operational, Security & UX Concerns | **Implemented** |
 | [0070](0070-entity-state-debug-page.md) | Entity State Debug Page | **Implemented** |
 
 ---

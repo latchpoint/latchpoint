@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from unittest import TestCase
 from unittest.mock import patch
 
 from django.urls import reverse
@@ -9,6 +10,7 @@ from accounts.models import User
 from alarm.models import AlarmSettingsEntry, Entity
 from alarm.use_cases.settings_profile import ensure_active_settings_profile
 from locks.models import DoorCode, DoorCodeLockAssignment
+from locks.use_cases.lock_config_sync import _normalize_pin
 
 
 class FakeZwavejsGateway:
@@ -383,3 +385,172 @@ class LockConfigSyncApiTests(APITestCase):
         self.assertEqual(slot_actions[1]["action"], "created")
         self.assertEqual(slot_actions[2]["action"], "error")
         self.assertIn("ConnectionError", slot_actions[2]["error"])
+
+    # --- Dry-run ---
+
+    def test_dry_run_returns_flag_and_does_not_persist(self):
+        """POST with ?dry_run=true returns dry_run=True in response and creates no DB rows."""
+        fake = self._make_single_slot_gateway(pin="1234")
+        url = reverse("locks-sync-config", kwargs={"lock_entity_id": "lock.front_door"})
+        with patch("locks.views.lock_config_sync.zwavejs_gateway", fake):
+            response = self.client.post(
+                f"{url}?dry_run=true",
+                {"user_id": str(self.user.id), "reauth_password": "pass"},
+                format="json",
+            )
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()["data"]
+        self.assertTrue(body["dry_run"])
+        self.assertEqual(body["created"], 1)
+
+        # Nothing persisted.
+        self.assertFalse(DoorCodeLockAssignment.objects.filter(lock_entity_id="lock.front_door").exists())
+        self.assertFalse(DoorCode.objects.filter(source=DoorCode.Source.SYNCED).exists())
+
+    def test_dry_run_does_not_fire_dispatcher(self):
+        """Dry-run must not call notify_entities_changed."""
+        fake = self._make_single_slot_gateway(pin="1234")
+        url = reverse("locks-sync-config", kwargs={"lock_entity_id": "lock.front_door"})
+        with (
+            patch("locks.views.lock_config_sync.zwavejs_gateway", fake),
+            patch("alarm.dispatcher.notify_entities_changed") as mock_notify,
+        ):
+            response = self.client.post(
+                f"{url}?dry_run=true",
+                {"user_id": str(self.user.id), "reauth_password": "pass"},
+                format="json",
+            )
+
+        self.assertEqual(response.status_code, 200)
+        mock_notify.assert_not_called()
+
+    # --- Dismissed assignments endpoints ---
+
+    def test_list_dismissed_assignments(self):
+        """GET dismissed-assignments returns serialized dismissed assignment."""
+        dismissed_code = DoorCode.objects.create(
+            user=self.user,
+            source=DoorCode.Source.SYNCED,
+            code_hash=None,
+            label="Slot 3",
+            code_type=DoorCode.CodeType.PERMANENT,
+            pin_length=None,
+            is_active=False,
+        )
+        DoorCodeLockAssignment.objects.create(
+            door_code=dismissed_code,
+            lock_entity_id="lock.front_door",
+            slot_index=3,
+            sync_dismissed=True,
+        )
+
+        url = reverse("locks-dismissed-assignments", kwargs={"lock_entity_id": "lock.front_door"})
+        response = self.client.get(url)
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()["data"]
+        self.assertEqual(len(data), 1)
+        item = data[0]
+        self.assertEqual(item["slot_index"], 3)
+        self.assertTrue(item["sync_dismissed"])
+        self.assertEqual(item["door_code_label"], "Slot 3")
+        self.assertEqual(item["door_code_source"], "synced")
+        self.assertFalse(item["door_code_is_active"])
+
+    def test_undismiss_assignment(self):
+        """POST undismiss clears sync_dismissed and returns updated assignment."""
+        dismissed_code = DoorCode.objects.create(
+            user=self.user,
+            source=DoorCode.Source.SYNCED,
+            code_hash=None,
+            label="Slot 2",
+            code_type=DoorCode.CodeType.PERMANENT,
+            pin_length=None,
+            is_active=False,
+        )
+        assignment = DoorCodeLockAssignment.objects.create(
+            door_code=dismissed_code,
+            lock_entity_id="lock.front_door",
+            slot_index=2,
+            sync_dismissed=True,
+        )
+
+        url = reverse("door-code-assignment-undismiss", kwargs={"assignment_id": assignment.id})
+        response = self.client.post(url, {"reauth_password": "pass"}, format="json")
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()["data"]
+        self.assertFalse(data["sync_dismissed"])
+
+        assignment.refresh_from_db()
+        self.assertFalse(assignment.sync_dismissed)
+
+
+class PinNormalizationTests(TestCase):
+    """Test _normalize_pin() with various input types (ADR 0068 test checklist)."""
+
+    def test_string_numeric_pin(self):
+        known, pin = _normalize_pin("1234")
+        self.assertTrue(known)
+        self.assertEqual(pin, "1234")
+
+    def test_string_8_digit_pin(self):
+        known, pin = _normalize_pin("12345678")
+        self.assertTrue(known)
+        self.assertEqual(pin, "12345678")
+
+    def test_integer_pin(self):
+        known, pin = _normalize_pin(1234)
+        self.assertTrue(known)
+        self.assertEqual(pin, "1234")
+
+    def test_bytes_pin(self):
+        known, pin = _normalize_pin(b"5678")
+        self.assertTrue(known)
+        self.assertEqual(pin, "5678")
+
+    def test_masked_stars(self):
+        known, pin = _normalize_pin("****")
+        self.assertFalse(known)
+        self.assertIsNone(pin)
+
+    def test_masked_bullets(self):
+        known, pin = _normalize_pin("\u2022\u2022\u2022\u2022")
+        self.assertFalse(known)
+        self.assertIsNone(pin)
+
+    def test_masked_x(self):
+        known, pin = _normalize_pin("xxxx")
+        self.assertFalse(known)
+        self.assertIsNone(pin)
+
+    def test_none_input(self):
+        known, pin = _normalize_pin(None)
+        self.assertFalse(known)
+        self.assertIsNone(pin)
+
+    def test_empty_string(self):
+        known, pin = _normalize_pin("")
+        self.assertFalse(known)
+        self.assertIsNone(pin)
+
+    def test_too_short(self):
+        known, pin = _normalize_pin("123")
+        self.assertFalse(known)
+        self.assertIsNone(pin)
+
+    def test_too_long(self):
+        known, pin = _normalize_pin("123456789")
+        self.assertFalse(known)
+        self.assertIsNone(pin)
+
+    def test_non_numeric(self):
+        known, pin = _normalize_pin("abcd")
+        self.assertFalse(known)
+        self.assertIsNone(pin)
+
+    def test_float_integer_pin(self):
+        known, pin = _normalize_pin(1234.0)
+        self.assertTrue(known)
+        self.assertEqual(pin, "1234")

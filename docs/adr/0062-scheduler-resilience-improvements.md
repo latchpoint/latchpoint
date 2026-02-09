@@ -1,7 +1,7 @@
 # ADR 0062: Scheduler Resilience Improvements
 
 ## Status
-Proposed
+Implemented
 
 ## Context
 The app uses an in-process, thread-based scheduler with a watchdog (ADR 0024).

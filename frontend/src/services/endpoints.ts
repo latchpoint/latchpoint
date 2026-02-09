@@ -62,6 +62,10 @@ export const apiEndpoints = {
   locks: {
     available: '/api/locks/available/',
     syncConfig: (lockEntityId: string) => `/api/locks/${encodeURIComponent(lockEntityId)}/sync-config/`,
+    dismissedAssignments: (lockEntityId: string) => `/api/locks/${encodeURIComponent(lockEntityId)}/dismissed-assignments/`,
+  },
+  doorCodeAssignments: {
+    undismiss: (assignmentId: number) => `/api/door-code-assignments/${assignmentId}/undismiss/`,
   },
   systemConfig: {
     all: '/api/system-config/',

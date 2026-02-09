@@ -13,6 +13,16 @@ urlpatterns = [
         lock_config_sync_views.LockConfigSyncView.as_view(),
         name="locks-sync-config",
     ),
+    path(
+        "locks/<path:lock_entity_id>/dismissed-assignments/",
+        lock_config_sync_views.DismissedAssignmentsView.as_view(),
+        name="locks-dismissed-assignments",
+    ),
+    path(
+        "door-code-assignments/<int:assignment_id>/undismiss/",
+        lock_config_sync_views.UndismissAssignmentView.as_view(),
+        name="door-code-assignment-undismiss",
+    ),
     path("door-codes/", views.DoorCodesView.as_view(), name="door-codes"),
     path("door-codes/<int:code_id>/", views.DoorCodeDetailView.as_view(), name="door-code-detail"),
 ]

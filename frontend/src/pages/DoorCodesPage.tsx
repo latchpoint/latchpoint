@@ -98,7 +98,7 @@ export function DoorCodesPage() {
 
           <SectionCard
             title="Sync Codes from Lock"
-            description="Pull existing user codes and supported schedules from a Z-Wave JS lock into LatchPoint."
+            description="Pull existing user codes and supported schedules from a Z-Wave JS lock into LatchPoint. Note: if you re-include a Z-Wave stick (factory reset or re-pair), previously synced codes will be orphaned because the lock entity ID changes. You may need to delete the old synced codes and re-sync."
             contentClassName="space-y-4"
           >
             <LockConfigSyncCard

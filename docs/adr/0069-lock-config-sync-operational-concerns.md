@@ -1,7 +1,7 @@
 # ADR 0069: Lock Config Sync — Operational, Security & UX Concerns
 
 ## Status
-**Partially Implemented** (core sync endpoint shipped; fast-follow items pending)
+**Implemented** (core sync + all fast-follow and enhancement items)
 
 ## Context
 ADR 0068 defines the core sync flow for reading Z-Wave JS lock codes and schedules into LatchPoint's `DoorCode` model. During review, a number of valid concerns were identified that are **not about the core sync logic** (read → parse → match → create/update) but about the surrounding production-readiness of the sync endpoint.
@@ -106,11 +106,11 @@ Add a `?dry_run=true` query parameter that returns the `SyncResult` (what would 
 - [x] Show loading spinner during sync (finding 10).
 
 ### Fast-follow
-- [ ] Add UI for dismissed synced slots — show dismissed slots, allow re-enabling sync per slot (finding 5; core matching logic is in ADR 0068).
-- [ ] Enforce editing rules for synced vs manual codes in the UI (finding 6).
-- [ ] Store `last_synced_at` per lock (finding 12).
-- [ ] Document stale entity ID behavior after Z-Wave re-inclusion (finding 13).
+- [x] Add UI for dismissed synced slots — show dismissed slots, allow re-enabling sync per slot (finding 5; core matching logic is in ADR 0068).
+- [x] Enforce editing rules for synced vs manual codes in the UI (finding 6).
+- [x] Store `last_synced_at` per lock (finding 12).
+- [x] Document stale entity ID behavior after Z-Wave re-inclusion (finding 13).
 
 ### Future enhancements
-- [ ] Emit dispatcher events on code sync for rules integration (finding 14).
-- [ ] Add `?dry_run=true` query parameter (finding 15).
+- [x] Emit dispatcher events on code sync for rules integration (finding 14).
+- [x] Add `?dry_run=true` query parameter (finding 15).
