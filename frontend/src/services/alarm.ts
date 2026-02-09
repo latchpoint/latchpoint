@@ -36,21 +36,46 @@ export const alarmService = {
 
   // Settings
   async getSettings(): Promise<AlarmSettingsProfile> {
-    const raw = await api.get<AlarmSettingsProfileDetail>(apiEndpoints.alarm.settings)
-    // Adapt { profile, entries[] } into the flat AlarmSettingsProfile shape.
-    const { profile, entries } = raw
-    const entryMap = new Map(entries.map((e) => [e.key, e.value]))
+    const raw = await api.get<AlarmSettingsProfileDetail | AlarmSettingsProfile>(apiEndpoints.alarm.settings)
+
+    // The API may return either:
+    //   (a) nested { profile, entries[] } — new format from AlarmSettingsProfileDetailSerializer
+    //   (b) a flat object with settings inlined — envelope-unwrapped flat profile
+    // Handle both gracefully.
+    if ('entries' in raw && Array.isArray((raw as AlarmSettingsProfileDetail).entries)) {
+      const { profile, entries } = raw as AlarmSettingsProfileDetail
+      const entryMap = new Map(entries.map((e) => [e.key, e.value]))
+      return {
+        ...profile,
+        delayTime: (entryMap.get('delay_time') as number) ?? 30,
+        armingTime: (entryMap.get('arming_time') as number) ?? 10,
+        triggerTime: (entryMap.get('trigger_time') as number) ?? 120,
+        disarmAfterTrigger: (entryMap.get('disarm_after_trigger') as boolean) ?? false,
+        codeArmRequired: (entryMap.get('code_arm_required') as boolean) ?? true,
+        availableArmingStates: (entryMap.get('available_arming_states') as AlarmSettingsProfile['availableArmingStates']) ?? [],
+        stateOverrides: (entryMap.get('state_overrides') as AlarmSettingsProfile['stateOverrides']) ?? {},
+        audioVisualSettings: (entryMap.get('audio_visual_settings') as AlarmSettingsProfile['audioVisualSettings']) ?? { beepEnabled: true, countdownDisplayEnabled: true, colorCodingEnabled: true },
+        sensorBehavior: (entryMap.get('sensor_behavior') as AlarmSettingsProfile['sensorBehavior']) ?? { warnOnOpenSensors: true, autoBypassEnabled: false, forceArmEnabled: true },
+      }
+    }
+
+    // Flat format: already has all fields after camelCase transform by the API client.
+    const flat = raw as AlarmSettingsProfile
     return {
-      ...profile,
-      delayTime: (entryMap.get('delay_time') as number) ?? 30,
-      armingTime: (entryMap.get('arming_time') as number) ?? 10,
-      triggerTime: (entryMap.get('trigger_time') as number) ?? 120,
-      disarmAfterTrigger: (entryMap.get('disarm_after_trigger') as boolean) ?? false,
-      codeArmRequired: (entryMap.get('code_arm_required') as boolean) ?? true,
-      availableArmingStates: (entryMap.get('available_arming_states') as AlarmSettingsProfile['availableArmingStates']) ?? [],
-      stateOverrides: (entryMap.get('state_overrides') as AlarmSettingsProfile['stateOverrides']) ?? {},
-      audioVisualSettings: (entryMap.get('audio_visual_settings') as AlarmSettingsProfile['audioVisualSettings']) ?? { beepEnabled: true, countdownDisplayEnabled: true, colorCodingEnabled: true },
-      sensorBehavior: (entryMap.get('sensor_behavior') as AlarmSettingsProfile['sensorBehavior']) ?? { warnOnOpenSensors: true, autoBypassEnabled: false, forceArmEnabled: true },
+      id: flat.id,
+      name: flat.name,
+      isActive: flat.isActive,
+      createdAt: flat.createdAt,
+      updatedAt: flat.updatedAt,
+      delayTime: flat.delayTime ?? 30,
+      armingTime: flat.armingTime ?? 10,
+      triggerTime: flat.triggerTime ?? 120,
+      disarmAfterTrigger: flat.disarmAfterTrigger ?? false,
+      codeArmRequired: flat.codeArmRequired ?? true,
+      availableArmingStates: flat.availableArmingStates ?? [],
+      stateOverrides: flat.stateOverrides ?? {},
+      audioVisualSettings: flat.audioVisualSettings ?? { beepEnabled: true, countdownDisplayEnabled: true, colorCodingEnabled: true },
+      sensorBehavior: flat.sensorBehavior ?? { warnOnOpenSensors: true, autoBypassEnabled: false, forceArmEnabled: true },
     }
   },
 
