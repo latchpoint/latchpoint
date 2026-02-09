@@ -3,7 +3,7 @@ import { Switch } from '@/components/ui/switch'
 type Props = {
   id: string
   checked: boolean
-  onCheckedChange: (next: boolean) => void
+  onCheckedChange?: (next: boolean) => void
   disabled: boolean
   hint?: string
 }

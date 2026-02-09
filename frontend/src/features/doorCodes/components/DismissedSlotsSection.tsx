@@ -31,7 +31,12 @@ export function DismissedSlotsSection({ lockEntityId }: Props) {
   }
 
   if (dismissedQuery.isLoading) return <LoadingInline label="Loading dismissed slots..." />
-  if (dismissedQuery.isError) return null
+  if (dismissedQuery.isError)
+    return (
+      <Alert variant="error" layout="inline">
+        <AlertDescription>{getErrorMessage(dismissedQuery.error)}</AlertDescription>
+      </Alert>
+    )
 
   const dismissed = dismissedQuery.data || []
   if (dismissed.length === 0) return null

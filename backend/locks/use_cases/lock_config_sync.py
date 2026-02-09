@@ -500,6 +500,7 @@ def sync_lock_config(
     target_user: User,
     actor_user: User,
     zwavejs: ZwavejsGateway,
+    dry_run: bool = False,
 ) -> SyncResult:
     """
     Pull user codes (CC 99) and supported weekday schedules (CC 76) from Z-Wave JS into DoorCode rows.
@@ -898,19 +899,20 @@ def sync_lock_config(
         result.timestamp = django_timezone.now()
 
         # Persist last_synced_at on the lock entity's attributes (ADR 0069 finding 12).
-        try:
-            entity = Entity.objects.filter(entity_id=lock_entity_id).first()
-            if entity:
-                attrs = entity.attributes or {}
-                zw = attrs.get("zwavejs") if isinstance(attrs, dict) else {}
-                if not isinstance(zw, dict):
-                    zw = {}
-                zw["last_synced_at"] = result.timestamp.isoformat()
-                attrs["zwavejs"] = zw
-                entity.attributes = attrs
-                entity.save(update_fields=["attributes", "updated_at"])
-        except Exception:
-            logger.warning("Failed to persist last_synced_at for %s", lock_entity_id, exc_info=True)
+        if not dry_run:
+            try:
+                entity = Entity.objects.filter(entity_id=lock_entity_id).first()
+                if entity:
+                    attrs = entity.attributes or {}
+                    zw = attrs.get("zwavejs") if isinstance(attrs, dict) else {}
+                    if not isinstance(zw, dict):
+                        zw = {}
+                    zw["last_synced_at"] = result.timestamp.isoformat()
+                    attrs["zwavejs"] = zw
+                    entity.attributes = attrs
+                    entity.save(update_fields=["attributes", "updated_at"])
+            except Exception:
+                logger.warning("Failed to persist last_synced_at for %s", lock_entity_id, exc_info=True)
 
         logger.info(
             "Lock config sync complete for %s (node %d): created=%d updated=%d unchanged=%d "
@@ -920,7 +922,7 @@ def sync_lock_config(
         )
 
         # Emit dispatcher event so rules referencing this lock can react (ADR 0069 finding 14).
-        if result.created or result.updated or result.deactivated:
+        if not dry_run and (result.created or result.updated or result.deactivated):
             try:
                 from alarm.dispatcher import notify_entities_changed
 

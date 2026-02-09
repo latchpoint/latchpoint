@@ -386,6 +386,106 @@ class LockConfigSyncApiTests(APITestCase):
         self.assertEqual(slot_actions[2]["action"], "error")
         self.assertIn("ConnectionError", slot_actions[2]["error"])
 
+    # --- Dry-run ---
+
+    def test_dry_run_returns_flag_and_does_not_persist(self):
+        """POST with ?dry_run=true returns dry_run=True in response and creates no DB rows."""
+        fake = self._make_single_slot_gateway(pin="1234")
+        url = reverse("locks-sync-config", kwargs={"lock_entity_id": "lock.front_door"})
+        with patch("locks.views.lock_config_sync.zwavejs_gateway", fake):
+            response = self.client.post(
+                f"{url}?dry_run=true",
+                {"user_id": str(self.user.id), "reauth_password": "pass"},
+                format="json",
+            )
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()["data"]
+        self.assertTrue(body["dry_run"])
+        self.assertEqual(body["created"], 1)
+
+        # Nothing persisted.
+        self.assertFalse(DoorCodeLockAssignment.objects.filter(lock_entity_id="lock.front_door").exists())
+        self.assertFalse(DoorCode.objects.filter(source=DoorCode.Source.SYNCED).exists())
+
+    def test_dry_run_does_not_fire_dispatcher(self):
+        """Dry-run must not call notify_entities_changed."""
+        fake = self._make_single_slot_gateway(pin="1234")
+        url = reverse("locks-sync-config", kwargs={"lock_entity_id": "lock.front_door"})
+        with (
+            patch("locks.views.lock_config_sync.zwavejs_gateway", fake),
+            patch("alarm.dispatcher.notify_entities_changed") as mock_notify,
+        ):
+            response = self.client.post(
+                f"{url}?dry_run=true",
+                {"user_id": str(self.user.id), "reauth_password": "pass"},
+                format="json",
+            )
+
+        self.assertEqual(response.status_code, 200)
+        mock_notify.assert_not_called()
+
+    # --- Dismissed assignments endpoints ---
+
+    def test_list_dismissed_assignments(self):
+        """GET dismissed-assignments returns serialized dismissed assignment."""
+        dismissed_code = DoorCode.objects.create(
+            user=self.user,
+            source=DoorCode.Source.SYNCED,
+            code_hash=None,
+            label="Slot 3",
+            code_type=DoorCode.CodeType.PERMANENT,
+            pin_length=None,
+            is_active=False,
+        )
+        DoorCodeLockAssignment.objects.create(
+            door_code=dismissed_code,
+            lock_entity_id="lock.front_door",
+            slot_index=3,
+            sync_dismissed=True,
+        )
+
+        url = reverse("locks-dismissed-assignments", kwargs={"lock_entity_id": "lock.front_door"})
+        response = self.client.get(url)
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()["data"]
+        self.assertEqual(len(data), 1)
+        item = data[0]
+        self.assertEqual(item["slot_index"], 3)
+        self.assertTrue(item["sync_dismissed"])
+        self.assertEqual(item["door_code_label"], "Slot 3")
+        self.assertEqual(item["door_code_source"], "synced")
+        self.assertFalse(item["door_code_is_active"])
+
+    def test_undismiss_assignment(self):
+        """POST undismiss clears sync_dismissed and returns updated assignment."""
+        dismissed_code = DoorCode.objects.create(
+            user=self.user,
+            source=DoorCode.Source.SYNCED,
+            code_hash=None,
+            label="Slot 2",
+            code_type=DoorCode.CodeType.PERMANENT,
+            pin_length=None,
+            is_active=False,
+        )
+        assignment = DoorCodeLockAssignment.objects.create(
+            door_code=dismissed_code,
+            lock_entity_id="lock.front_door",
+            slot_index=2,
+            sync_dismissed=True,
+        )
+
+        url = reverse("door-code-assignment-undismiss", kwargs={"assignment_id": assignment.id})
+        response = self.client.post(url, {"reauth_password": "pass"}, format="json")
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()["data"]
+        self.assertFalse(data["sync_dismissed"])
+
+        assignment.refresh_from_db()
+        self.assertFalse(assignment.sync_dismissed)
+
 
 class PinNormalizationTests(TestCase):
     """Test _normalize_pin() with various input types (ADR 0068 test checklist)."""

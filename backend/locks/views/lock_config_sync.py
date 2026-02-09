@@ -55,18 +55,16 @@ class LockConfigSyncView(APIView):
         if dry_run:
             # Execute the sync inside a savepoint that is always rolled back,
             # so we get a full preview without persisting any changes.
-            try:
-                with transaction.atomic():
-                    result = lock_config_sync_uc.sync_lock_config(
-                        lock_entity_id=lock_entity_id,
-                        target_user=target_user,
-                        actor_user=request.user,
-                        zwavejs=zwavejs_gateway,
-                    )
-                    # Force rollback of this savepoint.
-                    transaction.set_rollback(True)
-            except Exception:
-                raise
+            with transaction.atomic():
+                result = lock_config_sync_uc.sync_lock_config(
+                    lock_entity_id=lock_entity_id,
+                    target_user=target_user,
+                    actor_user=request.user,
+                    zwavejs=zwavejs_gateway,
+                    dry_run=True,
+                )
+                # Force rollback of this savepoint.
+                transaction.set_rollback(True)
             data = result.as_dict()
             data["dry_run"] = True
             return Response(data, status=status.HTTP_200_OK)

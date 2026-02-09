@@ -152,7 +152,7 @@ export function DoorCodeEditPanel({
         disabled={isBusy}
       />
 
-      <DoorCodeActiveToggle id={`door-code-active-label-${code.id}`} checked={editIsActive} onCheckedChange={onEditIsActiveChange} disabled={isBusy || isSynced} hint={isSynced ? 'Controlled by lock sync' : undefined} />
+      <DoorCodeActiveToggle id={`door-code-active-label-${code.id}`} checked={editIsActive} onCheckedChange={isSynced ? undefined : onEditIsActiveChange} disabled={isBusy || isSynced} hint={isSynced ? 'Controlled by lock sync' : undefined} />
 
       <ReauthPasswordField
         id={`door-code-edit-password-${code.id}`}
