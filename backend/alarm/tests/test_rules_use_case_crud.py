@@ -87,7 +87,8 @@ class CreateRuleTests(TestCase):
 
     def test_invalidates_cache(self, mock_sources, mock_ids, mock_invalidate, mock_sync):
         definition = self._make_definition()
-        create_rule(validated_data={"name": "R5", "definition": definition}, entity_ids=None)
+        with self.captureOnCommitCallbacks(execute=True):
+            create_rule(validated_data={"name": "R5", "definition": definition}, entity_ids=None)
         mock_invalidate.assert_called_once()
 
     def test_passes_entity_sources_to_sync(self, mock_sources, mock_ids, mock_invalidate, mock_sync):
@@ -146,12 +147,15 @@ class UpdateRuleTests(TestCase):
 
     def test_no_definition_no_entity_ids_skips_sync(self, mock_sources, mock_ids, mock_invalidate, mock_sync):
         rule = self._create_existing_rule()
-        update_rule(rule=rule, validated_data={"name": "Renamed"}, entity_ids=None)
+        with self.captureOnCommitCallbacks(execute=True):
+            update_rule(rule=rule, validated_data={"name": "Renamed"}, entity_ids=None)
         mock_sync.assert_not_called()
+        mock_ids.assert_not_called()
 
     def test_invalidates_cache_on_update(self, mock_sources, mock_ids, mock_invalidate, mock_sync):
         rule = self._create_existing_rule()
-        update_rule(rule=rule, validated_data={"name": "Renamed"}, entity_ids=None)
+        with self.captureOnCommitCallbacks(execute=True):
+            update_rule(rule=rule, validated_data={"name": "Renamed"}, entity_ids=None)
         mock_invalidate.assert_called_once()
 
     def test_auto_derives_kind_on_update(self, mock_sources, mock_ids, mock_invalidate, mock_sync):
