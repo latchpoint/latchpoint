@@ -431,3 +431,10 @@ Or via a lightweight DI container / request-scoped factory. This aligns with ADR
 - [ ] Audit `integrations_zigbee2mqtt/runtime.py` catches (8 silent passes)
 - [ ] Audit `integrations_home_assistant/state_stream.py` catches (3 silent passes)
 - [ ] Document action handler registration pattern in developer guide
+
+### Optional
+
+- [ ] Add comment on `_HANDLERS` registry explaining import-time-only mutation is safe (contrast with Finding 3)
+- [ ] Inject zwavejs settings via `ActionContext` instead of inline `get_active_settings_profile()` call (aligns with Finding 10/15)
+- [ ] Add docstring to `ActionHandler` type alias clarifying `None` error = validation issue vs runtime failure
+- [ ] Split `test_action_handlers.py` into per-handler test modules as handlers grow
