@@ -87,6 +87,7 @@ This document tracks all Architecture Decision Records (ADRs) and their implemen
 | [0068](0068-zwavejs-lock-config-sync.md) | Z-Wave JS Lock Config Sync (Codes & Schedules) | **Implemented** |
 | [0069](0069-lock-config-sync-operational-concerns.md) | Lock Config Sync — Operational, Security & UX Concerns | **Implemented** |
 | [0070](0070-entity-state-debug-page.md) | Entity State Debug Page | **Implemented** |
+| [0071](0071-backend-code-smells-and-solid-violations.md) | Backend Code Smells and SOLID Principle Violations | **Proposed** |
 
 ---
 
@@ -96,12 +97,12 @@ This document tracks all Architecture Decision Records (ADRs) and their implemen
 |--------|-------|
 | **Implemented** | 57 |
 | **Partially Implemented** | 1 |
-| **Proposed** | 1 |
+| **Proposed** | 2 |
 | **Superseded** | 11 |
-| **Total** | 70 |
+| **Total** | 71 |
 
 Note: **Superseded** includes entries marked as "Superseded by …" in the table above.
 
 ---
 
-*Last updated: 2026-02-08* (Marked ADR 0047 as Implemented — all legacy removal targets completed)
+*Last updated: 2026-02-08* (Added ADR 0071 — Backend Code Smells and SOLID Principle Violations)
