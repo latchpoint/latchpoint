@@ -4,8 +4,8 @@ from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from alarm import services
 from alarm.serializers import AlarmStateSnapshotSerializer
+from alarm.state_machine.transitions import cancel_arming
 from alarm.use_cases import alarm_actions
 
 
@@ -33,5 +33,5 @@ class DisarmAlarmView(APIView):
 class CancelArmingView(APIView):
     def post(self, request):
         """Cancel an in-progress arming transition."""
-        snapshot = services.cancel_arming(user=request.user)
+        snapshot = cancel_arming(user=request.user)
         return Response(AlarmStateSnapshotSerializer(snapshot).data)

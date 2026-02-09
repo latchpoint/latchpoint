@@ -13,7 +13,7 @@ from django.utils.dateparse import parse_datetime
 from django.utils import timezone
 
 from accounts.models import Role, User, UserCode, UserCodeAllowedState, UserRoleAssignment
-from alarm import services
+from alarm.state_machine.transitions import get_current_snapshot
 from integrations_home_assistant import api as home_assistant
 from alarm.models import (
     AlarmSettingsProfile,
@@ -273,7 +273,7 @@ class Command(BaseCommand):
                 timezone=getattr(settings, "TIME_ZONE", "UTC"),
             )
             _ensure_active_settings_profile()
-            services.get_current_snapshot(process_timers=False)
+            get_current_snapshot(process_timers=False)
 
             admin_user = User.objects.create_superuser(
                 email="admin@testhome.local",

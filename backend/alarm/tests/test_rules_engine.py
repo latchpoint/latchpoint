@@ -6,7 +6,8 @@ from django.test import TestCase
 from django.utils import timezone
 
 from accounts.models import User
-from alarm import rules_engine, services
+from alarm import rules_engine
+from alarm.state_machine.transitions import arm, get_current_snapshot, timer_expired
 from alarm.models import AlarmSettingsProfile, AlarmState, Entity, Rule, RuleRuntimeState
 from alarm.tests.settings_test_utils import set_profile_settings
 
@@ -23,7 +24,7 @@ class RuleEngineForTests(TestCase):
             trigger_time=5,
             code_arm_required=False,
         )
-        services.get_current_snapshot(process_timers=False)
+        get_current_snapshot(process_timers=False)
 
     def test_for_rule_schedules_then_fires(self):
         Entity.objects.create(
@@ -52,8 +53,8 @@ class RuleEngineForTests(TestCase):
             },
         )
 
-        services.arm(target_state=AlarmState.ARMED_AWAY, user=self.user)
-        snapshot = services.timer_expired()
+        arm(target_state=AlarmState.ARMED_AWAY, user=self.user)
+        snapshot = timer_expired()
         self.assertEqual(snapshot.current_state, AlarmState.ARMED_AWAY)
 
         now = timezone.now()
@@ -65,7 +66,7 @@ class RuleEngineForTests(TestCase):
         later = now + timedelta(seconds=6)
         result = rules_engine.run_rules(now=later, actor_user=self.user)
         self.assertGreaterEqual(result.fired, 1)
-        snapshot = services.get_current_snapshot(process_timers=False)
+        snapshot = get_current_snapshot(process_timers=False)
         self.assertEqual(snapshot.current_state, AlarmState.TRIGGERED)
 
         # Condition remains true; do not schedule or fire again until it goes false.

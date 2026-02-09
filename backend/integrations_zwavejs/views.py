@@ -23,7 +23,7 @@ from alarm.settings_registry import ALARM_PROFILE_SETTINGS_BY_KEY
 from alarm.state_machine.settings import get_setting_json
 from alarm.use_cases.settings_profile import ensure_active_settings_profile
 from alarm.signals import settings_profile_changed
-from alarm.crypto import encrypt_secret
+from alarm.crypto import can_encrypt, encrypt_secret
 from integrations_zwavejs.config import (
     normalize_zwavejs_connection,
     prepare_runtime_zwavejs_connection,
@@ -130,6 +130,8 @@ class ZwavejsSettingsView(APIView):
         changes = dict(serializer.validated_data)
 
         if "api_token" in changes:
+            if changes.get("api_token") and not can_encrypt():
+                raise ValidationError("Encryption is not configured. Set SETTINGS_ENCRYPTION_KEY before saving secrets.")
             changes["api_token"] = encrypt_secret(changes.get("api_token"))
         else:
             # Preserve existing token if not provided.

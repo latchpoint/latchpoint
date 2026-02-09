@@ -36,17 +36,8 @@ export interface AlarmSettingsProfile {
   stateOverrides: StateOverrides
   audioVisualSettings: AudioVisualSettings
   sensorBehavior: SensorBehavior
-  homeAssistantNotify?: HomeAssistantNotifySettings
   createdAt: string
   updatedAt: string
-}
-
-export interface HomeAssistantNotifySettings {
-  enabled: boolean
-  service?: string
-  services?: string[]
-  cooldownSeconds?: number
-  states: AlarmStateType[]
 }
 
 export interface StateOverrides {

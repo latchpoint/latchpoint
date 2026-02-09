@@ -9,6 +9,7 @@ from accounts.use_cases.user_codes import create_user_code
 from alarm.models import AlarmSettingsProfile, AlarmState
 from alarm.tests.settings_test_utils import set_profile_settings
 from alarm.models import Sensor
+from alarm.state_machine.transitions import arm, get_current_snapshot, sensor_triggered
 from control_panels.models import ControlPanelDevice, ControlPanelIntegrationType, ControlPanelKind
 from control_panels.zwave_ring_keypad_v2 import handle_zwavejs_ring_keypad_v2_event, sync_ring_keypad_v2_devices_state
 
@@ -57,17 +58,13 @@ class RingKeypadV2ControlPanelTests(TestCase):
         ) as set_value:
             handle_zwavejs_ring_keypad_v2_event(msg)
 
-            from alarm import services
-
-            snapshot = services.get_current_snapshot(process_timers=False)
+            snapshot = get_current_snapshot(process_timers=False)
             self.assertEqual(snapshot.current_state, AlarmState.ARMED_AWAY)
             # Indicator sync is handled via `alarm_state_change_committed` in runtime (not invoked here).
 
     def test_disarm_via_entry_control_notification_event_shape(self):
-        from alarm import services
-
         # Start armed.
-        services.arm(target_state=AlarmState.ARMED_HOME, user=None, code=None, reason="test")
+        arm(target_state=AlarmState.ARMED_HOME, user=None, code=None, reason="test")
 
         msg = {
             "type": "event",
@@ -86,7 +83,7 @@ class RingKeypadV2ControlPanelTests(TestCase):
         ):
             handle_zwavejs_ring_keypad_v2_event(msg)
 
-        snapshot = services.get_current_snapshot(process_timers=False)
+        snapshot = get_current_snapshot(process_timers=False)
         self.assertEqual(snapshot.current_state, AlarmState.DISARMED)
 
     def test_disarm_with_invalid_code_plays_error_indicator(self):
@@ -110,9 +107,7 @@ class RingKeypadV2ControlPanelTests(TestCase):
             self.assertTrue(any(call.get("property") == 9 and call.get("property_key") == 9 and call.get("value") == 77 for call in calls))
 
     def test_sync_maps_armed_night_to_armed_home_indicator(self):
-        from alarm import services
-
-        services.arm(target_state=AlarmState.ARMED_NIGHT, user=None, code=None, reason="test")
+        arm(target_state=AlarmState.ARMED_NIGHT, user=None, code=None, reason="test")
 
         with patch("alarm.gateways.zwavejs.DefaultZwavejsGateway.set_value") as set_value:
             sync_ring_keypad_v2_devices_state()
@@ -121,9 +116,7 @@ class RingKeypadV2ControlPanelTests(TestCase):
         self.assertTrue(any(call.get("property") == 10 and call.get("property_key") == 1 for call in calls))
 
     def test_sync_maps_armed_vacation_to_armed_away_indicator(self):
-        from alarm import services
-
-        services.arm(target_state=AlarmState.ARMED_VACATION, user=None, code=None, reason="test")
+        arm(target_state=AlarmState.ARMED_VACATION, user=None, code=None, reason="test")
 
         with patch("alarm.gateways.zwavejs.DefaultZwavejsGateway.set_value") as set_value:
             sync_ring_keypad_v2_devices_state()
@@ -132,8 +125,6 @@ class RingKeypadV2ControlPanelTests(TestCase):
         self.assertTrue(any(call.get("property") == 11 and call.get("property_key") == 1 for call in calls))
 
     def test_sync_arming_sets_exit_delay_indicator(self):
-        from alarm import services
-
         set_profile_settings(
             self.profile,
             delay_time=30,
@@ -143,8 +134,8 @@ class RingKeypadV2ControlPanelTests(TestCase):
             state_overrides={},
         )
 
-        services.arm(target_state=AlarmState.ARMED_AWAY, user=None, code=None, reason="test")
-        snapshot = services.get_current_snapshot(process_timers=False)
+        arm(target_state=AlarmState.ARMED_AWAY, user=None, code=None, reason="test")
+        snapshot = get_current_snapshot(process_timers=False)
         self.assertEqual(snapshot.current_state, AlarmState.ARMING)
 
         with patch("alarm.gateways.zwavejs.DefaultZwavejsGateway.set_value") as set_value:
@@ -155,13 +146,11 @@ class RingKeypadV2ControlPanelTests(TestCase):
         self.assertTrue(any(call.get("property") == 18 and call.get("property_key") == 9 and call.get("value") == 77 for call in calls))
 
     def test_sync_pending_sets_entry_delay_indicator(self):
-        from alarm import services
-
-        services.arm(target_state=AlarmState.ARMED_AWAY, user=None, code=None, reason="test")
+        arm(target_state=AlarmState.ARMED_AWAY, user=None, code=None, reason="test")
         sensor = Sensor.objects.create(name="Door", is_entry_point=True)
-        services.sensor_triggered(sensor=sensor, user=None, reason="test")
+        sensor_triggered(sensor=sensor, user=None, reason="test")
 
-        snapshot = services.get_current_snapshot(process_timers=False)
+        snapshot = get_current_snapshot(process_timers=False)
         self.assertEqual(snapshot.current_state, AlarmState.PENDING)
 
         with patch("alarm.gateways.zwavejs.DefaultZwavejsGateway.set_value") as set_value:

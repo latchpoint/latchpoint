@@ -10,11 +10,12 @@ from django.db import close_old_connections
 from django.utils import timezone
 
 from accounts.use_cases import code_validation
-from alarm import services
+from alarm.state_machine.events import record_code_used, record_failed_code
+from alarm.state_machine.settings import get_active_settings_profile, get_setting_bool, get_setting_json
+from alarm.state_machine.transitions import arm, cancel_arming, disarm, get_current_snapshot
 from integrations_home_assistant import mqtt_alarm_entity_status_store as status_store
 from alarm.models import AlarmState
 from transports_mqtt.manager import MqttNotReachable, mqtt_connection_manager
-from alarm.state_machine.settings import get_active_settings_profile, get_setting_bool, get_setting_json
 
 logger = logging.getLogger(__name__)
 
@@ -108,7 +109,7 @@ def publish_discovery(*, force: bool = False) -> None:
         status_store.mark_discovery_published()
         # Immediately publish availability + current state so HA does not show "unknown" after discovery.
         publish_availability(online=True)
-        snapshot = services.get_current_snapshot(process_timers=False)
+        snapshot = get_current_snapshot(process_timers=False)
         publish_state(state=snapshot.current_state)
     except MqttNotReachable:
         logger.info("MQTT not connected; discovery publish skipped.")
@@ -244,23 +245,23 @@ def handle_mqtt_alarm_command(*, topic: str, payload: str) -> None:
             publish_error(action=action, error="Too many attempts. Try again later.")
             return
         if not raw_code:
-            services.record_failed_code(user=None, action="disarm", metadata={"source": "mqtt", "reason": "missing"})
+            record_failed_code(user=None, action="disarm", metadata={"source": "mqtt", "reason": "missing"})
             publish_error(action=action, error="Code required.")
             return
         try:
             result = code_validation.validate_any_active_code(raw_code=raw_code, now=now)
         except Exception:
-            services.record_failed_code(user=None, action="disarm", metadata={"source": "mqtt"})
+            record_failed_code(user=None, action="disarm", metadata={"source": "mqtt"})
             publish_error(action=action, error="Invalid code.")
             return
         code_obj = result.code
         user = code_obj.user
-        services.disarm(user=user, code=code_obj, reason="mqtt_disarm")
-        services.record_code_used(user=user, code=code_obj, action="disarm", metadata={"source": "mqtt"})
+        disarm(user=user, code=code_obj, reason="mqtt_disarm")
+        record_code_used(user=user, code=code_obj, action="disarm", metadata={"source": "mqtt"})
         return
 
     # Arm: respect existing setting, but accept a code if provided.
-    profile = services.get_active_settings_profile()
+    profile = get_active_settings_profile()
     code_required = get_setting_bool(profile, "code_arm_required") or raw_code is not None
     code_obj = None
     user = None
@@ -269,7 +270,7 @@ def handle_mqtt_alarm_command(*, topic: str, payload: str) -> None:
             publish_error(action=action, error="Too many attempts. Try again later.")
             return
         if not raw_code:
-            services.record_failed_code(
+            record_failed_code(
                 user=None,
                 action="arm",
                 metadata={"source": "mqtt", "target_state": target, "reason": "missing"},
@@ -279,15 +280,15 @@ def handle_mqtt_alarm_command(*, topic: str, payload: str) -> None:
         try:
             result = code_validation.validate_any_active_code(raw_code=raw_code, now=now)
         except Exception:
-            services.record_failed_code(user=None, action="arm", metadata={"source": "mqtt", "target_state": target})
+            record_failed_code(user=None, action="arm", metadata={"source": "mqtt", "target_state": target})
             publish_error(action=action, error="Invalid code.")
             return
         code_obj = result.code
         user = code_obj.user
 
-    services.arm(target_state=target, user=user, code=code_obj, reason="mqtt_arm")
+    arm(target_state=target, user=user, code=code_obj, reason="mqtt_arm")
     if code_obj is not None and user is not None:
-        services.record_code_used(user=user, code=code_obj, action="arm", metadata={"source": "mqtt", "target_state": target})
+        record_code_used(user=user, code=code_obj, action="arm", metadata={"source": "mqtt", "target_state": target})
 
 
 def initialize_home_assistant_mqtt_alarm_entity_integration() -> None:
@@ -308,7 +309,7 @@ def initialize_home_assistant_mqtt_alarm_entity_integration() -> None:
         publish_availability(online=True)
         publish_discovery()
         # Publish current state on connect so HA catches up after restarts.
-        snapshot = services.get_current_snapshot(process_timers=False)
+        snapshot = get_current_snapshot(process_timers=False)
         publish_state(state=snapshot.current_state)
 
     mqtt_connection_manager.subscribe(topic=COMMAND_TOPIC, qos=0, callback=handle_mqtt_alarm_command)

@@ -8,7 +8,8 @@ from rest_framework.views import APIView
 from django.db import transaction
 
 from accounts.permissions import IsAdminRole
-from alarm.crypto import encrypt_secret
+from config.domain_exceptions import ValidationError
+from alarm.crypto import can_encrypt, encrypt_secret
 from alarm.gateways.mqtt import default_mqtt_gateway
 from transports_mqtt.config import normalize_mqtt_connection, prepare_runtime_mqtt_connection
 from alarm.serializers import (
@@ -67,6 +68,8 @@ class MqttSettingsView(APIView):
         changes = dict(serializer.validated_data)
 
         if "password" in changes:
+            if changes.get("password") and not can_encrypt():
+                raise ValidationError("Encryption is not configured. Set SETTINGS_ENCRYPTION_KEY before saving secrets.")
             changes["password"] = encrypt_secret(changes.get("password"))
         else:
             # Preserve existing password token if not provided.

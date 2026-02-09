@@ -53,3 +53,25 @@ class CryptoConfigHelpersTests(SimpleTestCase):
         )
         self.assertEqual(runtime["token"], "s3cr3t")
 
+    def test_encrypt_secret_raises_without_key(self):
+        os.environ.pop(crypto.SETTINGS_ENCRYPTION_KEY_ENV, None)
+        crypto._get_fernet.cache_clear()
+        with self.assertRaises(crypto.EncryptionNotConfigured):
+            crypto.encrypt_secret("some_secret")
+
+    def test_encrypt_secret_allows_empty_string_without_key(self):
+        os.environ.pop(crypto.SETTINGS_ENCRYPTION_KEY_ENV, None)
+        crypto._get_fernet.cache_clear()
+        self.assertEqual(crypto.encrypt_secret(""), "")
+
+    def test_decrypt_secret_raises_for_plaintext(self):
+        from cryptography.fernet import Fernet
+
+        os.environ[crypto.SETTINGS_ENCRYPTION_KEY_ENV] = Fernet.generate_key().decode("utf-8")
+        crypto._get_fernet.cache_clear()
+        with self.assertRaises(ValueError) as ctx:
+            crypto.decrypt_secret("plaintext_value")
+        self.assertIn("Plaintext secret detected", str(ctx.exception))
+
+    def test_decrypt_secret_allows_empty_string(self):
+        self.assertEqual(crypto.decrypt_secret(""), "")

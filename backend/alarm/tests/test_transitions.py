@@ -6,8 +6,8 @@ from django.test import TestCase
 from django.utils import timezone
 
 from accounts.models import User
-from alarm import services
 from alarm.models import AlarmSettingsProfile, AlarmState, AlarmStateSnapshot, Sensor
+from alarm.state_machine.transitions import arm, disarm, get_current_snapshot, sensor_triggered, timer_expired
 from alarm.tests.settings_test_utils import set_profile_setting, set_profile_settings
 
 
@@ -34,7 +34,7 @@ class AlarmTransitionTests(TestCase):
         )
 
     def test_arm_to_arming(self):
-        snapshot = services.arm(target_state=AlarmState.ARMED_AWAY, user=self.user)
+        snapshot = arm(target_state=AlarmState.ARMED_AWAY, user=self.user)
         snapshot.refresh_from_db()
         self.assertEqual(snapshot.current_state, AlarmState.ARMING)
         self.assertEqual(snapshot.target_armed_state, AlarmState.ARMED_AWAY)
@@ -42,72 +42,72 @@ class AlarmTransitionTests(TestCase):
 
     def test_arm_home_zero_exit_delay_arms_immediately(self):
         set_profile_setting(self.profile, "state_overrides", {AlarmState.ARMED_HOME: {"arming_time": 0}})
-        snapshot = services.arm(target_state=AlarmState.ARMED_HOME, user=self.user)
+        snapshot = arm(target_state=AlarmState.ARMED_HOME, user=self.user)
         snapshot.refresh_from_db()
         self.assertEqual(snapshot.current_state, AlarmState.ARMED_HOME)
         self.assertIsNone(snapshot.exit_at)
 
     def test_timer_expired_arming_to_armed(self):
-        snapshot = services.arm(target_state=AlarmState.ARMED_AWAY, user=self.user)
+        snapshot = arm(target_state=AlarmState.ARMED_AWAY, user=self.user)
         snapshot.exit_at = timezone.now() - timedelta(seconds=1)
         snapshot.save(update_fields=["exit_at"])
-        snapshot = services.timer_expired()
+        snapshot = timer_expired()
         snapshot.refresh_from_db()
         self.assertEqual(snapshot.current_state, AlarmState.ARMED_AWAY)
 
     def test_entry_sensor_goes_pending(self):
-        snapshot = services.arm(target_state=AlarmState.ARMED_AWAY, user=self.user)
+        snapshot = arm(target_state=AlarmState.ARMED_AWAY, user=self.user)
         snapshot.exit_at = timezone.now() - timedelta(seconds=1)
         snapshot.save(update_fields=["exit_at"])
-        snapshot = services.timer_expired()
-        snapshot = services.sensor_triggered(sensor=self.entry_sensor)
+        snapshot = timer_expired()
+        snapshot = sensor_triggered(sensor=self.entry_sensor)
         snapshot.refresh_from_db()
         self.assertEqual(snapshot.current_state, AlarmState.PENDING)
         self.assertEqual(snapshot.previous_state, AlarmState.ARMED_AWAY)
         self.assertIsNotNone(snapshot.exit_at)
 
     def test_non_entry_sensor_triggers(self):
-        snapshot = services.arm(target_state=AlarmState.ARMED_AWAY, user=self.user)
+        snapshot = arm(target_state=AlarmState.ARMED_AWAY, user=self.user)
         snapshot.exit_at = timezone.now() - timedelta(seconds=1)
         snapshot.save(update_fields=["exit_at"])
-        snapshot = services.timer_expired()
-        snapshot = services.sensor_triggered(sensor=self.motion_sensor)
+        snapshot = timer_expired()
+        snapshot = sensor_triggered(sensor=self.motion_sensor)
         snapshot.refresh_from_db()
         self.assertEqual(snapshot.current_state, AlarmState.TRIGGERED)
         self.assertEqual(snapshot.previous_state, AlarmState.ARMED_AWAY)
         self.assertIsNotNone(snapshot.exit_at)
 
     def test_trigger_timer_returns_to_armed(self):
-        snapshot = services.arm(target_state=AlarmState.ARMED_AWAY, user=self.user)
+        snapshot = arm(target_state=AlarmState.ARMED_AWAY, user=self.user)
         snapshot.exit_at = timezone.now() - timedelta(seconds=1)
         snapshot.save(update_fields=["exit_at"])
-        snapshot = services.timer_expired()
-        snapshot = services.sensor_triggered(sensor=self.motion_sensor)
+        snapshot = timer_expired()
+        snapshot = sensor_triggered(sensor=self.motion_sensor)
         snapshot.exit_at = timezone.now() - timedelta(seconds=1)
         snapshot.save(update_fields=["exit_at"])
-        snapshot = services.timer_expired()
+        snapshot = timer_expired()
         snapshot.refresh_from_db()
         self.assertEqual(snapshot.current_state, AlarmState.ARMED_AWAY)
 
     def test_trigger_timer_disarms_when_configured(self):
         set_profile_setting(self.profile, "disarm_after_trigger", True)
-        snapshot = services.arm(target_state=AlarmState.ARMED_AWAY, user=self.user)
+        snapshot = arm(target_state=AlarmState.ARMED_AWAY, user=self.user)
         snapshot.exit_at = timezone.now() - timedelta(seconds=1)
         snapshot.save(update_fields=["exit_at"])
-        snapshot = services.timer_expired()
-        snapshot = services.sensor_triggered(sensor=self.motion_sensor)
+        snapshot = timer_expired()
+        snapshot = sensor_triggered(sensor=self.motion_sensor)
         snapshot.exit_at = timezone.now() - timedelta(seconds=1)
         snapshot.save(update_fields=["exit_at"])
-        snapshot = services.timer_expired()
+        snapshot = timer_expired()
         snapshot.refresh_from_db()
         self.assertEqual(snapshot.current_state, AlarmState.DISARMED)
 
     def test_disarm_clears_target(self):
-        snapshot = services.arm(target_state=AlarmState.ARMED_AWAY, user=self.user)
+        snapshot = arm(target_state=AlarmState.ARMED_AWAY, user=self.user)
         snapshot.exit_at = timezone.now() - timedelta(seconds=1)
         snapshot.save(update_fields=["exit_at"])
-        snapshot = services.timer_expired()
-        snapshot = services.disarm(user=self.user)
+        snapshot = timer_expired()
+        snapshot = disarm(user=self.user)
         snapshot.refresh_from_db()
         self.assertEqual(snapshot.current_state, AlarmState.DISARMED)
         self.assertIsNone(snapshot.target_armed_state)
@@ -119,7 +119,7 @@ class AlarmSnapshotBootstrapTests(TestCase):
             name="Default",
             is_active=True,
         )
-        snapshot = services.timer_expired()
+        snapshot = timer_expired()
         snapshot.refresh_from_db()
         self.assertEqual(snapshot.current_state, AlarmState.DISARMED)
         self.assertTrue(AlarmStateSnapshot.objects.exists())
