@@ -5,7 +5,7 @@ from rest_framework import serializers
 from alarm.models import AlarmEvent, AlarmSettingsProfile, AlarmStateSnapshot
 from alarm.integration_settings_masking import mask_setting_value
 from alarm.settings_registry import ALARM_PROFILE_SETTINGS
-from alarm.state_machine.settings import get_setting_bool, get_setting_int, get_setting_json
+from alarm.state_machine.settings import get_setting_json
 
 
 def _list_profile_setting_entries(profile: AlarmSettingsProfile) -> list[dict[str, object]]:
@@ -54,50 +54,6 @@ class AlarmSettingsProfileMetaSerializer(serializers.ModelSerializer):
             "updated_at",
         )
 
-
-class AlarmSettingsProfileSerializer(serializers.Serializer):
-    """
-    Back-compat read shape: materialized from row-based settings entries.
-    """
-
-    id = serializers.IntegerField(read_only=True)
-    name = serializers.CharField(read_only=True)
-    is_active = serializers.BooleanField(read_only=True)
-    delay_time = serializers.IntegerField(read_only=True)
-    arming_time = serializers.IntegerField(read_only=True)
-    trigger_time = serializers.IntegerField(read_only=True)
-    disarm_after_trigger = serializers.BooleanField(read_only=True)
-    code_arm_required = serializers.BooleanField(read_only=True)
-    available_arming_states = serializers.JSONField(read_only=True)
-    state_overrides = serializers.JSONField(read_only=True)
-    audio_visual_settings = serializers.JSONField(read_only=True)
-    sensor_behavior = serializers.JSONField(read_only=True)
-    mqtt_connection = serializers.JSONField(read_only=True)
-    home_assistant_alarm_entity = serializers.JSONField(read_only=True)
-    zwavejs_connection = serializers.JSONField(read_only=True)
-    created_at = serializers.DateTimeField(read_only=True)
-    updated_at = serializers.DateTimeField(read_only=True)
-
-    def to_representation(self, instance: AlarmSettingsProfile):
-        """Return a legacy flat settings shape derived from the active settings entries."""
-        meta = AlarmSettingsProfileMetaSerializer(instance).data
-        meta.update(
-            {
-                "delay_time": get_setting_int(instance, "delay_time"),
-                "arming_time": get_setting_int(instance, "arming_time"),
-                "trigger_time": get_setting_int(instance, "trigger_time"),
-                "disarm_after_trigger": get_setting_bool(instance, "disarm_after_trigger"),
-                "code_arm_required": get_setting_bool(instance, "code_arm_required"),
-                "available_arming_states": get_setting_json(instance, "available_arming_states") or [],
-                "state_overrides": get_setting_json(instance, "state_overrides") or {},
-                "audio_visual_settings": get_setting_json(instance, "audio_visual_settings") or {},
-                "sensor_behavior": get_setting_json(instance, "sensor_behavior") or {},
-                "mqtt_connection": mask_setting_value(key="mqtt_connection", value=get_setting_json(instance, "mqtt_connection") or {}),
-                "home_assistant_alarm_entity": get_setting_json(instance, "home_assistant_alarm_entity") or {},
-                "zwavejs_connection": mask_setting_value(key="zwavejs_connection", value=get_setting_json(instance, "zwavejs_connection") or {}),
-            }
-        )
-        return meta
 
 
 class AlarmEventSerializer(serializers.ModelSerializer):

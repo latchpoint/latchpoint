@@ -12,7 +12,6 @@ from alarm.models import AlarmSettingsProfile, AlarmState
 from alarm.serializers import (
     AlarmSettingsProfileDetailSerializer,
     AlarmSettingsProfileMetaSerializer,
-    AlarmSettingsProfileSerializer,
     AlarmSettingsProfileUpdateSerializer,
 )
 from alarm.state_machine.timing import resolve_timing

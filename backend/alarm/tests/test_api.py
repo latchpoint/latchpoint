@@ -115,7 +115,7 @@ class AlarmApiTests(APITestCase):
         self.code.days_of_week = 1 << 5  # Saturday only (Mon=0)
         self.code.save(update_fields=["code_type", "days_of_week"])
 
-        with patch("alarm.services.timezone.now", return_value=fixed_now):
+        with patch("alarm.use_cases.alarm_actions.timezone.now", return_value=fixed_now):
             response = self.client.post(url, data={"code": self.code_value})
         self.assertEqual(response.status_code, 401)
         self.assertEqual(response.json()["error"]["message"], "Code is not valid today.")
@@ -130,7 +130,7 @@ class AlarmApiTests(APITestCase):
         self.code.window_end = timezone.datetime(2025, 1, 1, 10, 0, 0, tzinfo=dt_timezone.utc).time()
         self.code.save(update_fields=["code_type", "window_start", "window_end"])
 
-        with patch("alarm.services.timezone.now", return_value=fixed_now):
+        with patch("alarm.use_cases.alarm_actions.timezone.now", return_value=fixed_now):
             response = self.client.post(url, data={"code": self.code_value})
         self.assertEqual(response.status_code, 401)
         self.assertEqual(response.json()["error"]["message"], "Code is not valid at this time.")
@@ -312,10 +312,10 @@ class AlarmApiTests(APITestCase):
         )
 
         # Put alarm into an armed state so disarm changes something.
-        from alarm import services
+        from alarm.state_machine.transitions import arm, get_current_snapshot, timer_expired
 
-        services.arm(target_state=AlarmState.ARMED_AWAY, user=self.user)
-        snapshot = services.timer_expired()
+        arm(target_state=AlarmState.ARMED_AWAY, user=self.user)
+        snapshot = timer_expired()
         self.assertEqual(snapshot.current_state, AlarmState.ARMED_AWAY)
 
         url = reverse("alarm-rules-run")
@@ -325,7 +325,7 @@ class AlarmApiTests(APITestCase):
         self.assertGreaterEqual(body["data"]["evaluated"], 1)
         self.assertGreaterEqual(body["data"]["fired"], 1)
 
-        snapshot = services.get_current_snapshot(process_timers=False)
+        snapshot = get_current_snapshot(process_timers=False)
         self.assertEqual(snapshot.current_state, AlarmState.DISARMED)
 
     def test_rules_simulate_endpoint(self):

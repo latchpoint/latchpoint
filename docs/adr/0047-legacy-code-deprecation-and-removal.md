@@ -1,12 +1,12 @@
 # ADR 0047: Legacy Code Deprecation and Removal
 
 ## Status
-**Partially Implemented** (one removal completed; remaining candidates tracked below)
+**Implemented**
 
 ## Context
-This codebase contains several “legacy” behaviors that exist primarily for backward compatibility:
+This codebase contains several "legacy" behaviors that exist primarily for backward compatibility:
 - Compatibility facades and re-exports to keep old imports working.
-- Deprecated settings keys and “legacy shape” serializers kept to avoid breaking older UI/API consumers.
+- Deprecated settings keys and "legacy shape" serializers kept to avoid breaking older UI/API consumers.
 - Protocol/event-parsing fallbacks to handle multiple upstream envelope formats.
 - Compatibility wrappers for APIs that used to exist (or are expected by external callers) but are now replaced.
 
@@ -15,7 +15,7 @@ These are useful during migration periods, but they tend to accumulate and becom
 - They hide which interfaces are truly supported.
 - They complicate refactors because call sites continue to depend on shims.
 
-This app is still in active development and can tolerate breaking changes. In this phase, keeping legacy code “just in case”
+This app is still in active development and can tolerate breaking changes. In this phase, keeping legacy code "just in case"
 usually slows iteration more than it helps.
 
 We need a consistent way to document, track, and remove legacy code, and a default posture that prefers deletion over
@@ -25,7 +25,7 @@ long-term compatibility.
 Remove legacy/compatibility code paths by default (breaking changes are acceptable) and do removal work as a series of
 small, reviewable PRs.
 
-This ADR is intentionally action-oriented: it defines what we consider “legacy”, identifies concrete targets, and sets a
+This ADR is intentionally action-oriented: it defines what we consider "legacy", identifies concrete targets, and sets a
 removal checklist so we can delete code confidently without reintroducing new shims.
 
 ### 1) Definition
@@ -39,7 +39,7 @@ If we keep a legacy path temporarily, it must include:
 - A clear marker: `Legacy:` or `Compatibility:` in a docstring or module header.
 - A short rationale: what it supports and why it cannot be removed in the same PR.
 - A removal condition: what must be true before it can be deleted (and how to validate it).
-- A tracking reference and explicit “sunset” milestone/date.
+- A tracking reference and explicit "sunset" milestone/date.
 
 ### 3) Default placement and boundaries
 Prefer isolating legacy behavior behind explicit boundaries so it is easy to find and remove:
@@ -60,7 +60,7 @@ PR.
 When removing legacy code, do the following in the same PR when possible:
 - Remove the shim and update all internal call sites.
 - Remove or migrate any persisted compatibility data (settings keys, serialized shapes).
-- Update API docs (and this ADR’s candidate list) if relevant.
+- Update API docs (and this ADR's candidate list) if relevant.
 - Add/adjust tests to lock in the new contract and prevent reintroduction.
 
 ## Removal Targets
@@ -68,28 +68,28 @@ This section is the working inventory of concrete legacy code we intend to remov
 Each target should be handled by a dedicated PR unless it is trivial.
 
 ### Compatibility facades / re-exports
-- `backend/alarm/services.py`: compatibility facade for state machine operations.
-  - Remove when views/tests/use-cases import from `alarm.state_machine/*` or `alarm.use_cases/*` directly.
-- `backend/alarm/serializers.py`: compatibility re-export wrapper.
-  - Remove when imports consistently use the `alarm.serializers` package modules.
+- ~~`backend/alarm/services.py`: compatibility facade for state machine operations.~~
+  - **REMOVED**: All call sites rewritten to import directly from `alarm.state_machine.*`, `alarm.use_cases.*`, etc. `validate_user_code` moved into `alarm.use_cases.alarm_actions`.
+- ~~`backend/alarm/serializers.py`: compatibility re-export wrapper.~~
+  - **REMOVED** (prior to this ADR).
 
 ### Legacy API shapes / deprecated settings
-- `backend/alarm/serializers/alarm.py` `AlarmSettingsProfileSerializer`: legacy flat settings shape.
-  - Remove when all consumers use `AlarmSettingsProfileDetailSerializer` (profile + entries) or another canonical shape.
-- `backend/integrations_home_assistant/tasks.py`: supports deprecated `home_assistant_notify` settings key.
-  - Remove by migrating persisted profiles and updating all call sites to the consolidated Notifications architecture.
-- `backend/alarm/state_machine/snapshot_store.py`: schedules Home Assistant notifications via the deprecated `home_assistant_notify` key.
-  - Remove by routing notifications through the consolidated Notifications architecture (e.g., rules-driven notification actions).
+- ~~`backend/alarm/serializers/alarm.py` `AlarmSettingsProfileSerializer`: legacy flat settings shape.~~
+  - **REMOVED**: `AlarmSettingsView` switched to `AlarmSettingsProfileDetailSerializer`. Frontend adapter maps the `{ profile, entries }` response into the existing `AlarmSettingsProfile` type.
+- ~~`backend/integrations_home_assistant/tasks.py`: supports deprecated `home_assistant_notify` settings key.~~
+  - **REMOVED**: Entire file deleted. Notifications are now rules-driven via the consolidated Notifications architecture (ADR 0044).
+- ~~`backend/alarm/state_machine/snapshot_store.py`: schedules Home Assistant notifications via the deprecated `home_assistant_notify` key.~~
+  - **REMOVED**: `_schedule_home_assistant_notify()` deleted from `transition()`. The modern `alarm_state_change_committed` signal path remains.
 
 ### Integration compatibility
-- `backend/control_panels/zwave_ring_keypad_v2.py`: parses multiple legacy event envelopes.
-  - Remove by enforcing a single normalized gateway envelope; update any emitters/tests that still send legacy shapes.
+- ~~`backend/control_panels/zwave_ring_keypad_v2.py`: parses multiple legacy event envelopes.~~
+  - **REMOVED**: Legacy `else` branch in `_extract_entry_control_notification()` removed. The gateway normalizes all events into `{"event": {...}}` format.
 - ~~`backend/integrations_zwavejs/manager.py` `lock()` / `unlock()`: compatibility wrappers that are intentionally unimplemented.~~
-  - **REMOVED**: Deleted from `ZwavejsConnectionManager`, `ZwavejsGateway` Protocol, and `DefaultZwavejsGateway`. No external callers existed.
+  - **REMOVED** (prior to this ADR): Deleted from `ZwavejsConnectionManager`, `ZwavejsGateway` Protocol, and `DefaultZwavejsGateway`. No external callers existed.
 
 ### Data format compatibility
-- `backend/alarm/crypto.py`: plaintext pass-through for backward compatibility.
-  - Remove only after confirming all persisted secrets are encrypted and any migration/backfill has completed.
+- ~~`backend/alarm/crypto.py`: plaintext pass-through for backward compatibility.~~
+  - **REMOVED**: `encrypt_secret()` now raises `EncryptionNotConfigured` when no key is set. `decrypt_secret()` raises `ValueError` for plaintext values. A backfill command (`manage.py encrypt_plaintext_secrets`) is provided for migration. Save paths in views guard with `can_encrypt()` before storing.
 
 ## Execution Plan
 - Start with internal-only shims (facades/re-exports) and update imports/call sites.
@@ -110,8 +110,3 @@ Each target should be handled by a dedicated PR unless it is trivial.
 - Legacy behavior becomes more visible and easier to delete safely.
 - Slightly more process overhead when adding compatibility shims, offset by lower long-term maintenance.
 - Clearer public/internal contracts and faster refactors once migrations complete.
-
-## Todos
-- Add tracking issues/ADRs for each candidate that needs a concrete migration plan.
-- Decide the canonical alarm settings read shape for frontend consumption and deprecate alternatives.
-- Establish a release/milestone convention (or “migration window”) for when deprecations can be removed.

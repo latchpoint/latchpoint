@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from alarm import services
+from alarm.state_machine.transitions import timer_expired
 
 
 @dataclass(frozen=True)
@@ -16,5 +16,5 @@ class TimerTickResult:
 
 def tick_alarm_timers() -> TimerTickResult:
     """Advance due timers in the alarm state machine and return the resulting state."""
-    snapshot = services.timer_expired()
+    snapshot = timer_expired()
     return TimerTickResult(state=snapshot.current_state)

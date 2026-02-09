@@ -63,7 +63,7 @@ This document tracks all Architecture Decision Records (ADRs) and their implemen
 | [0044](0044-notifications-architecture-consolidation.md) | Notifications Architecture (Consolidated) | **Implemented** |
 | [0045](0045-slack-notification-provider.md) | Slack Notification Provider | **Implemented** |
 | [0046](0046-home-assistant-websocket-state-subscription.md) | Home Assistant WebSocket State Subscription | **Superseded** |
-| [0047](0047-legacy-code-deprecation-and-removal.md) | Legacy Code Deprecation and Removal | **Partially Implemented** |
+| [0047](0047-legacy-code-deprecation-and-removal.md) | Legacy Code Deprecation and Removal | **Implemented** |
 | [0048](0048-zigbee2mqtt-mappings-user-friendly-editor.md) | User-Friendly Zigbee2MQTT Mappings Editor | Superseded by 0049 |
 | [0049](0049-zigbee2mqtt-entity-first-rules-driven-automation.md) | Zigbee2MQTT Entity-First, Rules-Driven Automation | **Implemented** |
 | [0050](0050-paginate-frigate-recent-detections-ui.md) | Paginate Recent Frigate Detections UI (Page Size 5) | **Implemented** |
@@ -78,15 +78,15 @@ This document tracks all Architecture Decision Records (ADRs) and their implemen
 | [0059](0059-rule-triggering-accuracy-and-realtime-semantics.md) | Rule Triggering Accuracy and Realtime Semantics | **Implemented** |
 | [0060](0060-evaluate-django-cron-library.md) | Evaluate django-cron Library vs Custom Scheduler | Superseded |
 | [0061](0061-optimize-dispatcher-entity-state-snapshot-for-rule-evaluation.md) | Optimize Dispatcher Entity-State Snapshot for Faster Rule Evaluation | **Implemented** |
-| [0062](0062-scheduler-resilience-improvements.md) | Scheduler Resilience Improvements | **Proposed** |
-| [0063](0063-scheduler-status-ui-and-health-monitoring.md) | Scheduler Status UI and Health Monitoring | **Proposed** |
-| [0064](0064-integration-gated-scheduler-tasks.md) | Integration-Gated Scheduler Tasks | **Partially Implemented** |
+| [0062](0062-scheduler-resilience-improvements.md) | Scheduler Resilience Improvements | **Implemented** |
+| [0063](0063-scheduler-status-ui-and-health-monitoring.md) | Scheduler Status UI and Health Monitoring | **Implemented** |
+| [0064](0064-integration-gated-scheduler-tasks.md) | Integration-Gated Scheduler Tasks | **Implemented** |
 | [0065](0065-rule-builder-when-time-ranges.md) | Rule Builder WHEN Time Ranges | **Implemented** |
 | [0066](0066-retention-cleanup-notifications-and-door-code-events.md) | Retention Cleanup Tasks for Notifications and Door Code Events | **Implemented** |
 | [0067](0067-backend-endpoint-test-coverage-gaps.md) | Backend Endpoint Test Coverage Gaps | **Proposed** |
 | [0068](0068-zwavejs-lock-config-sync.md) | Z-Wave JS Lock Config Sync (Codes & Schedules) | **Implemented** |
 | [0069](0069-lock-config-sync-operational-concerns.md) | Lock Config Sync — Operational, Security & UX Concerns | **Partially Implemented** |
-| [0070](0070-entity-state-debug-page.md) | Entity State Debug Page | **Proposed** |
+| [0070](0070-entity-state-debug-page.md) | Entity State Debug Page | **Implemented** |
 
 ---
 
@@ -94,9 +94,9 @@ This document tracks all Architecture Decision Records (ADRs) and their implemen
 
 | Status | Count |
 |--------|-------|
-| **Implemented** | 52 |
-| **Partially Implemented** | 3 |
-| **Proposed** | 4 |
+| **Implemented** | 57 |
+| **Partially Implemented** | 1 |
+| **Proposed** | 1 |
 | **Superseded** | 11 |
 | **Total** | 70 |
 
@@ -104,4 +104,4 @@ Note: **Superseded** includes entries marked as "Superseded by …" in the table
 
 ---
 
-*Last updated: 2026-02-08* (Implemented ADR 0068; core items from ADR 0069 shipped; added ADR 0070)
+*Last updated: 2026-02-08* (Marked ADR 0047 as Implemented — all legacy removal targets completed)

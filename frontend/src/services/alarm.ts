@@ -36,7 +36,22 @@ export const alarmService = {
 
   // Settings
   async getSettings(): Promise<AlarmSettingsProfile> {
-    return api.get<AlarmSettingsProfile>(apiEndpoints.alarm.settings)
+    const raw = await api.get<AlarmSettingsProfileDetail>(apiEndpoints.alarm.settings)
+    // Adapt { profile, entries[] } into the flat AlarmSettingsProfile shape.
+    const { profile, entries } = raw
+    const entryMap = new Map(entries.map((e) => [e.key, e.value]))
+    return {
+      ...profile,
+      delayTime: (entryMap.get('delay_time') as number) ?? 30,
+      armingTime: (entryMap.get('arming_time') as number) ?? 10,
+      triggerTime: (entryMap.get('trigger_time') as number) ?? 120,
+      disarmAfterTrigger: (entryMap.get('disarm_after_trigger') as boolean) ?? false,
+      codeArmRequired: (entryMap.get('code_arm_required') as boolean) ?? true,
+      availableArmingStates: (entryMap.get('available_arming_states') as AlarmSettingsProfile['availableArmingStates']) ?? [],
+      stateOverrides: (entryMap.get('state_overrides') as AlarmSettingsProfile['stateOverrides']) ?? {},
+      audioVisualSettings: (entryMap.get('audio_visual_settings') as AlarmSettingsProfile['audioVisualSettings']) ?? { beepEnabled: true, countdownDisplayEnabled: true, colorCodingEnabled: true },
+      sensorBehavior: (entryMap.get('sensor_behavior') as AlarmSettingsProfile['sensorBehavior']) ?? { warnOnOpenSensors: true, autoBypassEnabled: false, forceArmEnabled: true },
+    }
   },
 
   async getSettingsProfiles(): Promise<AlarmSettingsProfileMeta[]> {

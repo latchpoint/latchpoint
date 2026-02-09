@@ -8,9 +8,10 @@ from typing import Any
 from django.utils import timezone
 
 from accounts.use_cases import code_validation
-from alarm import services
 from alarm.models import AlarmState
-from alarm.state_machine.settings import get_setting_bool
+from alarm.state_machine.events import record_code_used, record_failed_code
+from alarm.state_machine.settings import get_active_settings_profile, get_setting_bool
+from alarm.state_machine.transitions import arm, cancel_arming, disarm, get_current_snapshot
 from control_panels.models import ControlPanelDevice, ControlPanelIntegrationType, ControlPanelKind
 
 
@@ -118,29 +119,22 @@ def _extract_entry_control_notification(msg: dict[str, Any]) -> RingKeypadV2Acti
     # The manager normalizes incoming zwave-js-server-python node events into `{"event": event_data_dict}`.
     # `event_data_dict` is shaped like NotificationEventModel:
     # {source:'node', event:'notification', nodeId, endpointIndex, ccId, args:{eventType,eventData,...}}
+    # The manager normalizes all events into {"event": {...}} — no legacy fallback needed.
     event_obj = msg.get("event")
-    if isinstance(event_obj, dict):
-        node_id = _get_int(event_obj, "nodeId", "node_id")
-        args = event_obj.get("args") if isinstance(event_obj.get("args"), dict) else None
-        command_class = _get_int(event_obj, "ccId", "commandClass", "command_class", "command_class_id")
-        # Some legacy emitters nested command class inside args.
-        if command_class is None and args is not None:
-            command_class = _get_int(args, "commandClass", "command_class", "command_class_id")
-        if command_class != _CC_ENTRY_CONTROL:
-            return None
-        if args is None:
-            return None
-        event_type = _get_int(args, "eventType", "event_type")
-        event_data = _get_str(args, "eventData", "event_data")
-    else:
-        # Legacy zwave-js-server (or other) envelope.
-        event_obj = msg
-        node_id = _get_int(event_obj, "nodeId", "node_id", "node")
-        command_class = _get_int(event_obj, "commandClass", "command_class", "command_class_id")
-        if command_class != _CC_ENTRY_CONTROL:
-            return None
-        event_type = _get_int(event_obj, "eventType", "event_type")
-        event_data = _get_str(event_obj, "eventData", "event_data")
+    if not isinstance(event_obj, dict):
+        return None
+    node_id = _get_int(event_obj, "nodeId", "node_id")
+    args = event_obj.get("args") if isinstance(event_obj.get("args"), dict) else None
+    command_class = _get_int(event_obj, "ccId", "commandClass", "command_class", "command_class_id")
+    # Some legacy emitters nested command class inside args.
+    if command_class is None and args is not None:
+        command_class = _get_int(args, "commandClass", "command_class", "command_class_id")
+    if command_class != _CC_ENTRY_CONTROL:
+        return None
+    if args is None:
+        return None
+    event_type = _get_int(args, "eventType", "event_type")
+    event_data = _get_str(args, "eventData", "event_data")
 
     if not node_id:
         return None
@@ -303,7 +297,7 @@ def test_ring_keypad_v2_beep(*, device: ControlPanelDevice, volume: int = 50) ->
 
 def _sync_device_state(*, device: ControlPanelDevice) -> None:
     """Update keypad indicator state based on the current alarm snapshot (best-effort)."""
-    snapshot = services.get_current_snapshot(process_timers=False)
+    snapshot = get_current_snapshot(process_timers=False)
     now = timezone.now()
 
     if snapshot.current_state == AlarmState.DISARMED:
@@ -354,7 +348,7 @@ def sync_ring_keypad_v2_devices_state() -> None:
 
     _maybe_close_old_connections()
     try:
-        snapshot = services.get_current_snapshot(process_timers=False)
+        snapshot = get_current_snapshot(process_timers=False)
         logger.info("Ring Keypad v2 sync: alarm_state=%s", snapshot.current_state)
     except Exception:
         pass
@@ -436,7 +430,7 @@ def handle_zwavejs_ring_keypad_v2_event(msg: dict[str, Any]) -> None:
 
     if req.event_type == _EVT_CANCEL:
         try:
-            services.cancel_arming(user=None, code=None, reason="control_panel_cancel")
+            cancel_arming(user=None, code=None, reason="control_panel_cancel")
             # Alarm state sync -> keypads happens via `alarm_state_change_committed`.
         except Exception as exc:
             device.last_error = str(exc)
@@ -448,7 +442,7 @@ def handle_zwavejs_ring_keypad_v2_event(msg: dict[str, Any]) -> None:
         if not _rate_limit(device_id=device.id, action="disarm"):
             return
         if not raw_code:
-            services.record_failed_code(user=None, action="disarm", metadata={"source": "control_panel", "device_id": device.id, "reason": "missing"})
+            record_failed_code(user=None, action="disarm", metadata={"source": "control_panel", "device_id": device.id, "reason": "missing"})
             _apply_ring_keypad_v2_volume(device=device, property_id=_IND_CODE_NOT_ACCEPTED)
             _indicator_set(device=device, property_id=_IND_CODE_NOT_ACCEPTED, property_key=1, value=1)
             logger.info("Ring Keypad v2 disarm rejected: missing code device_id=%s", device.id)
@@ -456,7 +450,7 @@ def handle_zwavejs_ring_keypad_v2_event(msg: dict[str, Any]) -> None:
         try:
             result = code_validation.validate_any_active_code(raw_code=raw_code, now=now)
         except Exception:
-            services.record_failed_code(user=None, action="disarm", metadata={"source": "control_panel", "device_id": device.id})
+            record_failed_code(user=None, action="disarm", metadata={"source": "control_panel", "device_id": device.id})
             _apply_ring_keypad_v2_volume(device=device, property_id=_IND_CODE_NOT_ACCEPTED)
             _indicator_set(device=device, property_id=_IND_CODE_NOT_ACCEPTED, property_key=1, value=1)
             logger.info("Ring Keypad v2 disarm rejected: invalid code device_id=%s", device.id)
@@ -464,8 +458,8 @@ def handle_zwavejs_ring_keypad_v2_event(msg: dict[str, Any]) -> None:
         code_obj = result.code
         user = code_obj.user
         try:
-            services.disarm(user=user, code=code_obj, reason="control_panel_disarm")
-            services.record_code_used(user=user, code=code_obj, action="disarm", metadata={"source": "control_panel", "device_id": device.id})
+            disarm(user=user, code=code_obj, reason="control_panel_disarm")
+            record_code_used(user=user, code=code_obj, action="disarm", metadata={"source": "control_panel", "device_id": device.id})
             # Alarm state sync -> keypads happens via `alarm_state_change_committed`.
             logger.info("Ring Keypad v2 disarm ok device_id=%s user_id=%s", device.id, getattr(user, "id", None))
         except Exception as exc:
@@ -478,7 +472,7 @@ def handle_zwavejs_ring_keypad_v2_event(msg: dict[str, Any]) -> None:
         # Ring v2 only provides Arm Away and Arm Stay; Arm Stay maps to armed_home.
         target_state = AlarmState.ARMED_AWAY if req.event_type == _EVT_ARM_AWAY else AlarmState.ARMED_HOME
 
-        profile = services.get_active_settings_profile()
+        profile = get_active_settings_profile()
         code_required = get_setting_bool(profile, "code_arm_required") or raw_code is not None
 
         user = None
@@ -487,7 +481,7 @@ def handle_zwavejs_ring_keypad_v2_event(msg: dict[str, Any]) -> None:
             if not _rate_limit(device_id=device.id, action=f"arm:{target_state}"):
                 return
             if not raw_code:
-                services.record_failed_code(
+                record_failed_code(
                     user=None,
                     action="arm",
                     metadata={"source": "control_panel", "device_id": device.id, "target_state": target_state, "reason": "missing"},
@@ -498,7 +492,7 @@ def handle_zwavejs_ring_keypad_v2_event(msg: dict[str, Any]) -> None:
             try:
                 result = code_validation.validate_any_active_code(raw_code=raw_code, now=now)
             except Exception:
-                services.record_failed_code(
+                record_failed_code(
                     user=None,
                     action="arm",
                     metadata={"source": "control_panel", "device_id": device.id, "target_state": target_state},
@@ -510,9 +504,9 @@ def handle_zwavejs_ring_keypad_v2_event(msg: dict[str, Any]) -> None:
             user = code_obj.user
 
         try:
-            services.arm(target_state=target_state, user=user, code=code_obj, reason="control_panel_arm")
+            arm(target_state=target_state, user=user, code=code_obj, reason="control_panel_arm")
             if code_obj is not None and user is not None:
-                services.record_code_used(user=user, code=code_obj, action="arm", metadata={"source": "control_panel", "device_id": device.id, "target_state": target_state})
+                record_code_used(user=user, code=code_obj, action="arm", metadata={"source": "control_panel", "device_id": device.id, "target_state": target_state})
             # Alarm state sync -> keypads happens via `alarm_state_change_committed`.
             logger.info("Ring Keypad v2 arm ok device_id=%s target_state=%s user_id=%s", device.id, target_state, getattr(user, "id", None))
         except Exception as exc:

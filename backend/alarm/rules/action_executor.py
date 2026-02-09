@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Protocol
 
-from alarm import services
+from alarm.state_machine import transitions as _transitions_module
 from alarm.gateways.home_assistant import HomeAssistantGateway, default_home_assistant_gateway
 from alarm.gateways.zigbee2mqtt import Zigbee2mqttGateway, default_zigbee2mqtt_gateway
 from alarm.gateways.zwavejs import ZwavejsGateway, default_zwavejs_gateway
@@ -39,7 +39,7 @@ def execute_actions(
     actions: list[dict[str, Any]],
     now,
     actor_user=None,
-    alarm_services: AlarmServices = services,
+    alarm_services: AlarmServices = _transitions_module,
     ha: HomeAssistantGateway = default_home_assistant_gateway,
     zwavejs: ZwavejsGateway = default_zwavejs_gateway,
     zigbee2mqtt: Zigbee2mqttGateway = default_zigbee2mqtt_gateway,

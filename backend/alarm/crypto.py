@@ -49,7 +49,7 @@ def encrypt_secret(value: str) -> str:
     """
     Encrypts a secret string, returning an `enc:`-prefixed token.
 
-    If encryption is not configured, returns the original value unchanged.
+    Raises `EncryptionNotConfigured` if encryption is not available.
     """
 
     if value is None:
@@ -59,7 +59,9 @@ def encrypt_secret(value: str) -> str:
         return ""
     f = _get_fernet()
     if f is None:
-        return value
+        raise EncryptionNotConfigured(
+            f"{SETTINGS_ENCRYPTION_KEY_ENV} is required to encrypt secrets."
+        )
     token = f.encrypt(value.encode("utf-8")).decode("utf-8")
     return f"{ENCRYPTION_PREFIX}{token}"
 
@@ -68,8 +70,8 @@ def decrypt_secret(value: str) -> str:
     """
     Decrypts a secret string.
 
-    - Plaintext values are returned as-is (backward compatibility).
-    - `enc:`-prefixed tokens require encryption to be configured.
+    Raises `ValueError` for non-empty plaintext values (missing `enc:` prefix).
+    Raises `EncryptionNotConfigured` when decryption is needed but no key is set.
     """
 
     if value is None:
@@ -78,7 +80,9 @@ def decrypt_secret(value: str) -> str:
     if value == "":
         return ""
     if not value.startswith(ENCRYPTION_PREFIX):
-        return value
+        raise ValueError(
+            "Plaintext secret detected. Run `manage.py encrypt_plaintext_secrets` to migrate."
+        )
     f = _get_fernet()
     if f is None:
         raise EncryptionNotConfigured(f"{SETTINGS_ENCRYPTION_KEY_ENV} is required to decrypt stored secrets.")
@@ -115,7 +119,9 @@ def decrypt_config(config: dict[str, Any] | None, encrypted_fields: list[str]) -
     """
     Decrypt sensitive fields in a configuration dictionary.
 
-    `decrypt_secret()` handles both plaintext and `enc:`-prefixed values.
+    Plaintext values (missing ``enc:`` prefix) are passed through with a warning
+    so that runtime decryption does not crash before ``encrypt_plaintext_secrets``
+    has been run.
     """
     if not config:
         return config
@@ -128,7 +134,15 @@ def decrypt_config(config: dict[str, Any] | None, encrypted_fields: list[str]) -
         if value is None:
             result[field] = ""
             continue
-        result[field] = decrypt_secret(value)
+        try:
+            result[field] = decrypt_secret(value)
+        except ValueError:
+            # Plaintext value — pass through so runtime stays functional.
+            import logging
+
+            logging.getLogger(__name__).warning(
+                "Plaintext secret in field %r. Run manage.py encrypt_plaintext_secrets.", field,
+            )
     return result
 
 
