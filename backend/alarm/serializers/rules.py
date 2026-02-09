@@ -5,7 +5,7 @@ from rest_framework import serializers
 from alarm.models import Rule, RuleEntityRef
 from alarm.rules.action_schemas import ADMIN_ONLY_ACTION_TYPES, validate_action
 from alarm.rules.conditions import validate_when_node
-from alarm.use_cases.rule_entity_refs import sync_rule_entity_refs
+from alarm.use_cases.rules import create_rule, update_rule
 
 
 class RuleSerializer(serializers.ModelSerializer):
@@ -53,26 +53,6 @@ class RuleSerializer(serializers.ModelSerializer):
             .select_related("entity")
             .values_list("entity__entity_id", flat=True)
         )
-
-
-def derive_kind_from_actions(definition: dict) -> str:
-    """Derive rule kind from the first action in the then clause."""
-    then_actions = definition.get("then", []) if isinstance(definition, dict) else []
-    if not then_actions:
-        return "trigger"  # Default
-
-    first_action = then_actions[0] if isinstance(then_actions, list) else {}
-    action_type = first_action.get("type", "") if isinstance(first_action, dict) else ""
-
-    # Map action types to rule kinds
-    if action_type == "alarm_trigger":
-        return "trigger"
-    elif action_type == "alarm_disarm":
-        return "disarm"
-    elif action_type == "alarm_arm":
-        return "arm"
-    else:
-        return "trigger"  # Default for ha_call_service, zwavejs_set_value, etc.
 
 
 class RuleUpsertSerializer(serializers.ModelSerializer):
@@ -158,66 +138,9 @@ class RuleUpsertSerializer(serializers.ModelSerializer):
         return sorted(set(cleaned))
 
     def create(self, validated_data):
-        """Create a rule and sync its entity refs. Auto-derives kind from actions."""
         entity_ids = validated_data.pop("entity_ids", None)
-
-        # Auto-derive kind from actions if not provided
-        definition = validated_data.get("definition", {})
-        if "kind" not in validated_data or not validated_data.get("kind"):
-            validated_data["kind"] = derive_kind_from_actions(definition)
-
-        from alarm.dispatcher.entity_extractor import extract_entity_sources_from_definition
-        entity_sources = extract_entity_sources_from_definition(definition)
-
-        from alarm.dispatcher.entity_extractor import extract_entity_ids_from_definition
-        extracted_entity_ids = set(extract_entity_ids_from_definition(definition))
-        if entity_ids is None:
-            # Auto-extract dependencies from definition (ADR 0057/0059).
-            entity_ids = sorted(extracted_entity_ids)
-        else:
-            # Preserve explicit entity_ids but always include definition-derived dependencies
-            # so the dispatcher can route non-entity operators (ADR 0059).
-            entity_ids = sorted(set(entity_ids) | extracted_entity_ids)
-
-        rule = super().create(validated_data)
-
-        # Invalidate dispatcher cache before syncing entity refs so the new rule
-        # triggers immediately even if dispatcher runs between these operations (ADR 0057)
-        from alarm.dispatcher import invalidate_entity_rule_cache
-        invalidate_entity_rule_cache()
-
-        sync_rule_entity_refs(rule=rule, entity_ids=entity_ids, entity_sources=entity_sources)
-
-        return rule
+        return create_rule(validated_data=validated_data, entity_ids=entity_ids)
 
     def update(self, instance, validated_data):
-        """Update a rule and sync its entity refs. Auto-derives kind from actions."""
         entity_ids = validated_data.pop("entity_ids", None)
-
-        # Auto-derive kind from actions if not provided
-        definition = validated_data.get("definition", instance.definition)
-        if "kind" not in validated_data or not validated_data.get("kind"):
-            validated_data["kind"] = derive_kind_from_actions(definition)
-
-        from alarm.dispatcher.entity_extractor import extract_entity_sources_from_definition
-        entity_sources = extract_entity_sources_from_definition(definition)
-
-        rule = super().update(instance, validated_data)
-
-        from alarm.dispatcher.entity_extractor import extract_entity_ids_from_definition
-        extracted_entity_ids = set(extract_entity_ids_from_definition(definition))
-        if entity_ids is None and "definition" in validated_data:
-            # Auto-extract dependencies from definition (ADR 0057/0059).
-            entity_ids = sorted(extracted_entity_ids)
-        elif entity_ids is not None:
-            # Preserve explicit entity_ids but always include definition-derived dependencies.
-            entity_ids = sorted(set(entity_ids) | extracted_entity_ids)
-
-        # Always invalidate dispatcher cache on update to ensure rule changes take effect (ADR 0057)
-        from alarm.dispatcher import invalidate_entity_rule_cache
-        invalidate_entity_rule_cache()
-
-        if entity_ids is not None:
-            sync_rule_entity_refs(rule=rule, entity_ids=entity_ids, entity_sources=entity_sources)
-
-        return rule
+        return update_rule(rule=instance, validated_data=validated_data, entity_ids=entity_ids)

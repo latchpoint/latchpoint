@@ -3,7 +3,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from alarm import rules_engine
+from alarm.dispatcher import invalidate_entity_rule_cache
+from alarm.dispatcher.entity_extractor import (
+    extract_entity_ids_from_definition,
+    extract_entity_sources_from_definition,
+)
 from alarm.models import Rule
+from alarm.use_cases.rule_entity_refs import sync_rule_entity_refs
 from config.domain_exceptions import ValidationError
 
 
@@ -71,3 +77,71 @@ def simulate_rules(*, input_data: RuleSimulateInput):
         assume_for_seconds=input_data.assume_for_seconds,
         alarm_state=input_data.alarm_state,
     )
+
+
+def derive_kind_from_actions(definition: dict) -> str:
+    """Derive rule kind from the first action in the then clause."""
+    then_actions = definition.get("then", []) if isinstance(definition, dict) else []
+    if not then_actions:
+        return "trigger"  # Default
+
+    first_action = then_actions[0] if isinstance(then_actions, list) else {}
+    action_type = first_action.get("type", "") if isinstance(first_action, dict) else ""
+
+    # Map action types to rule kinds
+    if action_type == "alarm_trigger":
+        return "trigger"
+    elif action_type == "alarm_disarm":
+        return "disarm"
+    elif action_type == "alarm_arm":
+        return "arm"
+    else:
+        return "trigger"  # Default for ha_call_service, zwavejs_set_value, etc.
+
+
+def create_rule(*, validated_data: dict, entity_ids: list[str] | None) -> Rule:
+    """Orchestrate rule creation: derive kind, extract entities, persist, invalidate cache."""
+    definition = validated_data.get("definition", {})
+    if "kind" not in validated_data or not validated_data.get("kind"):
+        validated_data["kind"] = derive_kind_from_actions(definition)
+
+    entity_sources = extract_entity_sources_from_definition(definition)
+    extracted_entity_ids = set(extract_entity_ids_from_definition(definition))
+
+    if entity_ids is None:
+        entity_ids = sorted(extracted_entity_ids)
+    else:
+        entity_ids = sorted(set(entity_ids) | extracted_entity_ids)
+
+    rule = Rule.objects.create(**validated_data)
+
+    invalidate_entity_rule_cache()
+    sync_rule_entity_refs(rule=rule, entity_ids=entity_ids, entity_sources=entity_sources)
+
+    return rule
+
+
+def update_rule(*, rule: Rule, validated_data: dict, entity_ids: list[str] | None) -> Rule:
+    """Orchestrate rule update: derive kind, extract entities, persist, invalidate cache."""
+    definition = validated_data.get("definition", rule.definition)
+    if "kind" not in validated_data or not validated_data.get("kind"):
+        validated_data["kind"] = derive_kind_from_actions(definition)
+
+    entity_sources = extract_entity_sources_from_definition(definition)
+
+    for attr, value in validated_data.items():
+        setattr(rule, attr, value)
+    rule.save()
+
+    extracted_entity_ids = set(extract_entity_ids_from_definition(definition))
+    if entity_ids is None and "definition" in validated_data:
+        entity_ids = sorted(extracted_entity_ids)
+    elif entity_ids is not None:
+        entity_ids = sorted(set(entity_ids) | extracted_entity_ids)
+
+    invalidate_entity_rule_cache()
+
+    if entity_ids is not None:
+        sync_rule_entity_refs(rule=rule, entity_ids=entity_ids, entity_sources=entity_sources)
+
+    return rule
