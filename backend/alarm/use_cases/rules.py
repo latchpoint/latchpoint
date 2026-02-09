@@ -79,7 +79,7 @@ def simulate_rules(*, input_data: RuleSimulateInput):
     )
 
 
-def derive_kind_from_actions(definition: dict) -> str:
+def derive_kind_from_actions(definition: dict | None) -> str:
     """Derive rule kind from the first action in the then clause."""
     then_actions = definition.get("then", []) if isinstance(definition, dict) else []
     if not then_actions:
@@ -101,9 +101,11 @@ def derive_kind_from_actions(definition: dict) -> str:
 
 def create_rule(*, validated_data: dict, entity_ids: list[str] | None) -> Rule:
     """Orchestrate rule creation: derive kind, extract entities, persist, invalidate cache."""
-    definition = validated_data.get("definition", {})
-    if "kind" not in validated_data or not validated_data.get("kind"):
-        validated_data["kind"] = derive_kind_from_actions(definition)
+    data = {**validated_data}
+
+    definition = data.get("definition", {})
+    if "kind" not in data or not data.get("kind"):
+        data["kind"] = derive_kind_from_actions(definition)
 
     entity_sources = extract_entity_sources_from_definition(definition)
     extracted_entity_ids = set(extract_entity_ids_from_definition(definition))
@@ -113,7 +115,7 @@ def create_rule(*, validated_data: dict, entity_ids: list[str] | None) -> Rule:
     else:
         entity_ids = sorted(set(entity_ids) | extracted_entity_ids)
 
-    rule = Rule.objects.create(**validated_data)
+    rule = Rule.objects.create(**data)
 
     invalidate_entity_rule_cache()
     sync_rule_entity_refs(rule=rule, entity_ids=entity_ids, entity_sources=entity_sources)
@@ -123,18 +125,19 @@ def create_rule(*, validated_data: dict, entity_ids: list[str] | None) -> Rule:
 
 def update_rule(*, rule: Rule, validated_data: dict, entity_ids: list[str] | None) -> Rule:
     """Orchestrate rule update: derive kind, extract entities, persist, invalidate cache."""
-    definition = validated_data.get("definition", rule.definition)
-    if "kind" not in validated_data or not validated_data.get("kind"):
-        validated_data["kind"] = derive_kind_from_actions(definition)
+    data = {**validated_data}
 
-    entity_sources = extract_entity_sources_from_definition(definition)
+    definition = data.get("definition", rule.definition)
+    if "kind" not in data or not data.get("kind"):
+        data["kind"] = derive_kind_from_actions(definition)
 
-    for attr, value in validated_data.items():
+    # Manual update — Rule has no M2M fields, so setattr+save is equivalent to serializer.update()
+    for attr, value in data.items():
         setattr(rule, attr, value)
     rule.save()
 
     extracted_entity_ids = set(extract_entity_ids_from_definition(definition))
-    if entity_ids is None and "definition" in validated_data:
+    if entity_ids is None and "definition" in data:
         entity_ids = sorted(extracted_entity_ids)
     elif entity_ids is not None:
         entity_ids = sorted(set(entity_ids) | extracted_entity_ids)
@@ -142,6 +145,7 @@ def update_rule(*, rule: Rule, validated_data: dict, entity_ids: list[str] | Non
     invalidate_entity_rule_cache()
 
     if entity_ids is not None:
+        entity_sources = extract_entity_sources_from_definition(definition)
         sync_rule_entity_refs(rule=rule, entity_ids=entity_ids, entity_sources=entity_sources)
 
     return rule

@@ -96,6 +96,16 @@ class CreateRuleTests(TestCase):
         call_kwargs = mock_sync.call_args.kwargs
         self.assertEqual(call_kwargs["entity_sources"], {"binary_sensor.front_door": "home_assistant"})
 
+    def test_empty_entity_ids_list_merges_with_extracted(self, mock_sources, mock_ids, mock_invalidate, mock_sync):
+        definition = self._make_definition()
+        create_rule(
+            validated_data={"name": "R7", "definition": definition},
+            entity_ids=[],
+        )
+        mock_sync.assert_called_once()
+        call_kwargs = mock_sync.call_args.kwargs
+        self.assertEqual(call_kwargs["entity_ids"], ["binary_sensor.front_door"])
+
 
 @patch(MOCK_SYNC)
 @patch(MOCK_INVALIDATE)
