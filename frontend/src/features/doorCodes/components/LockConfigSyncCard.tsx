@@ -10,6 +10,7 @@ import { LoadingInline } from '@/components/ui/loading-inline'
 import { Modal } from '@/components/ui/modal'
 import { Select } from '@/components/ui/select'
 import { formatDaysMask } from '@/features/codes/utils/daysOfWeek'
+import { DismissedSlotsSection } from '@/features/doorCodes/components/DismissedSlotsSection'
 
 type Props = {
   userId: string
@@ -26,6 +27,29 @@ function getZwavejsNodeId(entity: Entity): number | null {
   if (typeof nodeId === 'number' && Number.isFinite(nodeId)) return nodeId
   if (typeof nodeId === 'string' && /^\d+$/.test(nodeId)) return Number(nodeId)
   return null
+}
+
+function getLastSyncedAt(entity: Entity): string | null {
+  const attrs = entity.attributes || {}
+  const zw = (attrs as Record<string, unknown>).zwavejs
+  if (!zw || typeof zw !== 'object') return null
+  const lastSyncedAt = (zw as Record<string, unknown>).lastSyncedAt ?? (zw as Record<string, unknown>).last_synced_at
+  return typeof lastSyncedAt === 'string' ? lastSyncedAt : null
+}
+
+function formatTimeAgo(isoString: string): string {
+  const date = new Date(isoString)
+  if (isNaN(date.getTime())) return isoString
+  const diffMs = Date.now() - date.getTime()
+  if (diffMs < 0) return 'just now'
+  const seconds = Math.floor(diffMs / 1000)
+  if (seconds < 60) return 'just now'
+  const minutes = Math.floor(seconds / 60)
+  if (minutes < 60) return `${minutes}m ago`
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return `${hours}h ago`
+  const days = Math.floor(hours / 24)
+  return `${days}d ago`
 }
 
 function ResultSummary({ result }: { result: LockConfigSyncResult }) {
@@ -47,6 +71,7 @@ export function LockConfigSyncCard({ userId, locks, locksIsLoading, locksError }
   const syncMutation = useSyncLockConfigMutation()
   const [selectedLockEntityId, setSelectedLockEntityId] = useState<string>('')
   const [reauthPassword, setReauthPassword] = useState<string>('')
+  const [dryRun, setDryRun] = useState<boolean>(false)
   const [error, setError] = useState<string | null>(null)
   const [result, setResult] = useState<LockConfigSyncResult | null>(null)
   const [resultOpen, setResultOpen] = useState<boolean>(false)
@@ -57,6 +82,13 @@ export function LockConfigSyncCard({ userId, locks, locksIsLoading, locksError }
       .filter((entity) => getZwavejsNodeId(entity) != null)
       .sort((a, b) => a.name.localeCompare(b.name))
   }, [locks])
+
+  const selectedLockEntity = useMemo(() => {
+    if (!selectedLockEntityId) return null
+    return zwaveLinkedLocks.find((l) => l.entityId === selectedLockEntityId) ?? null
+  }, [selectedLockEntityId, zwaveLinkedLocks])
+
+  const lastSyncedAt = selectedLockEntity ? getLastSyncedAt(selectedLockEntity) : null
 
   const submit = async () => {
     setError(null)
@@ -77,6 +109,7 @@ export function LockConfigSyncCard({ userId, locks, locksIsLoading, locksError }
       const data = await syncMutation.mutateAsync({
         lockEntityId: selectedLockEntityId,
         req: { userId, reauthPassword },
+        dryRun,
       })
       setResult(data)
       setResultOpen(true)
@@ -120,6 +153,10 @@ export function LockConfigSyncCard({ userId, locks, locksIsLoading, locksError }
         </Select>
       </FormField>
 
+      {lastSyncedAt ? (
+        <div className="text-sm text-muted-foreground">Last synced: {formatTimeAgo(lastSyncedAt)}</div>
+      ) : null}
+
       <FormField label="Password" required help="Required to sync door codes (admin re-authentication).">
         <Input
           type="password"
@@ -136,16 +173,28 @@ export function LockConfigSyncCard({ userId, locks, locksIsLoading, locksError }
         </Alert>
       ) : null}
 
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-3">
         <Button onClick={() => void submit()} disabled={syncMutation.isPending || zwaveLinkedLocks.length === 0}>
-          {syncMutation.isPending ? 'Syncing…' : 'Sync Codes from Lock'}
+          {syncMutation.isPending ? 'Syncing…' : dryRun ? 'Preview Sync' : 'Sync Codes from Lock'}
         </Button>
+        <label className="flex items-center gap-1.5 text-sm">
+          <input
+            type="checkbox"
+            checked={dryRun}
+            onChange={(e) => setDryRun(e.target.checked)}
+            disabled={syncMutation.isPending}
+            className="rounded border-input"
+          />
+          Dry run (preview only)
+        </label>
       </div>
+
+      {selectedLockEntityId ? <DismissedSlotsSection lockEntityId={selectedLockEntityId} /> : null}
 
       <Modal
         open={resultOpen}
         onOpenChange={setResultOpen}
-        title="Sync Results"
+        title={result?.dryRun ? 'Sync Preview (Dry Run)' : 'Sync Results'}
         description={result?.lockEntityId ? `Lock: ${result.lockEntityId}` : undefined}
         maxWidthClassName="max-w-2xl"
       >

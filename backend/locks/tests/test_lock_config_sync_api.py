@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from unittest import TestCase
 from unittest.mock import patch
 
 from django.urls import reverse
@@ -9,6 +10,7 @@ from accounts.models import User
 from alarm.models import AlarmSettingsEntry, Entity
 from alarm.use_cases.settings_profile import ensure_active_settings_profile
 from locks.models import DoorCode, DoorCodeLockAssignment
+from locks.use_cases.lock_config_sync import _normalize_pin
 
 
 class FakeZwavejsGateway:
@@ -383,3 +385,72 @@ class LockConfigSyncApiTests(APITestCase):
         self.assertEqual(slot_actions[1]["action"], "created")
         self.assertEqual(slot_actions[2]["action"], "error")
         self.assertIn("ConnectionError", slot_actions[2]["error"])
+
+
+class PinNormalizationTests(TestCase):
+    """Test _normalize_pin() with various input types (ADR 0068 test checklist)."""
+
+    def test_string_numeric_pin(self):
+        known, pin = _normalize_pin("1234")
+        self.assertTrue(known)
+        self.assertEqual(pin, "1234")
+
+    def test_string_8_digit_pin(self):
+        known, pin = _normalize_pin("12345678")
+        self.assertTrue(known)
+        self.assertEqual(pin, "12345678")
+
+    def test_integer_pin(self):
+        known, pin = _normalize_pin(1234)
+        self.assertTrue(known)
+        self.assertEqual(pin, "1234")
+
+    def test_bytes_pin(self):
+        known, pin = _normalize_pin(b"5678")
+        self.assertTrue(known)
+        self.assertEqual(pin, "5678")
+
+    def test_masked_stars(self):
+        known, pin = _normalize_pin("****")
+        self.assertFalse(known)
+        self.assertIsNone(pin)
+
+    def test_masked_bullets(self):
+        known, pin = _normalize_pin("\u2022\u2022\u2022\u2022")
+        self.assertFalse(known)
+        self.assertIsNone(pin)
+
+    def test_masked_x(self):
+        known, pin = _normalize_pin("xxxx")
+        self.assertFalse(known)
+        self.assertIsNone(pin)
+
+    def test_none_input(self):
+        known, pin = _normalize_pin(None)
+        self.assertFalse(known)
+        self.assertIsNone(pin)
+
+    def test_empty_string(self):
+        known, pin = _normalize_pin("")
+        self.assertFalse(known)
+        self.assertIsNone(pin)
+
+    def test_too_short(self):
+        known, pin = _normalize_pin("123")
+        self.assertFalse(known)
+        self.assertIsNone(pin)
+
+    def test_too_long(self):
+        known, pin = _normalize_pin("123456789")
+        self.assertFalse(known)
+        self.assertIsNone(pin)
+
+    def test_non_numeric(self):
+        known, pin = _normalize_pin("abcd")
+        self.assertFalse(known)
+        self.assertIsNone(pin)
+
+    def test_float_integer_pin(self):
+        known, pin = _normalize_pin(1234.0)
+        self.assertTrue(known)
+        self.assertEqual(pin, "1234")

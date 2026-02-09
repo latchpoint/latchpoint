@@ -82,6 +82,7 @@ export const queryKeys = {
     all: ['doorCodes'] as const,
     byUser: (userId: string) => ['doorCodes', 'byUser', userId] as const,
     detail: (id: number) => ['doorCodes', id] as const,
+    dismissedAssignments: (lockEntityId: string) => ['doorCodes', 'dismissed', lockEntityId] as const,
   },
   events: {
     all: ['events'] as const,

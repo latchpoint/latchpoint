@@ -59,6 +59,16 @@ export interface UpdateDoorCodeRequest {
   reauthPassword: string
 }
 
+export interface DismissedAssignment {
+  id: number
+  lockEntityId: string
+  slotIndex: number | null
+  syncDismissed: boolean
+  doorCodeLabel: string
+  doorCodeSource: DoorCodeSource
+  doorCodeIsActive: boolean
+}
+
 export interface LockConfigSyncRequest {
   userId: string
   reauthPassword: string
@@ -95,4 +105,5 @@ export interface LockConfigSyncResult {
   errors: number
   timestamp: string
   slots: LockConfigSyncSlotResult[]
+  dryRun?: boolean
 }

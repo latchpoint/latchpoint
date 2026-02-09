@@ -896,12 +896,42 @@ def sync_lock_config(
                 result.deactivated += 1
 
         result.timestamp = django_timezone.now()
+
+        # Persist last_synced_at on the lock entity's attributes (ADR 0069 finding 12).
+        try:
+            entity = Entity.objects.filter(entity_id=lock_entity_id).first()
+            if entity:
+                attrs = entity.attributes or {}
+                zw = attrs.get("zwavejs") if isinstance(attrs, dict) else {}
+                if not isinstance(zw, dict):
+                    zw = {}
+                zw["last_synced_at"] = result.timestamp.isoformat()
+                attrs["zwavejs"] = zw
+                entity.attributes = attrs
+                entity.save(update_fields=["attributes", "updated_at"])
+        except Exception:
+            logger.warning("Failed to persist last_synced_at for %s", lock_entity_id, exc_info=True)
+
         logger.info(
             "Lock config sync complete for %s (node %d): created=%d updated=%d unchanged=%d "
             "deactivated=%d dismissed=%d skipped=%d errors=%d",
             lock_entity_id, node_id, result.created, result.updated, result.unchanged,
             result.deactivated, result.dismissed, result.skipped, result.errors,
         )
+
+        # Emit dispatcher event so rules referencing this lock can react (ADR 0069 finding 14).
+        if result.created or result.updated or result.deactivated:
+            try:
+                from alarm.dispatcher import notify_entities_changed
+
+                notify_entities_changed(
+                    source="lock_config_sync",
+                    entity_ids=[lock_entity_id],
+                    changed_at=result.timestamp,
+                )
+            except Exception:
+                logger.warning("Failed to notify dispatcher after sync for %s", lock_entity_id, exc_info=True)
+
         return result
     finally:
         _release_sync_lock(lock_key=lock_key, lock_id=lock_id)

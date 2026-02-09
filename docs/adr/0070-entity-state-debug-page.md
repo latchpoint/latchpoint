@@ -1,7 +1,7 @@
 # ADR 0070: Entity State Debug Page
 
 ## Status
-Proposed
+Implemented
 
 ## Context
 When defining rules in LatchPoint, users need to know the exact state values that Home Assistant entities report. For example, a user creating a rule for `light.lamp` needs to know whether the state is `"on"` / `"off"`, what attributes are available, and what values those attributes hold. Currently, there is no way to inspect raw entity state within LatchPoint — users must switch to the Home Assistant UI or developer tools to look up this information.

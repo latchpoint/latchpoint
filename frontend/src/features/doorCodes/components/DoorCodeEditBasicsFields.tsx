@@ -9,6 +9,7 @@ type Props = {
   maxUses: string
   onMaxUsesChange: (next: string) => void
   isBusy: boolean
+  isSynced?: boolean
 }
 
 export function DoorCodeEditBasicsFields({
@@ -20,6 +21,7 @@ export function DoorCodeEditBasicsFields({
   maxUses,
   onMaxUsesChange,
   isBusy,
+  isSynced = false,
 }: Props) {
   return (
     <div className="grid gap-4 md:grid-cols-2">
@@ -35,12 +37,12 @@ export function DoorCodeEditBasicsFields({
         </label>
         <Input
           id={`door-code-edit-code-${codeId}`}
-          value={newCode}
+          value={isSynced ? '' : newCode}
           onChange={(e) => onNewCodeChange(e.target.value)}
-          placeholder="4–8 digits"
+          placeholder={isSynced ? 'Controlled by lock sync' : '4–8 digits'}
           inputMode="numeric"
           autoComplete="off"
-          disabled={isBusy}
+          disabled={isBusy || isSynced}
         />
       </div>
       <div className="space-y-2">

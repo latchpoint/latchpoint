@@ -1,7 +1,7 @@
 # ADR 0063: Scheduler Status UI and Health Monitoring
 
 ## Status
-Proposed
+Implemented
 
 ## Related
 - ADR 0024: In-Process Task Scheduler with Watchdog

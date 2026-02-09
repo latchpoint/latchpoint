@@ -1,7 +1,7 @@
 # ADR 0064: Integration-Gated Scheduler Tasks
 
 ## Status
-Partially Implemented
+Implemented
 
 ## Context
 The app uses an in-process, thread-based scheduler (ADR 0024). Today, some scheduled tasks run on a fixed cadence even when their associated integration is not enabled/configured (e.g. Home Assistant status checks or entity sync loops).
