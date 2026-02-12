@@ -206,7 +206,7 @@ class ZwavejsConnectionManager:
             try:
                 listener(msg)
             except Exception:
-                self._logger.debug("Event listener failed", exc_info=True)
+                self._logger.warning("Event listener failed", exc_info=True)
                 continue
 
         # Notify dispatcher if this is a value update (ADR 0057)
@@ -326,7 +326,7 @@ class ZwavejsConnectionManager:
             try:
                 self._event_executor.submit(self._emit_event, msg)
             except Exception:
-                self._logger.debug("Event bridge attachment failed", exc_info=True)
+                self._logger.warning("Event bridge attachment failed", exc_info=True)
                 return
 
         def _attach_node(node) -> None:

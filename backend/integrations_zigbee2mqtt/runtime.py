@@ -177,7 +177,7 @@ def apply_runtime_settings_from_active_profile() -> None:
             _subscribe_for_ingest(settings=settings)
             refresh_device_mapping_async()
     except Exception:
-        logger.debug("Failed to apply runtime settings", exc_info=True)
+        logger.warning("Failed to apply runtime settings", exc_info=True)
         return
 
 
@@ -222,7 +222,7 @@ def _subscribe_for_ingest(*, settings: Zigbee2mqttSettings) -> None:
                 return
             _handle_z2m_message(settings=current, topic=topic, payload=payload)
         except Exception:
-            logger.debug("Message handling failed for topic %s", topic, exc_info=True)
+            logger.warning("Message handling failed for topic %s", topic, exc_info=True)
             return
 
     if wildcard not in _subscribed_wildcards:
@@ -259,7 +259,7 @@ def refresh_device_mapping_async(*, min_interval_seconds: int = 30) -> None:
         try:
             refresh_device_mapping_via_mqtt(timeout_seconds=3.0)
         except Exception:
-            logger.debug("Device mapping refresh failed", exc_info=True)
+            logger.warning("Device mapping refresh failed", exc_info=True)
             return
 
     threading.Thread(target=_run, daemon=True).start()

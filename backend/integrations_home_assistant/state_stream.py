@@ -307,7 +307,7 @@ class HomeAssistantStateStream:
                 ]
             )
         except Exception:
-            logger.debug("Entity sync broadcast failed", exc_info=True)
+            logger.warning("Entity sync broadcast failed", exc_info=True)
 
         try:
             from alarm.dispatcher import notify_entities_changed
@@ -318,7 +318,7 @@ class HomeAssistantStateStream:
                 changed_at=changed_at,
             )
         except Exception:
-            logger.debug("Dispatcher notification failed", exc_info=True)
+            logger.warning("Dispatcher notification failed", exc_info=True)
 
 
 _stream = HomeAssistantStateStream()

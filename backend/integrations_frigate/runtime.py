@@ -121,7 +121,7 @@ def apply_runtime_settings_from_active_profile() -> None:
         if settings.enabled and _mqtt_enabled():
             _subscribe(settings=settings)
     except Exception:
-        logger.debug("Failed to apply Frigate runtime settings", exc_info=True)
+        logger.warning("Failed to apply Frigate runtime settings", exc_info=True)
         return
 
 
@@ -181,7 +181,7 @@ def _subscribe(*, settings: FrigateSettings) -> None:
                     return
                 _handle_frigate_message(settings=current, topic=topic, payload=payload)
             except Exception:
-                logger.debug("Frigate message handling failed", exc_info=True)
+                logger.warning("Frigate message handling failed", exc_info=True)
                 return
 
         mqtt_connection_manager.subscribe(topic=topic, qos=0, callback=_handle_message)
@@ -250,7 +250,7 @@ def _handle_frigate_message(*, settings: FrigateSettings, topic: str, payload: s
     try:
         prune_old_detections(retention_seconds=settings.retention_seconds)
     except Exception:
-        logger.debug("Detection pruning failed", exc_info=True)
+        logger.warning("Detection pruning failed", exc_info=True)
         return
 
     # Notify dispatcher of Frigate detection (ADR 0057).
