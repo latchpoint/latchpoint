@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from alarm.rules.action_handlers import ActionContext, register
 from alarm.state_machine.settings import get_active_settings_profile, get_setting_json
+
+logger = logging.getLogger(__name__)
 
 
 def execute(action: dict[str, Any], ctx: ActionContext) -> tuple[dict[str, Any], str | None]:
@@ -35,6 +38,7 @@ def execute(action: dict[str, Any], ctx: ActionContext) -> tuple[dict[str, Any],
         )
         return {"ok": True, "type": "zwavejs_set_value", "node_id": node_id, "value_id": value_id}, None
     except Exception as exc:
+        logger.warning("zwavejs_set_value failed for rule %s: %s", ctx.rule.id, exc)
         return {"ok": False, "type": "zwavejs_set_value", "node_id": node_id, "value_id": value_id, "error": str(exc)}, str(exc)
 
 

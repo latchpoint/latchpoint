@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import logging
+
 from django.db import transaction
 from rest_framework.exceptions import ValidationError
 
 from alarm.models import AlarmSettingsEntry, AlarmSettingsProfile
 from alarm.settings_registry import ALARM_PROFILE_SETTINGS, ALARM_PROFILE_SETTINGS_BY_KEY
+
+logger = logging.getLogger(__name__)
 
 
 def _ensure_profile_entries(profile: AlarmSettingsProfile) -> None:
@@ -81,7 +85,7 @@ def update_settings_profile(*, profile: AlarmSettingsProfile, changes: dict) -> 
                 lambda: settings_profile_changed.send(sender=None, profile_id=profile.id, reason="updated")
             )
         except Exception:
-            pass
+            logger.debug("Signal emission failed", exc_info=True)
     return profile
 
 
@@ -106,5 +110,5 @@ def activate_settings_profile(*, profile: AlarmSettingsProfile) -> AlarmSettings
                 lambda: settings_profile_changed.send(sender=None, profile_id=profile.id, reason="activated")
             )
         except Exception:
-            pass
+            logger.debug("Signal emission failed", exc_info=True)
     return profile

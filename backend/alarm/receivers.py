@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 from datetime import timedelta
 
 from django.dispatch import receiver
@@ -13,8 +14,44 @@ logger = logging.getLogger(__name__)
 
 _OUTAGE_THRESHOLD_SECONDS = 60
 
-_offline_since: dict[str, timezone.datetime] = {}
-_offline_event_emitted: set[str] = set()
+
+class IntegrationOutageTracker:
+    """Thread-safe tracker for integration offline state and event deduplication."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._offline_since: dict[str, timezone.datetime] = {}
+        self._event_emitted: set[str] = set()
+
+    def mark_offline(self, integration: str, now) -> None:
+        with self._lock:
+            self._offline_since[integration] = now
+            self._event_emitted.discard(integration)
+
+    def mark_online(self, integration: str) -> float | None:
+        with self._lock:
+            start = self._offline_since.pop(integration, None)
+            self._event_emitted.discard(integration)
+        return None  # caller computes duration from start
+
+    def get_offline_start(self, integration: str):
+        with self._lock:
+            return self._offline_since.get(integration)
+
+    def is_event_emitted(self, integration: str) -> bool:
+        with self._lock:
+            return integration in self._event_emitted
+
+    def set_event_emitted(self, integration: str) -> None:
+        with self._lock:
+            self._event_emitted.add(integration)
+
+    def record_initial_offline(self, integration: str, now) -> None:
+        with self._lock:
+            self._offline_since[integration] = now
+
+
+_tracker = IntegrationOutageTracker()
 
 
 @receiver(integration_status_changed)
@@ -24,17 +61,17 @@ def log_integration_transition(sender, *, integration: str, is_healthy: bool, pr
 
     if previous_healthy is None:
         if not is_healthy:
-            _offline_since[integration] = now
+            _tracker.record_initial_offline(integration, now)
         return
 
     if previous_healthy and not is_healthy:
-        _offline_since[integration] = now
-        _offline_event_emitted.discard(integration)
+        _tracker.mark_offline(integration, now)
         logger.warning("Integration %s went offline", integration)
         return
 
     if not previous_healthy and is_healthy:
-        offline_duration = (now - _offline_since.get(integration, now)).total_seconds()
+        offline_start = _tracker.get_offline_start(integration)
+        offline_duration = (now - (offline_start or now)).total_seconds()
         logger.info("Integration %s back online after %.0fs", integration, offline_duration)
 
         if offline_duration >= _OUTAGE_THRESHOLD_SECONDS:
@@ -47,8 +84,7 @@ def log_integration_transition(sender, *, integration: str, is_healthy: bool, pr
                 },
             )
 
-        _offline_since.pop(integration, None)
-        _offline_event_emitted.discard(integration)
+        _tracker.mark_online(integration)
 
 
 @receiver(integration_status_observed)
@@ -57,7 +93,7 @@ def log_prolonged_outage(sender, *, integration: str, is_healthy: bool, checked_
     if is_healthy:
         return
 
-    offline_start = _offline_since.get(integration)
+    offline_start = _tracker.get_offline_start(integration)
     if not offline_start:
         return
 
@@ -65,7 +101,7 @@ def log_prolonged_outage(sender, *, integration: str, is_healthy: bool, checked_
     if offline_duration < _OUTAGE_THRESHOLD_SECONDS:
         return
 
-    if integration in _offline_event_emitted:
+    if _tracker.is_event_emitted(integration):
         return
 
     now = timezone.now()
@@ -75,7 +111,7 @@ def log_prolonged_outage(sender, *, integration: str, is_healthy: bool, checked_
         metadata__integration=integration,
     ).exists()
     if recent_event:
-        _offline_event_emitted.add(integration)
+        _tracker.set_event_emitted(integration)
         return
 
     logger.error("Integration %s offline for %.0fs", integration, offline_duration)
@@ -87,5 +123,4 @@ def log_prolonged_outage(sender, *, integration: str, is_healthy: bool, checked_
             "offline_duration_seconds": offline_duration,
         },
     )
-    _offline_event_emitted.add(integration)
-
+    _tracker.set_event_emitted(integration)

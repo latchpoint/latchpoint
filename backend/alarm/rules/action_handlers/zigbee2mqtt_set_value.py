@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from alarm.rules.action_handlers import ActionContext, register
+
+logger = logging.getLogger(__name__)
 
 
 def execute(action: dict[str, Any], ctx: ActionContext) -> tuple[dict[str, Any], str | None]:
@@ -15,6 +18,7 @@ def execute(action: dict[str, Any], ctx: ActionContext) -> tuple[dict[str, Any],
         ctx.zigbee2mqtt.set_entity_value(entity_id=entity_id.strip(), value=action.get("value"))
         return {"ok": True, "type": "zigbee2mqtt_set_value", "entity_id": entity_id.strip()}, None
     except Exception as exc:
+        logger.warning("zigbee2mqtt_set_value failed for rule %s: %s", ctx.rule.id, exc)
         return {"ok": False, "type": "zigbee2mqtt_set_value", "entity_id": entity_id.strip(), "error": str(exc)}, str(exc)
 
 

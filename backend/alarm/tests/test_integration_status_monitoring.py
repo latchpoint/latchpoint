@@ -15,8 +15,7 @@ from alarm.signals import integration_status_changed, integration_status_observe
 
 class IntegrationStatusReceiversTests(TestCase):
     def setUp(self) -> None:
-        receivers._offline_since.clear()
-        receivers._offline_event_emitted.clear()
+        receivers._tracker = receivers.IntegrationOutageTracker()
 
     def test_offline_threshold_emits_offline_event_once(self):
         base = timezone.now()

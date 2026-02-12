@@ -351,7 +351,7 @@ def sync_ring_keypad_v2_devices_state() -> None:
         snapshot = get_current_snapshot(process_timers=False)
         logger.info("Ring Keypad v2 sync: alarm_state=%s", snapshot.current_state)
     except Exception:
-        pass
+        logger.debug("Failed to get alarm snapshot for Ring Keypad sync", exc_info=True)
     devices = ControlPanelDevice.objects.filter(
         enabled=True,
         integration_type=ControlPanelIntegrationType.ZWAVEJS,
@@ -368,7 +368,7 @@ def sync_ring_keypad_v2_devices_state() -> None:
                 device.last_error = str(exc)
                 device.save(update_fields=["last_error", "updated_at"])
             except Exception:
-                pass
+                logger.debug("Failed to save device error state", exc_info=True)
             continue
 
 

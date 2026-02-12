@@ -430,7 +430,7 @@ class RuleDispatcher:
                 )
                 required.update(str(eid).strip() for eid in ref_entity_ids if str(eid).strip())
             except Exception:
-                pass
+                logger.debug("RuleEntityRef lookup failed", exc_info=True)
 
         for rule in rules:
             try:
@@ -670,5 +670,5 @@ def invalidate_entity_rule_cache() -> None:
         try:
             cache.set(_CACHE_ENTITY_RULE_VERSION_KEY, uuid4().hex, timeout=None)
         except Exception:
-            pass
+            logger.debug("Cache version bump failed", exc_info=True)
     logger.debug("Entity-rule cache invalidated")
