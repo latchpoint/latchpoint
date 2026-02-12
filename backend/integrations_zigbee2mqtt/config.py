@@ -26,6 +26,10 @@ class Zigbee2mqttSettings:
     base_topic: str
     allowlist: list[object]
     denylist: list[object]
+    run_rules_on_event: bool
+    run_rules_debounce_seconds: int
+    run_rules_max_per_minute: int
+    run_rules_kinds: list[object]
 
 
 DEFAULT_SETTINGS: dict[str, Any] = {
@@ -33,6 +37,10 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "base_topic": "zigbee2mqtt",
     "allowlist": [],
     "denylist": [],
+    "run_rules_on_event": False,
+    "run_rules_debounce_seconds": 5,
+    "run_rules_max_per_minute": 60,
+    "run_rules_kinds": [],
 }
 
 
@@ -47,11 +55,27 @@ def normalize_zigbee2mqtt_settings(raw: object) -> Zigbee2mqttSettings:
     allowlist = _as_list(data.get("allowlist"))
     denylist = _as_list(data.get("denylist"))
 
+    run_rules_on_event = bool(data.get("run_rules_on_event", DEFAULT_SETTINGS["run_rules_on_event"]))
+
+    run_rules_debounce_seconds = data.get("run_rules_debounce_seconds", DEFAULT_SETTINGS["run_rules_debounce_seconds"])
+    if not isinstance(run_rules_debounce_seconds, int) or run_rules_debounce_seconds < 0:
+        run_rules_debounce_seconds = DEFAULT_SETTINGS["run_rules_debounce_seconds"]
+
+    run_rules_max_per_minute = data.get("run_rules_max_per_minute", DEFAULT_SETTINGS["run_rules_max_per_minute"])
+    if not isinstance(run_rules_max_per_minute, int) or run_rules_max_per_minute < 1:
+        run_rules_max_per_minute = DEFAULT_SETTINGS["run_rules_max_per_minute"]
+
+    run_rules_kinds = _as_list(data.get("run_rules_kinds"))
+
     return Zigbee2mqttSettings(
         enabled=bool(data.get("enabled", False)),
         base_topic=base_topic,
         allowlist=allowlist,
         denylist=denylist,
+        run_rules_on_event=run_rules_on_event,
+        run_rules_debounce_seconds=run_rules_debounce_seconds,
+        run_rules_max_per_minute=run_rules_max_per_minute,
+        run_rules_kinds=run_rules_kinds,
     )
 
 
@@ -63,6 +87,10 @@ def mask_zigbee2mqtt_settings(raw: object) -> dict[str, Any]:
         "base_topic": normalized.base_topic,
         "allowlist": normalized.allowlist,
         "denylist": normalized.denylist,
+        "run_rules_on_event": normalized.run_rules_on_event,
+        "run_rules_debounce_seconds": normalized.run_rules_debounce_seconds,
+        "run_rules_max_per_minute": normalized.run_rules_max_per_minute,
+        "run_rules_kinds": normalized.run_rules_kinds,
     }
 
 

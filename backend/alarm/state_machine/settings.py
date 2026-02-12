@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from alarm.models import AlarmSettingsEntry, AlarmSettingsProfile
-from alarm.settings_registry import ALARM_PROFILE_SETTINGS_BY_KEY
+from alarm.models import AlarmSettingsEntry, AlarmSettingsProfile, SystemConfig
+from alarm.settings_registry import ALARM_PROFILE_SETTINGS_BY_KEY, SYSTEM_CONFIG_SETTINGS_BY_KEY
 
 from .errors import TransitionError
 from alarm.use_cases.settings_profile import ensure_active_settings_profile
@@ -54,3 +54,19 @@ def get_setting_int(profile: AlarmSettingsProfile, key: str) -> int:
 def get_setting_json(profile: AlarmSettingsProfile, key: str):
     """Return a setting value (typically a dict/list) without further coercion."""
     return get_setting_value(profile, key)
+
+
+def get_system_config_value(key: str):
+    """Return the value for a *system-wide* config key from the ``SystemConfig`` table.
+
+    Falls back to the registry default when the row doesn't exist in the DB.
+    This is used by subsystems (e.g. the dispatcher) that store configuration
+    globally rather than per-profile.
+    """
+    definition = SYSTEM_CONFIG_SETTINGS_BY_KEY.get(key)
+    if not definition:
+        raise TransitionError(f"Unknown system config key: {key}")
+    try:
+        return SystemConfig.objects.values_list("value", flat=True).get(key=key)
+    except SystemConfig.DoesNotExist:
+        return definition.default
