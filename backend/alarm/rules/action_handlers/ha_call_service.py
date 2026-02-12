@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from alarm.rules.action_handlers import ActionContext, register
+
+logger = logging.getLogger(__name__)
 
 
 def execute(action: dict[str, Any], ctx: ActionContext) -> tuple[dict[str, Any], str | None]:
@@ -21,6 +24,7 @@ def execute(action: dict[str, Any], ctx: ActionContext) -> tuple[dict[str, Any],
         )
         return {"ok": True, "type": "ha_call_service", "action": action_str}, None
     except Exception as exc:
+        logger.warning("ha_call_service failed for rule %s: %s", ctx.rule.id, exc, exc_info=True)
         return {"ok": False, "type": "ha_call_service", "action": action_str, "error": str(exc)}, str(exc)
 
 

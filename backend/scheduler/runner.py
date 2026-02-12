@@ -18,6 +18,16 @@ from .schedules import DailyAt, Every, Schedule
 
 logger = logging.getLogger(__name__)
 
+
+def _safe_telemetry(fn, *args, **kwargs):
+    """Call a telemetry function, logging failures at DEBUG instead of crashing."""
+    try:
+        fn(*args, **kwargs)
+    except Exception:
+        fn_name = getattr(fn, "__name__", repr(fn))
+        logger.debug("Telemetry call %s failed", fn_name, exc_info=True)
+
+
 _WATCHDOG_INTERVAL = 60  # Check threads every 60 seconds
 _lock = threading.Lock()  # Protect shared state
 _threads: dict[str, threading.Thread] = {}
@@ -132,10 +142,12 @@ def _run_task_loop(*, task: ScheduledTask, stop_event: threading.Event) -> None:
     """Run a task on its schedule forever."""
     try:
         from . import telemetry
-
-        telemetry.touch_task_health_registered(task=task)
     except Exception:
-        pass
+        logger.debug("Telemetry module unavailable in _run_task_loop", exc_info=True)
+        telemetry = None
+
+    if telemetry is not None:
+        _safe_telemetry(telemetry.touch_task_health_registered, task=task)
 
     while True:
         if stop_event.is_set():
@@ -176,12 +188,8 @@ def _run_task_loop(*, task: ScheduledTask, stop_event: threading.Event) -> None:
                 }
             )
 
-        try:
-            from . import telemetry
-
-            telemetry.update_task_health_scheduling(task=task, next_run_at=next_run)
-        except Exception:
-            pass
+        if telemetry is not None:
+            _safe_telemetry(telemetry.update_task_health_scheduling, task=task, next_run_at=next_run)
 
         logger.info(
             "Task %s scheduled for %s (in %.0fs)",
@@ -219,17 +227,14 @@ def _run_task_loop(*, task: ScheduledTask, stop_event: threading.Event) -> None:
                 }
             )
 
-        try:
-            from . import telemetry
-
-            telemetry.update_task_health_started(
+        if telemetry is not None:
+            _safe_telemetry(
+                telemetry.update_task_health_started,
                 task=task,
                 started_at=started_at,
                 consecutive_failures_at_start=consecutive_failures,
                 thread_name=threading.current_thread().name,
             )
-        except Exception:
-            pass
 
         start_time = time.monotonic()
         try:
@@ -245,15 +250,15 @@ def _run_task_loop(*, task: ScheduledTask, stop_event: threading.Event) -> None:
                 status["last_duration_seconds"] = round(duration, 6)
                 status["consecutive_failures"] = 0
 
-            try:
-                from . import telemetry
-
-                telemetry.update_task_health_finished_success(
+            if telemetry is not None:
+                _safe_telemetry(
+                    telemetry.update_task_health_finished_success,
                     task=task,
                     finished_at=finished_at,
                     duration_seconds=duration,
                 )
-                telemetry.record_task_run_success_if_slow(
+                _safe_telemetry(
+                    telemetry.record_task_run_success_if_slow,
                     task=task,
                     started_at=started_at,
                     finished_at=finished_at,
@@ -261,8 +266,6 @@ def _run_task_loop(*, task: ScheduledTask, stop_event: threading.Event) -> None:
                     consecutive_failures_at_start=consecutive_failures,
                     thread_name=threading.current_thread().name,
                 )
-            except Exception:
-                pass
         except Exception as exc:
             duration = time.monotonic() - start_time
             logger.exception(
@@ -279,17 +282,17 @@ def _run_task_loop(*, task: ScheduledTask, stop_event: threading.Event) -> None:
                 status["last_error"] = "exception"
                 status["consecutive_failures"] = next_consecutive_failures
 
-            try:
-                from . import telemetry
-
-                telemetry.update_task_health_finished_failure(
+            if telemetry is not None:
+                _safe_telemetry(
+                    telemetry.update_task_health_finished_failure,
                     task=task,
                     finished_at=finished_at,
                     duration_seconds=duration,
                     consecutive_failures=next_consecutive_failures,
                     error_message=str(exc),
                 )
-                telemetry.record_task_run_failure(
+                _safe_telemetry(
+                    telemetry.record_task_run_failure,
                     task=task,
                     started_at=started_at,
                     finished_at=finished_at,
@@ -298,13 +301,12 @@ def _run_task_loop(*, task: ScheduledTask, stop_event: threading.Event) -> None:
                     thread_name=threading.current_thread().name,
                     exc=exc,
                 )
-                telemetry.maybe_emit_failure_event(
+                _safe_telemetry(
+                    telemetry.maybe_emit_failure_event,
                     task_name=task.name,
                     consecutive_failures=next_consecutive_failures,
                     error_message=str(exc),
                 )
-            except Exception:
-                pass
         finally:
             close_old_connections()
             with _lock:
@@ -313,17 +315,19 @@ def _run_task_loop(*, task: ScheduledTask, stop_event: threading.Event) -> None:
 
 def _run_watchdog() -> None:
     """Monitor task threads and restart any that died."""
+    try:
+        from . import telemetry
+    except Exception:
+        logger.debug("Telemetry module unavailable in _run_watchdog", exc_info=True)
+        telemetry = None
+
     while True:
         time.sleep(_WATCHDOG_INTERVAL)
 
         with _lock:
             running_task_names = list(_running)
-        try:
-            from . import telemetry
-
-            telemetry.update_running_task_heartbeats(task_names=running_task_names)
-        except Exception:
-            pass
+        if telemetry is not None:
+            _safe_telemetry(telemetry.update_running_task_heartbeats, task_names=running_task_names)
 
         for name, task in get_tasks().items():
             enabled_now, enabled_reason = _task_enabled_now(task)
@@ -375,18 +379,15 @@ def _run_watchdog() -> None:
                             runtime_seconds,
                             task.max_runtime_seconds,
                         )
-                        try:
-                            from . import telemetry
-
-                            telemetry.maybe_emit_stuck_event(
+                        if telemetry is not None:
+                            _safe_telemetry(
+                                telemetry.maybe_emit_stuck_event,
                                 task_name=name,
                                 runtime_seconds=runtime_seconds,
                                 max_runtime_seconds=int(task.max_runtime_seconds),
                             )
-                        except Exception:
-                            pass
                 except Exception:
-                    pass
+                    logger.debug("Stuck detection failed for task %s", name, exc_info=True)
 
             with _lock:
                 thread = _threads.get(name)

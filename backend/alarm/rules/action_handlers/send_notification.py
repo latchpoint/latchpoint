@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from alarm.rules.action_handlers import ActionContext, register
 from alarm.state_machine.settings import get_active_settings_profile
 from notifications.dispatcher import get_dispatcher as get_notification_dispatcher
+
+logger = logging.getLogger(__name__)
 
 
 def execute(action: dict[str, Any], ctx: ActionContext) -> tuple[dict[str, Any], str | None]:
@@ -46,6 +49,7 @@ def execute(action: dict[str, Any], ctx: ActionContext) -> tuple[dict[str, Any],
                 "error_code": enqueue_result.error_code,
             }, enqueue_result.message
     except Exception as exc:
+        logger.warning("send_notification failed for rule %s: %s", ctx.rule.id, exc, exc_info=True)
         return {
             "ok": False,
             "type": "send_notification",

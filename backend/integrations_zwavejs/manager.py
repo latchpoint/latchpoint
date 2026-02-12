@@ -206,6 +206,7 @@ class ZwavejsConnectionManager:
             try:
                 listener(msg)
             except Exception:
+                self._logger.warning("Event listener failed", exc_info=True)
                 continue
 
         # Notify dispatcher if this is a value update (ADR 0057)
@@ -267,6 +268,7 @@ class ZwavejsConnectionManager:
             else:
                 payload = {"value": event}
         except Exception:
+            self._logger.debug("Event coercion failed", exc_info=True)
             return None
 
         if "event" in payload and isinstance(payload.get("event"), dict):
@@ -324,6 +326,7 @@ class ZwavejsConnectionManager:
             try:
                 self._event_executor.submit(self._emit_event, msg)
             except Exception:
+                self._logger.warning("Event bridge attachment failed", exc_info=True)
                 return
 
         def _attach_node(node) -> None:
@@ -334,6 +337,7 @@ class ZwavejsConnectionManager:
                     node_id = getattr(node, "id", None)
                 node_id_int = int(node_id)
             except Exception:
+                self._logger.debug("Node event bridge failed", exc_info=True)
                 return
 
             with self._lock:
@@ -348,6 +352,7 @@ class ZwavejsConnectionManager:
                 try:
                     on(event_name, lambda data, _name=event_name: _handler(_name, data))
                 except Exception:
+                    self._logger.debug("Node event bridge failed", exc_info=True)
                     continue
 
         nodes = getattr(controller, "nodes", None)
@@ -369,7 +374,7 @@ class ZwavejsConnectionManager:
             try:
                 controller_on("node added", _on_node_added)
             except Exception:
-                pass
+                self._logger.debug("Node event bridge failed", exc_info=True)
 
     def get_status(self) -> ZwavejsConnectionStatus:
         """Return the current connection status snapshot."""
@@ -553,7 +558,7 @@ class ZwavejsConnectionManager:
             try:
                 loop.call_soon_threadsafe(loop.stop)
             except Exception:
-                pass
+                self._logger.debug("Cleanup failed during disconnect", exc_info=True)
         if thread is not None and thread.is_alive():
             thread.join(timeout=2)
         with self._lock:
@@ -584,11 +589,11 @@ class ZwavejsConnectionManager:
                 if pending:
                     loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
             except Exception:
-                pass
+                self._logger.debug("Loop cleanup failed", exc_info=True)
             try:
                 loop.close()
             except Exception:
-                pass
+                self._logger.debug("Loop cleanup failed", exc_info=True)
 
     async def _async_run_loop(self) -> None:
         """Async connection loop that reconnects with backoff until stopped or disabled."""
@@ -656,7 +661,7 @@ class ZwavejsConnectionManager:
                             try:
                                 self._attach_event_bridges(client=client)
                             except Exception:
-                                pass
+                                self._logger.debug("Event bridge attachment failed", exc_info=True)
                             break
                         await asyncio.sleep(0.05)
 
@@ -736,6 +741,7 @@ class ZwavejsConnectionManager:
             try:
                 out.append(_value_id_dict_from_value_data(dict(value.data)))
             except Exception:
+                self._logger.debug("Value ID extraction failed", exc_info=True)
                 continue
         return out
 

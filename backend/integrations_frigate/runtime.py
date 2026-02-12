@@ -121,6 +121,7 @@ def apply_runtime_settings_from_active_profile() -> None:
         if settings.enabled and _mqtt_enabled():
             _subscribe(settings=settings)
     except Exception:
+        logger.warning("Failed to apply Frigate runtime settings", exc_info=True)
         return
 
 
@@ -135,9 +136,9 @@ def prune_old_detections(*, retention_seconds: int, min_interval_seconds: int = 
                 if timezone.now() - last_dt < timezone.timedelta(seconds=int(min_interval_seconds)):
                     return
             except Exception:
-                pass
+                logger.debug("Cache timestamp parse failed", exc_info=True)
     except Exception:
-        pass
+        logger.debug("Cache operation failed", exc_info=True)
 
     cutoff = timezone.now() - timezone.timedelta(seconds=int(retention_seconds))
     FrigateDetection.objects.filter(observed_at__lt=cutoff).delete()
@@ -180,6 +181,7 @@ def _subscribe(*, settings: FrigateSettings) -> None:
                     return
                 _handle_frigate_message(settings=current, topic=topic, payload=payload)
             except Exception:
+                logger.warning("Frigate message handling failed", exc_info=True)
                 return
 
         mqtt_connection_manager.subscribe(topic=topic, qos=0, callback=_handle_message)
@@ -194,7 +196,7 @@ def _subscribe(*, settings: FrigateSettings) -> None:
             try:
                 mark_availability_state(payload)
             except Exception:
-                pass
+                logger.debug("Frigate availability update failed", exc_info=True)
 
         mqtt_connection_manager.subscribe(topic=avail_topic, qos=0, callback=_handle_availability)
 
@@ -248,6 +250,7 @@ def _handle_frigate_message(*, settings: FrigateSettings, topic: str, payload: s
     try:
         prune_old_detections(retention_seconds=settings.retention_seconds)
     except Exception:
+        logger.warning("Detection pruning failed", exc_info=True)
         return
 
     # Notify dispatcher of Frigate detection (ADR 0057).

@@ -177,6 +177,7 @@ def apply_runtime_settings_from_active_profile() -> None:
             _subscribe_for_ingest(settings=settings)
             refresh_device_mapping_async()
     except Exception:
+        logger.warning("Failed to apply runtime settings", exc_info=True)
         return
 
 
@@ -221,6 +222,7 @@ def _subscribe_for_ingest(*, settings: Zigbee2mqttSettings) -> None:
                 return
             _handle_z2m_message(settings=current, topic=topic, payload=payload)
         except Exception:
+            logger.warning("Message handling failed for topic %s", topic, exc_info=True)
             return
 
     if wildcard not in _subscribed_wildcards:
@@ -248,15 +250,16 @@ def refresh_device_mapping_async(*, min_interval_seconds: int = 30) -> None:
                 if timezone.now() - last_dt < timezone.timedelta(seconds=int(min_interval_seconds)):
                     return
             except Exception:
-                pass
+                logger.debug("Cache timestamp parse failed", exc_info=True)
     except Exception:
-        pass
+        logger.debug("Cache operation failed", exc_info=True)
 
     def _run() -> None:
         """Background worker to refresh the mapping without blocking the caller."""
         try:
             refresh_device_mapping_via_mqtt(timeout_seconds=3.0)
         except Exception:
+            logger.warning("Device mapping refresh failed", exc_info=True)
             return
 
     threading.Thread(target=_run, daemon=True).start()
@@ -300,7 +303,7 @@ def refresh_device_mapping_via_mqtt(*, timeout_seconds: float = 3.0) -> dict[str
                     devices = cached_devices
                     break
             except Exception:
-                pass
+                logger.debug("Cache timestamp parse failed", exc_info=True)
         evt = threading.Event()
         evt.wait(timeout=0.05)
 
@@ -382,7 +385,7 @@ def _handle_z2m_message(*, settings: Zigbee2mqttSettings, topic: str, payload: s
     try:
         status_store.mark_seen()
     except Exception:
-        pass
+        logger.debug("Status store mark_seen failed", exc_info=True)
 
     now = timezone.now()
 
@@ -461,7 +464,7 @@ def sync_devices_via_mqtt(*, timeout_seconds: float = 3.0) -> dict[str, Any]:
         try:
             status_store.mark_error(error=str(exc))
         except Exception:
-            pass
+            logger.debug("Status store mark_error failed", exc_info=True)
         raise
 
     devices: list[dict[str, Any]] | None = None
@@ -476,7 +479,7 @@ def sync_devices_via_mqtt(*, timeout_seconds: float = 3.0) -> dict[str, Any]:
                     devices = cached_devices
                     break
             except Exception:
-                pass
+                logger.debug("Cache timestamp parse failed", exc_info=True)
         evt = threading.Event()
         evt.wait(timeout=0.05)
 
@@ -488,7 +491,7 @@ def sync_devices_via_mqtt(*, timeout_seconds: float = 3.0) -> dict[str, Any]:
             try:
                 status_store.mark_error(error=str(exc))
             except Exception:
-                pass
+                logger.debug("Status store mark_error failed", exc_info=True)
             raise exc
         devices = cached_devices
 
@@ -523,7 +526,7 @@ def sync_devices_via_mqtt(*, timeout_seconds: float = 3.0) -> dict[str, Any]:
         for ieee, ids in entity_ids_by_ieee.items():
             cache.set(_entity_ids_cache_key(ieee=ieee), sorted(ids), timeout=None)
     except Exception:
-        pass
+        logger.debug("Cache operation failed", exc_info=True)
 
     devices_list = devices or []
     status_store.mark_sync(device_count=len(devices_list))

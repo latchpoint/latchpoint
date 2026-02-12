@@ -116,7 +116,7 @@ class HomeAssistantStateStream:
             if ws is not None:
                 ws.close()
         except Exception:
-            pass
+            logger.debug("WebSocket close failed", exc_info=True)
 
     def restart(self) -> None:
         self.stop()
@@ -307,7 +307,7 @@ class HomeAssistantStateStream:
                 ]
             )
         except Exception:
-            pass
+            logger.warning("Entity sync broadcast failed", exc_info=True)
 
         try:
             from alarm.dispatcher import notify_entities_changed
@@ -318,7 +318,7 @@ class HomeAssistantStateStream:
                 changed_at=changed_at,
             )
         except Exception:
-            pass
+            logger.warning("Dispatcher notification failed", exc_info=True)
 
 
 _stream = HomeAssistantStateStream()

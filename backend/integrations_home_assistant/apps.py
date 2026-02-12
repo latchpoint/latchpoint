@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import logging
 import sys
 
 from django.apps import AppConfig
+
+logger = logging.getLogger(__name__)
 
 
 class IntegrationsHomeAssistantConfig(AppConfig):
@@ -18,7 +21,7 @@ class IntegrationsHomeAssistantConfig(AppConfig):
 
             register_setting_masker(key="home_assistant_connection", masker=mask_home_assistant_connection)
         except Exception:
-            pass
+            logger.warning("Setting masker registration failed", exc_info=True)
 
         argv = " ".join(sys.argv).lower()
         if any(token in argv for token in ["makemigrations", "migrate", "collectstatic", "pytest", " test"]):
@@ -33,19 +36,21 @@ class IntegrationsHomeAssistantConfig(AppConfig):
             from alarm.gateways.mqtt import default_mqtt_gateway
             from alarm.state_machine.settings import get_active_settings_profile, get_setting_json
         except Exception:
+            logger.warning("HA integration import failed", exc_info=True)
             return
 
         # Best-effort: register MQTT subscriptions/hooks if enabled.
         try:
             mqtt_alarm_entity.initialize_home_assistant_mqtt_alarm_entity_integration()
         except Exception:
-            pass
+            logger.warning("MQTT alarm entity initialization failed", exc_info=True)
 
         def _on_alarm_state_change_committed(sender, *, state_to: str, **_kwargs) -> None:
             """Publish MQTT alarm entity state on committed alarm state changes."""
             try:
                 mqtt_alarm_entity.publish_state(state=state_to)
             except Exception:
+                logger.warning("MQTT alarm entity state publish failed", exc_info=True)
                 return
 
         alarm_state_change_committed.connect(_on_alarm_state_change_committed, dispatch_uid="ha_mqtt_alarm_entity_state")
@@ -61,6 +66,7 @@ class IntegrationsHomeAssistantConfig(AppConfig):
                 default_mqtt_gateway.apply_settings(settings=prepare_runtime_mqtt_connection(mqtt_cfg))
                 mqtt_alarm_entity.publish_discovery(force=True)
             except Exception:
+                logger.warning("MQTT alarm entity profile update failed", exc_info=True)
                 return
 
         settings_profile_changed.connect(_on_settings_profile_changed, dispatch_uid="ha_mqtt_alarm_entity_profile_changed")
@@ -70,12 +76,14 @@ class IntegrationsHomeAssistantConfig(AppConfig):
             try:
                 apply_from_profile_id(profile_id=profile_id)
             except Exception:
+                logger.warning("HA connection profile apply failed", exc_info=True)
                 return
             try:
                 from integrations_home_assistant import state_stream
 
                 state_stream.apply_runtime_settings_from_active_profile()
             except Exception:
+                logger.warning("HA state stream apply failed", exc_info=True)
                 return
 
         settings_profile_changed.connect(_on_ha_connection_profile_changed, dispatch_uid="ha_connection_profile_changed")
@@ -84,7 +92,7 @@ class IntegrationsHomeAssistantConfig(AppConfig):
         try:
             apply_from_active_profile_if_exists()
         except Exception:
-            pass
+            logger.warning("HA connection warm-up failed", exc_info=True)
 
         # Best-effort: start/stop realtime HA entity updates based on current settings.
         try:
@@ -92,4 +100,4 @@ class IntegrationsHomeAssistantConfig(AppConfig):
 
             state_stream.apply_runtime_settings_from_active_profile()
         except Exception:
-            pass
+            logger.warning("HA state stream startup failed", exc_info=True)

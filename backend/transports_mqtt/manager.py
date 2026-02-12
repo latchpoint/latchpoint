@@ -261,11 +261,11 @@ class MqttConnectionManager:
             try:
                 client.disconnect()
             except Exception:
-                pass
+                self._logger.debug("Cleanup failed during disconnect", exc_info=True)
             try:
                 client.loop_stop()
             except Exception:
-                pass
+                self._logger.debug("Cleanup failed during disconnect", exc_info=True)
 
     def _set_error(self, error: str | None) -> None:
         """Set the manager's last error message (best-effort, no raising)."""
@@ -286,11 +286,11 @@ class MqttConnectionManager:
         try:
             client.disconnect()
         except Exception:
-            pass
+            self._logger.debug("Cleanup failed during disconnect", exc_info=True)
         try:
             client.loop_stop()
         except Exception:
-            pass
+            self._logger.debug("Cleanup failed during disconnect", exc_info=True)
 
     def _connect(self, *, settings: MqttConnectionSettings) -> None:
         """Start (or restart) an async MQTT connection using the provided settings."""
@@ -453,7 +453,7 @@ class MqttConnectionManager:
             try:
                 client.unsubscribe(topic)
             except Exception:
-                pass
+                self._logger.debug("Unsubscribe failed for %s", topic, exc_info=True)
 
     def register_on_connect(self, callback) -> None:
         """Register a callback to run on successful connect (best-effort)."""
@@ -506,6 +506,7 @@ class MqttConnectionManager:
                 if not self._topic_matches(topic_filter=topic_filter, topic=topic):
                     continue
             except Exception:
+                self._logger.debug("Topic match failed for %s", topic_filter, exc_info=True)
                 continue
             cbs = entry.get("callbacks") if isinstance(entry, dict) else None
             if isinstance(cbs, list):
