@@ -32,7 +32,7 @@ def execute(action: dict[str, Any], ctx: ActionContext) -> tuple[dict[str, Any],
             **({"brightness": brightness} if brightness is not None else {}),
         }, None
     except Exception as exc:
-        logger.warning("zigbee2mqtt_light failed for rule %s: %s", ctx.rule.id, exc)
+        logger.warning("zigbee2mqtt_light failed for rule %s: %s", ctx.rule.id, exc, exc_info=True)
         return {
             "ok": False,
             "type": "zigbee2mqtt_light",

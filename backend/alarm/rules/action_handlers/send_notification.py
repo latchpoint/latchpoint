@@ -49,7 +49,7 @@ def execute(action: dict[str, Any], ctx: ActionContext) -> tuple[dict[str, Any],
                 "error_code": enqueue_result.error_code,
             }, enqueue_result.message
     except Exception as exc:
-        logger.warning("send_notification failed for rule %s: %s", ctx.rule.id, exc)
+        logger.warning("send_notification failed for rule %s: %s", ctx.rule.id, exc, exc_info=True)
         return {
             "ok": False,
             "type": "send_notification",

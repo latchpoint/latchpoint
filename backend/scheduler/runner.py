@@ -24,7 +24,8 @@ def _safe_telemetry(fn, *args, **kwargs):
     try:
         fn(*args, **kwargs)
     except Exception:
-        logger.debug("Telemetry call %s failed", fn.__name__, exc_info=True)
+        fn_name = getattr(fn, "__name__", repr(fn))
+        logger.debug("Telemetry call %s failed", fn_name, exc_info=True)
 
 
 _WATCHDOG_INTERVAL = 60  # Check threads every 60 seconds
@@ -142,6 +143,7 @@ def _run_task_loop(*, task: ScheduledTask, stop_event: threading.Event) -> None:
     try:
         from . import telemetry
     except Exception:
+        logger.debug("Telemetry module unavailable in _run_task_loop", exc_info=True)
         telemetry = None
 
     if telemetry is not None:
@@ -316,6 +318,7 @@ def _run_watchdog() -> None:
     try:
         from . import telemetry
     except Exception:
+        logger.debug("Telemetry module unavailable in _run_watchdog", exc_info=True)
         telemetry = None
 
     while True:
