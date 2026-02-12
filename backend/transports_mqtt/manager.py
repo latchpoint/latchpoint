@@ -262,12 +262,10 @@ class MqttConnectionManager:
                 client.disconnect()
             except Exception:
                 self._logger.debug("Cleanup failed during disconnect", exc_info=True)
-                pass
             try:
                 client.loop_stop()
             except Exception:
                 self._logger.debug("Cleanup failed during disconnect", exc_info=True)
-                pass
 
     def _set_error(self, error: str | None) -> None:
         """Set the manager's last error message (best-effort, no raising)."""
@@ -289,12 +287,10 @@ class MqttConnectionManager:
             client.disconnect()
         except Exception:
             self._logger.debug("Cleanup failed during disconnect", exc_info=True)
-            pass
         try:
             client.loop_stop()
         except Exception:
             self._logger.debug("Cleanup failed during disconnect", exc_info=True)
-            pass
 
     def _connect(self, *, settings: MqttConnectionSettings) -> None:
         """Start (or restart) an async MQTT connection using the provided settings."""
@@ -458,7 +454,6 @@ class MqttConnectionManager:
                 client.unsubscribe(topic)
             except Exception:
                 self._logger.debug("Unsubscribe failed for %s", topic, exc_info=True)
-                pass
 
     def register_on_connect(self, callback) -> None:
         """Register a callback to run on successful connect (best-effort)."""

@@ -28,11 +28,11 @@ class IntegrationOutageTracker:
             self._offline_since[integration] = now
             self._event_emitted.discard(integration)
 
-    def mark_online(self, integration: str) -> float | None:
+    def mark_online(self, integration: str) -> timezone.datetime | None:
         with self._lock:
             start = self._offline_since.pop(integration, None)
             self._event_emitted.discard(integration)
-        return None  # caller computes duration from start
+        return start
 
     def get_offline_start(self, integration: str):
         with self._lock:
@@ -47,8 +47,7 @@ class IntegrationOutageTracker:
             self._event_emitted.add(integration)
 
     def record_initial_offline(self, integration: str, now) -> None:
-        with self._lock:
-            self._offline_since[integration] = now
+        self.mark_offline(integration, now)
 
 
 _tracker = IntegrationOutageTracker()
@@ -70,7 +69,7 @@ def log_integration_transition(sender, *, integration: str, is_healthy: bool, pr
         return
 
     if not previous_healthy and is_healthy:
-        offline_start = _tracker.get_offline_start(integration)
+        offline_start = _tracker.mark_online(integration)
         offline_duration = (now - (offline_start or now)).total_seconds()
         logger.info("Integration %s back online after %.0fs", integration, offline_duration)
 
@@ -83,8 +82,6 @@ def log_integration_transition(sender, *, integration: str, is_healthy: bool, pr
                     "offline_duration_seconds": offline_duration,
                 },
             )
-
-        _tracker.mark_online(integration)
 
 
 @receiver(integration_status_observed)
