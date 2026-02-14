@@ -26,7 +26,10 @@ const DoorCodesPage = lazy(() => import('@/pages/DoorCodesPage'))
 const EventsPage = lazy(() => import('@/pages/EventsPage'))
 const ControlPanelsPage = lazy(() => import('@/pages/ControlPanelsPage'))
 const SchedulerPage = lazy(() => import('@/pages/SchedulerPage'))
-const DebugPage = lazy(() => import('@/pages/DebugPage'))
+const DebugLayout = lazy(() => import('@/pages/debug/DebugLayout'))
+const DebugIndexRedirect = lazy(() => import('@/pages/debug/DebugIndexRedirect'))
+const DebugEntitiesTab = lazy(() => import('@/pages/debug/DebugEntitiesTab'))
+const DebugLogsTab = lazy(() => import('@/pages/debug/DebugLogsTab'))
 const SettingsLayout = lazy(() => import('@/pages/settings/SettingsLayout'))
 const SettingsIndexRedirect = lazy(() => import('@/pages/settings/SettingsIndexRedirect'))
 const SettingsAlarmTab = lazy(() => import('@/pages/settings/SettingsAlarmTab'))
@@ -114,7 +117,11 @@ function AppContent() {
             <Route path={AppRoutes.EVENTS} element={<EventsPage />} />
             <Route path={AppRoutes.CONTROL_PANELS} element={<ControlPanelsPage />} />
             <Route path={AppRoutes.SCHEDULER} element={<SchedulerPage />} />
-            <Route path={AppRoutes.DEBUG} element={<DebugPage />} />
+            <Route path={AppRoutes.DEBUG} element={<DebugLayout />}>
+              <Route index element={<DebugIndexRedirect />} />
+              <Route path="entities" element={<DebugEntitiesTab />} />
+              <Route path="logs" element={<DebugLogsTab />} />
+            </Route>
             <Route path={AppRoutes.SETTINGS} element={<SettingsLayout />}>
               <Route index element={<SettingsIndexRedirect />} />
               <Route path="alarm" element={<SettingsAlarmTab />} />

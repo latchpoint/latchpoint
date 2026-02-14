@@ -88,6 +88,7 @@ This document tracks all Architecture Decision Records (ADRs) and their implemen
 | [0069](0069-lock-config-sync-operational-concerns.md) | Lock Config Sync — Operational, Security & UX Concerns | **Implemented** |
 | [0070](0070-entity-state-debug-page.md) | Entity State Debug Page | **Implemented** |
 | [0071](0071-backend-code-smells-and-solid-violations.md) | Backend Code Smells and SOLID Principle Violations | **Proposed** |
+| [0072](0072-log-viewer-debug-tab.md) | Log Viewer Debug Tab | **Proposed** |
 
 ---
 
@@ -97,12 +98,12 @@ This document tracks all Architecture Decision Records (ADRs) and their implemen
 |--------|-------|
 | **Implemented** | 57 |
 | **Partially Implemented** | 1 |
-| **Proposed** | 2 |
+| **Proposed** | 3 |
 | **Superseded** | 11 |
-| **Total** | 71 |
+| **Total** | 72 |
 
 Note: **Superseded** includes entries marked as "Superseded by …" in the table above.
 
 ---
 
-*Last updated: 2026-02-08* (Added ADR 0071 — Backend Code Smells and SOLID Principle Violations)
+*Last updated: 2026-02-13* (Added ADR 0072 — Log Viewer Debug Tab)

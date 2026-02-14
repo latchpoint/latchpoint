@@ -17,3 +17,16 @@ class AlarmConfig(AppConfig):
 
         # Import tasks to register them with the scheduler
         from . import tasks  # noqa: F401
+
+        # Configure the in-memory log viewer buffer (ADR 0072)
+        import logging
+
+        from django.conf import settings
+
+        from . import log_handler
+
+        log_handler.configure(
+            buffer_size=settings.LOG_VIEWER_BUFFER_SIZE,
+            capture_level=getattr(logging, settings.LOG_VIEWER_CAPTURE_LEVEL, logging.DEBUG),
+            broadcast_level=getattr(logging, settings.LOG_VIEWER_BROADCAST_LEVEL, logging.WARNING),
+        )

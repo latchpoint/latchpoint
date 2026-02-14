@@ -37,7 +37,8 @@ export function Sidebar() {
       {/* Navigation */}
       <nav className="flex flex-col gap-1 p-2">
         {navItems.map((item) => {
-          const isActive = location.pathname === item.path
+          const isActive =
+            location.pathname === item.path || location.pathname.startsWith(item.path + '/')
           const Icon = item.icon
 
           return (
