@@ -1,19 +1,8 @@
-import { useCallback, useRef, useState } from 'react'
-import { Pause, Play, Trash2, ArrowDownToLine, Search, X } from 'lucide-react'
-import type { SearchAddon } from '@xterm/addon-search'
+import { Pause, Play, Trash2, ArrowDownToLine } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import { LOG_LEVELS } from '../types'
-
-const SEARCH_DECORATIONS = {
-  matchBackground: '#3f3f46',
-  matchBorder: '#52525b',
-  matchOverviewRuler: '#888888',
-  activeMatchBackground: '#854d0e',
-  activeMatchBorder: '#a16207',
-  activeMatchColorOverviewRuler: '#ffa500',
-} as const
 
 const LEVEL_OPTIONS: { label: string; value: number }[] = [
   { label: 'All', value: 0 },
@@ -28,7 +17,6 @@ interface LogToolbarProps {
   paused: boolean
   autoScroll: boolean
   levelFilter: number
-  searchAddon: SearchAddon | null
   onPauseToggle: () => void
   onAutoScrollToggle: () => void
   onLevelFilterChange: (level: number) => void
@@ -39,59 +27,11 @@ export function LogToolbar({
   paused,
   autoScroll,
   levelFilter,
-  searchAddon,
   onPauseToggle,
   onAutoScrollToggle,
   onLevelFilterChange,
   onClear,
 }: LogToolbarProps) {
-  const [searchOpen, setSearchOpen] = useState(false)
-  const [searchQuery, setSearchQuery] = useState('')
-  const inputRef = useRef<HTMLInputElement>(null)
-
-  const handleSearchToggle = useCallback(() => {
-    setSearchOpen((prev) => {
-      if (!prev) {
-        // Opening search — focus the input after render
-        setTimeout(() => inputRef.current?.focus(), 0)
-      } else {
-        // Closing search — clear highlights
-        setSearchQuery('')
-        searchAddon?.clearDecorations()
-      }
-      return !prev
-    })
-  }, [searchAddon])
-
-  const handleSearchChange = useCallback(
-    (e: React.ChangeEvent<HTMLInputElement>) => {
-      const value = e.target.value
-      setSearchQuery(value)
-      if (value) {
-        searchAddon?.findNext(value, { incremental: true, decorations: SEARCH_DECORATIONS })
-      } else {
-        searchAddon?.clearDecorations()
-      }
-    },
-    [searchAddon]
-  )
-
-  const handleSearchKeyDown = useCallback(
-    (e: React.KeyboardEvent<HTMLInputElement>) => {
-      if (e.key === 'Enter') {
-        e.preventDefault()
-        if (e.shiftKey) {
-          searchAddon?.findPrevious(searchQuery, { decorations: SEARCH_DECORATIONS })
-        } else {
-          searchAddon?.findNext(searchQuery, { decorations: SEARCH_DECORATIONS })
-        }
-      } else if (e.key === 'Escape') {
-        handleSearchToggle()
-      }
-    },
-    [searchAddon, searchQuery, handleSearchToggle]
-  )
-
   return (
     <div className="flex flex-wrap items-center gap-2 px-3 py-2 border-b border-border bg-card">
       {/* Level filter */}
@@ -113,34 +53,6 @@ export function LogToolbar({
       </div>
 
       <div className="flex-1" />
-
-      {/* Search */}
-      {searchOpen && (
-        <div className="flex items-center gap-1">
-          <input
-            ref={inputRef}
-            type="text"
-            value={searchQuery}
-            onChange={handleSearchChange}
-            onKeyDown={handleSearchKeyDown}
-            placeholder="Search logs..."
-            className="h-7 w-48 rounded border border-border bg-background px-2 text-xs text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring"
-          />
-          <Button variant="ghost" size="icon" className="h-7 w-7" onClick={handleSearchToggle}>
-            <X className="h-3.5 w-3.5" />
-          </Button>
-        </div>
-      )}
-
-      <Button
-        variant="ghost"
-        size="icon"
-        className="h-7 w-7"
-        onClick={handleSearchToggle}
-        title="Search (Ctrl+F)"
-      >
-        <Search className="h-3.5 w-3.5" />
-      </Button>
 
       {/* Auto-scroll toggle */}
       <Button

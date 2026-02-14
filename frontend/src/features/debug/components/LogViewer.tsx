@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
-import { SearchAddon } from '@xterm/addon-search'
 import '@xterm/xterm/css/xterm.css'
 
 import { api } from '@/services'
@@ -24,7 +23,6 @@ import type { LogEntry } from '../types'
 export function LogViewer() {
   const terminalRef = useRef<HTMLDivElement>(null)
   const [terminal, setTerminal] = useState<Terminal | null>(null)
-  const [searchAddon, setSearchAddon] = useState<SearchAddon | null>(null)
   const fitAddonRef = useRef<FitAddon | null>(null)
 
   const [paused, setPaused] = useState(false)
@@ -71,17 +69,14 @@ export function LogViewer() {
     })
 
     const fit = new FitAddon()
-    const search = new SearchAddon()
 
     term.loadAddon(fit)
-    term.loadAddon(search)
 
     term.open(terminalRef.current)
     fit.fit()
 
     fitAddonRef.current = fit
     setTerminal(term)
-    setSearchAddon(search)
 
     // Handle resize
     const resizeObserver = new ResizeObserver(() => {
@@ -97,7 +92,6 @@ export function LogViewer() {
       resizeObserver.disconnect()
       term.dispose()
       setTerminal(null)
-      setSearchAddon(null)
       fitAddonRef.current = null
     }
   }, [])
@@ -172,7 +166,6 @@ export function LogViewer() {
         paused={paused}
         autoScroll={autoScroll}
         levelFilter={levelFilter}
-        searchAddon={searchAddon}
         onPauseToggle={handlePauseToggle}
         onAutoScrollToggle={handleAutoScrollToggle}
         onLevelFilterChange={handleLevelFilterChange}
