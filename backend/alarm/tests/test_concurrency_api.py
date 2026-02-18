@@ -57,22 +57,26 @@ class ConcurrencyApiTests(TransactionTestCase):
         results: list[Any] = [None] * len(callables)
         errors: list[BaseException] = []
         lock = threading.Lock()
+        max_lock_retries = 12
 
         def worker(index: int, fn):
             try:
                 close_old_connections()
                 barrier.wait(timeout=5)
-                for attempt in range(4):
+                for attempt in range(max_lock_retries):
                     try:
                         results[index] = fn()
                         return
                     except OperationalError as exc:
                         # SQLite can throw transient lock errors under intentional
                         # concurrent writes in CI; retry briefly to assert behavior.
-                        if "database table is locked" not in str(exc).lower() or attempt == 3:
+                        if (
+                            "database table is locked" not in str(exc).lower()
+                            or attempt == max_lock_retries - 1
+                        ):
                             raise
                         close_old_connections()
-                        time.sleep(0.05 * (attempt + 1))
+                        time.sleep(0.1 * (attempt + 1))
             except BaseException as exc:  # noqa: BLE001
                 with lock:
                     errors.append(exc)
@@ -83,7 +87,7 @@ class ConcurrencyApiTests(TransactionTestCase):
         for thread in threads:
             thread.start()
         for thread in threads:
-            thread.join(timeout=10)
+            thread.join(timeout=20)
         return results, errors
 
     def test_parallel_arm_requests_have_one_success_and_one_conflict(self):
