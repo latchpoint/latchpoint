@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from unittest.mock import patch
 
 from channels.testing import WebsocketCommunicator
 from channels.db import database_sync_to_async
@@ -131,6 +132,53 @@ class AlarmWebSocketTests(TransactionTestCase):
 
         asyncio.run(run())
 
+    def test_websocket_initial_messages_have_contract_and_sequence(self):
+        user = User.objects.create_user(email="wscontract@example.com", password="pass")
+        token = Token.objects.create(user=user)
+
+        async def run():
+            communicator = WebsocketCommunicator(application, f"/ws/alarm/?token={token.key}")
+            try:
+                connected, _ = await communicator.connect()
+                self.assertTrue(connected)
+
+                alarm_msg = await communicator.receive_json_from(timeout=1)
+                system_msg = await communicator.receive_json_from(timeout=1)
+
+                self.assertEqual(alarm_msg.get("type"), "alarm_state")
+                self.assertEqual(system_msg.get("type"), "system_status")
+
+                self.assertIsInstance(alarm_msg.get("sequence"), int)
+                self.assertIsInstance(system_msg.get("sequence"), int)
+                self.assertGreater(alarm_msg["sequence"], 0)
+                self.assertGreater(system_msg["sequence"], 0)
+
+                alarm_payload = alarm_msg.get("payload") or {}
+                self.assertIn("state", alarm_payload)
+                self.assertIn("effective_settings", alarm_payload)
+                state = alarm_payload.get("state") or {}
+                for key in (
+                    "id",
+                    "current_state",
+                    "previous_state",
+                    "settings_profile",
+                    "entered_at",
+                    "timing_snapshot",
+                ):
+                    self.assertIn(key, state)
+
+                effective = alarm_payload.get("effective_settings") or {}
+                for key in ("delay_time", "arming_time", "trigger_time"):
+                    self.assertIn(key, effective)
+
+                system_payload = system_msg.get("payload") or {}
+                for key in ("home_assistant", "mqtt", "zwavejs", "zigbee2mqtt", "frigate"):
+                    self.assertIn(key, system_payload)
+            finally:
+                await communicator.disconnect()
+
+        asyncio.run(run())
+
     def test_websocket_receives_alarm_state_updates(self):
         user = User.objects.create_user(email="wsstate@example.com", password="pass")
         token = Token.objects.create(user=user)
@@ -164,6 +212,70 @@ class AlarmWebSocketTests(TransactionTestCase):
                 await communicator.disconnect()
 
         asyncio.run(run())
+
+    def test_websocket_state_update_sequence_is_monotonic(self):
+        user = User.objects.create_user(email="wsseq@example.com", password="pass")
+        token = Token.objects.create(user=user)
+
+        @database_sync_to_async
+        def arm_alarm():
+            transitions.disarm(reason="test_setup")
+            transitions.arm(target_state=AlarmState.ARMED_HOME, reason="test_arm")
+
+        async def run():
+            communicator = WebsocketCommunicator(application, f"/ws/alarm/?token={token.key}")
+            try:
+                connected, _ = await communicator.connect()
+                self.assertTrue(connected)
+
+                initial_one = await communicator.receive_json_from(timeout=1)
+                initial_two = await communicator.receive_json_from(timeout=1)
+                max_initial_sequence = max(
+                    int(initial_one.get("sequence") or 0),
+                    int(initial_two.get("sequence") or 0),
+                )
+
+                await arm_alarm()
+
+                got_update = False
+                for _ in range(4):
+                    msg = await communicator.receive_json_from(timeout=1)
+                    if msg.get("type") != "alarm_state":
+                        continue
+                    payload = msg.get("payload") or {}
+                    state = payload.get("state") or {}
+                    if state.get("current_state") in {AlarmState.ARMING, AlarmState.ARMED_HOME}:
+                        got_update = True
+                        self.assertGreater(int(msg.get("sequence") or 0), max_initial_sequence)
+                        break
+
+                self.assertTrue(got_update)
+            finally:
+                await communicator.disconnect()
+
+        asyncio.run(run())
+
+    def test_websocket_connect_tolerates_initial_system_status_errors(self):
+        user = User.objects.create_user(email="ws-tolerant@example.com", password="pass")
+        token = Token.objects.create(user=user)
+
+        async def run():
+            communicator = WebsocketCommunicator(application, f"/ws/alarm/?token={token.key}")
+            try:
+                connected, _ = await communicator.connect()
+                self.assertTrue(connected)
+
+                first = await communicator.receive_json_from(timeout=1)
+                self.assertEqual(first.get("type"), "alarm_state")
+
+                await communicator.send_json_to({"type": "ping"})
+                pong = await communicator.receive_json_from(timeout=1)
+                self.assertEqual(pong, {"type": "pong"})
+            finally:
+                await communicator.disconnect()
+
+        with patch("alarm.consumers.get_current_system_status_message", side_effect=RuntimeError("boom")):
+            asyncio.run(run())
 
     def test_websocket_alarm_state_handles_uuid_fields(self):
         user = User.objects.create_user(email="wsuuid@example.com", password="pass")

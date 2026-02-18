@@ -90,7 +90,7 @@ This document tracks all Architecture Decision Records (ADRs) and their implemen
 | [0071](0071-backend-code-smells-and-solid-violations.md) | Backend Code Smells and SOLID Principle Violations | **Proposed** |
 | [0072](0072-log-viewer-debug-tab.md) | Log Viewer Debug Tab | **Proposed** |
 | [0073](0073-backend-endpoint-test-baseline-expansion.md) | Backend Endpoint Test Baseline Expansion (Useful Gaps) | **Implemented** |
-| [0074](0074-test-suite-expansion-beyond-endpoint-baseline.md) | Test Suite Expansion Beyond Endpoint Baseline | **Proposed** |
+| [0074](0074-test-suite-expansion-beyond-endpoint-baseline.md) | Test Suite Expansion Beyond Endpoint Baseline | **Implemented** |
 
 ---
 
@@ -98,9 +98,9 @@ This document tracks all Architecture Decision Records (ADRs) and their implemen
 
 | Status | Count |
 |--------|-------|
-| **Implemented** | 58 |
+| **Implemented** | 59 |
 | **Partially Implemented** | 1 |
-| **Proposed** | 4 |
+| **Proposed** | 3 |
 | **Superseded** | 11 |
 | **Total** | 74 |
 
@@ -108,4 +108,4 @@ Note: **Superseded** includes entries marked as "Superseded by …" in the table
 
 ---
 
-*Last updated: 2026-02-18* (Added ADR 0074 as Proposed)
+*Last updated: 2026-02-18* (Marked ADR 0074 as Implemented)
