@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import threading
+import time
 from typing import Any
 from unittest.mock import patch
 
 from django.contrib.auth.hashers import make_password
-from django.db import close_old_connections
+from django.db import OperationalError, close_old_connections
 from django.test import TransactionTestCase
 from django.urls import reverse
 from rest_framework.test import APIClient
@@ -61,7 +62,17 @@ class ConcurrencyApiTests(TransactionTestCase):
             try:
                 close_old_connections()
                 barrier.wait(timeout=5)
-                results[index] = fn()
+                for attempt in range(4):
+                    try:
+                        results[index] = fn()
+                        return
+                    except OperationalError as exc:
+                        # SQLite can throw transient lock errors under intentional
+                        # concurrent writes in CI; retry briefly to assert behavior.
+                        if "database table is locked" not in str(exc).lower() or attempt == 3:
+                            raise
+                        close_old_connections()
+                        time.sleep(0.05 * (attempt + 1))
             except BaseException as exc:  # noqa: BLE001
                 with lock:
                     errors.append(exc)
