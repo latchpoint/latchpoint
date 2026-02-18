@@ -71,6 +71,9 @@ export const apiEndpoints = {
     all: '/api/system-config/',
     key: (key: string) => `/api/system-config/${encodeURIComponent(key)}/`,
   },
+  debug: {
+    logs: '/api/alarm/debug/logs/',
+  },
   scheduler: {
     status: '/api/scheduler/status/',
     taskRuns: (taskName: string) =>

@@ -31,6 +31,8 @@ urlpatterns = [
     path("arm/", views.ArmAlarmView.as_view(), name="alarm-arm"),
     path("disarm/", views.DisarmAlarmView.as_view(), name="alarm-disarm"),
     path("cancel-arming/", views.CancelArmingView.as_view(), name="alarm-cancel-arming"),
+    # Debug endpoints (ADR 0072)
+    path("debug/logs/", views.DebugLogsView.as_view(), name="debug-logs"),
     # Dispatcher endpoints (ADR 0057)
     path("dispatcher/status/", views.DispatcherStatusView.as_view(), name="dispatcher-status"),
     path("dispatcher/config/", views.DispatcherConfigView.as_view(), name="dispatcher-config"),

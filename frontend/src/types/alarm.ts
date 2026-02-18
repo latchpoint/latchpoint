@@ -133,6 +133,12 @@ export type AlarmWebSocketMessage =
       payload: EntitySyncPayload
       sequence: number
     }
+  | {
+      type: 'log_entry'
+      timestamp: string
+      payload: LogEntryPayload
+      sequence: number
+    }
 
 export interface EntitySyncEntity {
   entityId: string
@@ -168,6 +174,19 @@ export interface HealthPayload {
   status: 'healthy' | 'degraded' | 'unhealthy'
   timestamp: string
   details?: Record<string, unknown>
+}
+
+export interface LogEntryPayload {
+  timestamp: string
+  level: string
+  levelNo: number
+  logger: string
+  message: string
+  excText: string | null
+  filename: string
+  lineno: number
+  funcName: string
+  formatted: string
 }
 
 export interface SystemStatusPayload {

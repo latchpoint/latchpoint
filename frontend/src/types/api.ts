@@ -133,6 +133,9 @@ export const queryKeys = {
     options: ['frigate', 'options'] as const,
     detections: ['frigate', 'detections'] as const,
   },
+  debug: {
+    logs: ['debug', 'logs'] as const,
+  },
   onboarding: {
     status: ['onboarding', 'status'] as const,
     setupStatus: ['onboarding', 'setupStatus'] as const,

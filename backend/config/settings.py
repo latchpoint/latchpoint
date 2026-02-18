@@ -189,36 +189,44 @@ HA_LOG_LEVEL = env.str("HA_LOG_LEVEL", default=env.str("LOG_LEVEL", default="INF
 if IS_TESTING and not ALLOW_HOME_ASSISTANT_IN_TESTS:
     HA_LOG_LEVEL = "WARNING"
 
+# Log Viewer (ADR 0072)
+LOG_VIEWER_CAPTURE_LEVEL = env.str("LOG_VIEWER_CAPTURE_LEVEL", default="DEBUG").upper()
+LOG_VIEWER_BROADCAST_LEVEL = env.str("LOG_VIEWER_BROADCAST_LEVEL", default="WARNING").upper()
+LOG_VIEWER_BUFFER_SIZE = env.int("LOG_VIEWER_BUFFER_SIZE", default=500)
+
+_ALL_HANDLERS = ["console", "buffered_ws"]
+
 LOGGING = {
     "version": 1,
     "disable_existing_loggers": False,
     "handlers": {
         "console": {"class": "logging.StreamHandler"},
+        "buffered_ws": {"class": "alarm.log_handler.BufferedWebSocketHandler"},
     },
-    "root": {"handlers": ["console"], "level": env.str("LOG_LEVEL", default="INFO").upper()},
+    "root": {"handlers": _ALL_HANDLERS, "level": env.str("LOG_LEVEL", default="INFO").upper()},
     "loggers": {
         "integrations_zwavejs": {
-            "handlers": ["console"],
+            "handlers": _ALL_HANDLERS,
             "level": env.str("ZWAVEJS_LOG_LEVEL", default=env.str("LOG_LEVEL", default="INFO")).upper(),
             "propagate": False,
         },
         "control_panels": {
-            "handlers": ["console"],
+            "handlers": _ALL_HANDLERS,
             "level": env.str("CONTROL_PANELS_LOG_LEVEL", default=env.str("LOG_LEVEL", default="INFO")).upper(),
             "propagate": False,
         },
         "integrations_home_assistant": {
-            "handlers": ["console"],
+            "handlers": _ALL_HANDLERS,
             "level": HA_LOG_LEVEL,
             "propagate": False,
         },
         "alarm.middleware": {
-            "handlers": ["console"],
+            "handlers": _ALL_HANDLERS,
             "level": env.str("WS_LOG_LEVEL", default=env.str("LOG_LEVEL", default="INFO")).upper(),
             "propagate": False,
         },
         "alarm.consumers": {
-            "handlers": ["console"],
+            "handlers": _ALL_HANDLERS,
             "level": env.str("WS_LOG_LEVEL", default=env.str("LOG_LEVEL", default="INFO")).upper(),
             "propagate": False,
         },
