@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from django.contrib.auth import get_user_model
 from django.test import TestCase
+from django.urls import reverse
 from rest_framework.test import APIRequestFactory
 
 from alarm.models import Rule
@@ -602,10 +603,16 @@ class SupportedActionsEndpointTests(TestCase):
     def setUp(self):
         self.user = User.objects.create_user(email="test@test.com", password="testpass")
         self.admin_user = User.objects.create_superuser(email="admin@test.com", password="adminpass")
+        self.url = reverse("alarm-rules-supported-actions")
+
+    def test_unauthenticated_returns_401(self):
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, 401)
+        self.assertIn("error", response.json())
 
     def test_non_admin_sees_only_non_admin_actions(self):
         self.client.force_login(self.user)
-        response = self.client.get("/api/alarm/rules/supported-actions/")
+        response = self.client.get(self.url)
         self.assertEqual(response.status_code, 200)
 
         action_types = {a["type"] for a in response.json()["data"]["actions"]}
@@ -620,7 +627,7 @@ class SupportedActionsEndpointTests(TestCase):
 
     def test_admin_sees_all_actions(self):
         self.client.force_login(self.admin_user)
-        response = self.client.get("/api/alarm/rules/supported-actions/")
+        response = self.client.get(self.url)
         self.assertEqual(response.status_code, 200)
 
         action_types = {a["type"] for a in response.json()["data"]["actions"]}
@@ -628,13 +635,13 @@ class SupportedActionsEndpointTests(TestCase):
 
     def test_response_includes_schema_version(self):
         self.client.force_login(self.admin_user)
-        response = self.client.get("/api/alarm/rules/supported-actions/")
+        response = self.client.get(self.url)
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["data"]["schema_version"], 1)
 
     def test_response_includes_admin_only_flag(self):
         self.client.force_login(self.admin_user)
-        response = self.client.get("/api/alarm/rules/supported-actions/")
+        response = self.client.get(self.url)
         self.assertEqual(response.status_code, 200)
 
         actions_by_type = {a["type"]: a for a in response.json()["data"]["actions"]}
@@ -646,7 +653,7 @@ class SupportedActionsEndpointTests(TestCase):
 
     def test_response_includes_schema_for_each_action(self):
         self.client.force_login(self.admin_user)
-        response = self.client.get("/api/alarm/rules/supported-actions/")
+        response = self.client.get(self.url)
         self.assertEqual(response.status_code, 200)
 
         for action in response.json()["data"]["actions"]:

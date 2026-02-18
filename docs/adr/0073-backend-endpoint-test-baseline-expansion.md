@@ -1,7 +1,7 @@
 # ADR 0073: Backend Endpoint Test Baseline Expansion (Useful Gaps)
 
 ## Status
-Proposed
+Implemented
 
 ## Context
 The backend test suite is strong in core domains (state machine, rules engine, integrations, scheduler), but some HTTP endpoints still lack direct API coverage.

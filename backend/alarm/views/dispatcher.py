@@ -7,6 +7,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from alarm.models import RuleRuntimeState
+from config.domain_exceptions import NotFoundError
 
 
 class DispatcherStatusView(APIView):
@@ -56,11 +57,8 @@ class SuspendedRulesView(APIView):
                 )
                 clear_suspension(runtime=runtime)
                 return Response({"cleared": 1}, status=status.HTTP_200_OK)
-            except (ValueError, RuleRuntimeState.DoesNotExist):
-                return Response(
-                    {"error": "Rule not found or not suspended"},
-                    status=status.HTTP_404_NOT_FOUND,
-                )
+            except (ValueError, RuleRuntimeState.DoesNotExist) as exc:
+                raise NotFoundError("Rule not found or not suspended.") from exc
 
         # Clear all suspended rules
         suspended = RuleRuntimeState.objects.filter(error_suspended=True)
