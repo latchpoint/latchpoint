@@ -89,6 +89,7 @@ This document tracks all Architecture Decision Records (ADRs) and their implemen
 | [0070](0070-entity-state-debug-page.md) | Entity State Debug Page | **Implemented** |
 | [0071](0071-backend-code-smells-and-solid-violations.md) | Backend Code Smells and SOLID Principle Violations | **Proposed** |
 | [0072](0072-log-viewer-debug-tab.md) | Log Viewer Debug Tab | **Proposed** |
+| [0073](0073-backend-endpoint-test-baseline-expansion.md) | Backend Endpoint Test Baseline Expansion (Useful Gaps) | **Proposed** |
 
 ---
 
@@ -98,12 +99,12 @@ This document tracks all Architecture Decision Records (ADRs) and their implemen
 |--------|-------|
 | **Implemented** | 57 |
 | **Partially Implemented** | 1 |
-| **Proposed** | 3 |
+| **Proposed** | 4 |
 | **Superseded** | 11 |
-| **Total** | 72 |
+| **Total** | 73 |
 
 Note: **Superseded** includes entries marked as "Superseded by …" in the table above.
 
 ---
 
-*Last updated: 2026-02-13* (Added ADR 0072 — Log Viewer Debug Tab)
+*Last updated: 2026-02-18* (Added ADR 0073 - Backend Endpoint Test Baseline Expansion (Useful Gaps))
