@@ -57,6 +57,7 @@ Scope note:
 - Extended websocket contract coverage in `backend/alarm/tests/test_websocket.py` for stricter payload/sequence assertions and connect-time error tolerance.
 - Added outbox retry/backoff lifecycle boundary tests in `backend/notifications/tests/test_outbox.py` (max attempts, non-retryable terminal state, rate-limit backoff window).
 - Added idempotency coverage in `backend/alarm/tests/test_idempotency_api.py` for repeated cancel-arming, repeated profile activation, and repeated entity sync upserts.
+- Added real parallel-request concurrency coverage in `backend/alarm/tests/test_concurrency_api.py` for arm/disarm/cancel-arming, profile activation, and entity sync.
 - Added integration fault-mapping tests in `backend/alarm/tests/test_integration_fault_mapping_api.py` for invalid-config, timeout, unavailable upstream, and unexpected runtime failures.
 - Added grouped phase-2 runner `scripts/docker-test-phase2.sh`.
 

@@ -99,10 +99,12 @@ def delete_settings_profile(*, profile: AlarmSettingsProfile) -> None:
 def activate_settings_profile(*, profile: AlarmSettingsProfile) -> AlarmSettingsProfile:
     """Make `profile` the active settings profile and deactivate others."""
     with transaction.atomic():
-        AlarmSettingsProfile.objects.filter(is_active=True).exclude(id=profile.id).update(is_active=False)
-        if not profile.is_active:
-            profile.is_active = True
-            profile.save(update_fields=["is_active"])
+        # Serialize activations so concurrent requests cannot leave multiple active profiles.
+        # Lock rows in a stable order before mutating.
+        list(AlarmSettingsProfile.objects.select_for_update().order_by("id").values_list("id", flat=True))
+        AlarmSettingsProfile.objects.exclude(id=profile.id).filter(is_active=True).update(is_active=False)
+        AlarmSettingsProfile.objects.filter(id=profile.id).update(is_active=True)
+        profile.is_active = True
         try:
             from alarm.signals import settings_profile_changed
 

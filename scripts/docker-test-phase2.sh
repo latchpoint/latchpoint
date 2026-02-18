@@ -7,6 +7,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 docker compose run --rm --entrypoint sh backend -c "cd backend && python manage.py test --keepdb \
 alarm.tests.test_permission_matrix_sensitive_api \
+alarm.tests.test_concurrency_api \
 alarm.tests.test_websocket \
 notifications.tests.test_outbox \
 alarm.tests.test_idempotency_api \
