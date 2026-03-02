@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 import environ
+from django.core.exceptions import ImproperlyConfigured
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -20,6 +21,54 @@ for candidate in [env_file, BASE_DIR / ".env", BASE_DIR.parent / ".env"]:
     if candidate_path.exists():
         env.read_env(candidate_path)
         break
+
+
+def _resolve_sql_driver(host: str, port: str) -> str:
+    host_lower = host.lower()
+    if port == "3306":
+        return "mysql"
+    if port == "5432":
+        return "postgresql"
+    if "mysql" in host_lower or "mariadb" in host_lower:
+        return "mysql"
+    return "postgresql"
+
+
+def _resolve_database_settings() -> dict[str, object]:
+    db_name = env.str("DB_DATABASE", default=env.str("POSTGRES_DB", default="")).strip()
+    if not db_name:
+        return {"ENGINE": "django.db.backends.sqlite3", "NAME": str(BASE_DIR / "db.sqlite3")}
+
+    if db_name == ":memory:" or db_name.endswith(".sqlite3") or db_name.endswith(".db"):
+        return {"ENGINE": "django.db.backends.sqlite3", "NAME": db_name}
+
+    db_user = env.str("DB_USERNAME", default=env.str("POSTGRES_USER", default="")).strip()
+    db_password = env.str("DB_PASSWORD", default=env.str("POSTGRES_PASSWORD", default="")).strip()
+    db_host = env.str("DB_HOST", default="").strip()
+    if not db_host:
+        raise ImproperlyConfigured(
+            "DB_HOST is required when using DB_DATABASE for Postgres/MySQL."
+        )
+    db_port = env.str("DB_PORT", default="").strip()
+    driver = _resolve_sql_driver(db_host, db_port)
+
+    database_settings: dict[str, object] = {
+        "ENGINE": (
+            "django.db.backends.mysql"
+            if driver == "mysql"
+            else "django.db.backends.postgresql"
+        ),
+        "NAME": db_name,
+        "USER": db_user,
+        "PASSWORD": db_password,
+        "HOST": db_host,
+    }
+    if db_port:
+        database_settings["PORT"] = db_port
+    if driver == "mysql":
+        database_settings["OPTIONS"] = {"charset": "utf8mb4"}
+    return database_settings
+
 
 SECRET_KEY = env("SECRET_KEY", default="insecure-dev-secret-key")
 DEBUG = env.bool("DEBUG", default=False)
@@ -101,7 +150,7 @@ WSGI_APPLICATION = "config.wsgi.application"
 ASGI_APPLICATION = "config.asgi.application"
 
 DATABASES = {
-    "default": env.db("DATABASE_URL", default=f"sqlite:///{BASE_DIR / 'db.sqlite3'}"),
+    "default": _resolve_database_settings(),
 }
 
 AUTH_PASSWORD_VALIDATORS = [

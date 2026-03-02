@@ -61,7 +61,11 @@ SECRET_KEY=your-secure-secret-key
 SETTINGS_ENCRYPTION_KEY=your-encryption-key
 DEBUG=False
 ALLOWED_HOSTS=your-domain.com
-DATABASE_URL=postgresql://user:pass@host:5432/dbname
+DB_DATABASE=alarm_db
+DB_USERNAME=alarm
+DB_PASSWORD=your-secure-password
+DB_HOST=db
+# DB_PORT=5432
 ```
 
 3. Pull and run the production container (published to GHCR):
@@ -77,9 +81,9 @@ services:
   db:
     image: postgres:15
     environment:
-      POSTGRES_DB: alarm_db
-      POSTGRES_USER: alarm
-      POSTGRES_PASSWORD: your-secure-password
+      POSTGRES_DB: ${DB_DATABASE:-alarm_db}
+      POSTGRES_USER: ${DB_USERNAME:-alarm}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-your-secure-password}
     volumes:
       - db_data:/var/lib/postgresql/data
 
@@ -124,7 +128,7 @@ The development setup:
 - Runs Vite dev server with hot module replacement
 - Proxies API and WebSocket requests to Django backend
 - Mounts source code for live reloading
-- Uses PostgreSQL database (or SQLite if DATABASE_URL is omitted)
+- Uses PostgreSQL database (or SQLite if `DB_DATABASE` is omitted)
 
 ### Running Commands
 
@@ -151,6 +155,10 @@ docker compose exec app python backend/manage.py shell
 | DEBUG | Enable debug mode | False |
 | LOG_LEVEL | Logging level | INFO |
 | ALLOWED_HOSTS | Comma-separated allowed hosts | localhost,127.0.0.1 |
-| DATABASE_URL | PostgreSQL connection URL | SQLite fallback |
+| DB_DATABASE | Database name (or sqlite filename/path) | SQLite fallback when omitted |
+| DB_USERNAME | Database username | - |
+| DB_PASSWORD | Database password | - |
+| DB_HOST | Database host | Required |
+| DB_PORT | Database port | Auto (5432/3306 by hints) |
 | CSRF_TRUSTED_ORIGINS | Trusted origins for CSRF | Auto-configured in debug |
 | CORS_ALLOWED_ORIGINS | Allowed CORS origins | - |
