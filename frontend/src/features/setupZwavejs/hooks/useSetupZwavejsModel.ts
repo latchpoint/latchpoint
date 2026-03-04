@@ -4,12 +4,9 @@ import { zodResolver } from '@hookform/resolvers/zod'
 import { useForm } from 'react-hook-form'
 import { UserRole } from '@/lib/constants'
 import { getErrorMessage } from '@/lib/errors'
-import { parseFloatInRange, parseIntInRange } from '@/lib/numberParsers'
 import { useAuth } from '@/hooks/useAuth'
 import {
   useSyncZwavejsEntitiesMutation,
-  useTestZwavejsConnectionMutation,
-  useUpdateZwavejsSettingsMutation,
   useZwavejsSettingsQuery,
   useZwavejsStatusQuery,
 } from '@/hooks/useZwavejs'
@@ -36,8 +33,6 @@ export function useSetupZwavejsModel() {
 
   const statusQuery = useZwavejsStatusQuery()
   const settingsQuery = useZwavejsSettingsQuery()
-  const updateSettings = useUpdateZwavejsSettingsMutation()
-  const testConnection = useTestZwavejsConnectionMutation()
   const syncEntities = useSyncZwavejsEntitiesMutation()
 
   const initialValues = useMemo<SetupZwavejsFormData | null>(() => {
@@ -70,52 +65,6 @@ export function useSetupZwavejsModel() {
 
   const enabled = watch('enabled')
 
-  const save = async (data: SetupZwavejsFormData) => {
-    setError(null)
-    setNotice(null)
-    if (!isAdmin) {
-      setError('Admin role required to configure Z-Wave JS.')
-      return
-    }
-
-    try {
-      const connectTimeoutSeconds = parseFloatInRange('Connect timeout', data.connectTimeoutSeconds, 0.5, 30)
-      const reconnectMinSeconds = parseIntInRange('Reconnect min', data.reconnectMinSeconds, 0, 300)
-      const reconnectMaxSeconds = parseIntInRange('Reconnect max', data.reconnectMaxSeconds, 0, 300)
-      if (reconnectMaxSeconds && reconnectMinSeconds && reconnectMaxSeconds < reconnectMinSeconds) {
-        throw new Error('Reconnect max must be >= reconnect min.')
-      }
-
-      await updateSettings.mutateAsync({
-        enabled: data.enabled,
-        wsUrl: data.wsUrl.trim(),
-        connectTimeoutSeconds,
-        reconnectMinSeconds,
-        reconnectMaxSeconds,
-      })
-      setNotice('Saved Z-Wave JS settings.')
-      void statusQuery.refetch()
-    } catch (err) {
-      setError(getErrorMessage(err) || 'Failed to save Z-Wave JS settings')
-    }
-  }
-
-  const test = async () => {
-    setError(null)
-    setNotice(null)
-    const data = watch()
-    try {
-      const connectTimeoutSeconds = parseFloatInRange('Connect timeout', data.connectTimeoutSeconds, 0.5, 30)
-      await testConnection.mutateAsync({
-        wsUrl: data.wsUrl.trim(),
-        connectTimeoutSeconds,
-      })
-      setNotice('Connection OK.')
-    } catch (err) {
-      setError(getErrorMessage(err) || 'Connection failed')
-    }
-  }
-
   const sync = async () => {
     setError(null)
     setNotice(null)
@@ -133,8 +82,6 @@ export function useSetupZwavejsModel() {
     notice,
     statusQuery,
     settingsQuery,
-    updateSettings,
-    testConnection,
     syncEntities,
     enabled,
     register,
@@ -143,9 +90,6 @@ export function useSetupZwavejsModel() {
     watch,
     errors,
     isSubmitting,
-    onSubmit: save,
-    onTest: test,
     onSync: sync,
   }
 }
-

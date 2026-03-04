@@ -6,14 +6,11 @@ import { http, HttpResponse } from 'msw'
 import { server } from '@/test/msw/server'
 import {
   notificationKeys,
-  useCreateNotificationProvider,
-  useDeleteNotificationProvider,
   useEnabledNotificationProviders,
   useNotificationProvider,
   useNotificationProviders,
   useNotificationProviderTypes,
   useTestNotificationProvider,
-  useUpdateNotificationProvider,
 } from '@/features/notifications/hooks/useNotificationProviders'
 
 function createClient() {
@@ -78,33 +75,13 @@ describe('notification provider hooks', () => {
     expect(result.current.data?.[0]).toMatchObject({ id: 'pushbullet' })
   })
 
-  it('invalidates list after create/update/delete', async () => {
+  it('tests a provider via mutation', async () => {
     server.use(
-      http.get('/api/notifications/providers/', () => HttpResponse.json({ data: [] })),
-      http.post('/api/notifications/providers/', () => HttpResponse.json({ data: { id: 'x' } })),
-      http.patch('/api/notifications/providers/x/', () => HttpResponse.json({ data: { id: 'x' } })),
-      http.delete('/api/notifications/providers/x/', () => HttpResponse.json({ data: null })),
       http.post('/api/notifications/providers/x/test/', () => HttpResponse.json({ data: { ok: true } }))
     )
 
     const client = createClient()
-    const invalidateSpy = vi.spyOn(client, 'invalidateQueries')
-
-    const { result: createHook } = renderHook(() => useCreateNotificationProvider(), { wrapper: wrap(client) })
-    await createHook.current.mutateAsync({ name: 'X', providerType: 'pushbullet', config: {} } as any)
-    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: notificationKeys.all })
-
-    const { result: updateHook } = renderHook(() => useUpdateNotificationProvider(), { wrapper: wrap(client) })
-    await updateHook.current.mutateAsync({ id: 'x', data: { name: 'X2', isEnabled: true } as any })
-    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: notificationKeys.all })
-    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: notificationKeys.provider('x') })
-
-    const { result: deleteHook } = renderHook(() => useDeleteNotificationProvider(), { wrapper: wrap(client) })
-    await deleteHook.current.mutateAsync('x')
-    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: notificationKeys.all })
-
     const { result: testHook } = renderHook(() => useTestNotificationProvider(), { wrapper: wrap(client) })
     await testHook.current.mutateAsync('x')
   })
 })
-

@@ -36,7 +36,7 @@ export function HomeAssistantOverviewCard({
           <span>Home Assistant</span>
         </div>
       }
-      description="Connect to Home Assistant for entity import, notify services, and related integrations."
+      description="Home Assistant connection is configured via environment variables."
       isAdmin={isAdmin}
       isBusy={isBusy}
       status={{
@@ -59,15 +59,15 @@ export function HomeAssistantOverviewCard({
         </div>
       }
       enableLabel="Enable Home Assistant"
-      enableHelp="Enables Home Assistant integration features (entity import, notify services, MQTT alarm entity management)."
+      enableHelp="Home Assistant is enabled/disabled via environment variables."
       enabled={draft?.enabled ?? false}
       onEnabledChange={(checked) => onSetDraft((prev) => (prev ? { ...prev, enabled: checked } : prev))}
-      enableDisabled={!draft}
+      enableDisabled={true}
       onRefresh={onRefresh}
       onReset={onReset}
       onSave={onSave}
-      saveDisabled={!draft}
+      resetDisabled={true}
+      saveDisabled={true}
     />
   )
 }
-

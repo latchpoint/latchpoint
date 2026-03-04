@@ -58,7 +58,6 @@ class NotificationHandler(ABC):
     Each handler must implement:
         - provider_type: Unique identifier for this provider
         - display_name: Human-readable name
-        - encrypted_fields: List of config fields that should be encrypted
         - config_schema: JSON Schema for configuration validation
         - validate_config(): Validate configuration
         - send(): Send a notification
@@ -68,7 +67,6 @@ class NotificationHandler(ABC):
     # Override in subclasses
     provider_type: str = ""
     display_name: str = ""
-    encrypted_fields: list[str] = []
     config_schema: dict = {}
 
     @abstractmethod

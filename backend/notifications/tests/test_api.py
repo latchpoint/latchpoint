@@ -141,7 +141,6 @@ class NotificationsApiTests(APITestCase):
             {
                 "provider_type": "pushbullet",
                 "display_name": "Pushbullet",
-                "encrypted_fields": ["access_token"],
                 "config_schema": {"type": "object", "properties": {}},
             }
         ]

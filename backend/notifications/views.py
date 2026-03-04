@@ -4,10 +4,7 @@ API views for notification providers.
 
 import logging
 
-from django.db.utils import IntegrityError
 from rest_framework import status
-from rest_framework.decorators import api_view, permission_classes
-from rest_framework.exceptions import ValidationError as DrfValidationError
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -18,7 +15,6 @@ from config.domain_exceptions import ConfigurationError, NotFoundError, ServiceU
 logger = logging.getLogger(__name__)
 
 from .dispatcher import get_dispatcher
-from .encryption import decrypt_config
 from .handlers import get_all_handlers_metadata, get_handler
 from .handlers.home_assistant import HomeAssistantHandler
 from .handlers.pushbullet import PushbulletHandler
@@ -56,23 +52,10 @@ class ProviderListCreateView(APIView):
         return Response(serializer.data)
 
     def post(self, request):
-        """Create a new notification provider."""
-        profile = get_active_profile()
-        if not profile:
-            raise ValidationError("No active profile.")
-
-        serializer = NotificationProviderSerializer(
-            data=request.data,
-            context={"profile": profile, "request": request},
-        )
-        serializer.is_valid(raise_exception=True)
-        try:
-            provider = serializer.save()
-        except IntegrityError:
-            raise DrfValidationError({"name": ["A provider with this name already exists."]})
+        """Notification providers are now configured via environment variables."""
         return Response(
-            NotificationProviderSerializer(provider).data,
-            status=status.HTTP_201_CREATED,
+            {"detail": "Notification providers are configured via environment variables."},
+            status=status.HTTP_405_METHOD_NOT_ALLOWED,
         )
 
 
@@ -101,35 +84,20 @@ class ProviderDetailView(APIView):
         return Response(serializer.data)
 
     def put(self, request, pk):
-        """Update a notification provider."""
-        provider = self.get_object(pk)
-        if not provider:
-            raise NotFoundError("Provider not found.")
-
-        serializer = NotificationProviderSerializer(
-            provider,
-            data=request.data,
-            partial=True,
-            context={"request": request},
+        """Notification providers are now configured via environment variables."""
+        return Response(
+            {"detail": "Notification providers are configured via environment variables."},
+            status=status.HTTP_405_METHOD_NOT_ALLOWED,
         )
-        serializer.is_valid(raise_exception=True)
-        try:
-            provider = serializer.save()
-        except IntegrityError:
-            raise DrfValidationError({"name": ["A provider with this name already exists."]})
-        return Response(NotificationProviderSerializer(provider).data)
 
-    # PATCH uses the same logic as PUT (both support partial updates)
     patch = put
 
     def delete(self, request, pk):
-        """Delete a notification provider."""
-        provider = self.get_object(pk)
-        if not provider:
-            raise NotFoundError("Provider not found.")
-
-        provider.delete()
-        return Response(status=status.HTTP_204_NO_CONTENT)
+        """Notification providers are now configured via environment variables."""
+        return Response(
+            {"detail": "Notification providers are configured via environment variables."},
+            status=status.HTTP_405_METHOD_NOT_ALLOWED,
+        )
 
 
 class TestProviderView(APIView):
@@ -241,23 +209,15 @@ class PushbulletDevicesView(APIView):
 
         Query params:
             - access_token: Direct token (for new provider setup)
-            - provider_id: Use token from existing provider
+            - provider_id: Use token from existing provider (reads from env)
         """
-        from alarm.crypto import EncryptionNotConfigured
-
         access_token = request.query_params.get("access_token")
         provider_id = request.query_params.get("provider_id")
 
         if provider_id:
             try:
-                provider = NotificationProvider.objects.get(id=provider_id)
-                handler = get_handler(provider.provider_type)
-                config = decrypt_config(provider.config, handler.encrypted_fields)
-                access_token = config.get("access_token")
-            except NotificationProvider.DoesNotExist:
-                raise NotFoundError("Provider not found.")
-            except EncryptionNotConfigured as exc:
-                raise ConfigurationError(str(exc)) from exc
+                env_config = PushbulletHandler.from_env()
+                access_token = env_config.get("access_token")
             except Exception as exc:
                 logger.exception("Error retrieving provider config")
                 raise ServiceUnavailableError("Failed to retrieve provider config.") from exc

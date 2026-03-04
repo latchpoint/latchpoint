@@ -3,8 +3,6 @@ import { describe, expect, it, vi } from 'vitest'
 import { renderHook, act } from '@testing-library/react'
 import { useHomeAssistantSettingsModel } from '@/features/homeAssistant/hooks/useHomeAssistantSettingsModel'
 
-const updateHa = vi.fn().mockResolvedValue({ ok: true })
-
 vi.mock('@/hooks/useAuthQueries', () => {
   return { useCurrentUserQuery: () => ({ data: { role: 'admin' } }) }
 })
@@ -16,7 +14,6 @@ vi.mock('@/hooks/useHomeAssistant', () => {
       data: { enabled: true, baseUrl: 'http://ha', connectTimeoutSeconds: 2, hasToken: true },
       refetch: vi.fn(),
     }),
-    useUpdateHomeAssistantSettingsMutation: () => ({ isPending: false, mutateAsync: updateHa }),
   }
 })
 
@@ -37,19 +34,20 @@ vi.mock('@/hooks/useHomeAssistantMqttAlarmEntity', () => {
 })
 
 describe('useHomeAssistantSettingsModel', () => {
-  it('clearToken disables and clears token', async () => {
+  it('provides read-only connection draft from settings query', async () => {
     const { result } = renderHook(() => useHomeAssistantSettingsModel())
 
     await act(async () => {
       await Promise.resolve()
     })
 
-    await act(async () => {
-      await result.current.clearToken()
+    expect(result.current.haConnectionDraft).toMatchObject({
+      enabled: true,
+      baseUrl: 'http://ha',
+      hasToken: true,
+      connectTimeoutSeconds: '2',
     })
-
-    expect(updateHa).toHaveBeenCalledWith({ enabled: false, token: '' })
-    expect(result.current.notice).toMatch(/cleared home assistant token/i)
+    expect(result.current.isAdmin).toBe(true)
+    expect(result.current.mqttReady).toBe(true)
   })
 })
-

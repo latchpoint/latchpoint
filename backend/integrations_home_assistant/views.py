@@ -7,26 +7,13 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from django.db import transaction
-
 from accounts.permissions import IsAdminRole
-from config.domain_exceptions import ConfigurationError, ServiceUnavailableError, ValidationError
+from config.domain_exceptions import ServiceUnavailableError
+from alarm.env_config import get_home_assistant_config
 from alarm.gateways.home_assistant import (
     HomeAssistantGateway,
     default_home_assistant_gateway,
 )
-from alarm.models import AlarmSettingsEntry
-from alarm.serializers import (
-    HomeAssistantConnectionSettingsSerializer,
-    HomeAssistantConnectionSettingsUpdateSerializer,
-)
-from alarm.crypto import can_encrypt, encrypt_secret
-from alarm.settings_registry import ALARM_PROFILE_SETTINGS_BY_KEY
-from alarm.state_machine.settings import get_setting_json
-from alarm.use_cases.settings_profile import ensure_active_settings_profile
-from alarm.signals import settings_profile_changed
-from integrations_home_assistant.config import normalize_home_assistant_connection
-from integrations_home_assistant.connection import set_cached_connection
 
 ha_gateway: HomeAssistantGateway = default_home_assistant_gateway
 logger = logging.getLogger(__name__)
@@ -49,54 +36,24 @@ class HomeAssistantSettingsView(APIView):
     permission_classes = [IsAuthenticated, IsAdminRole]
 
     def get(self, request):
-        """Return the current persisted Home Assistant connection settings."""
-        profile = ensure_active_settings_profile()
-        value = normalize_home_assistant_connection(get_setting_json(profile, "home_assistant_connection") or {})
-        return Response(HomeAssistantConnectionSettingsSerializer(value).data, status=status.HTTP_200_OK)
-
-    def patch(self, request):
-        """Update persisted Home Assistant settings and refresh runtime cache (admin-only)."""
-        profile = ensure_active_settings_profile()
-        current = normalize_home_assistant_connection(get_setting_json(profile, "home_assistant_connection") or {})
-
-        serializer = HomeAssistantConnectionSettingsUpdateSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        changes = dict(serializer.validated_data)
-
-        if "token" in changes:
-            token = changes.get("token") or ""
-            if token != "" and not can_encrypt():
-                raise ConfigurationError("SETTINGS_ENCRYPTION_KEY is required to store the Home Assistant token.")
-            changes["token"] = encrypt_secret(token)
-        else:
-            # Preserve existing token if not provided.
-            changes["token"] = current.get("token", "")
-
-        merged = dict(current)
-        merged.update(changes)
-        merged = normalize_home_assistant_connection(merged)
-
-        if merged.get("enabled"):
-            if not str(merged.get("base_url") or "").strip():
-                raise ValidationError("Home Assistant base_url is required when enabled.")
-            if not str(merged.get("token") or "").strip():
-                raise ValidationError("Home Assistant token is required when enabled.")
-
-        definition = ALARM_PROFILE_SETTINGS_BY_KEY["home_assistant_connection"]
-        AlarmSettingsEntry.objects.update_or_create(
-            profile=profile,
-            key="home_assistant_connection",
-            defaults={"value": merged, "value_type": definition.value_type},
+        """Return the current Home Assistant connection settings from env vars."""
+        cfg = get_home_assistant_config()
+        return Response(
+            {
+                "enabled": cfg["enabled"],
+                "base_url": cfg["base_url"],
+                "has_token": bool(cfg["token"]),
+                "connect_timeout_seconds": cfg["connect_timeout_seconds"],
+            },
+            status=status.HTTP_200_OK,
         )
 
-        # Best-effort: refresh runtime cache so other requests don't need DB reads.
-        try:
-            set_cached_connection(merged)
-        except Exception:
-            pass
-
-        transaction.on_commit(lambda: settings_profile_changed.send(sender=None, profile_id=profile.id, reason="updated"))
-        return Response(HomeAssistantConnectionSettingsSerializer(merged).data, status=status.HTTP_200_OK)
+    def patch(self, request):
+        """Home Assistant settings are now configured via environment variables."""
+        return Response(
+            {"detail": "Home Assistant settings are configured via environment variables."},
+            status=status.HTTP_405_METHOD_NOT_ALLOWED,
+        )
 
 
 class HomeAssistantEntitiesView(_HomeAssistantBaseView):

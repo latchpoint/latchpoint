@@ -18,7 +18,18 @@ logger = logging.getLogger(__name__)
 class SlackHandler(NotificationHandler):
     provider_type = "slack"
     display_name = "Slack"
-    encrypted_fields = ["bot_token"]
+    @classmethod
+    def from_env(cls) -> dict:
+        from alarm.env_config import get_slack_config
+
+        config = get_slack_config()
+        return {k: v for k, v in config.items() if k != "enabled"}
+
+    @classmethod
+    def is_enabled_from_env(cls) -> bool:
+        from alarm.env_config import get_slack_config
+
+        return get_slack_config()["enabled"]
 
     config_schema = {
         "type": "object",

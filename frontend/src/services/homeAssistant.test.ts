@@ -3,7 +3,6 @@ import { apiEndpoints } from './endpoints'
 
 const apiMock = vi.hoisted(() => ({
   get: vi.fn(),
-  patch: vi.fn(),
   getData: vi.fn(),
 }))
 
@@ -14,7 +13,6 @@ import { homeAssistantService } from './homeAssistant'
 describe('homeAssistant', () => {
   beforeEach(() => {
     apiMock.get.mockReset()
-    apiMock.patch.mockReset()
     apiMock.getData.mockReset()
   })
 
@@ -22,12 +20,6 @@ describe('homeAssistant', () => {
     apiMock.get.mockResolvedValue({ configured: false, reachable: false })
     await homeAssistantService.getStatus()
     expect(apiMock.get).toHaveBeenCalledWith(apiEndpoints.homeAssistant.status)
-  })
-
-  it('updates settings via PATCH', async () => {
-    apiMock.patch.mockResolvedValue({ enabled: true })
-    await homeAssistantService.updateSettings({ enabled: true })
-    expect(apiMock.patch).toHaveBeenCalledWith(apiEndpoints.homeAssistant.settings, { enabled: true })
   })
 
   it('lists entities via getData', async () => {

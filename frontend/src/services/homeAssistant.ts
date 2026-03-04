@@ -15,13 +15,6 @@ export interface HomeAssistantConnectionSettings {
   hasToken: boolean
 }
 
-export interface HomeAssistantConnectionSettingsUpdate {
-  enabled?: boolean
-  baseUrl?: string
-  token?: string | null
-  connectTimeoutSeconds?: number
-}
-
 export interface HomeAssistantEntity {
   entityId: string
   domain: string
@@ -39,12 +32,6 @@ export const homeAssistantService = {
 
   async getSettings(): Promise<HomeAssistantConnectionSettings> {
     return api.get<HomeAssistantConnectionSettings>(apiEndpoints.homeAssistant.settings)
-  },
-
-  async updateSettings(
-    changes: HomeAssistantConnectionSettingsUpdate
-  ): Promise<HomeAssistantConnectionSettings> {
-    return api.patch<HomeAssistantConnectionSettings>(apiEndpoints.homeAssistant.settings, changes)
   },
 
   async listEntities(): Promise<HomeAssistantEntity[]> {

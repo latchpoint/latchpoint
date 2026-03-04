@@ -1,7 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { zwavejsService } from '@/services'
 import { queryKeys } from '@/types'
-import type { ZwavejsSettingsUpdate, ZwavejsTestConnectionRequest } from '@/types'
 import { useAuthSessionQuery, useCurrentUserQuery } from '@/hooks/useAuthQueries'
 import { TEN_SECONDS_MS, UserRole } from '@/lib/constants'
 import { formatEntitiesSyncNotice } from '@/lib/notices'
@@ -38,23 +37,6 @@ export function useZwavejsSettingsQuery() {
     queryKey: queryKeys.zwavejs.settings,
     queryFn: zwavejsService.getSettings,
     enabled: isAuthenticated && isAdmin,
-  })
-}
-
-export function useUpdateZwavejsSettingsMutation() {
-  const queryClient = useQueryClient()
-  return useMutation({
-    mutationFn: (changes: ZwavejsSettingsUpdate) => zwavejsService.updateSettings(changes),
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: queryKeys.zwavejs.settings })
-      await queryClient.invalidateQueries({ queryKey: queryKeys.zwavejs.status })
-    },
-  })
-}
-
-export function useTestZwavejsConnectionMutation() {
-  return useMutation({
-    mutationFn: (payload: ZwavejsTestConnectionRequest) => zwavejsService.testConnection(payload),
   })
 }
 

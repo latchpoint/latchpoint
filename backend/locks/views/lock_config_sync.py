@@ -7,11 +7,9 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from alarm.env_config import get_zwavejs_config
 from alarm.gateways.zwavejs import default_zwavejs_gateway
-from alarm.state_machine.settings import get_setting_json
-from alarm.use_cases.settings_profile import ensure_active_settings_profile
 from config.domain_exceptions import ValidationError
-from integrations_zwavejs.config import normalize_zwavejs_connection, prepare_runtime_zwavejs_connection
 from locks.permissions import IsAdminRole
 from locks.serializers import DismissedAssignmentSerializer, LockConfigSyncRequestSerializer
 from locks.use_cases import door_codes as door_codes_uc
@@ -21,16 +19,15 @@ zwavejs_gateway = default_zwavejs_gateway
 
 
 def _apply_zwavejs_settings() -> float:
-    """Apply stored Z-Wave JS connection settings to the gateway; return connect timeout seconds."""
-    profile = ensure_active_settings_profile()
-    settings_obj = normalize_zwavejs_connection(get_setting_json(profile, "zwavejs_connection") or {})
-    if not settings_obj.get("enabled"):
+    """Apply env-based Z-Wave JS connection settings to the gateway; return connect timeout seconds."""
+    config = get_zwavejs_config()
+    if not config.get("enabled"):
         raise ValidationError("Z-Wave JS is disabled.")
-    if not settings_obj.get("ws_url"):
+    if not config.get("ws_url"):
         raise ValidationError("Z-Wave JS ws_url is required.")
 
-    zwavejs_gateway.apply_settings(settings_obj=prepare_runtime_zwavejs_connection(settings_obj))
-    return float(settings_obj.get("connect_timeout_seconds") or 5)
+    zwavejs_gateway.apply_settings(settings_obj=config)
+    return float(config.get("connect_timeout_seconds") or 5)
 
 
 class LockConfigSyncView(APIView):

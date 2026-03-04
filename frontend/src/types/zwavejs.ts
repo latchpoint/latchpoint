@@ -16,17 +16,3 @@ export interface ZwavejsSettings {
   reconnectMaxSeconds: number
   hasApiToken?: boolean
 }
-
-export interface ZwavejsSettingsUpdate {
-  enabled?: boolean
-  wsUrl?: string
-  apiToken?: string | null
-  connectTimeoutSeconds?: number
-  reconnectMinSeconds?: number
-  reconnectMaxSeconds?: number
-}
-
-export interface ZwavejsTestConnectionRequest {
-  wsUrl: string
-  connectTimeoutSeconds?: number
-}

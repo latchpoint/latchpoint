@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import logging
 import sys
+import warnings
 
 from django.apps import AppConfig
+
+logger = logging.getLogger(__name__)
 
 
 class TransportsMqttConfig(AppConfig):
@@ -10,44 +14,37 @@ class TransportsMqttConfig(AppConfig):
     name = "transports_mqtt"
 
     def ready(self) -> None:
-        """Register setting maskers and best-effort runtime hooks for MQTT transport."""
-        # Always register settings maskers (safe in tests/migrations).
-        try:
-            from alarm.integration_settings_masking import register_setting_masker
-            from transports_mqtt.config import mask_mqtt_connection
-
-            register_setting_masker(key="mqtt_connection", masker=mask_mqtt_connection)
-        except Exception:
-            pass
-
+        """Best-effort runtime hooks for MQTT transport."""
         # Avoid side effects during migrations/collectstatic/tests.
         argv = " ".join(sys.argv).lower()
         if any(token in argv for token in ["makemigrations", "migrate", "collectstatic", "pytest", " test"]):
             return
 
         try:
+            from alarm.env_config import get_frigate_env_overrides, get_mqtt_config, get_zigbee2mqtt_env_overrides
             from alarm.gateways.mqtt import default_mqtt_gateway
-            from alarm.signals import settings_profile_changed
-            from alarm.state_machine.settings import get_active_settings_profile, get_setting_json
-            from transports_mqtt.config import normalize_mqtt_connection, prepare_runtime_mqtt_connection
         except Exception:
             return
 
-        def _apply_from_active_profile() -> None:
-            """Apply MQTT settings from the active profile to the runtime gateway (best-effort)."""
+        def _apply_from_env() -> None:
+            """Apply MQTT settings from env vars to the runtime gateway (best-effort)."""
             try:
-                profile = get_active_settings_profile()
-                settings_obj = normalize_mqtt_connection(get_setting_json(profile, "mqtt_connection") or {})
-                default_mqtt_gateway.apply_settings(settings=prepare_runtime_mqtt_connection(settings_obj))
+                cfg = get_mqtt_config()
+                default_mqtt_gateway.apply_settings(settings=cfg)
             except Exception:
                 return
 
-        def _on_settings_profile_changed(sender, *, profile_id: int, reason: str, **_kwargs) -> None:
-            """Refresh runtime MQTT settings when the profile changes."""
-            _apply_from_active_profile()
+        # Startup validation: warn if MQTT is disabled but dependents are enabled.
+        mqtt_cfg = get_mqtt_config()
+        if not mqtt_cfg["enabled"]:
+            z2m = get_zigbee2mqtt_env_overrides()
+            frigate = get_frigate_env_overrides()
+            if z2m["enabled"]:
+                logger.warning("ZIGBEE2MQTT_ENABLED=true but MQTT_ENABLED=false; Zigbee2MQTT will not function")
+            if frigate["enabled"]:
+                logger.warning("FRIGATE_ENABLED=true but MQTT_ENABLED=false; Frigate will not function")
 
-        settings_profile_changed.connect(_on_settings_profile_changed, dispatch_uid="mqtt_transport_profile_changed")
-
-        # Apply settings once at process startup so the runtime connection manager is configured
-        # even if no HTTP status endpoint is hit (e.g. clients rely on websocket snapshots).
-        _apply_from_active_profile()
+        # Apply settings once at process startup.
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message="Accessing the database during app initialization")
+            _apply_from_env()

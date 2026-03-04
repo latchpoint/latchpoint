@@ -1,7 +1,7 @@
 # ADR 0038: Centralized Encryption Logic
 
 ## Status
-**Implemented**
+**Superseded** by [ADR 0075](0075-env-var-credentials-remove-encryption.md)
 
 ## Context
 

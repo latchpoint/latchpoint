@@ -12,14 +12,14 @@ export function SettingsHomeAssistantTab() {
       <div className="space-y-4">
         <HomeAssistantOverviewCard
           isAdmin={model.isAdmin}
-          isBusy={model.updateHaSettingsMutation.isPending}
+          isBusy={false}
           draft={model.haConnectionDraft}
           reachable={model.haStatusQuery.data?.reachable}
           configured={model.haStatusQuery.data?.configured}
           lastError={model.haStatusQuery.data?.error}
           onRefresh={model.refreshConnection}
-          onReset={model.resetConnection}
-          onSave={() => void model.saveConnection()}
+          onReset={() => {}}
+          onSave={() => {}}
           onSetDraft={model.setHaConnectionDraft}
         />
 
@@ -29,9 +29,6 @@ export function SettingsHomeAssistantTab() {
           isLoading={model.haSettingsQuery.isLoading}
           isError={model.haSettingsQuery.isError}
           loadError={model.haSettingsQuery.error}
-          isPending={model.updateHaSettingsMutation.isPending}
-          onClearToken={() => void model.clearToken()}
-          onSetDraft={model.setHaConnectionDraft}
         />
 
         <HomeAssistantMqttAlarmEntityCard

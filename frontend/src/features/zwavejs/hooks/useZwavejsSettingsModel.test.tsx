@@ -3,8 +3,6 @@ import { describe, expect, it, vi } from 'vitest'
 import { renderHook, act } from '@testing-library/react'
 import { useZwavejsSettingsModel } from '@/features/zwavejs/hooks/useZwavejsSettingsModel'
 
-const updateZ = vi.fn().mockResolvedValue({ ok: true })
-
 vi.mock('@/hooks/useAuthQueries', () => {
   return { useCurrentUserQuery: () => ({ data: { role: 'admin' } }) }
 })
@@ -17,30 +15,25 @@ vi.mock('@/hooks/useZwavejs', () => {
       isLoading: false,
       refetch: vi.fn(),
     }),
-    useUpdateZwavejsSettingsMutation: () => ({ isPending: false, mutateAsync: updateZ }),
-    useTestZwavejsConnectionMutation: () => ({ isPending: false, mutateAsync: vi.fn() }),
     useSyncZwavejsEntitiesMutation: () => ({ isPending: false, mutateAsync: vi.fn().mockResolvedValue({ notice: 'ok' }) }),
   }
 })
 
 describe('useZwavejsSettingsModel', () => {
-  it('validates wsUrl when enabled', async () => {
+  it('provides read-only draft from settings query', async () => {
     const { result } = renderHook(() => useZwavejsSettingsModel())
 
     await act(async () => {
       await Promise.resolve()
     })
 
-    act(() => {
-      result.current.setDraft((prev) => (prev ? { ...prev, enabled: true, wsUrl: 'http://nope' } : prev))
+    expect(result.current.draft).toMatchObject({
+      enabled: false,
+      wsUrl: '',
+      connectTimeoutSeconds: '5',
+      reconnectMinSeconds: '1',
+      reconnectMaxSeconds: '30',
     })
-
-    await act(async () => {
-      await result.current.save()
-    })
-
-    expect(result.current.error).toBe('WebSocket URL must start with ws:// or wss://.')
-    expect(updateZ).not.toHaveBeenCalled()
+    expect(result.current.isAdmin).toBe(true)
   })
 })
-

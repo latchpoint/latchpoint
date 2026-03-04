@@ -19,12 +19,7 @@ export function SettingsMqttTab() {
         zigbee2mqttEnabled={Boolean(model.zigbee2mqttSettingsQuery.data?.enabled)}
         frigateEnabled={Boolean(model.frigateSettingsQuery.data?.enabled)}
         onRefresh={model.refresh}
-        onReset={model.reset}
-        onSave={() => void model.save()}
-        onTest={() => void model.test()}
-        onClearPassword={() => void model.clearPassword()}
         onSetDraft={model.setDraft}
-        hasInitialDraft={Boolean(model.initialDraft)}
       />
     </SettingsTabShell>
   )

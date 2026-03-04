@@ -23,7 +23,18 @@ class HomeAssistantHandler(NotificationHandler):
 
     provider_type = "home_assistant"
     display_name = "Home Assistant"
-    encrypted_fields = []  # HA credentials are managed by integrations_home_assistant
+    @classmethod
+    def from_env(cls) -> dict:
+        from alarm.env_config import get_ha_notify_config
+
+        config = get_ha_notify_config()
+        return {k: v for k, v in config.items() if k != "enabled"}
+
+    @classmethod
+    def is_enabled_from_env(cls) -> bool:
+        from alarm.env_config import get_ha_notify_config
+
+        return get_ha_notify_config()["enabled"]
 
     config_schema = {
         "type": "object",

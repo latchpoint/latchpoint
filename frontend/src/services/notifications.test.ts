@@ -42,11 +42,9 @@ describe('notifications', () => {
     expect(devices).toEqual([{ iden: 'd1' }])
   })
 
-  it('validates pushbullet token via POST', async () => {
-    apiMock.post.mockResolvedValue({ valid: true })
-    await notificationsService.validatePushbulletToken('o.token')
-    expect(apiMock.post).toHaveBeenCalledWith(apiEndpoints.notifications.pushbulletValidateToken, {
-      accessToken: 'o.token',
-    })
+  it('tests a provider via POST', async () => {
+    apiMock.post.mockResolvedValue({ success: true, message: 'OK' })
+    await notificationsService.testProvider('p1')
+    expect(apiMock.post).toHaveBeenCalledWith(apiEndpoints.notifications.testProvider('p1'))
   })
 })
