@@ -205,31 +205,16 @@ class PushbulletDevicesView(APIView):
 
     def get(self, request):
         """
-        List devices for a Pushbullet account.
+        List devices for the Pushbullet account configured via env vars.
 
-        Query params:
-            - access_token: Direct token (for new provider setup)
-            - provider_id: Use token from existing provider (reads from env)
+        The access token is always read from the NOTIFICATION_PUSHBULLET_ACCESS_TOKEN
+        environment variable.
         """
-        access_token = request.query_params.get("access_token")
-        provider_id = request.query_params.get("provider_id")
-
-        if provider_id:
-            try:
-                provider = NotificationProvider.objects.get(id=provider_id)
-            except NotificationProvider.DoesNotExist:
-                raise NotFoundError("Provider not found.")
-            if provider.provider_type != "pushbullet":
-                raise ValidationError("Provider is not a Pushbullet provider.")
-            try:
-                env_config = PushbulletHandler.from_env()
-                access_token = env_config.get("access_token")
-            except Exception as exc:
-                logger.exception("Error retrieving provider config")
-                raise ServiceUnavailableError("Failed to retrieve provider config.") from exc
+        env_config = PushbulletHandler.from_env()
+        access_token = env_config.get("access_token")
 
         if not access_token:
-            raise ValidationError("Access token required.")
+            raise ConfigurationError("Pushbullet access token not configured in environment.")
 
         handler = PushbulletHandler()
         devices = handler.list_devices(access_token)

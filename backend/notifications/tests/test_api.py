@@ -178,15 +178,17 @@ class NotificationsApiTests(APITestCase):
         self.assertEqual(len(body["data"]), 1)
         self.assertEqual(body["data"][0]["provider_name"], provider.name)
 
-    def test_pushbullet_devices_returns_validation_error_without_token(self):
+    @patch("notifications.views.PushbulletHandler.from_env", return_value={})
+    def test_pushbullet_devices_returns_config_error_without_token(self, _mock_env):
         response = self.client.get(self._reverse("pushbullet-devices"))
-        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.status_code, 503)
         body = response.json()
         self.assertIn("error", body)
-        self.assertEqual(body["error"]["status"], "validation_error")
+        self.assertEqual(body["error"]["status"], "configuration_error")
 
     @patch("notifications.views.PushbulletHandler.list_devices")
-    def test_pushbullet_devices_returns_device_list(self, mock_list_devices):
+    @patch("notifications.views.PushbulletHandler.from_env", return_value={"access_token": "o.fake"})
+    def test_pushbullet_devices_returns_device_list(self, _mock_env, mock_list_devices):
         mock_list_devices.return_value = [
             {
                 "iden": "dev-1",
@@ -197,7 +199,7 @@ class NotificationsApiTests(APITestCase):
             }
         ]
 
-        response = self.client.get(f"{self._reverse('pushbullet-devices')}?access_token=o.fake")
+        response = self.client.get(self._reverse("pushbullet-devices"))
         self.assertEqual(response.status_code, 200)
         body = response.json()
         self.assertIn("data", body)

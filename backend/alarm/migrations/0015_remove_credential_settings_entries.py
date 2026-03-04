@@ -26,7 +26,7 @@ def noop(apps, schema_editor):
 class Migration(migrations.Migration):
     dependencies = [
         ("alarm", "0014_alter_alarmevent_event_type_choices"),
-        ("notifications", "0001_initial"),
+        ("notifications", "0005_rename_notificati_status_created_at_idx_notificatio_status_1e9b53_idx_and_more"),
     ]
 
     operations = [
