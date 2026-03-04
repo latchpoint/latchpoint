@@ -32,7 +32,7 @@ class NotificationDispatcher:
     """
     Central dispatcher for sending notifications.
 
-    Resolves provider by ID, decrypts config, and routes to appropriate handler.
+    Resolves provider by ID, reads config from env, and routes to appropriate handler.
     Also handles logging of notification attempts.
     """
 

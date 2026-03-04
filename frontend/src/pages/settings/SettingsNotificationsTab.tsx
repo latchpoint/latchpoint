@@ -9,7 +9,7 @@ export function SettingsNotificationsTab() {
 
   return (
     <SettingsTabShell isAdmin={isAdmin}>
-      <NotificationProvidersCard isAdmin={isAdmin} />
+      <NotificationProvidersCard />
     </SettingsTabShell>
   )
 }

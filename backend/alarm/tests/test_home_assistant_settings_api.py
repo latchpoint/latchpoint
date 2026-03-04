@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from unittest.mock import patch
-
 from django.contrib.auth.hashers import make_password
 from django.urls import reverse
 from rest_framework.test import APIClient, APITestCase
@@ -58,20 +56,10 @@ class HomeAssistantSettingsApiTests(APITestCase):
         self.assertNotIn("token", body["data"])
         self.assertEqual(body["data"]["has_token"], True)
 
-    def test_patch_home_assistant_settings_preserves_token_when_omitted(self):
+    def test_patch_home_assistant_settings_returns_405(self):
         url = reverse("ha-settings")
         response = self.client.patch(url, data={"base_url": "http://ha2.local:8123"}, format="json")
-        self.assertEqual(response.status_code, 200)
-        body = response.json()
-        self.assertNotIn("token", body["data"])
-        self.assertEqual(body["data"]["has_token"], True)
-
-    def test_patch_home_assistant_settings_requires_encryption_key_when_setting_token(self):
-        url = reverse("ha-settings")
-        with patch("integrations_home_assistant.views.can_encrypt", return_value=False):
-            response = self.client.patch(url, data={"token": "newtoken"}, format="json")
-        self.assertEqual(response.status_code, 503)
-        self.assertEqual(response.json()["error"]["status"], "configuration_error")
+        self.assertEqual(response.status_code, 405)
 
 
 class HomeAssistantSettingsApiPermissionsTests(APITestCase):

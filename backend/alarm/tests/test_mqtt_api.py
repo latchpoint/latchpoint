@@ -9,7 +9,6 @@ from rest_framework.test import APIClient, APITestCase
 from accounts.models import Role, User, UserCode, UserRoleAssignment
 from alarm.models import AlarmSettingsProfile
 from integrations_home_assistant.models import HomeAssistantMqttAlarmEntityStatus
-from alarm.state_machine.settings import get_setting_json
 from alarm.tests.settings_test_utils import set_profile_settings
 
 
@@ -89,34 +88,10 @@ class MqttApiTests(APITestCase):
         self.assertNotIn("password", body["data"])
         self.assertEqual(body["data"]["has_password"], True)
 
-    def test_patch_mqtt_settings_preserves_password_when_omitted(self):
+    def test_patch_mqtt_settings_returns_405(self):
         url = reverse("mqtt-settings")
         response = self.client.patch(url, data={"host": "mqtt2.local"}, format="json")
-        self.assertEqual(response.status_code, 200)
-        body = response.json()
-        self.assertNotIn("password", body["data"])
-        self.assertEqual(body["data"]["has_password"], True)
-
-    def test_disabling_mqtt_disables_zigbee2mqtt_and_frigate(self):
-        url = reverse("mqtt-settings")
-        response = self.client.patch(url, data={"enabled": False}, format="json")
-        self.assertEqual(response.status_code, 200)
-
-        self.profile.refresh_from_db()
-        z2m = get_setting_json(self.profile, "zigbee2mqtt") or {}
-        frigate = get_setting_json(self.profile, "frigate") or {}
-        self.assertEqual(bool(z2m.get("enabled")), False)
-        self.assertEqual(bool(frigate.get("enabled")), False)
-
-    def test_cannot_enable_zigbee2mqtt_or_frigate_when_mqtt_disabled(self):
-        response = self.client.patch(reverse("mqtt-settings"), data={"enabled": False}, format="json")
-        self.assertEqual(response.status_code, 200)
-
-        resp_z2m = self.client.patch(reverse("zigbee2mqtt-settings"), data={"enabled": True}, format="json")
-        self.assertEqual(resp_z2m.status_code, 400)
-
-        resp_frigate = self.client.patch(reverse("frigate-settings"), data={"enabled": True}, format="json")
-        self.assertEqual(resp_frigate.status_code, 400)
+        self.assertEqual(response.status_code, 405)
 
     def test_publish_discovery_endpoint_calls_publish(self):
         url = reverse("integrations-ha-mqtt-alarm-entity-publish-discovery")

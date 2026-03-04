@@ -58,13 +58,10 @@ class ZwavejsApiTests(APITestCase):
         self.assertNotIn("api_token", body["data"])
         self.assertEqual(body["data"]["has_api_token"], True)
 
-    def test_patch_zwavejs_settings_preserves_token_when_omitted(self):
+    def test_patch_zwavejs_settings_returns_405(self):
         url = reverse("zwavejs-settings")
         response = self.client.patch(url, data={"ws_url": "wss://zwavejs2.local:3000"}, format="json")
-        self.assertEqual(response.status_code, 200)
-        body = response.json()
-        self.assertNotIn("api_token", body["data"])
-        self.assertEqual(body["data"]["has_api_token"], True)
+        self.assertEqual(response.status_code, 405)
 
     def test_zwavejs_status_endpoint_does_not_connect_during_tests(self):
         url = reverse("zwavejs-status")

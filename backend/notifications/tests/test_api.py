@@ -75,9 +75,7 @@ class NotificationsApiTests(APITestCase):
         self.assertEqual(len(body["data"]), 1)
         self.assertEqual(body["data"][0]["id"], str(provider.id))
 
-    @patch("notifications.serializers.encrypt_config")
-    def test_provider_create_and_duplicate_name_error(self, mock_encrypt_config):
-        mock_encrypt_config.side_effect = lambda config, _fields: config
+    def test_provider_create_returns_405(self):
         url = self._reverse("provider-list")
         payload = {
             "name": "Pushbullet Created",
@@ -85,17 +83,26 @@ class NotificationsApiTests(APITestCase):
             "config": {"access_token": "o.created-token"},
             "is_enabled": True,
         }
+        response = self.client.post(url, data=payload, format="json")
+        self.assertEqual(response.status_code, 405)
 
-        created = self.client.post(url, data=payload, format="json")
-        self.assertEqual(created.status_code, 201)
-        self.assertIn("data", created.json())
-        self.assertEqual(created.json()["data"]["name"], "Pushbullet Created")
+    def test_provider_update_returns_405(self):
+        provider = self._create_pushbullet_provider()
+        url = self._reverse("provider-detail", pk=provider.id)
+        response = self.client.put(url, data={"name": "Updated"}, format="json")
+        self.assertEqual(response.status_code, 405)
 
-        duplicate = self.client.post(url, data=payload, format="json")
-        self.assertEqual(duplicate.status_code, 400)
-        duplicate_body = duplicate.json()
-        self.assertIn("error", duplicate_body)
-        self.assertEqual(duplicate_body["error"]["status"], "validation_error")
+    def test_provider_patch_returns_405(self):
+        provider = self._create_pushbullet_provider()
+        url = self._reverse("provider-detail", pk=provider.id)
+        response = self.client.patch(url, data={"name": "Patched"}, format="json")
+        self.assertEqual(response.status_code, 405)
+
+    def test_provider_delete_returns_405(self):
+        provider = self._create_pushbullet_provider()
+        url = self._reverse("provider-detail", pk=provider.id)
+        response = self.client.delete(url)
+        self.assertEqual(response.status_code, 405)
 
     def test_provider_detail_returns_provider(self):
         provider = self._create_pushbullet_provider()

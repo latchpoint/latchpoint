@@ -31,11 +31,7 @@ const PROVIDER_TYPE_LABELS: Record<string, string> = {
   home_assistant: 'Home Assistant',
 }
 
-interface NotificationProvidersCardProps {
-  isAdmin: boolean
-}
-
-export function NotificationProvidersCard({ isAdmin: _isAdmin }: NotificationProvidersCardProps) {
+export function NotificationProvidersCard() {
   const [testingId, setTestingId] = useState<string | null>(null)
   const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null)
 

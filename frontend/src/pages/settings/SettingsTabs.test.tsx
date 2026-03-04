@@ -203,7 +203,7 @@ vi.mock('@/hooks/useAuthQueries', () => {
 })
 
 vi.mock('@/features/notifications/components/NotificationProvidersCard', () => {
-  return { NotificationProvidersCard: (props: any) => <div>NotificationProvidersCard {String(props.isAdmin)}</div> }
+  return { NotificationProvidersCard: () => <div>NotificationProvidersCard</div> }
 })
 
 describe('Settings tabs', () => {
@@ -241,10 +241,9 @@ describe('Settings tabs', () => {
     expect(document.body.textContent).toContain('FrigateRecentDetectionsCard')
   })
 
-  it('renders notifications settings tab and passes admin flag', () => {
-    isAdmin = false
+  it('renders notifications settings tab', () => {
     render(<SettingsNotificationsTab />)
-    expect(document.body.textContent).toContain('NotificationProvidersCard false')
+    expect(document.body.textContent).toContain('NotificationProvidersCard')
   })
 })
 

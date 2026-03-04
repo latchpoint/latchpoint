@@ -17,8 +17,10 @@ class NotificationsConfig(AppConfig):
         from . import tasks  # noqa: F401
 
         # Auto-provision env-based notification providers (skip management commands).
-        argv = " ".join(sys.argv).lower()
-        if any(token in argv for token in ["makemigrations", "migrate", "collectstatic", "pytest", " test"]):
+        subcommand = sys.argv[1] if len(sys.argv) > 1 else ""
+        if subcommand in {"makemigrations", "migrate", "collectstatic", "test"}:
+            return
+        if "pytest" in sys.argv[0]:
             return
 
         with warnings.catch_warnings():

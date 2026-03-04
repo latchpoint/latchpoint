@@ -38,14 +38,14 @@ describe('NotificationProvidersCard', () => {
 
   it('renders virtual Home Assistant system provider when HA configured', () => {
     haConfigured = true
-    renderWithProviders(<NotificationProvidersCard isAdmin={true} />)
+    renderWithProviders(<NotificationProvidersCard />)
     expect(screen.getAllByText('Home Assistant').length).toBeGreaterThanOrEqual(1)
     expect(screen.getByText(/system/i)).toBeInTheDocument()
   })
 
   it('tests provider and displays result banner', async () => {
     const user = userEvent.setup()
-    renderWithProviders(<NotificationProvidersCard isAdmin={true} />)
+    renderWithProviders(<NotificationProvidersCard />)
 
     await user.click(screen.getByRole('button', { name: /test/i }))
     expect(mutateTest).toHaveBeenCalledWith('p1')
@@ -53,7 +53,7 @@ describe('NotificationProvidersCard', () => {
   })
 
   it('does not render Add Provider button', () => {
-    renderWithProviders(<NotificationProvidersCard isAdmin={true} />)
+    renderWithProviders(<NotificationProvidersCard />)
     expect(screen.queryByRole('button', { name: /add provider/i })).toBeNull()
   })
 })
