@@ -14,7 +14,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-# Map of provider_type -> (handler_class_path, display_name)
+# Provider types to check for env-based auto-provisioning
 _PROVIDER_TYPES = [
     "pushbullet",
     "discord",

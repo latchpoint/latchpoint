@@ -66,7 +66,7 @@ MQTT_PORT=1883
 MQTT_USERNAME=
 MQTT_PASSWORD=
 MQTT_USE_TLS=false
-MQTT_CLIENT_ID=latchpoint
+MQTT_CLIENT_ID=latchpoint-alarm
 
 # Z-Wave JS
 ZWAVEJS_ENABLED=false
@@ -81,7 +81,7 @@ ZIGBEE2MQTT_BASE_TOPIC=zigbee2mqtt
 # Frigate (no secrets -- just enable + topic)
 FRIGATE_ENABLED=false
 FRIGATE_EVENTS_TOPIC=frigate/events
-FRIGATE_RETENTION_SECONDS=86400
+FRIGATE_RETENTION_SECONDS=3600
 ```
 
 #### Notification Providers

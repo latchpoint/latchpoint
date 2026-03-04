@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+from unittest.mock import patch
 
 from django.core.cache import cache
 from django.test import TestCase
@@ -10,14 +12,10 @@ from alarm.use_cases.settings_profile import ensure_active_settings_profile
 from integrations_zigbee2mqtt.runtime import _CACHE_KEY_FRIENDLY_TO_IEEE, _entity_ids_cache_key, _handle_z2m_message, get_settings
 
 
+@patch.dict(os.environ, {"ZIGBEE2MQTT_ENABLED": "true", "ZIGBEE2MQTT_BASE_TOPIC": "zigbee2mqtt"})
 class Zigbee2mqttRuntimeIngestTests(TestCase):
     def test_ingest_updates_only_known_entity_ids(self):
         profile = ensure_active_settings_profile()
-        AlarmSettingsEntry.objects.update_or_create(
-            profile=profile,
-            key="mqtt_connection",
-            defaults={"value_type": "json", "value": {"enabled": True, "host": "mqtt.local", "port": 1883}},
-        )
         AlarmSettingsEntry.objects.update_or_create(
             profile=profile,
             key="zigbee2mqtt",
@@ -48,11 +46,6 @@ class Zigbee2mqttRuntimeIngestTests(TestCase):
 
     def test_ingest_skips_unknown_keys_without_db_writes(self):
         profile = ensure_active_settings_profile()
-        AlarmSettingsEntry.objects.update_or_create(
-            profile=profile,
-            key="mqtt_connection",
-            defaults={"value_type": "json", "value": {"enabled": True, "host": "mqtt.local", "port": 1883}},
-        )
         AlarmSettingsEntry.objects.update_or_create(
             profile=profile,
             key="zigbee2mqtt",

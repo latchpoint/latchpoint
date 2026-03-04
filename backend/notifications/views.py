@@ -216,6 +216,12 @@ class PushbulletDevicesView(APIView):
 
         if provider_id:
             try:
+                provider = NotificationProvider.objects.get(id=provider_id)
+            except NotificationProvider.DoesNotExist:
+                raise NotFoundError("Provider not found.")
+            if provider.provider_type != "pushbullet":
+                raise ValidationError("Provider is not a Pushbullet provider.")
+            try:
                 env_config = PushbulletHandler.from_env()
                 access_token = env_config.get("access_token")
             except Exception as exc:

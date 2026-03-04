@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from unittest.mock import patch
 
 from django.test import override_settings
@@ -9,7 +10,6 @@ from rest_framework.test import APIClient, APITestCase
 
 from accounts.models import User
 from alarm.models import AlarmSettingsProfile
-from alarm.tests.settings_test_utils import set_profile_settings
 from integrations_home_assistant.connection import clear_cached_connection
 
 
@@ -31,6 +31,12 @@ class _DummyResponse:
         return False
 
 
+@patch.dict(os.environ, {
+    "HA_ENABLED": "true",
+    "HA_BASE_URL": "http://homeassistant.local:8123",
+    "HA_TOKEN": "supersecret",
+    "HA_CONNECT_TIMEOUT": "2",
+})
 class HomeAssistantStatusCacheWarmupTests(APITestCase):
     def setUp(self):
         self.user = User.objects.create_user(email="ha-status@example.com", password="pass")
@@ -40,15 +46,6 @@ class HomeAssistantStatusCacheWarmupTests(APITestCase):
         # Deactivate any existing profiles to ensure test isolation
         AlarmSettingsProfile.objects.update(is_active=False)
         self.profile = AlarmSettingsProfile.objects.create(name="HA Status Test Profile", is_active=True)
-        set_profile_settings(
-            self.profile,
-            home_assistant_connection={
-                "enabled": True,
-                "base_url": "http://homeassistant.local:8123",
-                "token": "supersecret",
-                "connect_timeout_seconds": 2,
-            },
-        )
 
     @override_settings(ALLOW_HOME_ASSISTANT_IN_TESTS=True)
     @patch("alarm.gateways.home_assistant.DefaultHomeAssistantGateway._import_client", return_value=None)

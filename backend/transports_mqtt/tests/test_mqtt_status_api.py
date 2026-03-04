@@ -7,7 +7,6 @@ from rest_framework.test import APIClient, APITestCase
 
 from accounts.models import User
 from alarm.models import AlarmSettingsProfile
-from alarm.tests.settings_test_utils import set_profile_settings
 from transports_mqtt.manager import MqttNotReachable
 
 
@@ -23,21 +22,6 @@ class MqttStatusApiTests(APITestCase):
             AlarmSettingsProfile.objects.update(is_active=False)
             self.profile.is_active = True
             self.profile.save(update_fields=["is_active"])
-        set_profile_settings(
-            self.profile,
-            mqtt_connection={
-                "enabled": True,
-                "host": "mqtt.local",
-                "port": 1883,
-                "username": "",
-                "password": "",
-                "use_tls": False,
-                "tls_insecure": False,
-                "client_id": "latchpoint-test",
-                "keepalive_seconds": 30,
-                "connect_timeout_seconds": 5,
-            },
-        )
 
     def test_status_requires_auth(self):
         response = APIClient().get(reverse("mqtt-status"))

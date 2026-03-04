@@ -5,6 +5,7 @@ with a mock ``ActionContext`` — no integration through ``execute_actions()``.
 """
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -22,7 +23,6 @@ from alarm.rules.action_handlers.zigbee2mqtt_light import execute as zigbee2mqtt
 from alarm.rules.action_handlers.zigbee2mqtt_set_value import execute as zigbee2mqtt_set_value_execute
 from alarm.rules.action_handlers.zigbee2mqtt_switch import execute as zigbee2mqtt_switch_execute
 from alarm.rules.action_handlers.zwavejs_set_value import execute as zwavejs_set_value_execute
-from alarm.tests.settings_test_utils import set_profile_settings
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
@@ -235,9 +235,8 @@ class ZwavejsSetValueHandlerTests(TestCase):
         self.assertEqual(result["error"], "invalid_value_id")
         self.assertIsNone(error)
 
+    @patch.dict(os.environ, {"ZWAVEJS_ENABLED": "true", "ZWAVEJS_WS_URL": "ws://localhost:3000", "ZWAVEJS_CONNECT_TIMEOUT": "2"})
     def test_happy_path(self):
-        profile = AlarmSettingsProfile.objects.create(name="Default", is_active=True)
-        set_profile_settings(profile, zwavejs_connection={"enabled": True, "ws_url": "ws://localhost:3000"})
         zwave = _FakeZwavejs()
         ctx = _make_ctx(zwavejs=zwave)
         result, error = zwavejs_set_value_execute(
@@ -254,9 +253,8 @@ class ZwavejsSetValueHandlerTests(TestCase):
         self.assertIsNone(error)
         self.assertEqual(zwave.calls[-1][0], "set_value")
 
+    @patch.dict(os.environ, {"ZWAVEJS_ENABLED": "true", "ZWAVEJS_WS_URL": "ws://localhost:3000", "ZWAVEJS_CONNECT_TIMEOUT": "2"})
     def test_exception_path(self):
-        profile = AlarmSettingsProfile.objects.create(name="Default", is_active=True)
-        set_profile_settings(profile, zwavejs_connection={"enabled": True})
         ctx = _make_ctx(fail=True)
         result, error = zwavejs_set_value_execute(
             {

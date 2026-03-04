@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from unittest.mock import patch
 
 from django.contrib.auth.hashers import make_password
@@ -37,18 +38,6 @@ class MqttApiTests(APITestCase):
             self.profile.save(update_fields=["is_active"])
         set_profile_settings(
             self.profile,
-            mqtt_connection={
-                "enabled": True,
-                "host": "mqtt.local",
-                "port": 1883,
-                "username": "u",
-                "password": "supersecret",
-                "use_tls": False,
-                "tls_insecure": False,
-                "client_id": "latchpoint-alarm",
-                "keepalive_seconds": 30,
-                "connect_timeout_seconds": 5,
-            },
             home_assistant_alarm_entity={
                 "enabled": True,
                 "entity_name": "Latchpoint",
@@ -68,18 +57,18 @@ class MqttApiTests(APITestCase):
             },
         )
 
-    def test_mqtt_password_is_masked_in_settings_profile_detail(self):
-        url = reverse("alarm-settings-profile-detail", args=[self.profile.id])
-        response = self.client.get(url)
-        self.assertEqual(response.status_code, 200)
-
-        entries = response.json()["data"]["entries"]
-        mqtt_entries = [e for e in entries if e["key"] == "mqtt_connection"]
-        self.assertEqual(len(mqtt_entries), 1)
-        value = mqtt_entries[0]["value"]
-        self.assertNotIn("password", value)
-        self.assertEqual(value["has_password"], True)
-
+    @patch.dict(os.environ, {
+        "MQTT_ENABLED": "true",
+        "MQTT_HOST": "mqtt.local",
+        "MQTT_PORT": "1883",
+        "MQTT_USERNAME": "u",
+        "MQTT_PASSWORD": "supersecret",
+        "MQTT_USE_TLS": "false",
+        "MQTT_TLS_INSECURE": "false",
+        "MQTT_CLIENT_ID": "latchpoint-alarm",
+        "MQTT_KEEPALIVE_SECONDS": "30",
+        "MQTT_CONNECT_TIMEOUT": "5",
+    })
     def test_mqtt_password_is_masked_in_mqtt_settings_endpoint(self):
         url = reverse("mqtt-settings")
         response = self.client.get(url)
@@ -93,14 +82,18 @@ class MqttApiTests(APITestCase):
         response = self.client.patch(url, data={"host": "mqtt2.local"}, format="json")
         self.assertEqual(response.status_code, 405)
 
-    def test_publish_discovery_endpoint_calls_publish(self):
+    @patch.dict(os.environ, {"MQTT_ENABLED": "true", "MQTT_HOST": "mqtt.local"})
+    @patch("transports_mqtt.manager.MqttConnectionManager.apply_settings")
+    def test_publish_discovery_endpoint_calls_publish(self, _mock_apply):
         url = reverse("integrations-ha-mqtt-alarm-entity-publish-discovery")
         with patch("integrations_home_assistant.mqtt_alarm_entity.mqtt_connection_manager.publish") as publish:
             response = self.client.post(url, data={}, format="json")
         self.assertEqual(response.status_code, 200)
         self.assertTrue(publish.called)
 
-    def test_publish_discovery_persists_status_timestamps(self):
+    @patch.dict(os.environ, {"MQTT_ENABLED": "true", "MQTT_HOST": "mqtt.local"})
+    @patch("transports_mqtt.manager.MqttConnectionManager.apply_settings")
+    def test_publish_discovery_persists_status_timestamps(self, _mock_apply):
         url = reverse("integrations-ha-mqtt-alarm-entity-publish-discovery")
         with patch("integrations_home_assistant.mqtt_alarm_entity.mqtt_connection_manager.publish"):
             response = self.client.post(url, data={}, format="json")

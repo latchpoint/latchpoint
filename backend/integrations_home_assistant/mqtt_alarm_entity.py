@@ -54,10 +54,11 @@ def _get_entity_settings() -> HomeAssistantMqttAlarmEntitySettings:
 
 
 def _mqtt_enabled() -> bool:
-    """Return True if MQTT is enabled and minimally configured in the active profile."""
-    profile = get_active_settings_profile()
-    mqtt_conn = get_setting_json(profile, "mqtt_connection") or {}
-    return bool(isinstance(mqtt_conn, dict) and mqtt_conn.get("enabled") and mqtt_conn.get("host"))
+    """Return True if MQTT is enabled and minimally configured (from env vars)."""
+    from alarm.env_config import get_mqtt_config
+
+    conn = get_mqtt_config()
+    return bool(conn.get("enabled") and conn.get("host"))
 
 
 def build_discovery_payload(*, entity_name: str, code_arm_required: bool) -> dict:

@@ -1,13 +1,14 @@
 from __future__ import annotations
 
+import os
 from datetime import datetime, timezone as dt_timezone
+from unittest.mock import patch
 
 from django.test import TestCase
 
 from alarm.models import AlarmSettingsProfile
 from alarm.models import Rule
 from alarm.rules.action_executor import execute_actions
-from alarm.tests.settings_test_utils import set_profile_settings
 
 
 class _Snapshot:
@@ -100,6 +101,7 @@ class ActionExecutorTests(TestCase):
         result = execute_actions(rule=rule, actions=[{"type": "ha_call_service", "action": "nodot"}], now=now, alarm_services=alarm_services, ha=ha)
         self.assertEqual(result["actions"][0]["error"], "invalid_action_format")
 
+    @patch.dict(os.environ, {"ZWAVEJS_ENABLED": "true", "ZWAVEJS_WS_URL": "ws://zwavejs.local:3000"})
     def test_execute_actions_supports_zwavejs_set_value_shape(self):
         class _Zwavejs:
             def __init__(self):
@@ -113,9 +115,6 @@ class ActionExecutorTests(TestCase):
 
             def set_value(self, *, node_id: int, endpoint: int, command_class: int, property, value, property_key=None):
                 self.calls.append(("set_value", node_id, endpoint, command_class, property, property_key, value))
-
-        profile = AlarmSettingsProfile.objects.create(name="Default", is_active=True)
-        set_profile_settings(profile, zwavejs_connection={"enabled": True, "ws_url": "ws://zwavejs.local:3000"})
 
         rule = Rule.objects.create(name="R", kind="trigger", enabled=True, priority=0, schema_version=1, definition={})
         alarm_services = _AlarmServices()
