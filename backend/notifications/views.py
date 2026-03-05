@@ -5,6 +5,7 @@ API views for notification providers.
 import logging
 
 from rest_framework import status
+from rest_framework.exceptions import MethodNotAllowed
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -15,7 +16,7 @@ from config.domain_exceptions import ConfigurationError, NotFoundError, ServiceU
 logger = logging.getLogger(__name__)
 
 from .dispatcher import get_dispatcher
-from .handlers import get_all_handlers_metadata, get_handler
+from .handlers import get_all_handlers_metadata
 from .handlers.home_assistant import HomeAssistantHandler
 from .handlers.pushbullet import PushbulletHandler
 from .models import NotificationLog, NotificationProvider
@@ -53,10 +54,7 @@ class ProviderListCreateView(APIView):
 
     def post(self, request):
         """Notification providers are now configured via environment variables."""
-        return Response(
-            {"detail": "Notification providers are configured via environment variables."},
-            status=status.HTTP_405_METHOD_NOT_ALLOWED,
-        )
+        raise MethodNotAllowed(request.method, detail="Notification providers are configured via environment variables.")
 
 
 class ProviderDetailView(APIView):
@@ -85,19 +83,13 @@ class ProviderDetailView(APIView):
 
     def put(self, request, pk):
         """Notification providers are now configured via environment variables."""
-        return Response(
-            {"detail": "Notification providers are configured via environment variables."},
-            status=status.HTTP_405_METHOD_NOT_ALLOWED,
-        )
+        raise MethodNotAllowed(request.method, detail="Notification providers are configured via environment variables.")
 
     patch = put
 
     def delete(self, request, pk):
         """Notification providers are now configured via environment variables."""
-        return Response(
-            {"detail": "Notification providers are configured via environment variables."},
-            status=status.HTTP_405_METHOD_NOT_ALLOWED,
-        )
+        raise MethodNotAllowed(request.method, detail="Notification providers are configured via environment variables.")
 
 
 class TestProviderView(APIView):

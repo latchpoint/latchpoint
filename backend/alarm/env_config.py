@@ -25,7 +25,7 @@ def get_home_assistant_config() -> dict:
         "enabled": env.bool("HA_ENABLED", default=False),
         "base_url": env.str("HA_BASE_URL", default="http://localhost:8123"),
         "token": env.str("HA_TOKEN", default=""),
-        "connect_timeout_seconds": env.int("HA_CONNECT_TIMEOUT", default=2),
+        "connect_timeout_seconds": env.float("HA_CONNECT_TIMEOUT", default=2),
     }
 
 
@@ -39,8 +39,8 @@ def get_mqtt_config() -> dict:
         "use_tls": env.bool("MQTT_USE_TLS", default=False),
         "tls_insecure": env.bool("MQTT_TLS_INSECURE", default=False),
         "client_id": env.str("MQTT_CLIENT_ID", default="latchpoint-alarm"),
-        "keepalive_seconds": env.int("MQTT_KEEPALIVE_SECONDS", default=30),
-        "connect_timeout_seconds": env.int("MQTT_CONNECT_TIMEOUT", default=5),
+        "keepalive_seconds": env.float("MQTT_KEEPALIVE_SECONDS", default=30),
+        "connect_timeout_seconds": env.float("MQTT_CONNECT_TIMEOUT", default=5),
     }
 
 
@@ -49,9 +49,9 @@ def get_zwavejs_config() -> dict:
         "enabled": env.bool("ZWAVEJS_ENABLED", default=False),
         "ws_url": env.str("ZWAVEJS_WS_URL", default="ws://localhost:3000"),
         "api_token": env.str("ZWAVEJS_API_TOKEN", default=""),
-        "connect_timeout_seconds": env.int("ZWAVEJS_CONNECT_TIMEOUT", default=5),
-        "reconnect_min_seconds": env.int("ZWAVEJS_RECONNECT_MIN", default=1),
-        "reconnect_max_seconds": env.int("ZWAVEJS_RECONNECT_MAX", default=30),
+        "connect_timeout_seconds": env.float("ZWAVEJS_CONNECT_TIMEOUT", default=5),
+        "reconnect_min_seconds": env.float("ZWAVEJS_RECONNECT_MIN", default=1),
+        "reconnect_max_seconds": env.float("ZWAVEJS_RECONNECT_MAX", default=30),
     }
 
 
@@ -66,7 +66,7 @@ def get_frigate_env_overrides() -> dict:
     return {
         "enabled": env.bool("FRIGATE_ENABLED", default=False),
         "events_topic": env.str("FRIGATE_EVENTS_TOPIC", default="frigate/events"),
-        "retention_seconds": env.int("FRIGATE_RETENTION_SECONDS", default=3600),
+        "retention_seconds": env.float("FRIGATE_RETENTION_SECONDS", default=3600),
     }
 
 

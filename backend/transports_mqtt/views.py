@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from rest_framework import status
+from rest_framework.exceptions import MethodNotAllowed
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -49,10 +50,7 @@ class MqttSettingsView(APIView):
 
     def patch(self, request):
         """MQTT settings are now configured via environment variables."""
-        return Response(
-            {"detail": "MQTT settings are configured via environment variables."},
-            status=status.HTTP_405_METHOD_NOT_ALLOWED,
-        )
+        raise MethodNotAllowed(request.method, detail="MQTT settings are configured via environment variables.")
 
 
 class MqttTestConnectionView(APIView):

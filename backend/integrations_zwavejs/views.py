@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 
 from rest_framework import status
+from rest_framework.exceptions import MethodNotAllowed
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -113,10 +114,7 @@ class ZwavejsSettingsView(APIView):
 
     def patch(self, request):
         """Z-Wave JS settings are now configured via environment variables."""
-        return Response(
-            {"detail": "Z-Wave JS settings are configured via environment variables."},
-            status=status.HTTP_405_METHOD_NOT_ALLOWED,
-        )
+        raise MethodNotAllowed(request.method, detail="Z-Wave JS settings are configured via environment variables.")
 
 
 class ZwavejsTestConnectionView(APIView):

@@ -4,7 +4,6 @@ Serializers for notification providers API.
 
 from rest_framework import serializers
 
-from .handlers import get_handler
 from .models import NotificationLog, NotificationProvider
 
 
