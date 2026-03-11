@@ -54,7 +54,7 @@ class NotificationsApiTests(APITestCase):
             (
                 "post",
                 self._reverse("pushbullet-validate-token"),
-                {"data": {"access_token": "o.fake"}, "format": "json"},
+                {"data": {}, "format": "json"},
             ),
             ("get", self._reverse("ha-services"), {}),
             ("post", self._reverse("ha-system-provider-test"), {"data": {}, "format": "json"}),
@@ -207,7 +207,8 @@ class NotificationsApiTests(APITestCase):
         self.assertEqual(body["data"]["devices"][0]["iden"], "dev-1")
 
     @patch("notifications.views.PushbulletHandler.get_user_info")
-    def test_pushbullet_validate_token_returns_user(self, mock_get_user_info):
+    @patch("notifications.views.PushbulletHandler.from_env", return_value={"access_token": "o.env-token"})
+    def test_pushbullet_validate_token_returns_user(self, _mock_from_env, mock_get_user_info):
         mock_get_user_info.return_value = {
             "name": "Test User",
             "email_normalized": "test@example.com",
@@ -215,7 +216,7 @@ class NotificationsApiTests(APITestCase):
 
         response = self.client.post(
             self._reverse("pushbullet-validate-token"),
-            data={"access_token": "o.fake"},
+            data={},
             format="json",
         )
         self.assertEqual(response.status_code, 200)
@@ -223,6 +224,19 @@ class NotificationsApiTests(APITestCase):
         self.assertIn("data", body)
         self.assertEqual(body["data"]["valid"], True)
         self.assertEqual(body["data"]["user"]["email"], "test@example.com")
+        mock_get_user_info.assert_called_once_with("o.env-token")
+
+    @patch("notifications.views.PushbulletHandler.from_env", return_value={"access_token": ""})
+    def test_pushbullet_validate_token_returns_config_error_without_token(self, _mock_from_env):
+        response = self.client.post(
+            self._reverse("pushbullet-validate-token"),
+            data={},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 503)
+        body = response.json()
+        self.assertIn("error", body)
+        self.assertEqual(body["error"]["status"], "configuration_error")
 
     @patch("notifications.views.HomeAssistantHandler.list_available_services")
     def test_ha_services_returns_service_list(self, mock_list_available_services):

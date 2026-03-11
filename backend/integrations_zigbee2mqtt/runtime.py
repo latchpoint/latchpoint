@@ -101,6 +101,8 @@ def get_settings() -> Zigbee2mqttSettings:
 
     profile = get_active_settings_profile()
     raw = get_setting_json(profile, "zigbee2mqtt") or {}
+    if not isinstance(raw, dict):
+        raw = {}
     overrides = get_zigbee2mqtt_env_overrides()
     raw["enabled"] = overrides["enabled"]
     raw["base_topic"] = overrides["base_topic"]

@@ -19,9 +19,7 @@ class MqttStatusView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        """Return current MQTT connection status (applies env-based settings)."""
-        cfg = get_mqtt_config()
-        mqtt_gateway.apply_settings(settings=cfg)
+        """Return current MQTT connection status."""
         status_obj = mqtt_gateway.get_status().as_dict()
         return Response(status_obj, status=status.HTTP_200_OK)
 

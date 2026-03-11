@@ -27,7 +27,6 @@ from .serializers import (
     ProviderTypeMetadataSerializer,
     PushbulletDeviceSerializer,
     PushbulletValidateTokenResultSerializer,
-    PushbulletValidateTokenSerializer,
     TestNotificationResultSerializer,
 )
 
@@ -199,7 +198,7 @@ class PushbulletDevicesView(APIView):
         """
         List devices for the Pushbullet account configured via env vars.
 
-        The access token is always read from the NOTIFICATION_PUSHBULLET_ACCESS_TOKEN
+        The access token is always read from the PUSHBULLET_ACCESS_TOKEN
         environment variable.
         """
         env_config = PushbulletHandler.from_env()
@@ -216,16 +215,17 @@ class PushbulletDevicesView(APIView):
 
 
 class PushbulletValidateTokenView(APIView):
-    """Validate a Pushbullet access token."""
+    """Validate the env-configured Pushbullet access token."""
 
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
-        """Validate a Pushbullet access token."""
-        serializer = PushbulletValidateTokenSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
+        """Validate the env-configured Pushbullet access token."""
+        env_config = PushbulletHandler.from_env()
+        access_token = env_config.get("access_token")
+        if not access_token:
+            raise ConfigurationError("Pushbullet access token not configured in environment.")
 
-        access_token = serializer.validated_data["access_token"]
         handler = PushbulletHandler()
         user_info = handler.get_user_info(access_token)
 

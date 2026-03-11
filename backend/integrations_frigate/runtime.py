@@ -43,6 +43,8 @@ def get_settings() -> FrigateSettings:
 
     profile = get_active_settings_profile()
     raw = get_setting_json(profile, "frigate") or {}
+    if not isinstance(raw, dict):
+        raw = {}
     overrides = get_frigate_env_overrides()
     raw["enabled"] = overrides["enabled"]
     raw["events_topic"] = overrides["events_topic"]

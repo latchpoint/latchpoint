@@ -2,10 +2,10 @@
 Auto-provisioning of notification providers from environment variables.
 
 For each handler type whose ``is_enabled_from_env()`` returns ``True``, ensures
-a corresponding ``NotificationProvider`` row exists in the given profile. Config
-field stores only non-secret display fields — secrets are read from env at
-dispatch time via ``handler.from_env()``.  Idempotent: updates existing rows
-if found, creates new ones otherwise.
+a corresponding ``NotificationProvider`` row exists in the given profile.  The
+``config`` field is left empty — all provider configuration (including secrets)
+is read from env at dispatch time via ``handler.from_env()``.  Idempotent:
+updates existing rows if found, creates new ones otherwise.
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-# Provider types to check for env-based auto-provisioning
+# Provider type strings to check for env-based auto-provisioning.
 _PROVIDER_TYPES = [
     "pushbullet",
     "discord",
@@ -49,9 +49,13 @@ def ensure_env_providers_exist(profile) -> None:
                     existing.save(update_fields=["is_enabled", "updated_at"])
                     logger.info("Enabled existing %s provider from env", provider_type)
             else:
+                # Use a deterministic name that includes provider_type to avoid
+                # collisions with the unique_together("profile", "name") constraint
+                # in case a user-created provider already uses the display_name.
+                env_name = f"{handler.display_name} (env)"
                 NotificationProvider.objects.create(
                     profile=profile,
-                    name=handler.display_name,
+                    name=env_name,
                     provider_type=provider_type,
                     config={},
                     is_enabled=True,

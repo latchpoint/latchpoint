@@ -77,12 +77,6 @@ class PushbulletDeviceSerializer(serializers.Serializer):
     pushable = serializers.BooleanField()
 
 
-class PushbulletValidateTokenSerializer(serializers.Serializer):
-    """Serializer for Pushbullet token validation request."""
-
-    access_token = serializers.CharField()
-
-
 class PushbulletValidateTokenResultSerializer(serializers.Serializer):
     """Serializer for Pushbullet token validation result."""
 
