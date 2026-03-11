@@ -89,6 +89,8 @@ class ZwavejsStatusView(APIView):
 
     def get(self, request):
         """Return current Z-Wave JS connection status."""
+        cfg = get_zwavejs_config()
+        zwavejs_gateway.apply_settings(settings_obj=cfg)
         return Response(zwavejs_gateway.get_status().as_dict(), status=status.HTTP_200_OK)
 
 
