@@ -14,7 +14,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-# Provider type strings to check for env-based auto-provisioning.
+# List of provider type strings to check for env-based auto-provisioning.
 _PROVIDER_TYPES = [
     "pushbullet",
     "discord",
