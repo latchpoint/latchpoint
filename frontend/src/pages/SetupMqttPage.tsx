@@ -15,14 +15,7 @@ export function SetupMqttPage() {
       connected={model.statusQuery.data?.connected}
       lastError={model.statusQuery.data?.lastError || undefined}
       hasSavedPassword={Boolean(model.settingsQuery.data?.hasPassword)}
-      isBusy={model.isSubmitting}
-      isSubmitting={model.isSubmitting}
-      isTesting={false}
-      formErrors={model.errors}
-      register={model.register}
-      handleSubmit={model.handleSubmit}
       watch={model.watch}
-      setValue={model.setValue}
       onBackToSettings={() => navigate(Routes.SETTINGS, { replace: true })}
     />
   )

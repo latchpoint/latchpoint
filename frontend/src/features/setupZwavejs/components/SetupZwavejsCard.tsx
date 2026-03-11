@@ -1,5 +1,5 @@
 import { Radio } from 'lucide-react'
-import type { FieldErrors, UseFormHandleSubmit, UseFormRegister, UseFormSetValue, UseFormWatch } from 'react-hook-form'
+import type { UseFormWatch } from 'react-hook-form'
 import { CenteredCard } from '@/components/ui/centered-card'
 import { Button } from '@/components/ui/button'
 import { Alert, AlertDescription } from '@/components/ui/alert'
@@ -12,17 +12,11 @@ type Props = {
   error: string | null
   notice: string | null
   isBusy: boolean
-  isSubmitting: boolean
-  isTesting: boolean
   isSyncing: boolean
   connected: boolean | undefined
   integrationEnabled: boolean | undefined
   lastError: string | undefined
-  formErrors: FieldErrors<SetupZwavejsFormData>
-  register: UseFormRegister<SetupZwavejsFormData>
-  handleSubmit: UseFormHandleSubmit<SetupZwavejsFormData>
   watch: UseFormWatch<SetupZwavejsFormData>
-  setValue: UseFormSetValue<SetupZwavejsFormData>
   onSync: () => Promise<void>
   onBackToSettings: () => void
 }
@@ -87,7 +81,7 @@ export function SetupZwavejsCard({
 
         <div className="flex flex-col gap-2 sm:flex-row">
           <Button type="button" variant="outline" className="flex-1" onClick={() => void onSync()} disabled={!isAdmin || isBusy || isSyncing}>
-            {isSyncing ? 'Syncing...' : 'Sync Entities'}
+            {isSyncing ? 'Syncing…' : 'Sync Entities'}
           </Button>
         </div>
 

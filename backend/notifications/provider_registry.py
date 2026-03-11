@@ -37,31 +37,31 @@ def ensure_env_providers_exist(profile) -> None:
 
         enabled = handler.is_enabled_from_env()
 
-        existing = NotificationProvider.objects.filter(
-            profile=profile,
-            provider_type=provider_type,
-        ).first()
+        # Use a deterministic name keyed on display_name to avoid collisions
+        # with user-created providers and ensure idempotent get_or_create.
+        env_name = f"{handler.display_name} (env)"
 
         if enabled:
-            if existing:
-                if not existing.is_enabled:
-                    existing.is_enabled = True
-                    existing.save(update_fields=["is_enabled", "updated_at"])
-                    logger.info("Enabled existing %s provider from env", provider_type)
-            else:
-                # Use a deterministic name that includes provider_type to avoid
-                # collisions with the unique_together("profile", "name") constraint
-                # in case a user-created provider already uses the display_name.
-                env_name = f"{handler.display_name} (env)"
-                NotificationProvider.objects.create(
-                    profile=profile,
-                    name=env_name,
-                    provider_type=provider_type,
-                    config={},
-                    is_enabled=True,
-                )
+            obj, created = NotificationProvider.objects.get_or_create(
+                profile=profile,
+                name=env_name,
+                defaults={
+                    "provider_type": provider_type,
+                    "config": {},
+                    "is_enabled": True,
+                },
+            )
+            if created:
                 logger.info("Created %s provider from env", provider_type)
-        elif existing and existing.is_enabled:
-            existing.is_enabled = False
-            existing.save(update_fields=["is_enabled", "updated_at"])
-            logger.info("Disabled %s provider (env disabled)", provider_type)
+            elif not obj.is_enabled:
+                obj.is_enabled = True
+                obj.save(update_fields=["is_enabled", "updated_at"])
+                logger.info("Enabled existing %s provider from env", provider_type)
+        else:
+            updated = NotificationProvider.objects.filter(
+                profile=profile,
+                name=env_name,
+                is_enabled=True,
+            ).update(is_enabled=False)
+            if updated:
+                logger.info("Disabled %s provider (env disabled)", provider_type)

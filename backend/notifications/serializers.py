@@ -28,6 +28,13 @@ class NotificationProviderSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = fields
 
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        # Always return empty config — all provider secrets live in env vars,
+        # and this prevents leaking any stale DB values from pre-migration rows.
+        data["config"] = {}
+        return data
+
 
 class NotificationLogSerializer(serializers.ModelSerializer):
     """Serializer for NotificationLog model."""

@@ -5,23 +5,16 @@ import { Button } from '@/components/ui/button'
 import { AdminActionRequiredAlert } from '@/features/settings/components/AdminActionRequiredAlert'
 import { ConnectionStatusTextBlock } from '@/features/integrations/components/ConnectionStatus'
 import type { SetupMqttFormData } from '@/features/setupMqtt/hooks/useSetupMqttModel'
-import type { FieldErrors, UseFormHandleSubmit, UseFormRegister, UseFormSetValue, UseFormWatch } from 'react-hook-form'
+import type { UseFormWatch } from 'react-hook-form'
 
 type Props = {
   isAdmin: boolean
   error: string | null
   notice: string | null
   hasSavedPassword: boolean
-  isBusy: boolean
-  isSubmitting: boolean
-  isTesting: boolean
   connected: boolean | undefined
   lastError: string | undefined
-  formErrors: FieldErrors<SetupMqttFormData>
-  register: UseFormRegister<SetupMqttFormData>
-  handleSubmit: UseFormHandleSubmit<SetupMqttFormData>
   watch: UseFormWatch<SetupMqttFormData>
-  setValue: UseFormSetValue<SetupMqttFormData>
   onBackToSettings: () => void
 }
 
