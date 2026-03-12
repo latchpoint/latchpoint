@@ -138,7 +138,7 @@ def get_home_assistant_config() -> dict:
         "enabled": env.bool("HA_ENABLED", default=False),
         "base_url": env.str("HA_BASE_URL", default="http://localhost:8123"),
         "token": env.str("HA_TOKEN", default=""),
-        "connect_timeout_seconds": env.int("HA_CONNECT_TIMEOUT", default=2),
+        "connect_timeout_seconds": env.float("HA_CONNECT_TIMEOUT", default=2),
     }
 ```
 
