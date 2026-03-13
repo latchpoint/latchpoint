@@ -33,7 +33,7 @@ class EnsureEnvProvidersExistTest(TestCase):
     def test_enables_existing_disabled_provider(self):
         existing = NotificationProvider.objects.create(
             profile=self.profile,
-            name="Pushbullet",
+            name="Pushbullet (env)",
             provider_type="pushbullet",
             config={},
             is_enabled=False,
@@ -48,7 +48,7 @@ class EnsureEnvProvidersExistTest(TestCase):
     def test_no_op_when_already_enabled(self):
         existing = NotificationProvider.objects.create(
             profile=self.profile,
-            name="Pushbullet",
+            name="Pushbullet (env)",
             provider_type="pushbullet",
             config={},
             is_enabled=True,
@@ -64,7 +64,7 @@ class EnsureEnvProvidersExistTest(TestCase):
     def test_disables_provider_when_env_disabled(self):
         existing = NotificationProvider.objects.create(
             profile=self.profile,
-            name="Pushbullet",
+            name="Pushbullet (env)",
             provider_type="pushbullet",
             config={},
             is_enabled=True,
