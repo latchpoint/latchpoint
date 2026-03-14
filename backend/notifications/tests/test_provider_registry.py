@@ -97,6 +97,23 @@ class EnsureEnvProvidersExistTest(TestCase):
         types = set(providers.values_list("provider_type", flat=True))
         self.assertEqual(types, {"pushbullet", "discord"})
 
+    def test_corrects_provider_type_mismatch(self):
+        """If an existing row has the wrong provider_type, it gets corrected."""
+        existing = NotificationProvider.objects.create(
+            profile=self.profile,
+            name="Pushbullet (env)",
+            provider_type="discord",  # wrong type for this name
+            config={},
+            is_enabled=True,
+        )
+
+        with patch.dict(os.environ, {"PUSHBULLET_ENABLED": "true"}):
+            ensure_env_providers_exist(self.profile)
+
+        existing.refresh_from_db()
+        self.assertEqual(existing.provider_type, "pushbullet")
+        self.assertTrue(existing.is_enabled)
+
     def test_handler_without_is_enabled_from_env_skipped(self):
         """A provider type whose handler lacks is_enabled_from_env is silently skipped."""
 
