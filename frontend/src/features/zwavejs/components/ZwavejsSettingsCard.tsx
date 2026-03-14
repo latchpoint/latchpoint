@@ -15,11 +15,7 @@ type Props = {
   connected: boolean | undefined
   enabled: boolean | undefined
   lastError: string | null | undefined
-  hasInitialDraft: boolean
   onRefresh: () => void
-  onReset: () => void
-  onSave: () => void
-  onTest: () => void
   onSync: () => void
   onSetDraft: (updater: (prev: ZwavejsDraft | null) => ZwavejsDraft | null) => void
 }
@@ -32,11 +28,7 @@ export function ZwavejsSettingsCard({
   connected,
   enabled,
   lastError,
-  hasInitialDraft,
   onRefresh,
-  onReset,
-  onSave,
-  onTest,
   onSync,
   onSetDraft,
 }: Props) {
@@ -59,19 +51,10 @@ export function ZwavejsSettingsCard({
         onEnabledChange={(checked) => onSetDraft((prev) => (prev ? { ...prev, enabled: checked } : prev))}
         enableDisabled={!draft}
         onRefresh={onRefresh}
-        onReset={onReset}
-        onSave={onSave}
-        resetDisabled={!hasInitialDraft}
-        saveDisabled={!draft}
         opsActions={
-          <>
-            <Button type="button" variant="secondary" onClick={onTest} disabled={!isAdmin || isBusy || !draft}>
-              Test Connection
-            </Button>
-            <Button type="button" variant="outline" onClick={onSync} disabled={!isAdmin || isBusy || !draft}>
-              Sync Entities
-            </Button>
-          </>
+          <Button type="button" variant="outline" onClick={onSync} disabled={!isAdmin || isBusy || !draft}>
+            Sync Entities
+          </Button>
         }
       >
         {isLoading && !draft ? <LoadingInline /> : !draft ? <div className="text-sm text-muted-foreground">Z-Wave JS settings unavailable.</div> : null}

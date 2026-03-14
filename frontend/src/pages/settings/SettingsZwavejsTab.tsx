@@ -15,11 +15,7 @@ export function SettingsZwavejsTab() {
         connected={model.statusQuery.data?.connected}
         enabled={model.statusQuery.data?.enabled}
         lastError={model.statusQuery.data?.lastError ?? undefined}
-        hasInitialDraft={Boolean(model.initialDraft)}
         onRefresh={model.refresh}
-        onReset={model.reset}
-        onSave={() => void model.save()}
-        onTest={() => void model.test()}
         onSync={() => void model.sync()}
         onSetDraft={model.setDraft}
       />

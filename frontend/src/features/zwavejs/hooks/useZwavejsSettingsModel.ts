@@ -66,7 +66,6 @@ export function useZwavejsSettingsModel() {
     isAdmin,
     draft,
     setDraft,
-    initialDraft,
     isBusy,
     error,
     notice,
