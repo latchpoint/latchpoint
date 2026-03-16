@@ -2,31 +2,27 @@ from __future__ import annotations
 
 from django.core.management.base import BaseCommand
 
-from alarm.state_machine.settings import get_active_settings_profile, get_setting_json
+from alarm.env_config import get_mqtt_config, get_zwavejs_config
 from alarm.gateways.mqtt import default_mqtt_gateway
 from alarm.gateways.zwavejs import default_zwavejs_gateway
-from integrations_zwavejs.config import normalize_zwavejs_connection, prepare_runtime_zwavejs_connection
-from transports_mqtt.config import normalize_mqtt_connection, prepare_runtime_mqtt_connection
+from alarm.state_machine.settings import get_active_settings_profile, get_setting_json
 
 
 class Command(BaseCommand):
-    help = "Apply the active settings profile to integration runtimes (MQTT, Z-Wave JS, HA MQTT alarm entity)."
+    help = "Apply integration settings to runtimes (MQTT, Z-Wave JS, HA MQTT alarm entity)."
 
     def handle(self, *args, **options):
-        """Apply active profile integration settings to runtime gateways (best-effort)."""
-        profile = get_active_settings_profile()
+        """Apply integration settings to runtime gateways (best-effort)."""
+        mqtt_config = get_mqtt_config()
+        default_mqtt_gateway.apply_settings(settings=mqtt_config)
+        self.stdout.write("Applied MQTT connection settings from env.")
 
-        mqtt_raw = get_setting_json(profile, "mqtt_connection") or {}
-        mqtt_settings = normalize_mqtt_connection(mqtt_raw)
-        default_mqtt_gateway.apply_settings(settings=prepare_runtime_mqtt_connection(mqtt_settings))
-        self.stdout.write("Applied MQTT connection settings.")
-
-        zwavejs_raw = get_setting_json(profile, "zwavejs_connection") or {}
-        zwavejs_settings = normalize_zwavejs_connection(zwavejs_raw)
-        default_zwavejs_gateway.apply_settings(settings_obj=prepare_runtime_zwavejs_connection(zwavejs_settings))
-        self.stdout.write("Applied Z-Wave JS connection settings.")
+        zwavejs_config = get_zwavejs_config()
+        default_zwavejs_gateway.apply_settings(settings_obj=zwavejs_config)
+        self.stdout.write("Applied Z-Wave JS connection settings from env.")
 
         # Best-effort: if HA MQTT alarm entity is enabled, republish discovery/state.
+        profile = get_active_settings_profile()
         ha_entity_raw = get_setting_json(profile, "home_assistant_alarm_entity") or {}
         if isinstance(ha_entity_raw, dict) and ha_entity_raw.get("enabled"):
             try:

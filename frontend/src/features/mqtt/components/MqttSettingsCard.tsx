@@ -1,6 +1,5 @@
 import { Wifi } from 'lucide-react'
 import { Alert, AlertDescription } from '@/components/ui/alert'
-import { Button } from '@/components/ui/button'
 import { IntegrationConnectionCard } from '@/features/integrations/components/IntegrationConnectionCard'
 import { IntegrationOverviewCard } from '@/features/integrations/components/IntegrationOverviewCard'
 import type { MqttDraft } from '@/features/mqtt/hooks/useMqttSettingsModel'
@@ -19,12 +18,7 @@ type Props = {
   zigbee2mqttEnabled: boolean
   frigateEnabled: boolean
   onRefresh: () => void
-  onReset: () => void
-  onSave: () => void
-  onTest: () => void
-  onClearPassword: () => void
   onSetDraft: (updater: (prev: MqttDraft | null) => MqttDraft | null) => void
-  hasInitialDraft: boolean
 }
 
 export function MqttSettingsCard({
@@ -39,12 +33,7 @@ export function MqttSettingsCard({
   zigbee2mqttEnabled,
   frigateEnabled,
   onRefresh,
-  onReset,
-  onSave,
-  onTest,
-  onClearPassword,
   onSetDraft,
-  hasInitialDraft,
 }: Props) {
   return (
     <div className="space-y-3 sm:space-y-4">
@@ -55,31 +44,26 @@ export function MqttSettingsCard({
             <span>MQTT</span>
           </div>
         }
-        description="Configure MQTT broker connection used by integrations (Home Assistant, Zigbee2MQTT, etc)."
+        description="MQTT broker connection is configured via environment variables."
         isAdmin={isAdmin}
         isBusy={isBusy}
         status={{ connected, enabled, lastError }}
         enableLabel="Enable MQTT"
-        enableHelp="Enables the MQTT transport used by integrations like Zigbee2MQTT and the Home Assistant MQTT alarm entity."
+        enableHelp="MQTT is enabled/disabled via environment variables."
         enabled={draft?.enabled ?? false}
         onEnabledChange={(checked) => onSetDraft((prev) => (prev ? { ...prev, enabled: checked } : prev))}
-        enableDisabled={!draft}
+        enableDisabled={true}
         onRefresh={onRefresh}
-        onReset={onReset}
-        onSave={onSave}
-        resetDisabled={!hasInitialDraft}
-        saveDisabled={!draft}
-        opsActions={
-          <Button type="button" variant="secondary" onClick={onTest} disabled={!isAdmin || isBusy || !draft}>
-            Test Connection
-          </Button>
-        }
+        onReset={() => {}}
+        onSave={() => {}}
+        resetDisabled={true}
+        saveDisabled={true}
       >
         {!isLoading && draft && !draft.enabled ? (
           <Alert variant="warning">
             <AlertDescription>
               {settings?.enabled
-                ? 'Saving with MQTT disabled will also disable Zigbee2MQTT and Frigate (they require MQTT).'
+                ? 'MQTT is being disabled. Zigbee2MQTT and Frigate require MQTT.'
                 : 'MQTT is disabled. Zigbee2MQTT and Frigate cannot be enabled without MQTT.'}
               {zigbee2mqttEnabled || frigateEnabled ? (
                 <>
@@ -92,15 +76,11 @@ export function MqttSettingsCard({
         ) : null}
       </IntegrationOverviewCard>
 
-      <IntegrationConnectionCard description="Connection settings are read by the backend container.">
+      <IntegrationConnectionCard description="Connection settings are configured via environment variables.">
         <div className="space-y-3 sm:space-y-4">
           <MqttSettingsForm
-            isAdmin={isAdmin}
-            isBusy={isBusy}
             draft={draft}
             isLoading={isLoading}
-            onClearPassword={onClearPassword}
-            onSetDraft={onSetDraft}
           />
         </div>
       </IntegrationConnectionCard>

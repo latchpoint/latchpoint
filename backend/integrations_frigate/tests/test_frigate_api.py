@@ -4,9 +4,11 @@ from django.urls import reverse
 from django.utils import timezone
 from rest_framework.test import APIClient, APITestCase
 
+import os
+from unittest.mock import patch
+
 from accounts.models import Role, User, UserRoleAssignment
 from alarm.models import AlarmSettingsProfile
-from alarm.tests.settings_test_utils import set_profile_settings
 from integrations_frigate.models import FrigateDetection
 
 
@@ -92,8 +94,8 @@ class FrigateApiStatusTests(APITestCase):
         self.assertEqual(response.status_code, 400)
         self.assertIn("MQTT", response.json()["error"]["message"])
 
+    @patch.dict(os.environ, {"MQTT_ENABLED": "true", "MQTT_HOST": "mqtt.local"})
     def test_settings_patch_updates_topic(self):
-        set_profile_settings(self.profile, mqtt_connection={"enabled": True, "host": "mqtt.local", "port": 1883})
         url = reverse("frigate-settings")
         response = self.client.patch(url, data={"events_topic": "frigate/custom"}, format="json")
         self.assertEqual(response.status_code, 200)

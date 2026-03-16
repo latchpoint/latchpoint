@@ -1,5 +1,6 @@
 /**
- * Notification provider types and interfaces
+ * Notification provider types and interfaces (read-only)
+ * Providers are now configured via environment variables (ADR-0075)
  */
 
 export type NotificationProviderType =
@@ -23,25 +24,11 @@ export interface NotificationProvider {
   updatedAt: string
 }
 
-export interface NotificationProviderCreate {
-  name: string
-  providerType: NotificationProviderType
-  config: Record<string, unknown>
-  isEnabled?: boolean
-}
-
-export interface NotificationProviderUpdate {
-  name?: string
-  config?: Record<string, unknown>
-  isEnabled?: boolean
-}
-
 export interface NotificationProviderTypeInfo {
   type: NotificationProviderType
   displayName: string
   description: string
   configSchema: Record<string, unknown>
-  encryptedFields: string[]
 }
 
 export interface NotificationTestResult {

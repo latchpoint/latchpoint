@@ -4,9 +4,9 @@ import json
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+from alarm.env_config import get_mqtt_config
 from alarm.models import Entity
 from alarm.state_machine.settings import get_active_settings_profile, get_setting_json
-from transports_mqtt.config import normalize_mqtt_connection, prepare_runtime_mqtt_connection
 from transports_mqtt.manager import MqttNotReachable, mqtt_connection_manager
 
 from alarm.gateways.mqtt import default_mqtt_gateway
@@ -138,11 +138,10 @@ class DefaultZigbee2mqttGateway:
     def set_entity_value(self, *, entity_id: str, value: Any) -> None:
         profile = get_active_settings_profile()
 
-        mqtt_raw = get_setting_json(profile, "mqtt_connection") or {}
-        mqtt_settings = normalize_mqtt_connection(mqtt_raw)
-        if not bool(mqtt_settings.get("enabled")):
+        mqtt_config = get_mqtt_config()
+        if not bool(mqtt_config.get("enabled")):
             raise ValueError("MQTT is disabled.")
-        default_mqtt_gateway.apply_settings(settings=prepare_runtime_mqtt_connection(mqtt_raw))
+        default_mqtt_gateway.apply_settings(settings=mqtt_config)
 
         z2m_raw = get_setting_json(profile, "zigbee2mqtt") or {}
         z2m_settings = normalize_zigbee2mqtt_settings(z2m_raw)

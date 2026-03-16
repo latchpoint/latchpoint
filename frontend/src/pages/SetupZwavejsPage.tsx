@@ -12,20 +12,12 @@ export function SetupZwavejsPage() {
       isAdmin={model.isAdmin}
       error={model.error}
       notice={model.notice}
-      isBusy={model.isSubmitting || model.updateSettings.isPending || model.testConnection.isPending || model.syncEntities.isPending}
-      isSubmitting={model.isSubmitting}
-      isTesting={model.testConnection.isPending}
+      isBusy={model.isSubmitting || model.syncEntities.isPending}
       isSyncing={model.syncEntities.isPending}
       connected={model.statusQuery.data?.connected}
       integrationEnabled={model.statusQuery.data?.enabled}
       lastError={model.statusQuery.data?.lastError || undefined}
-      formErrors={model.errors}
-      register={model.register}
-      handleSubmit={model.handleSubmit}
       watch={model.watch}
-      setValue={model.setValue}
-      onSubmit={model.onSubmit}
-      onTest={model.onTest}
       onSync={model.onSync}
       onBackToSettings={() => navigate(Routes.SETTINGS, { replace: true })}
     />

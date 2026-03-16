@@ -112,12 +112,9 @@ class HomeAssistantSettingsApiPermissionTests(APITestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn("data", response.json())
 
-    def test_patch_settings_requires_base_url_and_token_when_enabled(self):
+    def test_patch_settings_returns_method_not_allowed(self):
         client = APIClient()
         client.force_authenticate(self.admin)
         url = reverse("ha-settings")
         response = client.patch(url, data={"enabled": True}, format="json")
-        self.assertEqual(response.status_code, 400)
-        # Validates either base_url or token is required
-        message = response.json()["error"]["message"].lower()
-        self.assertTrue("base_url" in message or "token" in message)
+        self.assertEqual(response.status_code, 405)

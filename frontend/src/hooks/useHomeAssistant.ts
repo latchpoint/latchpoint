@@ -1,9 +1,8 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQuery } from '@tanstack/react-query'
 import { homeAssistantService } from '@/services'
 import { queryKeys } from '@/types'
 import { useAuthSessionQuery, useCurrentUserQuery } from '@/hooks/useAuthQueries'
 import { UserRole } from '@/lib/constants'
-import type { HomeAssistantConnectionSettingsUpdate } from '@/services/homeAssistant'
 
 export function useHomeAssistantStatus() {
   const session = useAuthSessionQuery()
@@ -24,20 +23,6 @@ export function useHomeAssistantSettingsQuery() {
     queryKey: queryKeys.homeAssistant.settings,
     queryFn: homeAssistantService.getSettings,
     enabled: isAuthenticated && isAdmin,
-  })
-}
-
-export function useUpdateHomeAssistantSettingsMutation() {
-  const queryClient = useQueryClient()
-  return useMutation({
-    mutationFn: (changes: HomeAssistantConnectionSettingsUpdate) =>
-      homeAssistantService.updateSettings(changes),
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: queryKeys.homeAssistant.settings })
-      await queryClient.invalidateQueries({ queryKey: queryKeys.homeAssistant.status })
-      await queryClient.invalidateQueries({ queryKey: queryKeys.homeAssistant.entities })
-      await queryClient.invalidateQueries({ queryKey: queryKeys.homeAssistant.notifyServices })
-    },
   })
 }
 

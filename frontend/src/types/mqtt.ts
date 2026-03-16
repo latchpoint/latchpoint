@@ -19,28 +19,3 @@ export interface MqttSettings {
   connectTimeoutSeconds: number
   hasPassword: boolean
 }
-
-export interface MqttSettingsUpdate {
-  enabled?: boolean
-  host?: string
-  port?: number
-  username?: string
-  password?: string
-  useTls?: boolean
-  tlsInsecure?: boolean
-  clientId?: string
-  keepaliveSeconds?: number
-  connectTimeoutSeconds?: number
-}
-
-export interface MqttTestConnectionRequest {
-  host: string
-  port: number
-  username?: string
-  password?: string
-  useTls?: boolean
-  tlsInsecure?: boolean
-  clientId?: string
-  keepaliveSeconds?: number
-  connectTimeoutSeconds?: number
-}

@@ -71,10 +71,6 @@ vi.mock('@/features/mqtt/hooks/useMqttSettingsModel', () => {
       zigbee2mqttSettingsQuery: { data: { enabled: false } },
       frigateSettingsQuery: { data: { enabled: false } },
       refresh: vi.fn(),
-      reset: vi.fn(),
-      save: vi.fn(),
-      test: vi.fn(),
-      clearPassword: vi.fn(),
       setDraft: vi.fn(),
     }),
   }
@@ -90,15 +86,11 @@ vi.mock('@/features/homeAssistant/hooks/useHomeAssistantSettingsModel', () => {
       error: null,
       notice: null,
       mqttReady: true,
-      haConnectionDraft: { baseUrl: '', token: '' },
+      haConnectionDraft: { baseUrl: '', enabled: false, connectTimeoutSeconds: '2', hasToken: false },
       setHaConnectionDraft: vi.fn(),
       haStatusQuery: { data: { reachable: true, configured: true, error: null } },
       haSettingsQuery: { isLoading: false, isError: false, error: null },
-      updateHaSettingsMutation: { isPending: false },
-      clearToken: vi.fn(),
       refreshConnection: vi.fn(),
-      resetConnection: vi.fn(),
-      saveConnection: vi.fn(),
       haMqttEntityDraft: {},
       setHaMqttEntityDraft: vi.fn(),
       haMqttEntityStatus: null,
@@ -128,14 +120,10 @@ vi.mock('@/features/zwavejs/hooks/useZwavejsSettingsModel', () => {
       notice: null,
       isBusy: false,
       draft: { enabled: false },
-      initialDraft: {},
       setDraft: vi.fn(),
       settingsQuery: { isLoading: false },
       statusQuery: { data: { connected: true, enabled: true, lastError: null } },
       refresh: vi.fn(),
-      reset: vi.fn(),
-      save: vi.fn(),
-      test: vi.fn(),
       sync: vi.fn(),
     }),
   }
@@ -211,7 +199,7 @@ vi.mock('@/hooks/useAuthQueries', () => {
 })
 
 vi.mock('@/features/notifications/components/NotificationProvidersCard', () => {
-  return { NotificationProvidersCard: (props: any) => <div>NotificationProvidersCard {String(props.isAdmin)}</div> }
+  return { NotificationProvidersCard: () => <div>NotificationProvidersCard</div> }
 })
 
 describe('Settings tabs', () => {
@@ -249,10 +237,9 @@ describe('Settings tabs', () => {
     expect(document.body.textContent).toContain('FrigateRecentDetectionsCard')
   })
 
-  it('renders notifications settings tab and passes admin flag', () => {
-    isAdmin = false
+  it('renders notifications settings tab', () => {
     render(<SettingsNotificationsTab />)
-    expect(document.body.textContent).toContain('NotificationProvidersCard false')
+    expect(document.body.textContent).toContain('NotificationProvidersCard')
   })
 })
 

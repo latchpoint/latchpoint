@@ -78,18 +78,18 @@ cd frontend && npm test
 - **System configuration (admin-only)**: list/update system config keys (`GET /api/system-config/`, `PATCH /api/system-config/:key/`).
 - **Home Assistant integration**:
   - status: `GET /api/alarm/home-assistant/status/`
-  - connection settings (stored in active profile; token encrypted): `GET/PATCH /api/alarm/home-assistant/settings/`
+  - connection settings (read from env vars): `GET /api/alarm/home-assistant/settings/`
   - entity + notify service discovery: `GET /api/alarm/home-assistant/entities/`, `GET /api/alarm/home-assistant/notify-services/`
-- **MQTT transport** (connection stored in active profile; password encrypted):
+- **MQTT transport** (connection read from env vars):
   - status: `GET /api/alarm/mqtt/status/`
-  - connection settings: `GET/PATCH /api/alarm/mqtt/settings/`
+  - connection settings: `GET /api/alarm/mqtt/settings/`
   - test connection: `POST /api/alarm/mqtt/test/`
 - **Home Assistant MQTT alarm entity** (requires MQTT enabled/configured):
   - status + settings: `GET /api/alarm/integrations/home-assistant/mqtt-alarm-entity/status/`, `GET/PATCH /api/alarm/integrations/home-assistant/mqtt-alarm-entity/`
   - publish discovery: `POST /api/alarm/integrations/home-assistant/mqtt-alarm-entity/publish-discovery/`
-- **Z-Wave JS integration** (connection stored in active profile; token encrypted):
+- **Z-Wave JS integration** (connection read from env vars):
   - status: `GET /api/alarm/zwavejs/status/`
-  - connection settings: `GET/PATCH /api/alarm/zwavejs/settings/`
+  - connection settings: `GET /api/alarm/zwavejs/settings/`
   - test connection: `POST /api/alarm/zwavejs/test/`
   - entity sync + set-value: `POST /api/alarm/zwavejs/entities/sync/`, `POST /api/alarm/zwavejs/set-value/`
 - **Codes**:
@@ -140,7 +140,7 @@ cd frontend && npm test
   - Home Assistant: `backend/integrations_home_assistant/`, `backend/alarm/gateways/home_assistant.py`
   - MQTT: `backend/transports_mqtt/`, `backend/alarm/gateways/mqtt.py`
   - Z-Wave JS: `backend/integrations_zwavejs/`, `backend/alarm/gateways/zwavejs.py`
-- Secret encryption helpers: `backend/alarm/crypto.py`
+- Env-based config readers: `backend/alarm/env_config.py`
 - Task scheduler: `backend/scheduler/` (in-process scheduled tasks with watchdog)
 - Frontend routing/pages: `frontend/src/pages/` and `frontend/src/routes.tsx`
 - Frontend API + WS clients: `frontend/src/services/api.ts`, `frontend/src/services/websocket.ts`
@@ -268,14 +268,13 @@ Use this checklist to keep changes consistent and easy to test.
 
 ## Environment & configuration
 - Example env: `.env.example` (copy to `.env`)
-- Secrets at rest:
-  - `SETTINGS_ENCRYPTION_KEY` is required to store/decrypt encrypted settings (Home Assistant token, MQTT password, Z-Wave JS token).
+- Integration credentials (HA token, MQTT password, ZWaveJS API token, notification secrets) are read from env vars at runtime (ADR 0075). See `.env.example` for the full list.
 - API response envelope (ADR 0025):
   - `API_RESPONSE_ENVELOPE_ENABLED=true` (default) wraps success responses as `{ "data": ... }`
 - Home Assistant settings:
-  - Runtime HA connection is stored in the active settings profile via `/api/alarm/home-assistant/settings/`.
+  - Connection config comes from `HA_*` env vars. The alarm entity settings remain DB-backed.
 - MQTT settings:
-  - Runtime MQTT connection is stored in the active settings profile via `/api/alarm/mqtt/settings/`.
+  - Connection config comes from `MQTT_*` env vars. Zigbee2MQTT/Frigate allowlists remain DB-backed.
 - Dev CSRF/CORS:
   - `DEBUG=True` and `ALLOWED_HOSTS` control dev-time trusted origins; see `backend/config/settings.py`.
   - In `DEBUG=True`, `CSRF_TRUSTED_ORIGINS` is auto-populated for common dev ports (including `5427` and `3000`) if unset.

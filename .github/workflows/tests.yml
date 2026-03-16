@@ -14,7 +14,6 @@ jobs:
         run: |
           cat > .env <<'EOF'
           SECRET_KEY=ci
-          SETTINGS_ENCRYPTION_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
           DEBUG=True
           API_RESPONSE_ENVELOPE_ENABLED=True
           LOG_LEVEL=INFO

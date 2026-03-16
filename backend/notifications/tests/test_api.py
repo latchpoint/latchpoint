@@ -54,7 +54,7 @@ class NotificationsApiTests(APITestCase):
             (
                 "post",
                 self._reverse("pushbullet-validate-token"),
-                {"data": {"access_token": "o.fake"}, "format": "json"},
+                {"data": {}, "format": "json"},
             ),
             ("get", self._reverse("ha-services"), {}),
             ("post", self._reverse("ha-system-provider-test"), {"data": {}, "format": "json"}),
@@ -75,9 +75,7 @@ class NotificationsApiTests(APITestCase):
         self.assertEqual(len(body["data"]), 1)
         self.assertEqual(body["data"][0]["id"], str(provider.id))
 
-    @patch("notifications.serializers.encrypt_config")
-    def test_provider_create_and_duplicate_name_error(self, mock_encrypt_config):
-        mock_encrypt_config.side_effect = lambda config, _fields: config
+    def test_provider_create_returns_405(self):
         url = self._reverse("provider-list")
         payload = {
             "name": "Pushbullet Created",
@@ -85,17 +83,26 @@ class NotificationsApiTests(APITestCase):
             "config": {"access_token": "o.created-token"},
             "is_enabled": True,
         }
+        response = self.client.post(url, data=payload, format="json")
+        self.assertEqual(response.status_code, 405)
 
-        created = self.client.post(url, data=payload, format="json")
-        self.assertEqual(created.status_code, 201)
-        self.assertIn("data", created.json())
-        self.assertEqual(created.json()["data"]["name"], "Pushbullet Created")
+    def test_provider_update_returns_405(self):
+        provider = self._create_pushbullet_provider()
+        url = self._reverse("provider-detail", pk=provider.id)
+        response = self.client.put(url, data={"name": "Updated"}, format="json")
+        self.assertEqual(response.status_code, 405)
 
-        duplicate = self.client.post(url, data=payload, format="json")
-        self.assertEqual(duplicate.status_code, 400)
-        duplicate_body = duplicate.json()
-        self.assertIn("error", duplicate_body)
-        self.assertEqual(duplicate_body["error"]["status"], "validation_error")
+    def test_provider_patch_returns_405(self):
+        provider = self._create_pushbullet_provider()
+        url = self._reverse("provider-detail", pk=provider.id)
+        response = self.client.patch(url, data={"name": "Patched"}, format="json")
+        self.assertEqual(response.status_code, 405)
+
+    def test_provider_delete_returns_405(self):
+        provider = self._create_pushbullet_provider()
+        url = self._reverse("provider-detail", pk=provider.id)
+        response = self.client.delete(url)
+        self.assertEqual(response.status_code, 405)
 
     def test_provider_detail_returns_provider(self):
         provider = self._create_pushbullet_provider()
@@ -141,7 +148,6 @@ class NotificationsApiTests(APITestCase):
             {
                 "provider_type": "pushbullet",
                 "display_name": "Pushbullet",
-                "encrypted_fields": ["access_token"],
                 "config_schema": {"type": "object", "properties": {}},
             }
         ]
@@ -172,15 +178,17 @@ class NotificationsApiTests(APITestCase):
         self.assertEqual(len(body["data"]), 1)
         self.assertEqual(body["data"][0]["provider_name"], provider.name)
 
-    def test_pushbullet_devices_returns_validation_error_without_token(self):
+    @patch("notifications.views.PushbulletHandler.from_env", return_value={})
+    def test_pushbullet_devices_returns_config_error_without_token(self, _mock_env):
         response = self.client.get(self._reverse("pushbullet-devices"))
-        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.status_code, 503)
         body = response.json()
         self.assertIn("error", body)
-        self.assertEqual(body["error"]["status"], "validation_error")
+        self.assertEqual(body["error"]["status"], "configuration_error")
 
     @patch("notifications.views.PushbulletHandler.list_devices")
-    def test_pushbullet_devices_returns_device_list(self, mock_list_devices):
+    @patch("notifications.views.PushbulletHandler.from_env", return_value={"access_token": "o.fake"})
+    def test_pushbullet_devices_returns_device_list(self, _mock_env, mock_list_devices):
         mock_list_devices.return_value = [
             {
                 "iden": "dev-1",
@@ -191,7 +199,7 @@ class NotificationsApiTests(APITestCase):
             }
         ]
 
-        response = self.client.get(f"{self._reverse('pushbullet-devices')}?access_token=o.fake")
+        response = self.client.get(self._reverse("pushbullet-devices"))
         self.assertEqual(response.status_code, 200)
         body = response.json()
         self.assertIn("data", body)
@@ -199,7 +207,8 @@ class NotificationsApiTests(APITestCase):
         self.assertEqual(body["data"]["devices"][0]["iden"], "dev-1")
 
     @patch("notifications.views.PushbulletHandler.get_user_info")
-    def test_pushbullet_validate_token_returns_user(self, mock_get_user_info):
+    @patch("notifications.views.PushbulletHandler.from_env", return_value={"access_token": "o.env-token"})
+    def test_pushbullet_validate_token_returns_user(self, _mock_from_env, mock_get_user_info):
         mock_get_user_info.return_value = {
             "name": "Test User",
             "email_normalized": "test@example.com",
@@ -207,7 +216,7 @@ class NotificationsApiTests(APITestCase):
 
         response = self.client.post(
             self._reverse("pushbullet-validate-token"),
-            data={"access_token": "o.fake"},
+            data={},
             format="json",
         )
         self.assertEqual(response.status_code, 200)
@@ -215,6 +224,19 @@ class NotificationsApiTests(APITestCase):
         self.assertIn("data", body)
         self.assertEqual(body["data"]["valid"], True)
         self.assertEqual(body["data"]["user"]["email"], "test@example.com")
+        mock_get_user_info.assert_called_once_with("o.env-token")
+
+    @patch("notifications.views.PushbulletHandler.from_env", return_value={"access_token": ""})
+    def test_pushbullet_validate_token_returns_config_error_without_token(self, _mock_from_env):
+        response = self.client.post(
+            self._reverse("pushbullet-validate-token"),
+            data={},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 503)
+        body = response.json()
+        self.assertIn("error", body)
+        self.assertEqual(body["error"]["status"], "configuration_error")
 
     @patch("notifications.views.HomeAssistantHandler.list_available_services")
     def test_ha_services_returns_service_list(self, mock_list_available_services):

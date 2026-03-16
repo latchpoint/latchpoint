@@ -10,8 +10,8 @@ from accounts.permissions import IsAdminRole
 from alarm.gateways.mqtt import default_mqtt_gateway
 from integrations_home_assistant import mqtt_alarm_entity_status_store
 from integrations_home_assistant.mqtt_alarm_entity import publish_discovery
+from alarm.env_config import get_mqtt_config
 from alarm.models import AlarmSettingsEntry
-from transports_mqtt.config import normalize_mqtt_connection, prepare_runtime_mqtt_connection
 from alarm.serializers import (
     HomeAssistantAlarmEntitySettingsSerializer,
     HomeAssistantAlarmEntitySettingsUpdateSerializer,
@@ -42,14 +42,9 @@ def _get_ha_alarm_entity_value(profile):
     return merged
 
 
-def _get_mqtt_connection_value(profile):
-    """Return normalized MQTT connection settings for the given profile."""
-    return normalize_mqtt_connection(get_setting_json(profile, "mqtt_connection") or {})
-
-
-def _mqtt_enabled(profile) -> bool:
-    """Return True if MQTT is enabled and minimally configured for this profile."""
-    conn = _get_mqtt_connection_value(profile)
+def _mqtt_enabled() -> bool:
+    """Return True if MQTT is enabled and minimally configured (from env vars)."""
+    conn = get_mqtt_config()
     return bool(conn.get("enabled") and conn.get("host"))
 
 
@@ -88,7 +83,7 @@ class HomeAssistantMqttAlarmEntitySettingsView(APIView):
         merged = dict(current)
         merged.update(dict(serializer.validated_data))
 
-        if merged.get("enabled") and not _mqtt_enabled(profile):
+        if merged.get("enabled") and not _mqtt_enabled():
             raise ValidationError(
                 {
                     "non_field_errors": [
@@ -120,12 +115,10 @@ class HomeAssistantMqttAlarmEntityPublishDiscoveryView(APIView):
 
     def post(self, request):
         """Ensure MQTT runtime settings are applied, then publish retained discovery config."""
-        profile = _get_profile()
-        if not _mqtt_enabled(profile):
+        if not _mqtt_enabled():
             raise ValidationError(
                 {"non_field_errors": ["MQTT must be enabled and configured before publishing discovery."]}
             )
-        settings_obj = _get_mqtt_connection_value(profile)
-        mqtt_gateway.apply_settings(settings=prepare_runtime_mqtt_connection(settings_obj))
+        mqtt_gateway.apply_settings(settings=get_mqtt_config())
         publish_discovery(force=True)
         return Response({"ok": True}, status=status.HTTP_200_OK)

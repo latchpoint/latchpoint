@@ -7,12 +7,6 @@ from threading import Lock
 
 from django.conf import settings
 
-from alarm.crypto import EncryptionNotConfigured
-from integrations_home_assistant.config import (
-    normalize_home_assistant_connection,
-    prepare_runtime_home_assistant_connection,
-)
-
 
 @dataclass(frozen=True)
 class HomeAssistantRuntimeConnection:
@@ -58,28 +52,21 @@ def clear_cached_connection() -> None:
         _last_warmup_attempt_at = 0.0
 
 
-def set_cached_connection(raw: object) -> None:
+def set_cached_connection() -> None:
     """
-    Cache the (decrypted) Home Assistant connection settings for request-time usage.
+    Cache the Home Assistant connection settings from environment variables.
 
     This must not raise; callers treat caching as best-effort.
     """
+    from alarm.env_config import get_home_assistant_config
 
-    normalized = normalize_home_assistant_connection(raw)
-    try:
-        runtime = prepare_runtime_home_assistant_connection(normalized)
-        error = None
-    except EncryptionNotConfigured as exc:
-        runtime = dict(normalized)
-        runtime["token"] = ""
-        error = str(exc)
+    cfg = get_home_assistant_config()
 
     obj = HomeAssistantRuntimeConnection(
-        enabled=bool(runtime.get("enabled")),
-        base_url=str(runtime.get("base_url") or ""),
-        token=str(runtime.get("token") or ""),
-        connect_timeout_seconds=float(runtime.get("connect_timeout_seconds") or 2),
-        error=error,
+        enabled=bool(cfg.get("enabled")),
+        base_url=str(cfg.get("base_url") or ""),
+        token=str(cfg.get("token") or ""),
+        connect_timeout_seconds=float(cfg.get("connect_timeout_seconds") or 2),
     )
     with _lock:
         global _cached
@@ -88,10 +75,9 @@ def set_cached_connection(raw: object) -> None:
 
 def warm_up_cached_connection_if_needed(*, min_interval_seconds: float = 2.0) -> None:
     """
-    Best-effort warm-up of the in-process runtime cache from the active profile.
+    Best-effort warm-up of the in-process runtime cache from env vars.
 
-    This is useful when app startup warms the cache before the DB is ready; in that
-    case `ready()`'s warm-up fails silently and the first request sees an empty cache.
+    Debounces repeated calls within *min_interval_seconds*.
     """
 
     if get_cached_connection() is not None:
@@ -109,56 +95,6 @@ def warm_up_cached_connection_if_needed(*, min_interval_seconds: float = 2.0) ->
         _last_warmup_attempt_at = now
 
     try:
-        apply_from_active_profile_if_exists()
+        set_cached_connection()
     except Exception:
         return
-
-
-def apply_from_profile_id(*, profile_id: int) -> None:
-    """
-    Best-effort load of the HA connection settings from the DB, without creating profiles.
-    """
-
-    if not _home_assistant_allowed_in_tests():
-        return
-
-    try:
-        from alarm.models import AlarmSettingsEntry
-    except Exception:
-        return
-
-    try:
-        entry = (
-            AlarmSettingsEntry.objects.filter(profile_id=profile_id, key="home_assistant_connection")
-            .only("value")
-            .first()
-        )
-    except Exception:
-        return
-
-    if not entry:
-        return
-    set_cached_connection(entry.value)
-
-
-def apply_from_active_profile_if_exists() -> None:
-    """
-    Best-effort cache warm-up on startup.
-    """
-
-    if not _home_assistant_allowed_in_tests():
-        return
-
-    try:
-        from alarm.models import AlarmSettingsProfile
-    except Exception:
-        return
-
-    try:
-        profile = AlarmSettingsProfile.objects.filter(is_active=True).only("id").first()
-    except Exception:
-        return
-
-    if not profile:
-        return
-    apply_from_profile_id(profile_id=int(profile.id))

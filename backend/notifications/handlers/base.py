@@ -58,7 +58,6 @@ class NotificationHandler(ABC):
     Each handler must implement:
         - provider_type: Unique identifier for this provider
         - display_name: Human-readable name
-        - encrypted_fields: List of config fields that should be encrypted
         - config_schema: JSON Schema for configuration validation
         - validate_config(): Validate configuration
         - send(): Send a notification
@@ -68,7 +67,6 @@ class NotificationHandler(ABC):
     # Override in subclasses
     provider_type: str = ""
     display_name: str = ""
-    encrypted_fields: list[str] = []
     config_schema: dict = {}
 
     @abstractmethod
@@ -77,7 +75,7 @@ class NotificationHandler(ABC):
         Validate provider configuration.
 
         Args:
-            config: Configuration dictionary (decrypted)
+            config: Provider configuration dictionary
 
         Returns:
             List of validation error messages (empty if valid)
@@ -96,7 +94,7 @@ class NotificationHandler(ABC):
         Send a notification.
 
         Args:
-            config: Provider configuration (decrypted)
+            config: Provider configuration dictionary
             message: Notification message body
             title: Optional notification title
             data: Optional provider-specific data
@@ -114,7 +112,7 @@ class NotificationHandler(ABC):
         Override for provider-specific test behavior.
 
         Args:
-            config: Provider configuration (decrypted)
+            config: Provider configuration dictionary
 
         Returns:
             NotificationResult indicating success or failure

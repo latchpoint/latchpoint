@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from unittest.mock import patch
 
 from django.urls import reverse
@@ -8,7 +9,6 @@ from rest_framework.test import APIClient, APITestCase
 from accounts.models import Role, User, UserRoleAssignment
 from alarm.gateways.home_assistant import HomeAssistantNotReachable
 from alarm.models import AlarmSettingsProfile
-from alarm.tests.settings_test_utils import set_profile_settings
 
 
 class IntegrationFaultMappingApiTests(APITestCase):
@@ -26,12 +26,7 @@ class IntegrationFaultMappingApiTests(APITestCase):
         self.admin_client.force_authenticate(self.admin)
 
         AlarmSettingsProfile.objects.update(is_active=False)
-        profile = AlarmSettingsProfile.objects.create(name="Default", is_active=True)
-        set_profile_settings(
-            profile,
-            mqtt_connection={"enabled": True, "host": "mqtt.local", "port": 1883},
-            zwavejs_connection={"enabled": True, "ws_url": "ws://zwavejs.local:3000"},
-        )
+        AlarmSettingsProfile.objects.create(name="Default", is_active=True)
 
     def test_mqtt_test_connection_invalid_config_maps_to_validation_error_envelope(self):
         response = self.admin_client.post(
@@ -55,6 +50,7 @@ class IntegrationFaultMappingApiTests(APITestCase):
         self.assertEqual(body["error"]["status"], "service_unavailable")
         self.assertEqual(body["error"]["gateway"], "Home Assistant")
 
+    @patch.dict(os.environ, {"ZWAVEJS_ENABLED": "true", "ZWAVEJS_WS_URL": "ws://zwavejs.local:3000"})
     @patch("integrations_zwavejs.views.sync_entities_from_zwavejs")
     @patch("integrations_zwavejs.views.zwavejs_gateway")
     def test_zwavejs_runtime_error_maps_to_service_unavailable(self, mock_gateway, mock_sync):

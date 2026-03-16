@@ -1,7 +1,7 @@
 # ADR 0017: Home Assistant Connection Settings in Alarm Profile (Encrypted)
 
 ## Status
-**Implemented**
+**Superseded** by [ADR 0075](0075-env-var-credentials-remove-encryption.md)
 
 ## Context
 Home Assistant connectivity used to be configured via environment variables.

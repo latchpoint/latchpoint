@@ -77,14 +77,12 @@ def get_handler_metadata(provider_type: str) -> dict:
     Returns dict with:
         - provider_type: str
         - display_name: str
-        - encrypted_fields: list[str]
         - config_schema: dict (JSON Schema)
     """
     handler = get_handler(provider_type)
     return {
         "provider_type": handler.provider_type,
         "display_name": handler.display_name,
-        "encrypted_fields": handler.encrypted_fields,
         "config_schema": handler.config_schema,
     }
 

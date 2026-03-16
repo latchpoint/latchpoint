@@ -3,7 +3,6 @@ from __future__ import annotations
 from rest_framework import serializers
 
 from alarm.models import AlarmEvent, AlarmSettingsProfile, AlarmStateSnapshot
-from alarm.integration_settings_masking import mask_setting_value
 from alarm.settings_registry import ALARM_PROFILE_SETTINGS
 from alarm.state_machine.settings import get_setting_json
 
@@ -13,7 +12,6 @@ def _list_profile_setting_entries(profile: AlarmSettingsProfile) -> list[dict[st
     out: list[dict[str, object]] = []
     for definition in ALARM_PROFILE_SETTINGS:
         value = get_setting_json(profile, definition.key)
-        value = mask_setting_value(key=definition.key, value=value)
         out.append(
             {
                 "key": definition.key,

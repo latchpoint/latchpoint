@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from unittest.mock import patch
 
 from django.urls import reverse
@@ -28,8 +29,6 @@ class SensitiveApiPermissionMatrixTests(APITestCase):
         self.profile = AlarmSettingsProfile.objects.create(name="Default", is_active=True)
         set_profile_settings(
             self.profile,
-            mqtt_connection={"enabled": True, "host": "mqtt.local", "port": 1883},
-            zwavejs_connection={"enabled": True, "ws_url": "ws://zwavejs.local:3000"},
             zigbee2mqtt={"enabled": True, "base_topic": "zigbee2mqtt"},
         )
 
@@ -64,6 +63,7 @@ class SensitiveApiPermissionMatrixTests(APITestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["data"]["ok"], True)
 
+    @patch.dict(os.environ, {"ZWAVEJS_ENABLED": "true", "ZWAVEJS_WS_URL": "ws://zwavejs.local:3000"})
     @patch("integrations_zwavejs.views.sync_entities_from_zwavejs")
     @patch("integrations_zwavejs.views.zwavejs_gateway")
     def test_zwavejs_sync_has_explicit_401_403_200_matrix(self, mock_gateway, mock_sync_entities):

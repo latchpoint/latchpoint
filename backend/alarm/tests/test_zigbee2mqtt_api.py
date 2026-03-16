@@ -31,7 +31,6 @@ class Zigbee2mqttApiTests(APITestCase):
         self.profile = AlarmSettingsProfile.objects.create(name="Default", is_active=True)
         set_profile_settings(
             self.profile,
-            mqtt_connection={"enabled": True, "host": "mqtt.local", "port": 1883},
             zigbee2mqtt={
                 "enabled": True,
                 "base_topic": "zigbee2mqtt",

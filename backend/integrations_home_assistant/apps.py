@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import sys
+import warnings
 
 from django.apps import AppConfig
 
@@ -13,28 +14,18 @@ class IntegrationsHomeAssistantConfig(AppConfig):
     name = "integrations_home_assistant"
 
     def ready(self) -> None:
-        """Register setting maskers and best-effort runtime hooks for HA integrations."""
-        # Always register settings maskers (safe in tests/migrations).
-        try:
-            from alarm.integration_settings_masking import register_setting_masker
-            from integrations_home_assistant.config import mask_home_assistant_connection
-
-            register_setting_masker(key="home_assistant_connection", masker=mask_home_assistant_connection)
-        except Exception:
-            logger.warning("Setting masker registration failed", exc_info=True)
-
+        """Best-effort runtime hooks for HA integrations."""
         argv = " ".join(sys.argv).lower()
         if any(token in argv for token in ["makemigrations", "migrate", "collectstatic", "pytest", " test"]):
             return
 
         try:
-            from alarm.signals import alarm_state_change_committed
-            from alarm.signals import settings_profile_changed
-            from integrations_home_assistant import mqtt_alarm_entity
-            from integrations_home_assistant.connection import apply_from_active_profile_if_exists, apply_from_profile_id
-            from transports_mqtt.config import normalize_mqtt_connection, prepare_runtime_mqtt_connection
+            from alarm.env_config import get_mqtt_config
             from alarm.gateways.mqtt import default_mqtt_gateway
+            from alarm.signals import alarm_state_change_committed, settings_profile_changed
             from alarm.state_machine.settings import get_active_settings_profile, get_setting_json
+            from integrations_home_assistant import mqtt_alarm_entity
+            from integrations_home_assistant.connection import set_cached_connection
         except Exception:
             logger.warning("HA integration import failed", exc_info=True)
             return
@@ -62,8 +53,8 @@ class IntegrationsHomeAssistantConfig(AppConfig):
                 entity_cfg = get_setting_json(profile, "home_assistant_alarm_entity") or {}
                 if not isinstance(entity_cfg, dict) or not entity_cfg.get("enabled"):
                     return
-                mqtt_cfg = normalize_mqtt_connection(get_setting_json(profile, "mqtt_connection") or {})
-                default_mqtt_gateway.apply_settings(settings=prepare_runtime_mqtt_connection(mqtt_cfg))
+                mqtt_cfg = get_mqtt_config()
+                default_mqtt_gateway.apply_settings(settings=mqtt_cfg)
                 mqtt_alarm_entity.publish_discovery(force=True)
             except Exception:
                 logger.warning("MQTT alarm entity profile update failed", exc_info=True)
@@ -71,33 +62,18 @@ class IntegrationsHomeAssistantConfig(AppConfig):
 
         settings_profile_changed.connect(_on_settings_profile_changed, dispatch_uid="ha_mqtt_alarm_entity_profile_changed")
 
-        def _on_ha_connection_profile_changed(sender, *, profile_id: int, reason: str, **_kwargs) -> None:
-            """Apply updated Home Assistant connection settings into the runtime cache."""
+        # Warm-up HA connection cache from env vars.
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message="Accessing the database during app initialization")
             try:
-                apply_from_profile_id(profile_id=profile_id)
+                set_cached_connection()
             except Exception:
-                logger.warning("HA connection profile apply failed", exc_info=True)
-                return
+                logger.warning("HA connection warm-up failed", exc_info=True)
+
+            # Best-effort: start/stop realtime HA entity updates based on current settings.
             try:
                 from integrations_home_assistant import state_stream
 
                 state_stream.apply_runtime_settings_from_active_profile()
             except Exception:
-                logger.warning("HA state stream apply failed", exc_info=True)
-                return
-
-        settings_profile_changed.connect(_on_ha_connection_profile_changed, dispatch_uid="ha_connection_profile_changed")
-
-        # Best-effort warm-up so requests don't need DB lookups for HA connection settings.
-        try:
-            apply_from_active_profile_if_exists()
-        except Exception:
-            logger.warning("HA connection warm-up failed", exc_info=True)
-
-        # Best-effort: start/stop realtime HA entity updates based on current settings.
-        try:
-            from integrations_home_assistant import state_stream
-
-            state_stream.apply_runtime_settings_from_active_profile()
-        except Exception:
-            logger.warning("HA state stream startup failed", exc_info=True)
+                logger.warning("HA state stream startup failed", exc_info=True)

@@ -1,12 +1,9 @@
 /**
- * React Query hooks for notification providers
+ * React Query hooks for notification providers (read-only)
+ * Providers are now configured via environment variables (ADR-0075)
  */
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useQuery, useMutation } from '@tanstack/react-query'
 import { notificationsService } from '@/services/notifications'
-import type {
-  NotificationProviderCreate,
-  NotificationProviderUpdate,
-} from '@/types/notifications'
 
 export const notificationKeys = {
   all: ['notification-providers'] as const,
@@ -33,39 +30,6 @@ export function useNotificationProviderTypes() {
   return useQuery({
     queryKey: notificationKeys.types,
     queryFn: () => notificationsService.getProviderTypes(),
-  })
-}
-
-export function useCreateNotificationProvider() {
-  const queryClient = useQueryClient()
-  return useMutation({
-    mutationFn: (data: NotificationProviderCreate) =>
-      notificationsService.createProvider(data),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: notificationKeys.all })
-    },
-  })
-}
-
-export function useUpdateNotificationProvider() {
-  const queryClient = useQueryClient()
-  return useMutation({
-    mutationFn: ({ id, data }: { id: string; data: NotificationProviderUpdate }) =>
-      notificationsService.updateProvider(id, data),
-    onSuccess: (_, { id }) => {
-      queryClient.invalidateQueries({ queryKey: notificationKeys.all })
-      queryClient.invalidateQueries({ queryKey: notificationKeys.provider(id) })
-    },
-  })
-}
-
-export function useDeleteNotificationProvider() {
-  const queryClient = useQueryClient()
-  return useMutation({
-    mutationFn: (id: string) => notificationsService.deleteProvider(id),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: notificationKeys.all })
-    },
   })
 }
 

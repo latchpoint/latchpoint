@@ -16,12 +16,12 @@ from alarm.signals import (
     integration_status_observed,
     settings_profile_changed,
 )
+from alarm.env_config import get_home_assistant_config
 from alarm.state_machine.settings import get_active_settings_profile, get_setting_json
 from integrations_frigate.config import normalize_frigate_settings
 from integrations_frigate.runtime import get_availability_state as frigate_availability_state
 from integrations_frigate.runtime import get_last_error as frigate_last_error
 from integrations_frigate.runtime import get_last_ingest_at as frigate_last_ingest_at
-from integrations_home_assistant.config import normalize_home_assistant_connection
 from integrations_zigbee2mqtt.config import normalize_zigbee2mqtt_settings
 from integrations_zigbee2mqtt.status_store import get_last_seen_at as z2m_last_seen_at
 from integrations_zigbee2mqtt.status_store import get_last_state as z2m_last_state
@@ -91,14 +91,8 @@ def _refresh_settings_snapshot_from_db() -> None:
     frigate_settings = normalize_frigate_settings(get_setting_json(profile, "frigate") or {})
     z2m_settings = normalize_zigbee2mqtt_settings(get_setting_json(profile, "zigbee2mqtt") or {})
 
-    # Treat "enabled" as the authoritative flag to decide whether we should run
-    # reachability checks. Read from the active profile to avoid races with cache warm-up.
-    try:
-        ha_raw = get_setting_json(profile, "home_assistant_connection") or {}
-        ha_conn = normalize_home_assistant_connection(ha_raw)
-        ha_enabled = bool(ha_conn.get("enabled"))
-    except Exception:
-        ha_enabled = False
+    ha_cfg = get_home_assistant_config()
+    ha_enabled = bool(ha_cfg.get("enabled"))
 
     snapshot = _IntegrationSettingsSnapshot(
         frigate_enabled=bool(frigate_settings.enabled),

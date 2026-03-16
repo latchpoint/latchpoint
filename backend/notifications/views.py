@@ -4,10 +4,8 @@ API views for notification providers.
 
 import logging
 
-from django.db.utils import IntegrityError
 from rest_framework import status
-from rest_framework.decorators import api_view, permission_classes
-from rest_framework.exceptions import ValidationError as DrfValidationError
+from rest_framework.exceptions import MethodNotAllowed
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -18,8 +16,7 @@ from config.domain_exceptions import ConfigurationError, NotFoundError, ServiceU
 logger = logging.getLogger(__name__)
 
 from .dispatcher import get_dispatcher
-from .encryption import decrypt_config
-from .handlers import get_all_handlers_metadata, get_handler
+from .handlers import get_all_handlers_metadata
 from .handlers.home_assistant import HomeAssistantHandler
 from .handlers.pushbullet import PushbulletHandler
 from .models import NotificationLog, NotificationProvider
@@ -30,7 +27,6 @@ from .serializers import (
     ProviderTypeMetadataSerializer,
     PushbulletDeviceSerializer,
     PushbulletValidateTokenResultSerializer,
-    PushbulletValidateTokenSerializer,
     TestNotificationResultSerializer,
 )
 
@@ -56,24 +52,8 @@ class ProviderListCreateView(APIView):
         return Response(serializer.data)
 
     def post(self, request):
-        """Create a new notification provider."""
-        profile = get_active_profile()
-        if not profile:
-            raise ValidationError("No active profile.")
-
-        serializer = NotificationProviderSerializer(
-            data=request.data,
-            context={"profile": profile, "request": request},
-        )
-        serializer.is_valid(raise_exception=True)
-        try:
-            provider = serializer.save()
-        except IntegrityError:
-            raise DrfValidationError({"name": ["A provider with this name already exists."]})
-        return Response(
-            NotificationProviderSerializer(provider).data,
-            status=status.HTTP_201_CREATED,
-        )
+        """Notification providers are now configured via environment variables."""
+        raise MethodNotAllowed(request.method, detail="Notification providers are configured via environment variables.")
 
 
 class ProviderDetailView(APIView):
@@ -101,35 +81,14 @@ class ProviderDetailView(APIView):
         return Response(serializer.data)
 
     def put(self, request, pk):
-        """Update a notification provider."""
-        provider = self.get_object(pk)
-        if not provider:
-            raise NotFoundError("Provider not found.")
+        """Notification providers are now configured via environment variables."""
+        raise MethodNotAllowed(request.method, detail="Notification providers are configured via environment variables.")
 
-        serializer = NotificationProviderSerializer(
-            provider,
-            data=request.data,
-            partial=True,
-            context={"request": request},
-        )
-        serializer.is_valid(raise_exception=True)
-        try:
-            provider = serializer.save()
-        except IntegrityError:
-            raise DrfValidationError({"name": ["A provider with this name already exists."]})
-        return Response(NotificationProviderSerializer(provider).data)
-
-    # PATCH uses the same logic as PUT (both support partial updates)
     patch = put
 
     def delete(self, request, pk):
-        """Delete a notification provider."""
-        provider = self.get_object(pk)
-        if not provider:
-            raise NotFoundError("Provider not found.")
-
-        provider.delete()
-        return Response(status=status.HTTP_204_NO_CONTENT)
+        """Notification providers are now configured via environment variables."""
+        raise MethodNotAllowed(request.method, detail="Notification providers are configured via environment variables.")
 
 
 class TestProviderView(APIView):
@@ -237,33 +196,16 @@ class PushbulletDevicesView(APIView):
 
     def get(self, request):
         """
-        List devices for a Pushbullet account.
+        List devices for the Pushbullet account configured via env vars.
 
-        Query params:
-            - access_token: Direct token (for new provider setup)
-            - provider_id: Use token from existing provider
+        The access token is always read from the PUSHBULLET_ACCESS_TOKEN
+        environment variable.
         """
-        from alarm.crypto import EncryptionNotConfigured
-
-        access_token = request.query_params.get("access_token")
-        provider_id = request.query_params.get("provider_id")
-
-        if provider_id:
-            try:
-                provider = NotificationProvider.objects.get(id=provider_id)
-                handler = get_handler(provider.provider_type)
-                config = decrypt_config(provider.config, handler.encrypted_fields)
-                access_token = config.get("access_token")
-            except NotificationProvider.DoesNotExist:
-                raise NotFoundError("Provider not found.")
-            except EncryptionNotConfigured as exc:
-                raise ConfigurationError(str(exc)) from exc
-            except Exception as exc:
-                logger.exception("Error retrieving provider config")
-                raise ServiceUnavailableError("Failed to retrieve provider config.") from exc
+        env_config = PushbulletHandler.from_env()
+        access_token = env_config.get("access_token")
 
         if not access_token:
-            raise ValidationError("Access token required.")
+            raise ConfigurationError("Pushbullet access token not configured in environment.")
 
         handler = PushbulletHandler()
         devices = handler.list_devices(access_token)
@@ -273,16 +215,17 @@ class PushbulletDevicesView(APIView):
 
 
 class PushbulletValidateTokenView(APIView):
-    """Validate a Pushbullet access token."""
+    """Validate the env-configured Pushbullet access token."""
 
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
-        """Validate a Pushbullet access token."""
-        serializer = PushbulletValidateTokenSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
+        """Validate the env-configured Pushbullet access token."""
+        env_config = PushbulletHandler.from_env()
+        access_token = env_config.get("access_token")
+        if not access_token:
+            raise ConfigurationError("Pushbullet access token not configured in environment.")
 
-        access_token = serializer.validated_data["access_token"]
         handler = PushbulletHandler()
         user_info = handler.get_user_info(access_token)
 

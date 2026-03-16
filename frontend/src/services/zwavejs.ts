@@ -1,5 +1,5 @@
 import api from './api'
-import type { ZwavejsSettings, ZwavejsSettingsUpdate, ZwavejsStatus, ZwavejsTestConnectionRequest } from '@/types'
+import type { ZwavejsSettings, ZwavejsStatus } from '@/types'
 import { apiEndpoints } from './endpoints'
 
 export type ZwavejsNodeSummary = {
@@ -25,14 +25,6 @@ export const zwavejsService = {
 
   async getSettings(): Promise<ZwavejsSettings> {
     return api.get<ZwavejsSettings>(apiEndpoints.integrations.zwavejs.settings)
-  },
-
-  async updateSettings(changes: ZwavejsSettingsUpdate): Promise<ZwavejsSettings> {
-    return api.patch<ZwavejsSettings>(apiEndpoints.integrations.zwavejs.settings, changes)
-  },
-
-  async testConnection(payload: ZwavejsTestConnectionRequest): Promise<{ ok: boolean }> {
-    return api.post<{ ok: boolean }>(apiEndpoints.integrations.zwavejs.test, payload)
   },
 
   async syncEntities(): Promise<{ imported: number; updated: number; timestamp: string }> {

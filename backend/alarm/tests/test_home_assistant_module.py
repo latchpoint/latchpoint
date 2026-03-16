@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 from datetime import timezone as dt_timezone
 from unittest.mock import patch
 from urllib.error import HTTPError, URLError
@@ -36,18 +37,20 @@ class HomeAssistantModuleTests(SimpleTestCase):
         clear_cached_connection()
 
     def tearDown(self):
+        if hasattr(self, "_env_patcher"):
+            self._env_patcher.stop()
         clear_cached_connection()
         super().tearDown()
 
     def _set_configured_connection(self, *, base_url: str = "http://ha:8123", token: str = "token"):
-        set_cached_connection(
-            {
-                "enabled": True,
-                "base_url": base_url,
-                "token": token,
-                "connect_timeout_seconds": 2,
-            }
-        )
+        self._env_patcher = patch.dict(os.environ, {
+            "HA_ENABLED": "true",
+            "HA_BASE_URL": base_url,
+            "HA_TOKEN": token,
+            "HA_CONNECT_TIMEOUT": "2",
+        })
+        self._env_patcher.start()
+        set_cached_connection()
 
     def test_get_status_returns_not_configured_when_missing_settings(self):
         status = home_assistant.get_status()

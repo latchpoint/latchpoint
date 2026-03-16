@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import os
+from unittest.mock import patch
+
 from django.contrib.auth.hashers import make_password
 from django.urls import reverse
 from rest_framework.test import APIClient, APITestCase
 
 from accounts.models import Role, User, UserCode, UserRoleAssignment
 from alarm.models import AlarmSettingsProfile
-from alarm.tests.settings_test_utils import set_profile_settings
 
 
 class ZwavejsApiTests(APITestCase):
@@ -26,30 +28,15 @@ class ZwavejsApiTests(APITestCase):
         )
 
         self.profile = AlarmSettingsProfile.objects.create(name="Default", is_active=True)
-        set_profile_settings(
-            self.profile,
-            zwavejs_connection={
-                "enabled": True,
-                "ws_url": "ws://zwavejs.local:3000",
-                "api_token": "supersecret",
-                "connect_timeout_seconds": 5,
-                "reconnect_min_seconds": 1,
-                "reconnect_max_seconds": 30,
-            },
-        )
 
-    def test_zwavejs_token_is_masked_in_settings_profile_detail(self):
-        url = reverse("alarm-settings-profile-detail", args=[self.profile.id])
-        response = self.client.get(url)
-        self.assertEqual(response.status_code, 200)
-
-        entries = response.json()["data"]["entries"]
-        zw_entries = [e for e in entries if e["key"] == "zwavejs_connection"]
-        self.assertEqual(len(zw_entries), 1)
-        value = zw_entries[0]["value"]
-        self.assertNotIn("api_token", value)
-        self.assertEqual(value["has_api_token"], True)
-
+    @patch.dict(os.environ, {
+        "ZWAVEJS_ENABLED": "true",
+        "ZWAVEJS_WS_URL": "ws://zwavejs.local:3000",
+        "ZWAVEJS_API_TOKEN": "supersecret",
+        "ZWAVEJS_CONNECT_TIMEOUT": "5",
+        "ZWAVEJS_RECONNECT_MIN": "1",
+        "ZWAVEJS_RECONNECT_MAX": "30",
+    })
     def test_zwavejs_token_is_masked_in_zwavejs_settings_endpoint(self):
         url = reverse("zwavejs-settings")
         response = self.client.get(url)
@@ -58,14 +45,15 @@ class ZwavejsApiTests(APITestCase):
         self.assertNotIn("api_token", body["data"])
         self.assertEqual(body["data"]["has_api_token"], True)
 
-    def test_patch_zwavejs_settings_preserves_token_when_omitted(self):
+    def test_patch_zwavejs_settings_returns_405(self):
         url = reverse("zwavejs-settings")
         response = self.client.patch(url, data={"ws_url": "wss://zwavejs2.local:3000"}, format="json")
-        self.assertEqual(response.status_code, 200)
-        body = response.json()
-        self.assertNotIn("api_token", body["data"])
-        self.assertEqual(body["data"]["has_api_token"], True)
+        self.assertEqual(response.status_code, 405)
 
+    @patch.dict(os.environ, {
+        "ZWAVEJS_ENABLED": "true",
+        "ZWAVEJS_WS_URL": "ws://zwavejs.local:3000",
+    })
     def test_zwavejs_status_endpoint_does_not_connect_during_tests(self):
         url = reverse("zwavejs-status")
         response = self.client.get(url)
@@ -75,14 +63,14 @@ class ZwavejsApiTests(APITestCase):
         self.assertEqual(body["data"]["connected"], False)
         self.assertIn("disabled during tests", (body["data"].get("last_error") or "").lower())
 
+    @patch.dict(os.environ, {"ZWAVEJS_ENABLED": "false"})
     def test_zwavejs_entities_sync_requires_enabled(self):
-        set_profile_settings(self.profile, zwavejs_connection={"enabled": False, "ws_url": ""})
         url = reverse("zwavejs-entities-sync")
         response = self.client.post(url, data={}, format="json")
         self.assertEqual(response.status_code, 400)
 
+    @patch.dict(os.environ, {"ZWAVEJS_ENABLED": "false"})
     def test_zwavejs_set_value_requires_enabled(self):
-        set_profile_settings(self.profile, zwavejs_connection={"enabled": False, "ws_url": ""})
         url = reverse("zwavejs-set-value")
         response = self.client.post(
             url,
@@ -136,16 +124,9 @@ class ZwavejsNodesApiTests(APITestCase):
         self.client = APIClient()
         self.client.force_authenticate(self.user)
         self.profile = AlarmSettingsProfile.objects.create(name="Default", is_active=True)
-        set_profile_settings(
-            self.profile,
-            zwavejs_connection={
-                "enabled": True,
-                "ws_url": "ws://zwavejs.local:3000",
-            },
-        )
 
+    @patch.dict(os.environ, {"ZWAVEJS_ENABLED": "false"})
     def test_nodes_returns_400_when_disabled(self):
-        set_profile_settings(self.profile, zwavejs_connection={"enabled": False, "ws_url": ""})
         url = reverse("zwavejs-nodes")
         response = self.client.get(url)
         self.assertEqual(response.status_code, 400)

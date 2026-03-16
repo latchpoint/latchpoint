@@ -33,7 +33,7 @@ This document tracks all Architecture Decision Records (ADRs) and their implemen
 | [0014](0014-alarm-core-and-integrations-decomposition.md) | Alarm Core + Integrations Decomposition | **Implemented** |
 | [0015](0015-integration-signals-contract.md) | Integration Signals Contract | **Implemented** |
 | [0016](0016-settings-routed-tabs-per-tab-save.md) | Settings UI as Routed Tabs with Per-Tab Save | **Implemented** |
-| [0017](0017-home-assistant-connection-settings-in-profile.md) | Home Assistant Connection Settings in Profile (Encrypted) | **Implemented** |
+| [0017](0017-home-assistant-connection-settings-in-profile.md) | Home Assistant Connection Settings in Profile (Encrypted) | Superseded by 0075 |
 | [0018](0018-zigbee2mqtt-integration.md) | Zigbee2MQTT Integration (Device Sync + Event Ingest) | **Implemented** |
 | [0019](0019-frigate-verification-and-person-thresholds.md) | Frigate MQTT Person Events as Rules Conditions | **Implemented** |
 | [0020](0020-ring-keypad-v2-volume-control.md) | Ring Keypad v2 Volume Control | **Implemented** |
@@ -54,7 +54,7 @@ This document tracks all Architecture Decision Records (ADRs) and their implemen
 | [0035](0035-notification-types-configuration-reference.md) | Notification Providers with In-App Configuration | **Superseded** |
 | [0036](0036-pushbullet-notification-provider.md) | Pushbullet Notification Provider Implementation | **Superseded** |
 | [0037](0037-notifications-django-app-architecture.md) | Notifications Django App Architecture | **Superseded** |
-| [0038](0038-centralized-encryption-logic.md) | Centralized Encryption Logic | **Implemented** |
+| [0038](0038-centralized-encryption-logic.md) | Centralized Encryption Logic | Superseded by 0075 |
 | [0039](0039-unified-error-handling.md) | Unified Error Handling | **Implemented** |
 | [0040](0040-zigbee2mqtt-hardening-and-control-semantics.md) | Zigbee2MQTT Hardening (Validation, Ingest, Control) | Superseded by 0049 |
 | [0041](0041-django-6.1-upgrade-plan.md) | Django 6.x Upgrade Plan | **Implemented** |
@@ -91,6 +91,7 @@ This document tracks all Architecture Decision Records (ADRs) and their implemen
 | [0072](0072-log-viewer-debug-tab.md) | Log Viewer Debug Tab | **Proposed** |
 | [0073](0073-backend-endpoint-test-baseline-expansion.md) | Backend Endpoint Test Baseline Expansion (Useful Gaps) | **Implemented** |
 | [0074](0074-test-suite-expansion-beyond-endpoint-baseline.md) | Test Suite Expansion Beyond Endpoint Baseline | **Implemented** |
+| [0075](0075-env-var-credentials-remove-encryption.md) | Move Integration Credentials to Env Vars, Remove Encryption | **Implemented** |
 
 ---
 
@@ -98,14 +99,14 @@ This document tracks all Architecture Decision Records (ADRs) and their implemen
 
 | Status | Count |
 |--------|-------|
-| **Implemented** | 59 |
+| **Implemented** | 58 |
 | **Partially Implemented** | 1 |
 | **Proposed** | 3 |
-| **Superseded** | 11 |
-| **Total** | 74 |
+| **Superseded** | 13 |
+| **Total** | 75 |
 
 Note: **Superseded** includes entries marked as "Superseded by …" in the table above.
 
 ---
 
-*Last updated: 2026-02-18* (Marked ADR 0074 as Implemented)
+*Last updated: 2026-03-03* (ADR 0075 implemented; ADRs 0017, 0038 superseded)

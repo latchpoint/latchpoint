@@ -1,14 +1,17 @@
 from __future__ import annotations
 
+import os
+from unittest.mock import patch
+
 from django.urls import reverse
 from rest_framework.test import APIClient, APITestCase
 
 from accounts.models import Role, User, UserRoleAssignment
 from alarm.models import AlarmSettingsProfile
-from alarm.tests.settings_test_utils import set_profile_settings
 from control_panels.models import ControlPanelDevice
 
 
+@patch.dict(os.environ, {"ZWAVEJS_ENABLED": "true", "ZWAVEJS_WS_URL": "ws://zwavejs.local:3000"})
 class ControlPanelsApiPermissionTests(APITestCase):
     def setUp(self):
         self.admin = User.objects.create_user(email="admin-perms@example.com", password="pass")
@@ -18,7 +21,6 @@ class ControlPanelsApiPermissionTests(APITestCase):
         self.regular_user = User.objects.create_user(email="regular@example.com", password="pass")
 
         self.profile = AlarmSettingsProfile.objects.create(name="Default", is_active=True)
-        set_profile_settings(self.profile, zwavejs_connection={"enabled": True, "ws_url": "ws://zwavejs.local:3000"})
 
     def test_list_control_panels_requires_auth(self):
         client = APIClient()
@@ -48,6 +50,7 @@ class ControlPanelsApiPermissionTests(APITestCase):
         self.assertEqual(response.status_code, 403)
 
 
+@patch.dict(os.environ, {"ZWAVEJS_ENABLED": "true", "ZWAVEJS_WS_URL": "ws://zwavejs.local:3000"})
 class ControlPanelsApiCrudTests(APITestCase):
     def setUp(self):
         self.user = User.objects.create_user(email="admin-crud@example.com", password="pass")
@@ -57,7 +60,6 @@ class ControlPanelsApiCrudTests(APITestCase):
         self.client.force_authenticate(self.user)
 
         self.profile = AlarmSettingsProfile.objects.create(name="Default", is_active=True)
-        set_profile_settings(self.profile, zwavejs_connection={"enabled": True, "ws_url": "ws://zwavejs.local:3000"})
 
     def test_list_control_panels(self):
         ControlPanelDevice.objects.create(
@@ -117,10 +119,8 @@ class ControlPanelsApiCrudTests(APITestCase):
         self.assertEqual(response.status_code, 204)
         self.assertFalse(ControlPanelDevice.objects.filter(id=device.id).exists())
 
+    @patch.dict(os.environ, {"ZWAVEJS_ENABLED": "false", "ZWAVEJS_WS_URL": ""})
     def test_create_control_panel_without_zwavejs_enabled_fails(self):
-        # Disable Z-Wave JS
-        set_profile_settings(self.profile, zwavejs_connection={"enabled": False, "ws_url": ""})
-
         url = reverse("control-panel-device-list-create")
         payload = {
             "name": "Ring No ZWave",
@@ -134,6 +134,7 @@ class ControlPanelsApiCrudTests(APITestCase):
         self.assertIn("Z-Wave JS", response.json()["error"]["message"])
 
 
+@patch.dict(os.environ, {"ZWAVEJS_ENABLED": "true", "ZWAVEJS_WS_URL": "ws://zwavejs.local:3000"})
 class ControlPanelsApiValidationTests(APITestCase):
     def setUp(self):
         self.user = User.objects.create_user(email="admin-control-panels@example.com", password="pass")
@@ -143,7 +144,6 @@ class ControlPanelsApiValidationTests(APITestCase):
         self.client.force_authenticate(self.user)
 
         self.profile = AlarmSettingsProfile.objects.create(name="Default", is_active=True)
-        set_profile_settings(self.profile, zwavejs_connection={"enabled": True, "ws_url": "ws://zwavejs.local:3000"})
 
     def test_create_rejects_duplicate_external_key(self):
         url = reverse("control-panel-device-list-create")

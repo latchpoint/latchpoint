@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import threading
 from unittest.mock import patch
 
@@ -58,14 +59,10 @@ class _FakeMqttManager:
                 ).start()
 
 
+@patch.dict(os.environ, {"ZIGBEE2MQTT_ENABLED": "true", "ZIGBEE2MQTT_BASE_TOPIC": "zigbee2mqtt", "MQTT_ENABLED": "true", "MQTT_HOST": "mqtt.local"})
 class Zigbee2mqttSyncDevicesTests(TestCase):
     def test_sync_devices_upserts_entities(self):
         profile = ensure_active_settings_profile()
-        AlarmSettingsEntry.objects.update_or_create(
-            profile=profile,
-            key="mqtt_connection",
-            defaults={"value_type": "json", "value": {"enabled": True, "host": "mqtt.local", "port": 1883}},
-        )
         AlarmSettingsEntry.objects.update_or_create(
             profile=profile,
             key="zigbee2mqtt",

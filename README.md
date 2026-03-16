@@ -58,7 +58,6 @@ cp .env.example .env
 2. Configure required variables in `.env`:
 ```
 SECRET_KEY=your-secure-secret-key
-SETTINGS_ENCRYPTION_KEY=your-encryption-key
 DEBUG=False
 ALLOWED_HOSTS=your-domain.com
 DATABASE_URL=postgresql://user:pass@host:5432/dbname
@@ -147,7 +146,6 @@ docker compose exec app python backend/manage.py shell
 | Variable | Description | Default |
 |----------|-------------|---------|
 | SECRET_KEY | Django secret key | Required |
-| SETTINGS_ENCRYPTION_KEY | Key for encrypting integration credentials | Required |
 | DEBUG | Enable debug mode | False |
 | LOG_LEVEL | Logging level | INFO |
 | ALLOWED_HOSTS | Comma-separated allowed hosts | localhost,127.0.0.1 |
