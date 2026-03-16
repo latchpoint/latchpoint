@@ -75,7 +75,7 @@ class NotificationHandler(ABC):
         Validate provider configuration.
 
         Args:
-            config: Configuration dictionary (decrypted)
+            config: Provider configuration dictionary
 
         Returns:
             List of validation error messages (empty if valid)
@@ -94,7 +94,7 @@ class NotificationHandler(ABC):
         Send a notification.
 
         Args:
-            config: Provider configuration (decrypted)
+            config: Provider configuration dictionary
             message: Notification message body
             title: Optional notification title
             data: Optional provider-specific data
@@ -112,7 +112,7 @@ class NotificationHandler(ABC):
         Override for provider-specific test behavior.
 
         Args:
-            config: Provider configuration (decrypted)
+            config: Provider configuration dictionary
 
         Returns:
             NotificationResult indicating success or failure

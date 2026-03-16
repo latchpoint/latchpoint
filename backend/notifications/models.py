@@ -36,7 +36,7 @@ class NotificationProvider(models.Model):
     )
     config = models.JSONField(
         default=dict,
-        help_text="Provider configuration (sensitive fields are encrypted)",
+        help_text="Provider configuration (env-sourced, kept empty)",
     )
     is_enabled = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)

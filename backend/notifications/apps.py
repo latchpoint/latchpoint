@@ -3,6 +3,7 @@ import sys
 import warnings
 
 from django.apps import AppConfig
+from django.db import DatabaseError, OperationalError
 
 logger = logging.getLogger(__name__)
 
@@ -32,5 +33,5 @@ class NotificationsConfig(AppConfig):
                 profile = AlarmSettingsProfile.objects.filter(is_active=True).first()
                 if profile:
                     ensure_env_providers_exist(profile)
-            except Exception:
+            except (DatabaseError, OperationalError):
                 logger.warning("Notification provider auto-provisioning failed", exc_info=True)
