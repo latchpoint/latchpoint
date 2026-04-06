@@ -6,6 +6,8 @@ export type SimulatedRule = {
   kind: string
   priority: number
   matched?: boolean
+  blockedByStopProcessing?: boolean
+  blockedByRuleId?: number
   trace?: unknown
   actions?: unknown
   for?: { status?: string; seconds?: number } | null
@@ -41,6 +43,11 @@ export function RulesTestRulesList({
                   ({r.kind}, priority {r.priority})
                   {title.startsWith('FOR') && r.for?.seconds ? ` • would schedule ${r.for.seconds}s` : ''}
                 </span>
+                {r.blockedByStopProcessing && (
+                  <span className="ml-2 rounded bg-amber-100 px-1.5 py-0.5 text-xs font-medium text-amber-800 dark:bg-amber-900 dark:text-amber-200">
+                    Blocked by rule #{r.blockedByRuleId}
+                  </span>
+                )}
               </summary>
               <div className="mt-2 grid gap-3 md:grid-cols-2">
                 <div>

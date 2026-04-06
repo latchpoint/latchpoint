@@ -29,6 +29,7 @@ interface RuleBuilderProps {
     name: string
     enabled: boolean
     priority: number
+    stopProcessing: boolean
     schemaVersion: number
     definition: RuleDefinition
     cooldownSeconds?: number | null
@@ -52,6 +53,7 @@ export function RuleBuilder({
   const [name, setName] = useState(rule?.name || '')
   const [enabled, setEnabled] = useState(rule?.enabled ?? true)
   const [priority, setPriority] = useState(rule?.priority ?? 100)
+  const [stopProcessing, setStopProcessing] = useState(rule?.stopProcessing ?? false)
   const [cooldownSeconds, setCooldownSeconds] = useState<string>(
     rule?.cooldownSeconds?.toString() || ''
   )
@@ -187,12 +189,13 @@ export function RuleBuilder({
         name: name.trim() || 'Untitled Rule',
         enabled,
         priority,
+        stopProcessing,
         schemaVersion: 1,
         definition,
         cooldownSeconds: cooldownSeconds ? parseInt(cooldownSeconds, 10) : null,
       })
     },
-    [query, actions, name, enabled, priority, cooldownSeconds, onSave, advanced, definitionText, forSecondsNum, builderGuardrailError]
+    [query, actions, name, enabled, priority, stopProcessing, cooldownSeconds, onSave, advanced, definitionText, forSecondsNum, builderGuardrailError]
   )
 
   const isEditing = rule?.id != null
@@ -255,16 +258,33 @@ export function RuleBuilder({
           </div>
 
           <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <Switch
-                id="rule-enabled"
-                checked={enabled}
-                onCheckedChange={setEnabled}
-                disabled={isSaving}
-              />
-              <label htmlFor="rule-enabled" className="text-sm">
-                Rule enabled
-              </label>
+            <div className="flex items-center gap-4">
+              <div className="flex items-center gap-2">
+                <Switch
+                  id="rule-enabled"
+                  checked={enabled}
+                  onCheckedChange={setEnabled}
+                  disabled={isSaving}
+                />
+                <label htmlFor="rule-enabled" className="text-sm">
+                  Rule enabled
+                </label>
+              </div>
+              <div className="flex items-center gap-2">
+                <Switch
+                  id="rule-stop-processing"
+                  checked={stopProcessing}
+                  onCheckedChange={setStopProcessing}
+                  disabled={isSaving}
+                />
+                <label htmlFor="rule-stop-processing" className="text-sm">
+                  Stop processing{' '}
+                  <HelpTip
+                    className="ml-1"
+                    content="When this rule fires, skip all lower-priority rules of the same kind (trigger, disarm, arm, suppress, or escalate) in this evaluation cycle. A trigger rule with stop processing will only block other trigger rules, not disarm or arm rules."
+                  />
+                </label>
+              </div>
             </div>
 
             <Button

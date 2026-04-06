@@ -11,7 +11,18 @@ export function formatRulesRunNotice(result: {
   fired: number
   scheduled: number
   skippedCooldown: number
+  skippedStopped: number
   errors: number
 }): string {
-  return `Rules run: evaluated ${result.evaluated}, fired ${result.fired}, scheduled ${result.scheduled}, cooldown ${result.skippedCooldown}, errors ${result.errors}.`
+  const parts = [
+    `evaluated ${result.evaluated}`,
+    `fired ${result.fired}`,
+    `scheduled ${result.scheduled}`,
+    `cooldown ${result.skippedCooldown}`,
+  ]
+  if (result.skippedStopped > 0) {
+    parts.push(`stopped ${result.skippedStopped}`)
+  }
+  parts.push(`errors ${result.errors}`)
+  return `Rules run: ${parts.join(', ')}.`
 }

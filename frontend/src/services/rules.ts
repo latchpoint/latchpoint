@@ -20,6 +20,7 @@ export const rulesService = {
     kind?: Rule['kind']  // Optional - auto-derived from actions by backend
     enabled: boolean
     priority: number
+    stopProcessing?: boolean
     schemaVersion: number
     definition: RuleDefinition
     cooldownSeconds?: number | null

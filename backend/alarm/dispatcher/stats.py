@@ -40,6 +40,7 @@ class DispatcherStats:
     rules_fired: int = 0
     rules_scheduled: int = 0
     rules_errors: int = 0
+    rules_stopped: int = 0
     last_dispatch_at: datetime | None = None
 
     # Snapshot / evaluation metrics (ADR 0061 follow-up).
@@ -90,6 +91,11 @@ class DispatcherStats:
         with self._lock:
             self.dropped_batches += count
 
+    def record_stopped(self, count: int = 1) -> None:
+        """Record rules skipped due to stop_processing."""
+        with self._lock:
+            self.rules_stopped += count
+
     def record_rules_result(
         self, evaluated: int = 0, fired: int = 0, scheduled: int = 0, errors: int = 0
     ) -> None:
@@ -136,6 +142,7 @@ class DispatcherStats:
                 "rules_fired": self.rules_fired,
                 "rules_scheduled": self.rules_scheduled,
                 "rules_errors": self.rules_errors,
+                "rules_stopped": self.rules_stopped,
                 "last_dispatch_at": (
                     self.last_dispatch_at.isoformat() if self.last_dispatch_at else None
                 ),
@@ -160,6 +167,7 @@ class DispatcherStats:
             self.rules_fired = 0
             self.rules_scheduled = 0
             self.rules_errors = 0
+            self.rules_stopped = 0
             self.last_dispatch_at = None
             self.entity_state_snapshot_size_last = 0
             self.entity_state_snapshot_size_total = 0
