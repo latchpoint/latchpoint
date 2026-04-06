@@ -409,6 +409,28 @@ class StopProcessingTimerTests(TestCase):
         # evaluated = len(rules=4) - skipped_stopped(2) = 2
         self.assertEqual(result.evaluated, 2)
 
+    def test_immediate_stopper_blocks_lower_priority_due_timer(self):
+        """A high-priority immediate stopper should block a lower-priority due timer."""
+        self._make_immediate_rule("Immediate Stopper", RuleKind.TRIGGER, 100, stop_processing=True)
+        timer_rule = self._make_for_rule("Low Timer", RuleKind.TRIGGER, 1, 60)
+        self._make_runtime_due(timer_rule)
+
+        result = run_rules(now=self.now)
+        self.assertEqual(result.fired, 1)           # Only the immediate stopper
+        self.assertEqual(result.skipped_stopped, 1)  # Timer blocked
+
+    def test_timer_priority_wins_over_chronological_order(self):
+        """A higher-priority timer stopper should block a lower-priority timer even if due later."""
+        timer_low = self._make_for_rule("Low Timer", RuleKind.TRIGGER, 1, 60)
+        timer_high = self._make_for_rule("High Timer Stopper", RuleKind.TRIGGER, 100, 60, stop_processing=True)
+        # Low-priority timer is due earlier (chronologically first)
+        self._make_runtime_due(timer_low, scheduled_for=self.now - timedelta(seconds=10))
+        self._make_runtime_due(timer_high, scheduled_for=self.now - timedelta(seconds=1))
+
+        result = run_rules(now=self.now)
+        self.assertEqual(result.fired, 1)           # Only the high-priority stopper
+        self.assertEqual(result.skipped_stopped, 1)  # Low timer blocked
+
 
 class StopProcessingSimulationTests(TestCase):
     """Comprehensive tests for stop_processing in simulate_rules()."""

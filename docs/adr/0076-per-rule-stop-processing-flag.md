@@ -1,7 +1,7 @@
 # ADR 0076: Per-Rule `stop_processing` Flag
 
 ## Status
-**Proposed**
+**Implemented**
 
 ## Context
 
