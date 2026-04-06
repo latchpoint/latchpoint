@@ -260,8 +260,15 @@ class RuleDispatcher:
             snapshot_ms = (perf_counter() - snapshot_started) * 1000.0
             self._stats.record_entity_state_snapshot(size=len(entity_state_map), query_ms=snapshot_ms)
 
+            stopped_kinds: set[str] = set()
             for rule in rules:
-                self._evaluate_rule_with_lock(rule, entity_state_map, batch)
+                if rule.kind in stopped_kinds:
+                    logger.debug("Rule %s skipped: kind %s stopped", rule.id, rule.kind)
+                    self._stats.record_stopped()
+                    continue
+                did_stop = self._evaluate_rule_with_lock(rule, entity_state_map, batch)
+                if did_stop:
+                    stopped_kinds.add(rule.kind)
 
         except Exception as exc:
             logger.exception("Batch %s: dispatch failed: %s", batch.batch_id, exc)
@@ -450,9 +457,12 @@ class RuleDispatcher:
         rule: Rule,
         entity_state_map: dict[str, str | None],
         batch: EntityChangeBatch,
-    ) -> None:
+    ) -> bool:
         """
         Evaluate a single rule with per-rule locking.
+
+        Returns True when the rule fired AND has stop_processing=True,
+        signalling that subsequent rules of the same kind should be skipped.
 
         Args:
             rule: The rule to evaluate
@@ -470,7 +480,7 @@ class RuleDispatcher:
                 "Rule %s locked, skipping (in-progress evaluation will see current state)",
                 rule.id,
             )
-            return
+            return False
 
         try:
             # Get or create runtime state
@@ -489,7 +499,7 @@ class RuleDispatcher:
             allowed, reason = is_rule_allowed(runtime=runtime, now=now)
             if not allowed:
                 logger.debug("Rule %s skipped: %s", rule.id, reason)
-                return
+                return False
 
             # Create filtered repositories that only return this rule
             base_repos = default_rule_engine_repositories()
@@ -497,10 +507,20 @@ class RuleDispatcher:
             def _single_rule_list():
                 return [rule]
 
+            def _scoped_due_runtimes(now):
+                from alarm.models import RuleRuntimeState
+
+                return list(
+                    RuleRuntimeState.objects.select_for_update()
+                    .filter(rule=rule, scheduled_for__isnull=False, scheduled_for__lte=now)
+                    .select_related("rule")
+                    .order_by("-rule__priority", "rule__id")
+                )
+
             repos = RuleEngineRepositories(
                 list_enabled_rules=_single_rule_list,
                 entity_state_map=lambda: entity_state_map,
-                due_runtimes=base_repos.due_runtimes,
+                due_runtimes=_scoped_due_runtimes,
                 ensure_runtime=base_repos.ensure_runtime,
                 frigate_is_available=base_repos.frigate_is_available,
                 list_frigate_detections=base_repos.list_frigate_detections,
@@ -526,8 +546,10 @@ class RuleDispatcher:
                     error="Evaluation error (see logs)",
                     now=now,
                 )
+                return False
             else:
                 record_rule_success(runtime=runtime)
+                return result.fired > 0 and rule.stop_processing
 
         except Exception as exc:
             logger.exception("Rule %s evaluation failed: %s", rule.id, exc)
@@ -555,6 +577,7 @@ class RuleDispatcher:
                     rule.id,
                     recording_exc,
                 )
+            return False
 
         finally:
             cache.delete(lock_key)

@@ -49,7 +49,7 @@ def default_rule_engine_repositories() -> RuleEngineRepositories:
             RuleRuntimeState.objects.select_for_update()
             .filter(scheduled_for__isnull=False, scheduled_for__lte=now, rule__enabled=True)
             .select_related("rule")
-            .order_by("scheduled_for", "id")
+            .order_by("-rule__priority", "rule__id")
         )
 
     def _frigate_is_available(now) -> bool:

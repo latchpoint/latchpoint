@@ -5,6 +5,8 @@ import { wsManager } from '@/services'
 import type { AlarmWebSocketMessage } from '@/types'
 import type { LogEntry } from '../types'
 
+const MAX_LOG_ENTRIES = 10_000
+
 /**
  * Subscribes to WebSocket `log_entry` messages and writes them to the xterm.js
  * terminal. Respects pause state by queuing entries and flushing on unpause.
@@ -55,6 +57,9 @@ export function useLogStream(
 
       // Always store for re-filtering, regardless of pause/filter state
       allEntriesRef.current.push(entry)
+      if (allEntriesRef.current.length > MAX_LOG_ENTRIES) {
+        allEntriesRef.current = allEntriesRef.current.slice(-MAX_LOG_ENTRIES)
+      }
 
       if (pausedRef.current) {
         queueRef.current.push(entry)

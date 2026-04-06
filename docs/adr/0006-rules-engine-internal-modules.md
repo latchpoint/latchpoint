@@ -31,6 +31,6 @@ This made the module harder to test in isolation and encouraged changes that tou
 - Keeps external imports stable for existing endpoints/tests.
 
 ## Todos
-- Add “stop-after-fire” and conflict resolution policy as explicit engine configuration.
+- ~~Add “stop-after-fire” and conflict resolution policy as explicit engine configuration.~~ Done — [ADR 0076](0076-per-rule-stop-processing-flag.md).
 - Add validation for HA service calls (security posture).
 - Add more unit-level tests around condition evaluation and action execution using fake gateways.

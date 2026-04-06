@@ -244,6 +244,7 @@ class Rule(models.Model):
     kind = models.CharField(max_length=32, choices=RuleKind.choices, db_index=True)
     enabled = models.BooleanField(default=True, db_index=True)
     priority = models.IntegerField(default=0, db_index=True)
+    stop_processing = models.BooleanField(default=False)
     schema_version = models.PositiveIntegerField(default=1)
     definition = models.JSONField(default=dict, blank=True)
     cooldown_seconds = models.PositiveIntegerField(null=True, blank=True)

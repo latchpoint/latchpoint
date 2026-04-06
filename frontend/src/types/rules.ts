@@ -23,6 +23,7 @@ export interface Rule {
   kind: RuleKind
   enabled: boolean
   priority: number
+  stopProcessing: boolean
   schemaVersion: number
   definition: RuleDefinition
   cooldownSeconds: number | null
@@ -37,6 +38,7 @@ export interface RuleRunResult {
   fired: number
   scheduled: number
   skippedCooldown: number
+  skippedStopped: number
   errors: number
 }
 
@@ -58,14 +60,16 @@ export interface RuleSimulateEntry {
   kind: RuleKind
   priority: number
   matched: boolean
+  blockedByStopProcessing?: boolean
+  blockedByRuleId?: number
   for?: RuleSimulateForInfo | null
-  trace: Record<string, unknown>
-  actions: unknown[]
+  trace?: Record<string, unknown>
+  actions?: unknown[]
 }
 
 export interface RuleSimulateResult {
   timestamp: string
-  summary: { evaluated: number; matched: number; wouldSchedule: number }
+  summary: { evaluated: number; matched: number; wouldSchedule: number; blocked: number }
   matchedRules: RuleSimulateEntry[]
   nonMatchingRules: RuleSimulateEntry[]
 }

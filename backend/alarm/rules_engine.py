@@ -32,6 +32,7 @@ class RuleRunResult:
     fired: int
     scheduled: int
     skipped_cooldown: int
+    skipped_stopped: int
     errors: int
 
     def as_dict(self) -> dict[str, int]:
@@ -41,6 +42,7 @@ class RuleRunResult:
             "fired": self.fired,
             "scheduled": self.scheduled,
             "skipped_cooldown": self.skipped_cooldown,
+            "skipped_stopped": self.skipped_stopped,
             "errors": self.errors,
         }
 
@@ -63,92 +65,107 @@ def run_rules(
     fired = 0
     scheduled = 0
     skipped_cooldown = 0
+    skipped_stopped = 0
     errors = 0
+    stopped_kinds: set[str] = set()
 
-    due_runtimes = repos.due_runtimes(now)
-
-    for runtime in due_runtimes:
-        rule = runtime.rule
-        seconds, child = extract_for((rule.definition or {}).get("when") if isinstance(rule.definition, dict) else None)
-        if not seconds:
-            runtime.scheduled_for = None
-            runtime.became_true_at = None
-            runtime.save(update_fields=["scheduled_for", "became_true_at", "updated_at"])
-            continue
-
-        matched = eval_condition_with_context(child, entity_state=entity_state, now=now, repos=repos)
-        if not matched:
-            runtime.scheduled_for = None
-            runtime.became_true_at = None
-            runtime.save(update_fields=["scheduled_for", "became_true_at", "updated_at"])
-            continue
-
-        if cooldown_active(rule=rule, runtime=runtime, now=now):
-            skipped_cooldown += 1
-            runtime.scheduled_for = None
-            runtime.save(update_fields=["scheduled_for", "updated_at"])
-            continue
-
-        try:
-            then = (rule.definition or {}).get("then") if isinstance(rule.definition, dict) else []
-            actions = then if isinstance(then, list) else []
-            result = execute_actions_func(rule=rule, actions=actions, now=now, actor_user=actor_user)
-            log_action_func(
-                rule=rule,
-                fired_at=now,
-                kind=rule.kind,
-                actions=actions,
-                result=result,
-                trace={"source": "timer"},
-            )
-            runtime.last_fired_at = now
-            runtime.scheduled_for = None
-            runtime.save(update_fields=["last_fired_at", "scheduled_for", "updated_at"])
-            fired += 1
-        except Exception as exc:  # pragma: no cover - defensive
-            errors += 1
-            log_action_func(
-                rule=rule,
-                fired_at=now,
-                kind=rule.kind,
-                actions=[],
-                result={},
-                trace={"source": "timer"},
-                error=str(exc),
-            )
+    # Pre-fetch due timers (acquires row locks via select_for_update) indexed by rule ID.
+    # This allows unified priority-ordered evaluation of both timer and immediate rules.
+    due_map = {rt.rule_id: rt for rt in repos.due_runtimes(now)}
 
     for rule in rules:
+        if rule.kind in stopped_kinds:
+            skipped_stopped += 1
+            continue
+
         definition = rule.definition or {}
         when_node = definition.get("when") if isinstance(definition, dict) else None
         seconds, child = extract_for(when_node)
 
         if seconds:
-            runtime = repos.ensure_runtime(rule)
-            matched = eval_condition_with_context(child, entity_state=entity_state, now=now, repos=repos)
-            if not matched:
-                if runtime.became_true_at or runtime.scheduled_for:
-                    runtime.became_true_at = None
-                    runtime.scheduled_for = None
+            runtime_due = due_map.get(rule.id)
+            if runtime_due:
+                # Timer is due — evaluate condition and potentially fire.
+                matched = eval_condition_with_context(child, entity_state=entity_state, now=now, repos=repos)
+                if not matched:
+                    runtime_due.scheduled_for = None
+                    runtime_due.became_true_at = None
+                    runtime_due.save(update_fields=["scheduled_for", "became_true_at", "updated_at"])
+                    continue
+
+                if cooldown_active(rule=rule, runtime=runtime_due, now=now):
+                    skipped_cooldown += 1
+                    runtime_due.scheduled_for = None
+                    runtime_due.save(update_fields=["scheduled_for", "updated_at"])
+                    continue
+
+                try:
+                    then = definition.get("then") if isinstance(definition, dict) else []
+                    actions = then if isinstance(then, list) else []
+                    result = execute_actions_func(rule=rule, actions=actions, now=now, actor_user=actor_user)
+                    trace = {"source": "timer"}
+                    if rule.stop_processing:
+                        trace["stop_processing"] = True
+                    log_action_func(
+                        rule=rule,
+                        fired_at=now,
+                        kind=rule.kind,
+                        actions=actions,
+                        result=result,
+                        trace=trace,
+                    )
+                    runtime_due.last_fired_at = now
+                    runtime_due.scheduled_for = None
+                    runtime_due.save(update_fields=["last_fired_at", "scheduled_for", "updated_at"])
+                    fired += 1
+                    if rule.stop_processing:
+                        stopped_kinds.add(rule.kind)
+                except Exception as exc:  # pragma: no cover - defensive
+                    errors += 1
+                    log_action_func(
+                        rule=rule,
+                        fired_at=now,
+                        kind=rule.kind,
+                        actions=[],
+                        result={},
+                        trace={"source": "timer"},
+                        error=str(exc),
+                    )
+            else:
+                # Timer not yet due — handle scheduling lifecycle.
+                runtime = repos.ensure_runtime(rule)
+                matched = eval_condition_with_context(child, entity_state=entity_state, now=now, repos=repos)
+                if not matched:
+                    if runtime.became_true_at or runtime.scheduled_for:
+                        runtime.became_true_at = None
+                        runtime.scheduled_for = None
+                        runtime.save(update_fields=["became_true_at", "scheduled_for", "updated_at"])
+                    continue
+
+                if runtime.became_true_at is None:
+                    runtime.became_true_at = now
+                    runtime.scheduled_for = now + timedelta(seconds=seconds)
                     runtime.save(update_fields=["became_true_at", "scheduled_for", "updated_at"])
-                continue
+                    scheduled += 1
+                    continue
 
-            if runtime.became_true_at is None:
-                runtime.became_true_at = now
-                runtime.scheduled_for = now + timedelta(seconds=seconds)
-                runtime.save(update_fields=["became_true_at", "scheduled_for", "updated_at"])
-                scheduled += 1
-                continue
+                # If we already fired during the current true-streak, do not reschedule.
+                if runtime.last_fired_at and runtime.became_true_at and runtime.last_fired_at >= runtime.became_true_at:
+                    continue
 
-            # If we already fired during the current true-streak, do not reschedule.
-            if runtime.last_fired_at and runtime.became_true_at and runtime.last_fired_at >= runtime.became_true_at:
-                continue
-
-            # Defensive: if we have a known true-streak but no schedule (e.g. cleared during
-            # cooldown/backoff), reschedule based on the original transition time.
-            if runtime.scheduled_for is None and runtime.became_true_at:
-                runtime.scheduled_for = runtime.became_true_at + timedelta(seconds=seconds)
-                runtime.save(update_fields=["scheduled_for", "updated_at"])
+                # Defensive: if we have a known true-streak but no schedule (e.g. cleared during
+                # cooldown/backoff), reschedule based on the original transition time.
+                if runtime.scheduled_for is None and runtime.became_true_at:
+                    runtime.scheduled_for = runtime.became_true_at + timedelta(seconds=seconds)
+                    runtime.save(update_fields=["scheduled_for", "updated_at"])
             continue
+
+        # Not a for-rule. Clean up any stale due runtime (e.g. for condition was removed).
+        stale_runtime = due_map.get(rule.id)
+        if stale_runtime:
+            stale_runtime.scheduled_for = None
+            stale_runtime.became_true_at = None
+            stale_runtime.save(update_fields=["scheduled_for", "became_true_at", "updated_at"])
 
         matched = eval_condition_with_context(when_node, entity_state=entity_state, now=now, repos=repos)
         if not matched:
@@ -175,17 +192,22 @@ def run_rules(
         actions = then if isinstance(then, list) else []
         try:
             result = execute_actions_func(rule=rule, actions=actions, now=now, actor_user=actor_user)
+            trace = {"source": "immediate"}
+            if rule.stop_processing:
+                trace["stop_processing"] = True
             log_action_func(
                 rule=rule,
                 fired_at=now,
                 kind=rule.kind,
                 actions=actions,
                 result=result,
-                trace={"source": "immediate"},
+                trace=trace,
             )
             runtime.last_fired_at = now
             runtime.save(update_fields=["last_fired_at", "updated_at"])
             fired += 1
+            if rule.stop_processing:
+                stopped_kinds.add(rule.kind)
         except Exception as exc:  # pragma: no cover - defensive
             errors += 1
             log_action_func(
@@ -199,10 +221,11 @@ def run_rules(
             )
 
     return RuleRunResult(
-        evaluated=len(rules),
+        evaluated=len(rules) - skipped_stopped,
         fired=fired,
         scheduled=scheduled,
         skipped_cooldown=skipped_cooldown,
+        skipped_stopped=skipped_stopped,
         errors=errors,
     )
 
@@ -247,8 +270,25 @@ def simulate_rules(
 
     matched: list[dict[str, Any]] = []
     not_matched: list[dict[str, Any]] = []
+    stopped_kinds: dict[str, int] = {}  # kind -> rule id that triggered the stop
+    blocked = 0
 
     for rule in rules:
+        if rule.kind in stopped_kinds:
+            blocked += 1
+            not_matched.append(
+                {
+                    "id": rule.id,
+                    "name": rule.name,
+                    "kind": rule.kind,
+                    "priority": rule.priority,
+                    "matched": False,
+                    "blocked_by_stop_processing": True,
+                    "blocked_by_rule_id": stopped_kinds[rule.kind],
+                }
+            )
+            continue
+
         definition = rule.definition or {}
         when_node = definition.get("when") if isinstance(definition, dict) else None
         seconds, child = extract_for(when_node)
@@ -295,6 +335,8 @@ def simulate_rules(
                     "actions": definition.get("then") if isinstance(definition.get("then"), list) else [],
                 }
             )
+            if rule.stop_processing:
+                stopped_kinds[rule.kind] = rule.id
             continue
 
         ok, trace = eval_condition_explain_with_context(when_node, entity_state=merged_state, now=now, repos=repos)
@@ -309,15 +351,18 @@ def simulate_rules(
         }
         if ok:
             matched.append(payload)
+            if rule.stop_processing:
+                stopped_kinds[rule.kind] = rule.id
         else:
             not_matched.append(payload)
 
     return {
         "timestamp": now.isoformat(),
         "summary": {
-            "evaluated": len(rules),
+            "evaluated": len(rules) - blocked,
             "matched": sum(1 for r in matched if r.get("matched") is True),
             "would_schedule": sum(1 for r in matched if r.get("for", {}).get("status") == "would_schedule"),
+            "blocked": blocked,
         },
         "matched_rules": matched,
         "non_matching_rules": not_matched,

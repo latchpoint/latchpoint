@@ -54,7 +54,7 @@ export function RulesTestResults({ mode, result, baselineResult }: Props) {
         <CardTitle>Results</CardTitle>
         <CardDescription>
           {result?.summary
-            ? `Evaluated ${result.summary.evaluated}, matched ${result.summary.matched}, would schedule ${result.summary.wouldSchedule}.`
+            ? `Evaluated ${result.summary.evaluated}, matched ${result.summary.matched}, would schedule ${result.summary.wouldSchedule}${result.summary.blocked ? `, blocked ${result.summary.blocked}` : ''}.`
             : 'Run a simulation to see results.'}
         </CardDescription>
       </CardHeader>
@@ -97,6 +97,11 @@ export function RulesTestResults({ mode, result, baselineResult }: Props) {
                     <summary className="cursor-pointer">
                       <span className="font-medium">{r.name}</span>{' '}
                       <span className="text-xs text-muted-foreground">({r.kind}, priority {r.priority})</span>
+                      {(r as SimulatedRule).blockedByStopProcessing && (
+                        <span className="ml-2 rounded bg-amber-100 px-1.5 py-0.5 text-xs font-medium text-amber-800 dark:bg-amber-900 dark:text-amber-200">
+                          Blocked by rule #{(r as SimulatedRule).blockedByRuleId}
+                        </span>
+                      )}
                     </summary>
                     <div className="mt-2 grid gap-3 md:grid-cols-2">
                       <div>
