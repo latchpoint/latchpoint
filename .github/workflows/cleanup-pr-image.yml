@@ -14,6 +14,7 @@ env:
 jobs:
   cleanup:
     runs-on: ubuntu-latest
+    if: github.event.pull_request.head.repo.full_name == github.repository
     steps:
       - name: Delete PR image from GHCR
         env:

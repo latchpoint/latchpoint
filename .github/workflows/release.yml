@@ -25,13 +25,14 @@ jobs:
         run: |
           TAG="${{ github.event.release.tag_name }}"
           echo "Tagging ${IMAGE_NAME}:${TAG} as ${IMAGE_NAME}:latest"
+          success=false
           for i in 1 2 3 4 5; do
-            crane tag "${IMAGE_NAME}:${TAG}" latest && break
-            echo "Attempt $i failed, image may not be pushed yet. Retrying in 30s..."
-            sleep 30
+            crane tag "${IMAGE_NAME}:${TAG}" latest && success=true && break
+            echo "Attempt $i failed, image may not be pushed yet."
+            [ "$i" -lt 5 ] && sleep 30
           done
 
-          if [ "$i" -eq 5 ]; then
+          if [ "$success" = false ]; then
             echo "Failed to tag after 5 attempts"
             exit 1
           fi

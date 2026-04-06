@@ -7,7 +7,7 @@
 
 The existing CI pipeline runs tests on pull requests (`ci-tests.yml`) but only builds and pushes Docker images when code is merged to main or a git tag is pushed (`build-and-push.yml`). The `latest` tag is updated on every merge to main, which conflates "latest code on main" with "latest stable release."
 
-This creates two problems:
+This creates three problems:
 
 ### 1. No PR-specific images
 When a PR is opened, there is no way to deploy or test the exact build artifact from that PR in a staging environment. Reviewers must either trust the test suite or manually build the image locally.
@@ -71,6 +71,6 @@ The tag trigger is narrowed from `**` (any tag) to `v*` (version tags). This avo
 - SHA tags on every build provide immutable references for debugging and rollback
 
 ### Negative
-- PR images accumulate in GHCR over time. A future cleanup workflow (e.g., `actions/delete-package-versions`) should prune `pr-*` tags when PRs are closed or merged.
+- PR images are automatically cleaned up by `cleanup-pr-image.yml` when PRs are closed or merged. However, orphaned `sha-{hash}` tags from PR builds are not pruned and may accumulate over time.
 - Fork PRs cannot produce images (by design — fork tokens lack GHCR write access). Contributors from forks must rely on test results only.
 - The `release.yml` retry loop assumes the tag-triggered build completes within 2.5 minutes. Extremely slow builds could exceed this window, though this is unlikely with GHA layer caching.
