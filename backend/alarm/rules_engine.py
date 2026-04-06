@@ -68,6 +68,7 @@ def run_rules(
     skipped_stopped = 0
     errors = 0
     stopped_kinds: set[str] = set()
+    stopped_rule_ids: set[int] = set()
 
     due_runtimes = repos.due_runtimes(now)
 
@@ -116,6 +117,7 @@ def run_rules(
             fired += 1
             if rule.stop_processing:
                 stopped_kinds.add(rule.kind)
+                stopped_rule_ids.add(rule.id)
         except Exception as exc:  # pragma: no cover - defensive
             errors += 1
             log_action_func(
@@ -129,8 +131,11 @@ def run_rules(
             )
 
     for rule in rules:
-        if rule.kind in stopped_kinds:
+        if rule.kind in stopped_kinds and rule.id not in stopped_rule_ids:
             skipped_stopped += 1
+            continue
+        if rule.kind in stopped_kinds:
+            # Stopper rule itself — skip main-loop re-processing but don't count as stopped
             continue
         definition = rule.definition or {}
         when_node = definition.get("when") if isinstance(definition, dict) else None
@@ -205,6 +210,7 @@ def run_rules(
             fired += 1
             if rule.stop_processing:
                 stopped_kinds.add(rule.kind)
+                stopped_rule_ids.add(rule.id)
         except Exception as exc:  # pragma: no cover - defensive
             errors += 1
             log_action_func(
@@ -356,7 +362,7 @@ def simulate_rules(
     return {
         "timestamp": now.isoformat(),
         "summary": {
-            "evaluated": len(rules),
+            "evaluated": len(rules) - blocked,
             "matched": sum(1 for r in matched if r.get("matched") is True),
             "would_schedule": sum(1 for r in matched if r.get("for", {}).get("status") == "would_schedule"),
             "blocked": blocked,
