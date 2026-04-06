@@ -26,9 +26,21 @@ jobs:
           TAG="${{ github.event.release.tag_name }}"
           echo "Tagging ${IMAGE_NAME}:${TAG} as ${IMAGE_NAME}:latest"
           for i in 1 2 3 4 5; do
-            crane tag "${IMAGE_NAME}:${TAG}" latest && exit 0
+            crane tag "${IMAGE_NAME}:${TAG}" latest && break
             echo "Attempt $i failed, image may not be pushed yet. Retrying in 30s..."
             sleep 30
           done
-          echo "Failed to tag after 5 attempts"
-          exit 1
+
+          if [ "$i" -eq 5 ]; then
+            echo "Failed to tag after 5 attempts"
+            exit 1
+          fi
+
+          {
+            echo "### Docker Image"
+            echo ""
+            echo "| Tag | Pull command |"
+            echo "|-----|-------------|"
+            echo "| \`latest\` | \`docker pull ${IMAGE_NAME}:latest\` |"
+            echo "| \`${TAG}\` | \`docker pull ${IMAGE_NAME}:${TAG}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"

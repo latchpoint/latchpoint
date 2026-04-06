@@ -52,3 +52,15 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Write job summary
+        run: |
+          echo "### Docker Image" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Tag | Pull command |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|-----|-------------|" >> "$GITHUB_STEP_SUMMARY"
+          while IFS= read -r tag; do
+            [ -z "${tag}" ] && continue
+            name="${tag##*:}"
+            echo "| \`${name}\` | \`docker pull ${tag}\` |" >> "$GITHUB_STEP_SUMMARY"
+          done <<< "${{ steps.meta.outputs.tags }}"
