@@ -47,6 +47,8 @@ jobs:
 
       - name: Build and push (production image)
         uses: docker/build-push-action@v6
+        env:
+          DOCKER_BUILD_SUMMARY: false
         with:
           context: .
           file: ./Dockerfile
@@ -59,12 +61,14 @@ jobs:
 
       - name: Write job summary
         run: |
-          echo "### Docker Image" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Tag | Pull command |" >> "$GITHUB_STEP_SUMMARY"
-          echo "|-----|-------------|" >> "$GITHUB_STEP_SUMMARY"
-          while IFS= read -r tag; do
-            [ -z "${tag}" ] && continue
-            name="${tag##*:}"
-            echo "| \`${name}\` | \`docker pull ${tag}\` |" >> "$GITHUB_STEP_SUMMARY"
-          done <<< "${{ steps.meta.outputs.tags }}"
+          {
+            echo "### Docker Image"
+            echo ""
+            echo "| Tag | Pull command |"
+            echo "|-----|-------------|"
+            while IFS= read -r tag; do
+              [ -z "${tag}" ] && continue
+              name="${tag##*:}"
+              echo "| \`${name}\` | \`docker pull ${tag}\` |"
+            done <<< "${{ steps.meta.outputs.tags }}"
+          } >> "$GITHUB_STEP_SUMMARY"
