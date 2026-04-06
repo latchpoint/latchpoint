@@ -507,10 +507,20 @@ class RuleDispatcher:
             def _single_rule_list():
                 return [rule]
 
+            def _scoped_due_runtimes(now):
+                from alarm.models import RuleRuntimeState
+
+                return list(
+                    RuleRuntimeState.objects.select_for_update()
+                    .filter(rule=rule, scheduled_for__isnull=False, scheduled_for__lte=now)
+                    .select_related("rule")
+                    .order_by("-rule__priority", "rule__id")
+                )
+
             repos = RuleEngineRepositories(
                 list_enabled_rules=_single_rule_list,
                 entity_state_map=lambda: entity_state_map,
-                due_runtimes=base_repos.due_runtimes,
+                due_runtimes=_scoped_due_runtimes,
                 ensure_runtime=base_repos.ensure_runtime,
                 frigate_is_available=base_repos.frigate_is_available,
                 list_frigate_detections=base_repos.list_frigate_detections,

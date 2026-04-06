@@ -63,8 +63,8 @@ export interface RuleSimulateEntry {
   blockedByStopProcessing?: boolean
   blockedByRuleId?: number
   for?: RuleSimulateForInfo | null
-  trace: Record<string, unknown>
-  actions: unknown[]
+  trace?: Record<string, unknown>
+  actions?: unknown[]
 }
 
 export interface RuleSimulateResult {
