@@ -118,9 +118,9 @@ class RuleUpsertSerializer(serializers.ModelSerializer):
                 continue
             action_type = action.get("type")
             if action_type in ADMIN_ONLY_ACTION_TYPES and (not user or not getattr(user, "is_staff", False)):
-                    raise serializers.ValidationError(
-                        {"definition": {"then": f"Action type '{action_type}' requires admin privileges"}}
-                    )
+                raise serializers.ValidationError(
+                    {"definition": {"then": f"Action type '{action_type}' requires admin privileges"}}
+                )
 
         return attrs
 

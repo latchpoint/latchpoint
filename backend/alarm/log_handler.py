@@ -112,7 +112,7 @@ def _format_ansi(entry: dict[str, Any]) -> str:
     else:
         time_part = ts.strftime("%H:%M:%S")
 
-    logger_name = entry['logger']
+    logger_name = entry["logger"]
     line = f"{_ANSI_DIM}{time_part}{_ANSI_RESET} {color}{level_name}{_ANSI_RESET} {_ANSI_DIM}{logger_name}{_ANSI_RESET}"
     line += f"\n  {color}{entry['message']}{_ANSI_RESET}"
 
