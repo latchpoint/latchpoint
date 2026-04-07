@@ -6,6 +6,8 @@ on:
       - main
     tags:
       - "v*"
+  release:
+    types: [published]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -16,11 +18,13 @@ env:
 
 jobs:
   tests:
+    if: github.event_name != 'release' || startsWith(github.event.release.tag_name, 'v')
     permissions:
       contents: read
     uses: ./.github/workflows/tests.yml
 
   build-and-push:
+    if: github.event_name != 'release' || startsWith(github.event.release.tag_name, 'v')
     permissions:
       contents: read
       packages: write
@@ -49,6 +53,7 @@ jobs:
             type=ref,event=tag
             type=sha,prefix=sha-
             type=raw,value=main,enable={{is_default_branch}}
+            type=raw,value=latest,enable=${{ github.event_name == 'release' }}
 
       - name: Build and push (production image)
         uses: docker/build-push-action@v7

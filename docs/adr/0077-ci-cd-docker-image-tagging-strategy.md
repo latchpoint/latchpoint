@@ -29,7 +29,7 @@ Restructure the CI/CD workflows into four distinct event-driven pipelines, each 
 | PR opened/updated | `ci.yml` | `pr-{N}`, `sha-{hash}` |
 | Push to main | `build-and-push.yml` | `main`, `sha-{hash}` |
 | Version tag pushed (`v*`) | `build-and-push.yml` | `{tag}`, `sha-{hash}` |
-| GitHub Release published | `release.yml` | `latest` (re-tag, no rebuild) |
+| GitHub Release published | `build-and-push.yml` | `{tag}`, `sha-{hash}`, `latest` |
 
 ### Key design choices
 
@@ -41,10 +41,8 @@ Fork PRs are excluded from the build step via an `if:` guard (`github.event.pull
 #### 2. `main` tag instead of `latest`
 Pushes to main produce a `main` tag instead of `latest`. This clearly communicates "latest code on the default branch" without implying release stability.
 
-#### 3. Release re-tags with `crane`
-When a GitHub Release is published, `release.yml` uses `crane tag` to copy the manifest pointer from the release's version tag to `latest`. This is an atomic metadata operation — no image layers are downloaded or re-uploaded — completing in seconds and guaranteeing that `latest` is byte-identical to the released version.
-
-A retry loop (5 attempts, 30 seconds apart) handles the edge case where a Release is created before the tag-triggered build finishes.
+#### 3. Release applies `latest` during build
+When a GitHub Release is published, `build-and-push.yml` triggers via its `release: types: [published]` event. A job-level `if:` guard (`startsWith(github.event.release.tag_name, 'v')`) ensures only `v*`-tagged releases proceed — non-version releases are skipped entirely. The `docker/metadata-action` conditionally adds the `latest` tag when `github.event_name == 'release'`. This means the release build produces the version tag, `sha-{hash}`, and `latest` in a single build-and-push step — no separate workflow, no `crane` dependency, and no retry logic for race conditions.
 
 #### 4. Version tag pattern: `v*`
 The tag trigger is narrowed from `**` (any tag) to `v*` (version tags). This avoids accidental builds from non-version tags.
@@ -54,8 +52,7 @@ The tag trigger is narrowed from `**` (any tag) to `v*` (version tags). This avo
 - **`.github/workflows/tests.yml`** — Reusable workflow for backend (Django) and frontend (Vitest) tests. Role and job structure unchanged; action versions updated separately.
 - **`.github/workflows/ci.yml`** — Replaces `ci-tests.yml`. Runs tests + builds/pushes `pr-N` images on PRs.
 - **`.github/workflows/cleanup-pr-image.yml`** — New. Deletes `pr-N` images from GHCR when pull requests are closed or merged.
-- **`.github/workflows/build-and-push.yml`** — Modified. Tags `main` instead of `latest`; triggers on `v*` tags only.
-- **`.github/workflows/release.yml`** — New. Re-tags a release version as `latest` using `crane`.
+- **`.github/workflows/build-and-push.yml`** — Modified. Tags `main` on pushes to main; applies `latest` on GitHub Release events; triggers on `v*` tags.
 
 ### Production compose update
 `docker-compose.prod.yml` is updated to reference `:main` instead of `:latest`, since `latest` is now only updated on releases.
@@ -74,4 +71,4 @@ The tag trigger is narrowed from `**` (any tag) to `v*` (version tags). This avo
 ### Negative
 - PR images are automatically cleaned up by `cleanup-pr-image.yml` when PRs are closed or merged. However, orphaned `sha-{hash}` tags from PR builds are not pruned and may accumulate over time.
 - Fork PRs cannot produce images (by design — fork tokens lack GHCR write access). Contributors from forks must rely on test results only.
-- The `release.yml` retry loop assumes the tag-triggered build completes within 2.5 minutes. Extremely slow builds could exceed this window, though this is unlikely with GHA layer caching.
+- Release events trigger a full rebuild rather than a lightweight re-tag. This takes longer than a `crane tag` approach but eliminates the race condition and external dependency entirely. With GHA layer caching, the rebuild typically completes in under 2 minutes.
