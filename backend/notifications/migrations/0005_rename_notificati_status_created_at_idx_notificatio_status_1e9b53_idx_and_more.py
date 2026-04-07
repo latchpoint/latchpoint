@@ -4,20 +4,19 @@ from django.db import migrations
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
-        ('notifications', '0004_notification_retention_indexes'),
+        ("notifications", "0004_notification_retention_indexes"),
     ]
 
     operations = [
         migrations.RenameIndex(
-            model_name='notificationdelivery',
-            new_name='notificatio_status_1e9b53_idx',
-            old_name='notificati_status_created_at_idx',
+            model_name="notificationdelivery",
+            new_name="notificatio_status_1e9b53_idx",
+            old_name="notificati_status_created_at_idx",
         ),
         migrations.RenameIndex(
-            model_name='notificationlog',
-            new_name='notificatio_created_01830a_idx',
-            old_name='notificati_created_at_idx',
+            model_name="notificationlog",
+            new_name="notificatio_created_01830a_idx",
+            old_name="notificati_created_at_idx",
         ),
     ]

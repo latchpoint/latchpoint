@@ -27,9 +27,7 @@ class Command(BaseCommand):
 
         if task is None:
             available = ", ".join(sorted(get_tasks().keys()))
-            raise CommandError(
-                f"Task '{task_name}' not found. Available tasks: {available or 'none'}"
-            )
+            raise CommandError(f"Task '{task_name}' not found. Available tasks: {available or 'none'}")
 
         self.stdout.write(f"Running task: {task_name}")
         start_time = time.monotonic()
@@ -37,9 +35,7 @@ class Command(BaseCommand):
         try:
             result = task.func()
             duration = time.monotonic() - start_time
-            self.stdout.write(
-                self.style.SUCCESS(f"Task completed in {duration:.2f}s")
-            )
+            self.stdout.write(self.style.SUCCESS(f"Task completed in {duration:.2f}s"))
             if result is not None:
                 self.stdout.write(f"Result: {result}")
         except Exception as e:

@@ -1,8 +1,7 @@
 from __future__ import annotations
 
 from django.contrib.auth.hashers import make_password
-from django.db.models import Exists, OuterRef, Q
-from django.db.models import QuerySet
+from django.db.models import Exists, OuterRef, Q, QuerySet
 
 from accounts.models import User
 from accounts.policies import is_admin
@@ -77,12 +76,7 @@ def list_door_codes_for_user(*, user: User) -> QuerySet[DoorCode]:
 
 def get_door_code_for_read(*, code_id: int) -> DoorCode:
     """Fetch a door code by id (with relations) or raise `NotFound`."""
-    code = (
-        DoorCode.objects.select_related("user")
-        .prefetch_related("lock_assignments")
-        .filter(id=code_id)
-        .first()
-    )
+    code = DoorCode.objects.select_related("user").prefetch_related("lock_assignments").filter(id=code_id).first()
     if not code:
         raise NotFound("Not found.")
     return code
@@ -91,12 +85,7 @@ def get_door_code_for_read(*, code_id: int) -> DoorCode:
 def get_door_code_for_admin_update(*, actor_user: User, code_id: int) -> DoorCode:
     """Fetch a door code for admin update, enforcing admin permissions and raising `NotFound`."""
     assert_admin(user=actor_user)
-    code = (
-        DoorCode.objects.select_related("user")
-        .prefetch_related("lock_assignments")
-        .filter(id=code_id)
-        .first()
-    )
+    code = DoorCode.objects.select_related("user").prefetch_related("lock_assignments").filter(id=code_id).first()
     if not code:
         raise NotFound("Not found.")
     return code
@@ -243,9 +232,7 @@ def list_dismissed_assignments(*, lock_entity_id: str) -> list[DoorCodeLockAssig
 def undismiss_assignment(*, assignment_id: int) -> DoorCodeLockAssignment:
     """Clear sync_dismissed on an assignment, re-enabling sync for that slot."""
     assignment = (
-        DoorCodeLockAssignment.objects.select_related("door_code")
-        .filter(id=assignment_id, sync_dismissed=True)
-        .first()
+        DoorCodeLockAssignment.objects.select_related("door_code").filter(id=assignment_id, sync_dismissed=True).first()
     )
     if not assignment:
         raise NotFound("Dismissed assignment not found.")

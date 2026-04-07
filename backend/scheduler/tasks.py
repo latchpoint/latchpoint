@@ -28,11 +28,7 @@ def scheduler_cleanup_task_runs() -> None:
     if max_per_task <= 0:
         return
 
-    task_names = (
-        SchedulerTaskRun.objects.values_list("task_name", flat=True)
-        .distinct()
-        .order_by("task_name")
-    )
+    task_names = SchedulerTaskRun.objects.values_list("task_name", flat=True).distinct().order_by("task_name")
 
     for task_name in task_names:
         keep_ids = list(

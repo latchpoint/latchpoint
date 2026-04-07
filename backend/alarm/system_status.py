@@ -10,14 +10,6 @@ from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
 from django.dispatch import receiver
 from django.utils import timezone
-
-from alarm.signals import (
-    integration_status_changed,
-    integration_status_observed,
-    settings_profile_changed,
-)
-from alarm.env_config import get_home_assistant_config
-from alarm.state_machine.settings import get_active_settings_profile, get_setting_json
 from integrations_frigate.config import normalize_frigate_settings
 from integrations_frigate.runtime import get_availability_state as frigate_availability_state
 from integrations_frigate.runtime import get_last_error as frigate_last_error
@@ -28,6 +20,14 @@ from integrations_zigbee2mqtt.status_store import get_last_state as z2m_last_sta
 from integrations_zigbee2mqtt.status_store import get_last_sync as z2m_last_sync
 from integrations_zwavejs.manager import zwavejs_connection_manager
 from transports_mqtt.manager import mqtt_connection_manager
+
+from alarm.env_config import get_home_assistant_config
+from alarm.signals import (
+    integration_status_changed,
+    integration_status_observed,
+    settings_profile_changed,
+)
+from alarm.state_machine.settings import get_active_settings_profile, get_setting_json
 
 logger = logging.getLogger(__name__)
 
@@ -113,7 +113,9 @@ def _on_settings_profile_changed(sender, *, profile_id: int, reason: str, **kwar
     try:
         _refresh_settings_snapshot_from_db()
     except Exception:
-        logger.exception("system_status: failed to refresh settings snapshot (profile_id=%s reason=%s)", profile_id, reason)
+        logger.exception(
+            "system_status: failed to refresh settings snapshot (profile_id=%s reason=%s)", profile_id, reason
+        )
         return
     # Best-effort: push an update immediately so UI reflects enable/disable quickly.
     try:

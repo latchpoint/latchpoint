@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import logging
 
 from rest_framework import status
@@ -34,10 +35,8 @@ class DebugLogsView(APIView):
         limit: int | None = None
         limit_raw = request.query_params.get("limit")
         if limit_raw is not None:
-            try:
+            with contextlib.suppress(ValueError, TypeError):
                 limit = max(1, int(limit_raw))
-            except (ValueError, TypeError):
-                pass
 
         entries = get_buffered_entries(level=level, logger_name=logger_name, limit=limit)
         return Response(entries, status=status.HTTP_200_OK)

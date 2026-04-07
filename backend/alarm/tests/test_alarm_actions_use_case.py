@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import contextlib
+
 from django.contrib.auth.hashers import make_password
 from django.test import TestCase
 
@@ -61,10 +63,8 @@ class ArmAlarmUseCaseTests(TestCase):
         )
 
     def test_arm_records_failed_code_event_on_invalid_code(self):
-        try:
+        with contextlib.suppress(InvalidCode):
             arm_alarm(user=self.user, target_state=AlarmState.ARMED_AWAY, raw_code="9999")
-        except InvalidCode:
-            pass
         self.assertTrue(
             AlarmEvent.objects.filter(
                 event_type=AlarmEventType.FAILED_CODE,
@@ -119,10 +119,8 @@ class DisarmAlarmUseCaseTests(TestCase):
         )
 
     def test_disarm_records_failed_code_event_on_invalid_code(self):
-        try:
+        with contextlib.suppress(InvalidCode):
             disarm_alarm(user=self.user, raw_code="9999")
-        except InvalidCode:
-            pass
         self.assertTrue(
             AlarmEvent.objects.filter(
                 event_type=AlarmEventType.FAILED_CODE,

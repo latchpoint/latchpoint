@@ -33,4 +33,3 @@ class Zigbee2mqttEntityMappingTests(SimpleTestCase):
             {"friendly_name": "b", "ieee_address": "0x2"},
         ]
         self.assertEqual(extract_ieee_mapping(devices), {"a": "0x1", "b": "0x2"})
-

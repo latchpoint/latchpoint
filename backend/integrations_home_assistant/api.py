@@ -1,8 +1,8 @@
-from __future__ import annotations
-
 """
 Home Assistant integration API surface.
 """
+
+from __future__ import annotations
 
 import logging
 from urllib.request import urlopen

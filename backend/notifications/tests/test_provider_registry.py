@@ -17,9 +17,7 @@ class EnsureEnvProvidersExistTest(TestCase):
             self.profile = AlarmSettingsProfile.objects.create(name="Default", is_active=True)
 
     def _count(self, provider_type: str) -> int:
-        return NotificationProvider.objects.filter(
-            profile=self.profile, provider_type=provider_type
-        ).count()
+        return NotificationProvider.objects.filter(profile=self.profile, provider_type=provider_type).count()
 
     def test_creates_provider_when_enabled_and_no_row_exists(self):
         with patch.dict(os.environ, {"PUSHBULLET_ENABLED": "true"}):
@@ -83,13 +81,16 @@ class EnsureEnvProvidersExistTest(TestCase):
         self.assertEqual(self._count("pushbullet"), 0)
 
     def test_multiple_providers_processed(self):
-        with patch.dict(os.environ, {
-            "PUSHBULLET_ENABLED": "true",
-            "DISCORD_ENABLED": "true",
-            "SLACK_ENABLED": "false",
-            "WEBHOOK_ENABLED": "false",
-            "HA_NOTIFY_ENABLED": "false",
-        }):
+        with patch.dict(
+            os.environ,
+            {
+                "PUSHBULLET_ENABLED": "true",
+                "DISCORD_ENABLED": "true",
+                "SLACK_ENABLED": "false",
+                "WEBHOOK_ENABLED": "false",
+                "HA_NOTIFY_ENABLED": "false",
+            },
+        ):
             ensure_env_providers_exist(self.profile)
 
         providers = NotificationProvider.objects.filter(profile=self.profile)

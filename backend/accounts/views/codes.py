@@ -56,11 +56,7 @@ class CodesView(APIView):
             window_end=validated.get("window_end"),
             allowed_states=validated.get("allowed_states"),
         )
-        code = (
-            UserCode.objects.select_related("user")
-            .prefetch_related("allowed_states")
-            .get(id=code.id)
-        )
+        code = UserCode.objects.select_related("user").prefetch_related("allowed_states").get(id=code.id)
         return Response(UserCodeSerializer(code).data, status=status.HTTP_201_CREATED)
 
 
@@ -94,9 +90,5 @@ class CodeDetailView(ObjectPermissionMixin, APIView):
         changes = dict(serializer.validated_data)
         changes.pop("reauth_password", None)
         code = user_codes_uc.update_user_code(code=code, changes=changes)
-        code = (
-            UserCode.objects.select_related("user")
-            .prefetch_related("allowed_states")
-            .get(id=code.id)
-        )
+        code = UserCode.objects.select_related("user").prefetch_related("allowed_states").get(id=code.id)
         return Response(UserCodeSerializer(code).data, status=status.HTTP_200_OK)

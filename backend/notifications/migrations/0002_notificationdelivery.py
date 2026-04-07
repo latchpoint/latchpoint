@@ -8,7 +8,6 @@ from django.utils import timezone
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
         ("alarm", "0001_initial"),
         ("notifications", "0001_initial"),

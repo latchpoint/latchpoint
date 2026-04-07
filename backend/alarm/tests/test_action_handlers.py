@@ -3,16 +3,15 @@
 Each handler is tested in isolation via its ``execute(action, ctx)`` function
 with a mock ``ActionContext`` — no integration through ``execute_actions()``.
 """
+
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field
-from typing import Any
 from unittest.mock import MagicMock, patch
 
 from django.test import TestCase
 
-from alarm.models import AlarmSettingsProfile, Rule
+from alarm.models import Rule
 from alarm.rules.action_handlers import ActionContext
 from alarm.rules.action_handlers.alarm_arm import execute as alarm_arm_execute
 from alarm.rules.action_handlers.alarm_disarm import execute as alarm_disarm_execute
@@ -23,7 +22,6 @@ from alarm.rules.action_handlers.zigbee2mqtt_light import execute as zigbee2mqtt
 from alarm.rules.action_handlers.zigbee2mqtt_set_value import execute as zigbee2mqtt_set_value_execute
 from alarm.rules.action_handlers.zigbee2mqtt_switch import execute as zigbee2mqtt_switch_execute
 from alarm.rules.action_handlers.zwavejs_set_value import execute as zwavejs_set_value_execute
-
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -205,7 +203,8 @@ class HaCallServiceHandlerTests(TestCase):
     def test_exception_path(self):
         ctx = _make_ctx(fail=True)
         result, error = ha_call_service_execute(
-            {"type": "ha_call_service", "action": "light.turn_on"}, ctx,
+            {"type": "ha_call_service", "action": "light.turn_on"},
+            ctx,
         )
         self.assertFalse(result["ok"])
         self.assertIn("ha boom", error)
@@ -235,7 +234,9 @@ class ZwavejsSetValueHandlerTests(TestCase):
         self.assertEqual(result["error"], "invalid_value_id")
         self.assertIsNone(error)
 
-    @patch.dict(os.environ, {"ZWAVEJS_ENABLED": "true", "ZWAVEJS_WS_URL": "ws://localhost:3000", "ZWAVEJS_CONNECT_TIMEOUT": "2"})
+    @patch.dict(
+        os.environ, {"ZWAVEJS_ENABLED": "true", "ZWAVEJS_WS_URL": "ws://localhost:3000", "ZWAVEJS_CONNECT_TIMEOUT": "2"}
+    )
     def test_happy_path(self):
         zwave = _FakeZwavejs()
         ctx = _make_ctx(zwavejs=zwave)
@@ -253,7 +254,9 @@ class ZwavejsSetValueHandlerTests(TestCase):
         self.assertIsNone(error)
         self.assertEqual(zwave.calls[-1][0], "set_value")
 
-    @patch.dict(os.environ, {"ZWAVEJS_ENABLED": "true", "ZWAVEJS_WS_URL": "ws://localhost:3000", "ZWAVEJS_CONNECT_TIMEOUT": "2"})
+    @patch.dict(
+        os.environ, {"ZWAVEJS_ENABLED": "true", "ZWAVEJS_WS_URL": "ws://localhost:3000", "ZWAVEJS_CONNECT_TIMEOUT": "2"}
+    )
     def test_exception_path(self):
         ctx = _make_ctx(fail=True)
         result, error = zwavejs_set_value_execute(
@@ -276,7 +279,8 @@ class Zigbee2mqttSetValueHandlerTests(TestCase):
     def test_validation_failure_missing_entity_id(self):
         ctx = _make_ctx()
         result, error = zigbee2mqtt_set_value_execute(
-            {"type": "zigbee2mqtt_set_value", "value": True}, ctx,
+            {"type": "zigbee2mqtt_set_value", "value": True},
+            ctx,
         )
         self.assertFalse(result["ok"])
         self.assertEqual(result["error"], "missing_entity_id")
@@ -285,7 +289,8 @@ class Zigbee2mqttSetValueHandlerTests(TestCase):
     def test_validation_failure_missing_value(self):
         ctx = _make_ctx()
         result, error = zigbee2mqtt_set_value_execute(
-            {"type": "zigbee2mqtt_set_value", "entity_id": "z2m.test"}, ctx,
+            {"type": "zigbee2mqtt_set_value", "entity_id": "z2m.test"},
+            ctx,
         )
         self.assertFalse(result["ok"])
         self.assertEqual(result["error"], "missing_value")
@@ -295,7 +300,8 @@ class Zigbee2mqttSetValueHandlerTests(TestCase):
         z2m = _FakeZ2M()
         ctx = _make_ctx(zigbee2mqtt=z2m)
         result, error = zigbee2mqtt_set_value_execute(
-            {"type": "zigbee2mqtt_set_value", "entity_id": "z2m.test", "value": True}, ctx,
+            {"type": "zigbee2mqtt_set_value", "entity_id": "z2m.test", "value": True},
+            ctx,
         )
         self.assertTrue(result["ok"])
         self.assertIsNone(error)
@@ -304,7 +310,8 @@ class Zigbee2mqttSetValueHandlerTests(TestCase):
     def test_exception_path(self):
         ctx = _make_ctx(fail=True)
         result, error = zigbee2mqtt_set_value_execute(
-            {"type": "zigbee2mqtt_set_value", "entity_id": "z2m.test", "value": True}, ctx,
+            {"type": "zigbee2mqtt_set_value", "entity_id": "z2m.test", "value": True},
+            ctx,
         )
         self.assertFalse(result["ok"])
         self.assertIn("z2m boom", error)
@@ -317,7 +324,8 @@ class Zigbee2mqttSwitchHandlerTests(TestCase):
     def test_validation_failure_missing_entity_id(self):
         ctx = _make_ctx()
         result, error = zigbee2mqtt_switch_execute(
-            {"type": "zigbee2mqtt_switch", "state": "on"}, ctx,
+            {"type": "zigbee2mqtt_switch", "state": "on"},
+            ctx,
         )
         self.assertFalse(result["ok"])
         self.assertEqual(result["error"], "missing_entity_id")
@@ -326,7 +334,8 @@ class Zigbee2mqttSwitchHandlerTests(TestCase):
     def test_validation_failure_invalid_state(self):
         ctx = _make_ctx()
         result, error = zigbee2mqtt_switch_execute(
-            {"type": "zigbee2mqtt_switch", "entity_id": "z2m.test", "state": "toggle"}, ctx,
+            {"type": "zigbee2mqtt_switch", "entity_id": "z2m.test", "state": "toggle"},
+            ctx,
         )
         self.assertFalse(result["ok"])
         self.assertEqual(result["error"], "invalid_state")
@@ -336,7 +345,8 @@ class Zigbee2mqttSwitchHandlerTests(TestCase):
         z2m = _FakeZ2M()
         ctx = _make_ctx(zigbee2mqtt=z2m)
         result, error = zigbee2mqtt_switch_execute(
-            {"type": "zigbee2mqtt_switch", "entity_id": "z2m.test", "state": "on"}, ctx,
+            {"type": "zigbee2mqtt_switch", "entity_id": "z2m.test", "state": "on"},
+            ctx,
         )
         self.assertTrue(result["ok"])
         self.assertEqual(result["state"], "on")
@@ -346,7 +356,8 @@ class Zigbee2mqttSwitchHandlerTests(TestCase):
     def test_exception_path(self):
         ctx = _make_ctx(fail=True)
         result, error = zigbee2mqtt_switch_execute(
-            {"type": "zigbee2mqtt_switch", "entity_id": "z2m.test", "state": "on"}, ctx,
+            {"type": "zigbee2mqtt_switch", "entity_id": "z2m.test", "state": "on"},
+            ctx,
         )
         self.assertFalse(result["ok"])
         self.assertIn("z2m boom", error)
@@ -359,7 +370,8 @@ class Zigbee2mqttLightHandlerTests(TestCase):
     def test_validation_failure_missing_entity_id(self):
         ctx = _make_ctx()
         result, error = zigbee2mqtt_light_execute(
-            {"type": "zigbee2mqtt_light", "state": "on"}, ctx,
+            {"type": "zigbee2mqtt_light", "state": "on"},
+            ctx,
         )
         self.assertFalse(result["ok"])
         self.assertEqual(result["error"], "missing_entity_id")
@@ -368,7 +380,8 @@ class Zigbee2mqttLightHandlerTests(TestCase):
     def test_validation_failure_invalid_state(self):
         ctx = _make_ctx()
         result, error = zigbee2mqtt_light_execute(
-            {"type": "zigbee2mqtt_light", "entity_id": "z2m.test", "state": "toggle"}, ctx,
+            {"type": "zigbee2mqtt_light", "entity_id": "z2m.test", "state": "toggle"},
+            ctx,
         )
         self.assertFalse(result["ok"])
         self.assertEqual(result["error"], "invalid_state")
@@ -377,7 +390,8 @@ class Zigbee2mqttLightHandlerTests(TestCase):
     def test_validation_failure_invalid_brightness(self):
         ctx = _make_ctx()
         result, error = zigbee2mqtt_light_execute(
-            {"type": "zigbee2mqtt_light", "entity_id": "z2m.test", "state": "on", "brightness": "high"}, ctx,
+            {"type": "zigbee2mqtt_light", "entity_id": "z2m.test", "state": "on", "brightness": "high"},
+            ctx,
         )
         self.assertFalse(result["ok"])
         self.assertEqual(result["error"], "invalid_brightness")
@@ -387,7 +401,8 @@ class Zigbee2mqttLightHandlerTests(TestCase):
         z2m = _FakeZ2M()
         ctx = _make_ctx(zigbee2mqtt=z2m)
         result, error = zigbee2mqtt_light_execute(
-            {"type": "zigbee2mqtt_light", "entity_id": "z2m.test", "state": "off", "brightness": 200}, ctx,
+            {"type": "zigbee2mqtt_light", "entity_id": "z2m.test", "state": "off", "brightness": 200},
+            ctx,
         )
         self.assertTrue(result["ok"])
         self.assertEqual(result["state"], "off")
@@ -399,7 +414,8 @@ class Zigbee2mqttLightHandlerTests(TestCase):
         z2m = _FakeZ2M()
         ctx = _make_ctx(zigbee2mqtt=z2m)
         result, error = zigbee2mqtt_light_execute(
-            {"type": "zigbee2mqtt_light", "entity_id": "z2m.test", "state": "on"}, ctx,
+            {"type": "zigbee2mqtt_light", "entity_id": "z2m.test", "state": "on"},
+            ctx,
         )
         self.assertTrue(result["ok"])
         self.assertNotIn("brightness", result)
@@ -408,7 +424,8 @@ class Zigbee2mqttLightHandlerTests(TestCase):
     def test_exception_path(self):
         ctx = _make_ctx(fail=True)
         result, error = zigbee2mqtt_light_execute(
-            {"type": "zigbee2mqtt_light", "entity_id": "z2m.test", "state": "on"}, ctx,
+            {"type": "zigbee2mqtt_light", "entity_id": "z2m.test", "state": "on"},
+            ctx,
         )
         self.assertFalse(result["ok"])
         self.assertIn("z2m boom", error)
@@ -421,7 +438,8 @@ class SendNotificationHandlerTests(TestCase):
     def test_validation_failure_missing_provider_id(self):
         ctx = _make_ctx()
         result, error = send_notification_execute(
-            {"type": "send_notification", "message": "hi"}, ctx,
+            {"type": "send_notification", "message": "hi"},
+            ctx,
         )
         self.assertFalse(result["ok"])
         self.assertEqual(result["error"], "missing_provider_id")
@@ -430,7 +448,8 @@ class SendNotificationHandlerTests(TestCase):
     def test_validation_failure_missing_message(self):
         ctx = _make_ctx()
         result, error = send_notification_execute(
-            {"type": "send_notification", "provider_id": "abc"}, ctx,
+            {"type": "send_notification", "provider_id": "abc"},
+            ctx,
         )
         self.assertFalse(result["ok"])
         self.assertEqual(result["error"], "missing_message")
@@ -450,7 +469,8 @@ class SendNotificationHandlerTests(TestCase):
 
         ctx = _make_ctx()
         result, error = send_notification_execute(
-            {"type": "send_notification", "provider_id": "prov-1", "message": "Alert!"}, ctx,
+            {"type": "send_notification", "provider_id": "prov-1", "message": "Alert!"},
+            ctx,
         )
         self.assertTrue(result["ok"])
         self.assertEqual(result["delivery_id"], "delivery-uuid-123")
@@ -471,7 +491,8 @@ class SendNotificationHandlerTests(TestCase):
 
         ctx = _make_ctx()
         result, error = send_notification_execute(
-            {"type": "send_notification", "provider_id": "prov-1", "message": "Alert!"}, ctx,
+            {"type": "send_notification", "provider_id": "prov-1", "message": "Alert!"},
+            ctx,
         )
         self.assertFalse(result["ok"])
         self.assertEqual(result["error"], "provider disabled")
@@ -484,7 +505,8 @@ class SendNotificationHandlerTests(TestCase):
 
         ctx = _make_ctx()
         result, error = send_notification_execute(
-            {"type": "send_notification", "provider_id": "prov-1", "message": "Alert!"}, ctx,
+            {"type": "send_notification", "provider_id": "prov-1", "message": "Alert!"},
+            ctx,
         )
         self.assertFalse(result["ok"])
         self.assertIn("dispatch boom", error)

@@ -19,6 +19,7 @@ class WebhookHandler(NotificationHandler):
 
     provider_type = "webhook"
     display_name = "Webhook"
+
     @classmethod
     def from_env(cls) -> dict:
         from alarm.env_config import get_webhook_config

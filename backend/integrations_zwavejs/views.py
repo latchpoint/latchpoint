@@ -9,12 +9,11 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from accounts.permissions import IsAdminRole
-from config.domain_exceptions import ServiceUnavailableError, ValidationError
 from alarm.env_config import get_zwavejs_config
 from alarm.gateways.zwavejs import default_zwavejs_gateway
 from alarm.serializers import ZwavejsSetValueSerializer, ZwavejsTestConnectionSerializer
+from config.domain_exceptions import ServiceUnavailableError, ValidationError
 from integrations_zwavejs.entity_sync import sync_entities_from_zwavejs
-
 
 zwavejs_gateway = default_zwavejs_gateway
 logger = logging.getLogger(__name__)
@@ -63,7 +62,7 @@ def _node_summary(node: dict) -> dict:
     command_classes = None
     cc_obj = node.get("commandClasses")
     if isinstance(cc_obj, dict):
-        command_classes = sorted([str(k) for k in cc_obj.keys()])
+        command_classes = sorted([str(k) for k in cc_obj])
     return {
         "node_id": node_id,
         "name": name or label or product_label or (f"Node {node_id}" if node_id else "Unknown node"),
@@ -128,7 +127,9 @@ class ZwavejsTestConnectionView(APIView):
 
         if not settings_obj.get("ws_url"):
             raise ValidationError("Z-Wave JS ws_url is required.")
-        zwavejs_gateway.test_connection(settings_obj=settings_obj, timeout_seconds=settings_obj.get("connect_timeout_seconds"))
+        zwavejs_gateway.test_connection(
+            settings_obj=settings_obj, timeout_seconds=settings_obj.get("connect_timeout_seconds")
+        )
         return Response({"ok": True}, status=status.HTTP_200_OK)
 
 

@@ -12,12 +12,10 @@ from rest_framework.views import APIView
 from accounts.permissions import IsAdminRole
 from config.pagination import EnvelopePagination
 from scheduler.registry import evaluate_task_enabled, get_tasks
-from scheduler.runner import get_scheduler_status
-from scheduler.runner import _compute_next_run
+from scheduler.runner import _compute_next_run, get_scheduler_status
 
 from .models import SchedulerTaskHealth, SchedulerTaskRun
-from .telemetry import serialize_schedule
-from .telemetry import get_instance_id
+from .telemetry import get_instance_id, serialize_schedule
 
 
 def _to_iso(dt):
@@ -58,8 +56,7 @@ class SchedulerStatusView(APIView):
 
         tasks_by_name = get_tasks()
         health_by_task_name = {
-            row.task_name: row
-            for row in SchedulerTaskHealth.objects.filter(instance_id=instance_id)
+            row.task_name: row for row in SchedulerTaskHealth.objects.filter(instance_id=instance_id)
         }
 
         tasks = []

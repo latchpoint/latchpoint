@@ -10,10 +10,9 @@ from alarm.models import AlarmState, AlarmStateSnapshot, Sensor
 from .constants import ARMED_STATES
 from .errors import TransitionError
 from .events import record_sensor_event
-from .settings import get_active_settings_profile
+from .settings import get_active_settings_profile, get_setting_bool
 from .snapshot_store import get_snapshot_for_update, set_previous_armed_state, transition
 from .timing import resolve_timing, timing_from_snapshot
-from .settings import get_setting_bool
 
 
 @transaction.atomic
@@ -66,7 +65,9 @@ def arm(
 
 
 @transaction.atomic
-def cancel_arming(*, user=None, code=None, reason: str = "cancel_arming", metadata: dict | None = None) -> AlarmStateSnapshot:
+def cancel_arming(
+    *, user=None, code=None, reason: str = "cancel_arming", metadata: dict | None = None
+) -> AlarmStateSnapshot:
     """Cancel an in-progress arming transition and return to disarmed."""
     snapshot = get_snapshot_for_update()
     if snapshot.current_state != AlarmState.ARMING:

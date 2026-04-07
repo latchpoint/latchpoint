@@ -6,7 +6,6 @@ from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from config.domain_exceptions import ServiceUnavailableError
 from alarm.gateways.home_assistant import (
     HomeAssistantGateway,
     default_home_assistant_gateway,
@@ -14,6 +13,7 @@ from alarm.gateways.home_assistant import (
 from alarm.models import Entity
 from alarm.serializers import EntitySerializer
 from alarm.use_cases.entity_sync import sync_entities_from_home_assistant
+from config.domain_exceptions import ServiceUnavailableError
 
 ha_gateway: HomeAssistantGateway = default_home_assistant_gateway
 logger = logging.getLogger(__name__)

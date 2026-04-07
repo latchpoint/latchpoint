@@ -4,7 +4,6 @@ from django.urls import path
 
 from integrations_frigate import views
 
-
 urlpatterns = [
     path("status/", views.FrigateStatusView.as_view(), name="frigate-status"),
     path("settings/", views.FrigateSettingsView.as_view(), name="frigate-settings"),

@@ -1,4 +1,3 @@
-import React from 'react'
 import { describe, expect, it, vi } from 'vitest'
 import { renderHook, act } from '@testing-library/react'
 import { useHomeAssistantSettingsModel } from '@/features/homeAssistant/hooks/useHomeAssistantSettingsModel'

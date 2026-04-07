@@ -29,12 +29,15 @@ class HomeAssistantSettingsApiTests(APITestCase):
 
         self.profile = AlarmSettingsProfile.objects.create(name="Default", is_active=True)
 
-    @patch.dict(os.environ, {
-        "HA_ENABLED": "true",
-        "HA_BASE_URL": "http://homeassistant.local:8123",
-        "HA_TOKEN": "supersecret",
-        "HA_CONNECT_TIMEOUT": "2",
-    })
+    @patch.dict(
+        os.environ,
+        {
+            "HA_ENABLED": "true",
+            "HA_BASE_URL": "http://homeassistant.local:8123",
+            "HA_TOKEN": "supersecret",
+            "HA_CONNECT_TIMEOUT": "2",
+        },
+    )
     def test_home_assistant_token_is_masked_in_home_assistant_settings_endpoint(self):
         url = reverse("ha-settings")
         response = self.client.get(url)

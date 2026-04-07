@@ -8,9 +8,9 @@ from rest_framework.test import APIClient, APITestCase
 
 from accounts.models import User
 from scheduler.models import SchedulerTaskHealth, SchedulerTaskRun, SchedulerTaskRunStatus
-from scheduler.telemetry import get_instance_id
 from scheduler.registry import register
 from scheduler.schedules import Every
+from scheduler.telemetry import get_instance_id
 
 
 class SchedulerApiTests(APITestCase):

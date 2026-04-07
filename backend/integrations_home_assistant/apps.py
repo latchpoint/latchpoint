@@ -44,7 +44,9 @@ class IntegrationsHomeAssistantConfig(AppConfig):
                 logger.warning("MQTT alarm entity state publish failed", exc_info=True)
                 return
 
-        alarm_state_change_committed.connect(_on_alarm_state_change_committed, dispatch_uid="ha_mqtt_alarm_entity_state")
+        alarm_state_change_committed.connect(
+            _on_alarm_state_change_committed, dispatch_uid="ha_mqtt_alarm_entity_state"
+        )
 
         def _on_settings_profile_changed(sender, *, profile_id: int, reason: str, **_kwargs) -> None:
             """Publish discovery/state updates when relevant profile settings change."""
@@ -60,7 +62,9 @@ class IntegrationsHomeAssistantConfig(AppConfig):
                 logger.warning("MQTT alarm entity profile update failed", exc_info=True)
                 return
 
-        settings_profile_changed.connect(_on_settings_profile_changed, dispatch_uid="ha_mqtt_alarm_entity_profile_changed")
+        settings_profile_changed.connect(
+            _on_settings_profile_changed, dispatch_uid="ha_mqtt_alarm_entity_profile_changed"
+        )
 
         # Warm-up HA connection cache from env vars.
         with warnings.catch_warnings():

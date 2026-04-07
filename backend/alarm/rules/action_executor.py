@@ -2,12 +2,16 @@ from __future__ import annotations
 
 from typing import Any
 
-from alarm.state_machine import transitions as _transitions_module
 from alarm.gateways.home_assistant import HomeAssistantGateway, default_home_assistant_gateway
 from alarm.gateways.zigbee2mqtt import Zigbee2mqttGateway, default_zigbee2mqtt_gateway
 from alarm.gateways.zwavejs import ZwavejsGateway, default_zwavejs_gateway
 from alarm.models import Rule
-from alarm.rules.action_handlers import ActionContext, AlarmServices, get_handler  # noqa: F401 — AlarmServices re-exported
+from alarm.rules.action_handlers import (  # noqa: F401 — AlarmServices re-exported
+    ActionContext,
+    AlarmServices,
+    get_handler,
+)
+from alarm.state_machine import transitions as _transitions_module
 
 
 def execute_actions(

@@ -11,7 +11,6 @@ from alarm.env_config import get_mqtt_config
 from alarm.gateways.mqtt import default_mqtt_gateway
 from alarm.serializers import MqttTestConnectionSerializer
 
-
 mqtt_gateway = default_mqtt_gateway
 
 

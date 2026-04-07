@@ -4,13 +4,13 @@ import json
 from dataclasses import dataclass
 from typing import Any, Protocol
 
-from alarm.env_config import get_mqtt_config
-from alarm.models import Entity
-from alarm.state_machine.settings import get_active_settings_profile, get_setting_json
+from integrations_zigbee2mqtt.config import normalize_zigbee2mqtt_settings
 from transports_mqtt.manager import MqttNotReachable, mqtt_connection_manager
 
+from alarm.env_config import get_mqtt_config
 from alarm.gateways.mqtt import default_mqtt_gateway
-from integrations_zigbee2mqtt.config import normalize_zigbee2mqtt_settings
+from alarm.models import Entity
+from alarm.state_machine.settings import get_active_settings_profile, get_setting_json
 
 
 class Zigbee2mqttGateway(Protocol):

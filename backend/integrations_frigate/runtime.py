@@ -3,18 +3,16 @@ from __future__ import annotations
 import json
 import logging
 import threading
-from typing import Any
 
 from django.core.cache import cache
 from django.db import close_old_connections
 from django.utils import timezone
+from transports_mqtt.manager import mqtt_connection_manager
 
 from alarm.state_machine.settings import get_active_settings_profile, get_setting_json
 from integrations_frigate.config import FrigateSettings, normalize_frigate_settings
 from integrations_frigate.models import FrigateDetection
 from integrations_frigate.parsing import parse_frigate_events_payload
-from transports_mqtt.manager import mqtt_connection_manager
-
 
 logger = logging.getLogger(__name__)
 
@@ -162,9 +160,7 @@ def _notify_dispatcher(*, camera: str, event_id: str, changed_at=None) -> None:
         # Use synthetic entity ID for Frigate detection routing (ADR 0059).
         # Per-camera allows dispatcher to route only impacted rules.
         camera_key = (camera or "").strip()
-        synthetic_entity_id = (
-            f"__frigate.person_detected:{camera_key}" if camera_key else "__frigate.person_detected"
-        )
+        synthetic_entity_id = f"__frigate.person_detected:{camera_key}" if camera_key else "__frigate.person_detected"
         notify_entities_changed(
             source="frigate:detection",
             entity_ids=[synthetic_entity_id],

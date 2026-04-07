@@ -32,19 +32,19 @@ class MigrateNotificationSettingsCommandTests(TestCase):
 
     def _get_notify_settings(self) -> dict:
         """Helper to get current notification settings."""
-        entry = AlarmSettingsEntry.objects.filter(
-            profile=self.profile, key="home_assistant_notify"
-        ).first()
+        entry = AlarmSettingsEntry.objects.filter(profile=self.profile, key="home_assistant_notify").first()
         return entry.value if entry else {}
 
     def test_migrates_single_state_to_rule(self):
         """Test that a single state notification setting creates one rule."""
-        self._set_notify_settings({
-            "enabled": True,
-            "service": "notify.mobile_app",
-            "cooldown_seconds": 60,
-            "states": ["triggered"],
-        })
+        self._set_notify_settings(
+            {
+                "enabled": True,
+                "service": "notify.mobile_app",
+                "cooldown_seconds": 60,
+                "states": ["triggered"],
+            }
+        )
 
         out = StringIO()
         call_command("migrate_notification_settings", stdout=out)
@@ -71,12 +71,14 @@ class MigrateNotificationSettingsCommandTests(TestCase):
 
     def test_migrates_multiple_states_to_rules(self):
         """Test that multiple states create multiple rules."""
-        self._set_notify_settings({
-            "enabled": True,
-            "service": "notify.notify",
-            "cooldown_seconds": 30,
-            "states": ["triggered", "armed_away", "disarmed"],
-        })
+        self._set_notify_settings(
+            {
+                "enabled": True,
+                "service": "notify.notify",
+                "cooldown_seconds": 30,
+                "states": ["triggered", "armed_away", "disarmed"],
+            }
+        )
 
         call_command("migrate_notification_settings")
 
@@ -92,12 +94,14 @@ class MigrateNotificationSettingsCommandTests(TestCase):
 
     def test_marks_setting_as_migrated(self):
         """Test that the setting is marked as migrated after successful migration."""
-        self._set_notify_settings({
-            "enabled": True,
-            "service": "notify.notify",
-            "cooldown_seconds": 0,
-            "states": ["triggered"],
-        })
+        self._set_notify_settings(
+            {
+                "enabled": True,
+                "service": "notify.notify",
+                "cooldown_seconds": 0,
+                "states": ["triggered"],
+            }
+        )
 
         call_command("migrate_notification_settings")
 
@@ -107,13 +111,15 @@ class MigrateNotificationSettingsCommandTests(TestCase):
 
     def test_skips_if_already_migrated(self):
         """Test that migration is skipped if already marked as migrated."""
-        self._set_notify_settings({
-            "enabled": True,
-            "migrated": True,
-            "service": "notify.notify",
-            "cooldown_seconds": 0,
-            "states": ["triggered"],
-        })
+        self._set_notify_settings(
+            {
+                "enabled": True,
+                "migrated": True,
+                "service": "notify.notify",
+                "cooldown_seconds": 0,
+                "states": ["triggered"],
+            }
+        )
 
         out = StringIO()
         call_command("migrate_notification_settings", stdout=out)
@@ -127,13 +133,15 @@ class MigrateNotificationSettingsCommandTests(TestCase):
 
     def test_force_flag_allows_remigration(self):
         """Test that --force allows re-running migration."""
-        self._set_notify_settings({
-            "enabled": True,
-            "migrated": True,
-            "service": "notify.notify",
-            "cooldown_seconds": 0,
-            "states": ["triggered"],
-        })
+        self._set_notify_settings(
+            {
+                "enabled": True,
+                "migrated": True,
+                "service": "notify.notify",
+                "cooldown_seconds": 0,
+                "states": ["triggered"],
+            }
+        )
 
         call_command("migrate_notification_settings", force=True)
 
@@ -143,12 +151,14 @@ class MigrateNotificationSettingsCommandTests(TestCase):
 
     def test_skips_if_notifications_disabled(self):
         """Test that migration is skipped if notifications are disabled."""
-        self._set_notify_settings({
-            "enabled": False,
-            "service": "notify.notify",
-            "cooldown_seconds": 0,
-            "states": ["triggered"],
-        })
+        self._set_notify_settings(
+            {
+                "enabled": False,
+                "service": "notify.notify",
+                "cooldown_seconds": 0,
+                "states": ["triggered"],
+            }
+        )
 
         out = StringIO()
         call_command("migrate_notification_settings", stdout=out)
@@ -162,12 +172,14 @@ class MigrateNotificationSettingsCommandTests(TestCase):
 
     def test_skips_if_no_states_configured(self):
         """Test that migration is skipped if no states are configured."""
-        self._set_notify_settings({
-            "enabled": True,
-            "service": "notify.notify",
-            "cooldown_seconds": 0,
-            "states": [],
-        })
+        self._set_notify_settings(
+            {
+                "enabled": True,
+                "service": "notify.notify",
+                "cooldown_seconds": 0,
+                "states": [],
+            }
+        )
 
         out = StringIO()
         call_command("migrate_notification_settings", stdout=out)
@@ -181,12 +193,14 @@ class MigrateNotificationSettingsCommandTests(TestCase):
 
     def test_dry_run_does_not_create_rules(self):
         """Test that --dry-run shows what would be done without making changes."""
-        self._set_notify_settings({
-            "enabled": True,
-            "service": "notify.notify",
-            "cooldown_seconds": 0,
-            "states": ["triggered", "armed_away"],
-        })
+        self._set_notify_settings(
+            {
+                "enabled": True,
+                "service": "notify.notify",
+                "cooldown_seconds": 0,
+                "states": ["triggered", "armed_away"],
+            }
+        )
 
         out = StringIO()
         call_command("migrate_notification_settings", dry_run=True, stdout=out)
@@ -205,11 +219,13 @@ class MigrateNotificationSettingsCommandTests(TestCase):
 
     def test_uses_default_service_if_not_specified(self):
         """Test that default notify.notify is used if service not specified."""
-        self._set_notify_settings({
-            "enabled": True,
-            "cooldown_seconds": 0,
-            "states": ["triggered"],
-        })
+        self._set_notify_settings(
+            {
+                "enabled": True,
+                "cooldown_seconds": 0,
+                "states": ["triggered"],
+            }
+        )
 
         call_command("migrate_notification_settings")
 
@@ -218,12 +234,14 @@ class MigrateNotificationSettingsCommandTests(TestCase):
 
     def test_handles_zero_cooldown(self):
         """Test that zero cooldown is stored as None."""
-        self._set_notify_settings({
-            "enabled": True,
-            "service": "notify.notify",
-            "cooldown_seconds": 0,
-            "states": ["triggered"],
-        })
+        self._set_notify_settings(
+            {
+                "enabled": True,
+                "service": "notify.notify",
+                "cooldown_seconds": 0,
+                "states": ["triggered"],
+            }
+        )
 
         call_command("migrate_notification_settings")
 

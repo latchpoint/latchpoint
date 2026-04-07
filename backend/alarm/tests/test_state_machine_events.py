@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone as dt_timezone
+from datetime import datetime
+from datetime import timezone as dt_timezone
 
 from django.contrib.auth.hashers import make_password
 from django.test import TestCase
@@ -66,4 +67,3 @@ class StateMachineEventsTests(TestCase):
         event = record_sensor_event(sensor)
         self.assertEqual(event.event_type, AlarmEventType.SENSOR_TRIGGERED)
         self.assertEqual(event.metadata["is_entry_point"], True)
-

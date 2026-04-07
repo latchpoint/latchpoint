@@ -69,12 +69,7 @@ def resolve_create_target_user(*, actor_user: User, requested_user_id: str | Non
 
 def get_code_for_read(*, code_id: int) -> UserCode:
     """Fetch a code by id (with relations) or raise `NotFound`."""
-    code = (
-        UserCode.objects.select_related("user")
-        .prefetch_related("allowed_states")
-        .filter(id=code_id)
-        .first()
-    )
+    code = UserCode.objects.select_related("user").prefetch_related("allowed_states").filter(id=code_id).first()
     if not code:
         raise NotFound("Not found.")
     return code
@@ -83,12 +78,7 @@ def get_code_for_read(*, code_id: int) -> UserCode:
 def get_code_for_admin_update(*, actor_user: User, code_id: int) -> UserCode:
     """Fetch a code for admin update, enforcing admin permissions and raising `NotFound`."""
     assert_admin(user=actor_user)
-    code = (
-        UserCode.objects.select_related("user")
-        .prefetch_related("allowed_states")
-        .filter(id=code_id)
-        .first()
-    )
+    code = UserCode.objects.select_related("user").prefetch_related("allowed_states").filter(id=code_id).first()
     if not code:
         raise NotFound("Not found.")
     return code

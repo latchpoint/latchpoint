@@ -50,4 +50,3 @@ class Migration(migrations.Migration):
     operations = [
         migrations.RunPython(_seed_exit_delay_overrides, reverse_code=migrations.RunPython.noop),
     ]
-

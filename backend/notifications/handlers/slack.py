@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 class SlackHandler(NotificationHandler):
     provider_type = "slack"
     display_name = "Slack"
+
     @classmethod
     def from_env(cls) -> dict:
         from alarm.env_config import get_slack_config
@@ -182,4 +183,3 @@ class SlackHandler(NotificationHandler):
             message="Test notification from alarm system",
             title="Test",
         )
-

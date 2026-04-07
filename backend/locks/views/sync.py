@@ -8,7 +8,6 @@ from rest_framework.views import APIView
 from alarm.gateways.home_assistant import (
     default_home_assistant_gateway,
 )
-
 from locks.use_cases import lock_sync
 
 ha_gateway = default_home_assistant_gateway

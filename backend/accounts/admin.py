@@ -42,7 +42,7 @@ class UserCreationForm(forms.ModelForm):
 class UserChangeForm(forms.ModelForm):
     class Meta:
         model = User
-        fields = "__all__"
+        fields = "__all__"  # noqa: DJ007
 
 
 @admin.register(User)

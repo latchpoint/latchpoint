@@ -1,10 +1,8 @@
-import React from 'react'
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { renderWithProviders } from '@/test/render'
 import { NotificationProvidersCard } from '@/features/notifications/components/NotificationProvidersCard'
-import { HA_SYSTEM_PROVIDER_ID } from '@/lib/constants'
 
 const mutateTest = vi.fn()
 

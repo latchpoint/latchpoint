@@ -28,9 +28,11 @@ export function useLogStream(
   const autoScrollRef = useRef(options.autoScroll)
 
   // Keep refs in sync with latest prop values
+  /* eslint-disable react-hooks/refs */
   pausedRef.current = options.paused
   levelFilterRef.current = options.levelFilter
   autoScrollRef.current = options.autoScroll
+  /* eslint-enable react-hooks/refs */
 
   // Flush queued entries when unpausing
   useEffect(() => {

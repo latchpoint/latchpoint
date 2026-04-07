@@ -13,6 +13,7 @@ from scheduler import DailyAt, Every, register
 
 logger = logging.getLogger(__name__)
 
+
 def _is_home_assistant_active() -> bool:
     """
     Return True if Home Assistant is enabled and minimally configured.
@@ -199,11 +200,13 @@ def sync_entity_states() -> dict:
             entity.last_changed = now
             update_fields.extend(["last_state", "last_changed"])
             updated += 1
-            changed_entities.append({
-                "entity_id": entity.entity_id,
-                "old_state": old_state,
-                "new_state": new_state,
-            })
+            changed_entities.append(
+                {
+                    "entity_id": entity.entity_id,
+                    "old_state": old_state,
+                    "new_state": new_state,
+                }
+            )
 
         entity.last_seen = now
         entity.save(update_fields=update_fields)
@@ -253,7 +256,7 @@ def check_home_assistant() -> None:
 @register(
     "process_due_rule_runtimes",
     schedule=Every(seconds=5, jitter=1),
-    description='Completes “wait for X seconds” rule timers and triggers any rules that become due.',
+    description="Completes “wait for X seconds” rule timers and triggers any rules that become due.",
 )
 def process_due_rule_runtimes() -> dict:
     """

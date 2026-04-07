@@ -22,7 +22,7 @@ from django.core.management.base import BaseCommand
 from django.db import transaction
 
 from accounts.models import User
-from alarm.models import Rule, AlarmSettingsEntry
+from alarm.models import AlarmSettingsEntry, Rule
 from alarm.state_machine.settings import get_active_settings_profile
 
 
@@ -47,37 +47,24 @@ class Command(BaseCommand):
 
         profile = get_active_settings_profile()
         # Read directly from database since setting was removed from registry
-        entry = AlarmSettingsEntry.objects.filter(
-            profile=profile, key="home_assistant_notify"
-        ).first()
+        entry = AlarmSettingsEntry.objects.filter(profile=profile, key="home_assistant_notify").first()
         notify_settings = entry.value if entry else {}
 
         # Check if already migrated (unless --force)
         if notify_settings.get("migrated") and not force:
             self.stdout.write(
-                self.style.WARNING(
-                    "Notification settings have already been migrated. "
-                    "Use --force to migrate again."
-                )
+                self.style.WARNING("Notification settings have already been migrated. Use --force to migrate again.")
             )
             return
 
         # Check if notifications are enabled
         if not notify_settings.get("enabled"):
-            self.stdout.write(
-                self.style.SUCCESS(
-                    "Notifications are disabled - nothing to migrate."
-                )
-            )
+            self.stdout.write(self.style.SUCCESS("Notifications are disabled - nothing to migrate."))
             return
 
         states = notify_settings.get("states", [])
         if not states:
-            self.stdout.write(
-                self.style.SUCCESS(
-                    "No alarm states configured for notifications - nothing to migrate."
-                )
-            )
+            self.stdout.write(self.style.SUCCESS("No alarm states configured for notifications - nothing to migrate."))
             return
 
         service = notify_settings.get("service", "notify.notify")
@@ -103,16 +90,18 @@ class Command(BaseCommand):
                 ],
             }
 
-            rules_to_create.append({
-                "name": rule_name,
-                "kind": "trigger",
-                "enabled": True,
-                "priority": 0,
-                "schema_version": 1,
-                "definition": rule_definition,
-                "cooldown_seconds": cooldown_seconds if cooldown_seconds > 0 else None,
-                "created_by": system_user,
-            })
+            rules_to_create.append(
+                {
+                    "name": rule_name,
+                    "kind": "trigger",
+                    "enabled": True,
+                    "priority": 0,
+                    "schema_version": 1,
+                    "definition": rule_definition,
+                    "cooldown_seconds": cooldown_seconds if cooldown_seconds > 0 else None,
+                    "created_by": system_user,
+                }
+            )
 
             if dry_run:
                 self.stdout.write(f"  Would create rule: {rule_name}")
@@ -123,11 +112,7 @@ class Command(BaseCommand):
                 self.stdout.write(f"  Creating rule: {rule_name}")
 
         if dry_run:
-            self.stdout.write(
-                self.style.SUCCESS(
-                    f"\nDry run complete. Would create {len(rules_to_create)} rules."
-                )
-            )
+            self.stdout.write(self.style.SUCCESS(f"\nDry run complete. Would create {len(rules_to_create)} rules."))
             return
 
         # Create rules and mark as migrated atomically

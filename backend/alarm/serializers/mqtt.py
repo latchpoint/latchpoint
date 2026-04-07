@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from rest_framework import serializers
-
 from transports_mqtt.config import normalize_mqtt_connection
 
 

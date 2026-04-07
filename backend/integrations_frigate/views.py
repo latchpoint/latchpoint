@@ -2,20 +2,21 @@ from __future__ import annotations
 
 import logging
 
-from django.utils import timezone
 from django.db import transaction
+from django.utils import timezone
 from rest_framework import status
 from rest_framework.exceptions import NotFound, ValidationError
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from transports_mqtt.manager import mqtt_connection_manager
 
 from accounts.permissions import IsAdminRole
 from alarm.models import AlarmSettingsEntry
 from alarm.settings_registry import ALARM_PROFILE_SETTINGS_BY_KEY
+from alarm.signals import settings_profile_changed
 from alarm.state_machine.settings import get_setting_json
 from alarm.use_cases.settings_profile import ensure_active_settings_profile
-from alarm.signals import settings_profile_changed
 from integrations_frigate.config import normalize_frigate_settings
 from integrations_frigate.models import FrigateDetection
 from integrations_frigate.runtime import (
@@ -29,7 +30,6 @@ from integrations_frigate.serializers import (
     FrigateSettingsSerializer,
     FrigateSettingsUpdateSerializer,
 )
-from transports_mqtt.manager import mqtt_connection_manager
 
 logger = logging.getLogger(__name__)
 
@@ -80,10 +80,13 @@ class FrigateSettingsView(APIView):
 
         if changes.get("enabled") is True:
             from alarm.env_config import get_mqtt_config
+
             conn = get_mqtt_config()
             mqtt_ok = bool(conn.get("enabled") and conn.get("host"))
             if not mqtt_ok:
-                raise ValidationError({"non_field_errors": ["MQTT must be enabled/configured before enabling Frigate."]})
+                raise ValidationError(
+                    {"non_field_errors": ["MQTT must be enabled/configured before enabling Frigate."]}
+                )
 
         merged = dict(current.__dict__)
         merged.update(changes)
@@ -97,7 +100,9 @@ class FrigateSettingsView(APIView):
         )
 
         apply_runtime_settings_from_active_profile()
-        transaction.on_commit(lambda: settings_profile_changed.send(sender=None, profile_id=profile.id, reason="updated"))
+        transaction.on_commit(
+            lambda: settings_profile_changed.send(sender=None, profile_id=profile.id, reason="updated")
+        )
         return Response(FrigateSettingsSerializer(normalized.__dict__).data, status=status.HTTP_200_OK)
 
 
@@ -177,10 +182,9 @@ class FrigateDetectionsView(APIView):
             logger.debug("Invalid frigate detections limit=%r; defaulting to 50", limit_raw)
             limit = 50
         limit = max(1, min(500, limit))
-        rows = (
-            FrigateDetection.objects.filter(provider="frigate", label="person")
-            .order_by("-observed_at", "-id")[:limit]
-        )
+        rows = FrigateDetection.objects.filter(provider="frigate", label="person").order_by("-observed_at", "-id")[
+            :limit
+        ]
         return Response(
             [
                 {
@@ -206,8 +210,8 @@ class FrigateDetectionDetailView(APIView):
         """Return full detection with raw JSON payload."""
         try:
             detection = FrigateDetection.objects.get(pk=pk)
-        except FrigateDetection.DoesNotExist:
-            raise NotFound("Detection not found.")
+        except FrigateDetection.DoesNotExist as exc:
+            raise NotFound("Detection not found.") from exc
 
         serializer = FrigateDetectionDetailSerializer(detection)
         return Response(serializer.data, status=status.HTTP_200_OK)

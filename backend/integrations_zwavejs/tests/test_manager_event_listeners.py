@@ -4,8 +4,7 @@ import asyncio
 import threading
 from unittest.mock import patch
 
-from django.test import SimpleTestCase
-from django.test import override_settings
+from django.test import SimpleTestCase, override_settings
 
 from integrations_zwavejs.manager import ZwavejsConnectionManager
 
@@ -96,8 +95,13 @@ class ZwavejsManagerEventListenerTests(SimpleTestCase):
             "args": {"commandClass": 111, "eventType": 5, "eventData": "1996"},
         }
 
-        with patch("integrations_zwavejs.manager._import_zwavejs_client", return_value=_fake_imports(emitted_event=emitted_event)):
-            manager.apply_settings(settings_obj={"enabled": True, "ws_url": "ws://example.test:3000", "connect_timeout_seconds": 0.2})
+        with patch(
+            "integrations_zwavejs.manager._import_zwavejs_client",
+            return_value=_fake_imports(emitted_event=emitted_event),
+        ):
+            manager.apply_settings(
+                settings_obj={"enabled": True, "ws_url": "ws://example.test:3000", "connect_timeout_seconds": 0.2}
+            )
             manager.ensure_connected(timeout_seconds=1.0)
             self.assertTrue(got_event.wait(timeout=1.0))
             self.assertTrue(received)

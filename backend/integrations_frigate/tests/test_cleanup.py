@@ -18,7 +18,10 @@ class FrigateCleanupTaskTests(TestCase):
     def setUp(self):
         self.profile = AlarmSettingsProfile.objects.create(name="Default", is_active=True)
 
-    @patch.dict(os.environ, {"FRIGATE_ENABLED": "true", "FRIGATE_EVENTS_TOPIC": "frigate/events", "FRIGATE_RETENTION_SECONDS": "3600"})
+    @patch.dict(
+        os.environ,
+        {"FRIGATE_ENABLED": "true", "FRIGATE_EVENTS_TOPIC": "frigate/events", "FRIGATE_RETENTION_SECONDS": "3600"},
+    )
     def test_cleanup_deletes_old_detections(self):
         """Detections older than retention_seconds should be deleted."""
 
@@ -60,7 +63,10 @@ class FrigateCleanupTaskTests(TestCase):
         # Recent detection should remain
         self.assertTrue(FrigateDetection.objects.filter(id=recent_detection.id).exists())
 
-    @patch.dict(os.environ, {"FRIGATE_ENABLED": "false", "FRIGATE_EVENTS_TOPIC": "frigate/events", "FRIGATE_RETENTION_SECONDS": "3600"})
+    @patch.dict(
+        os.environ,
+        {"FRIGATE_ENABLED": "false", "FRIGATE_EVENTS_TOPIC": "frigate/events", "FRIGATE_RETENTION_SECONDS": "3600"},
+    )
     def test_cleanup_skips_when_disabled(self):
         """Cleanup should skip when Frigate is disabled."""
 
@@ -86,7 +92,10 @@ class FrigateCleanupTaskTests(TestCase):
         self.assertEqual(deleted_count, 0)
         self.assertEqual(FrigateDetection.objects.count(), 1)
 
-    @patch.dict(os.environ, {"FRIGATE_ENABLED": "true", "FRIGATE_EVENTS_TOPIC": "frigate/events", "FRIGATE_RETENTION_SECONDS": "86400"})
+    @patch.dict(
+        os.environ,
+        {"FRIGATE_ENABLED": "true", "FRIGATE_EVENTS_TOPIC": "frigate/events", "FRIGATE_RETENTION_SECONDS": "86400"},
+    )
     def test_cleanup_respects_retention_seconds(self):
         """Cleanup should use the configured retention_seconds."""
 
@@ -112,7 +121,10 @@ class FrigateCleanupTaskTests(TestCase):
         self.assertEqual(deleted_count, 0)
         self.assertTrue(FrigateDetection.objects.filter(id=detection.id).exists())
 
-    @patch.dict(os.environ, {"FRIGATE_ENABLED": "true", "FRIGATE_EVENTS_TOPIC": "frigate/events", "FRIGATE_RETENTION_SECONDS": "3600"})
+    @patch.dict(
+        os.environ,
+        {"FRIGATE_ENABLED": "true", "FRIGATE_EVENTS_TOPIC": "frigate/events", "FRIGATE_RETENTION_SECONDS": "3600"},
+    )
     def test_cleanup_deletes_multiple_old_detections(self):
         """Cleanup should delete all detections older than retention."""
 

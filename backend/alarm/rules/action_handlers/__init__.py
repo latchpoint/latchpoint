@@ -5,6 +5,7 @@ Each handler module self-registers at import time via ``register()``.
 The public API is ``get_handler(action_type)`` which returns the callable
 or *None* for unknown types.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass

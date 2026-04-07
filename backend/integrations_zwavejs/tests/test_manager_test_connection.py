@@ -3,8 +3,7 @@ from __future__ import annotations
 import asyncio
 from unittest.mock import patch
 
-from django.test import SimpleTestCase
-from django.test import override_settings
+from django.test import SimpleTestCase, override_settings
 
 from integrations_zwavejs.manager import ZwavejsConnectionManager, ZwavejsNotReachable
 
@@ -45,12 +44,18 @@ class ZwavejsTestConnectionValidationTests(SimpleTestCase):
     @override_settings(ALLOW_ZWAVEJS_IN_TESTS=True)
     def test_test_connection_rejects_non_zwave_server(self):
         manager = ZwavejsConnectionManager()
-        with patch("integrations_zwavejs.manager._import_zwavejs_client", return_value=_fake_imports(driver_ready=False)):
-            with self.assertRaises(ZwavejsNotReachable):
-                manager.test_connection(settings_obj={"ws_url": "ws://example.test:3000"}, timeout_seconds=0.05)
+        with (
+            patch(
+                "integrations_zwavejs.manager._import_zwavejs_client", return_value=_fake_imports(driver_ready=False)
+            ),
+            self.assertRaises(ZwavejsNotReachable),
+        ):
+            manager.test_connection(settings_obj={"ws_url": "ws://example.test:3000"}, timeout_seconds=0.05)
 
     @override_settings(ALLOW_ZWAVEJS_IN_TESTS=True)
     def test_test_connection_accepts_zwave_server(self):
         manager = ZwavejsConnectionManager()
-        with patch("integrations_zwavejs.manager._import_zwavejs_client", return_value=_fake_imports(driver_ready=True)):
+        with patch(
+            "integrations_zwavejs.manager._import_zwavejs_client", return_value=_fake_imports(driver_ready=True)
+        ):
             manager.test_connection(settings_obj={"ws_url": "ws://example.test:3000"}, timeout_seconds=0.2)

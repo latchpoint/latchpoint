@@ -8,7 +8,6 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from django.test import SimpleTestCase
 
-from alarm import log_handler
 from alarm.log_handler import (
     BufferedWebSocketHandler,
     _broadcast_queue,
@@ -104,8 +103,16 @@ class EmitTests(LogHandlerTestCase):
         entry = entries[0]
 
         expected_keys = {
-            "timestamp", "level", "level_no", "logger", "message",
-            "exc_text", "filename", "lineno", "func_name", "formatted",
+            "timestamp",
+            "level",
+            "level_no",
+            "logger",
+            "message",
+            "exc_text",
+            "filename",
+            "lineno",
+            "func_name",
+            "formatted",
         }
         self.assertEqual(set(entry.keys()), expected_keys)
         self.assertEqual(entry["level"], "WARNING")
@@ -238,7 +245,7 @@ class FormatAnsiTests(LogHandlerTestCase):
             "level_no": logging.ERROR,
             "logger": "test",
             "message": "something failed",
-            "exc_text": "Traceback (most recent call last):\n  File \"test.py\", line 1\nValueError: bad value",
+            "exc_text": 'Traceback (most recent call last):\n  File "test.py", line 1\nValueError: bad value',
             "filename": "test.py",
             "lineno": 1,
             "func_name": "test_func",

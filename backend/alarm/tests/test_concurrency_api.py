@@ -70,10 +70,7 @@ class ConcurrencyApiTests(TransactionTestCase):
                     except OperationalError as exc:
                         # SQLite can throw transient lock errors under intentional
                         # concurrent writes in CI; retry briefly to assert behavior.
-                        if (
-                            "database table is locked" not in str(exc).lower()
-                            or attempt == max_lock_retries - 1
-                        ):
+                        if "database table is locked" not in str(exc).lower() or attempt == max_lock_retries - 1:
                             raise
                         close_old_connections()
                         time.sleep(0.1 * (attempt + 1))
@@ -240,6 +237,7 @@ class ConcurrencyApiTests(TransactionTestCase):
                 ]
 
         with patch("alarm.views.entities.ha_gateway", _Gateway()):
+
             def call_sync():
                 client = APIClient()
                 client.force_authenticate(self.user)

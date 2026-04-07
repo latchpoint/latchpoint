@@ -4,7 +4,6 @@ API views for notification providers.
 
 import logging
 
-from rest_framework import status
 from rest_framework.exceptions import MethodNotAllowed
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -12,8 +11,6 @@ from rest_framework.views import APIView
 
 from alarm.models import AlarmSettingsProfile
 from config.domain_exceptions import ConfigurationError, NotFoundError, ServiceUnavailableError, ValidationError
-
-logger = logging.getLogger(__name__)
 
 from .dispatcher import get_dispatcher
 from .handlers import get_all_handlers_metadata
@@ -29,6 +26,8 @@ from .serializers import (
     PushbulletValidateTokenResultSerializer,
     TestNotificationResultSerializer,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def get_active_profile():
@@ -53,7 +52,9 @@ class ProviderListCreateView(APIView):
 
     def post(self, request):
         """Notification providers are now configured via environment variables."""
-        raise MethodNotAllowed(request.method, detail="Notification providers are configured via environment variables.")
+        raise MethodNotAllowed(
+            request.method, detail="Notification providers are configured via environment variables."
+        )
 
 
 class ProviderDetailView(APIView):
@@ -82,13 +83,17 @@ class ProviderDetailView(APIView):
 
     def put(self, request, pk):
         """Notification providers are now configured via environment variables."""
-        raise MethodNotAllowed(request.method, detail="Notification providers are configured via environment variables.")
+        raise MethodNotAllowed(
+            request.method, detail="Notification providers are configured via environment variables."
+        )
 
     patch = put
 
     def delete(self, request, pk):
         """Notification providers are now configured via environment variables."""
-        raise MethodNotAllowed(request.method, detail="Notification providers are configured via environment variables.")
+        raise MethodNotAllowed(
+            request.method, detail="Notification providers are configured via environment variables."
+        )
 
 
 class TestProviderView(APIView):
@@ -104,8 +109,8 @@ class TestProviderView(APIView):
 
         try:
             provider = NotificationProvider.objects.get(id=pk, profile=profile)
-        except NotificationProvider.DoesNotExist:
-            raise NotFoundError("Provider not found.")
+        except NotificationProvider.DoesNotExist as exc:
+            raise NotFoundError("Provider not found.") from exc
 
         dispatcher = get_dispatcher()
         result = dispatcher.test_provider(provider)
@@ -174,13 +179,9 @@ class NotificationLogListView(APIView):
             return Response([])
 
         # Get logs for providers in this profile
-        provider_ids = NotificationProvider.objects.filter(profile=profile).values_list(
-            "id", flat=True
-        )
+        provider_ids = NotificationProvider.objects.filter(profile=profile).values_list("id", flat=True)
 
-        logs = NotificationLog.objects.filter(provider_id__in=provider_ids).order_by(
-            "-created_at"
-        )[:100]
+        logs = NotificationLog.objects.filter(provider_id__in=provider_ids).order_by("-created_at")[:100]
 
         serializer = NotificationLogSerializer(logs, many=True)
         return Response(serializer.data)

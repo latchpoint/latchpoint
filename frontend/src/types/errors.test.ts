@@ -52,7 +52,7 @@ describe('types/errors', () => {
       expect(getApiErrorMessage({ non_field_errors: ['Nope'] })).toBe('Nope')
     })
 
-    it('formats field errors as \"field: message\"', () => {
+    it('formats field errors as "field: message"', () => {
       expect(getApiErrorMessage({ email: ['Invalid'] })).toBe('email: Invalid')
     })
   })

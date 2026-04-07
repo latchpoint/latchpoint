@@ -4,6 +4,7 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
+
 def _as_list(value: object) -> list[object]:
     """Coerce a value into a list, returning [] for non-lists."""
     if value is None:

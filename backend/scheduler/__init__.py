@@ -15,7 +15,7 @@ Usage:
         ...
 """
 
-from .registry import get_task, get_tasks, register, ScheduledTask
+from .registry import ScheduledTask, get_task, get_tasks, register
 from .runner import get_scheduler_status, start_scheduler
 from .schedules import DailyAt, Every, Schedule
 

@@ -9,7 +9,12 @@ from django.test import TestCase
 
 from alarm.models import AlarmSettingsEntry, Entity
 from alarm.use_cases.settings_profile import ensure_active_settings_profile
-from integrations_zigbee2mqtt.runtime import _CACHE_KEY_FRIENDLY_TO_IEEE, _entity_ids_cache_key, _handle_z2m_message, get_settings
+from integrations_zigbee2mqtt.runtime import (
+    _CACHE_KEY_FRIENDLY_TO_IEEE,
+    _entity_ids_cache_key,
+    _handle_z2m_message,
+    get_settings,
+)
 
 
 @patch.dict(os.environ, {"ZIGBEE2MQTT_ENABLED": "true", "ZIGBEE2MQTT_BASE_TOPIC": "zigbee2mqtt"})
@@ -69,4 +74,3 @@ class Zigbee2mqttRuntimeIngestTests(TestCase):
         settings = get_settings()
         with self.assertNumQueries(0):
             _handle_z2m_message(settings=settings, topic=f"zigbee2mqtt/{friendly}", payload=json.dumps({"unknown": 1}))
-

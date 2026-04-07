@@ -133,29 +133,19 @@ class DoorCodeCreateSerializer(serializers.Serializer):
             )
 
         if code_type == DoorCode.CodeType.ONE_TIME and max_uses is not None:
-            raise serializers.ValidationError(
-                {"max_uses": "One-time codes automatically expire after one use."}
-            )
+            raise serializers.ValidationError({"max_uses": "One-time codes automatically expire after one use."})
 
         if start_at and end_at and start_at > end_at:
-            raise serializers.ValidationError(
-                {"end_at": "end_at must be after or equal to start_at."}
-            )
+            raise serializers.ValidationError({"end_at": "end_at must be after or equal to start_at."})
 
         if days_of_week is not None:
             if days_of_week < 0 or days_of_week > 127:
-                raise serializers.ValidationError(
-                    {"days_of_week": "days_of_week must be between 0 and 127."}
-                )
+                raise serializers.ValidationError({"days_of_week": "days_of_week must be between 0 and 127."})
             if days_of_week == 0:
-                raise serializers.ValidationError(
-                    {"days_of_week": "Select at least one day."}
-                )
+                raise serializers.ValidationError({"days_of_week": "Select at least one day."})
 
         if (window_start is None) != (window_end is None):
-            raise serializers.ValidationError(
-                {"window_start": "window_start and window_end must be set together."}
-            )
+            raise serializers.ValidationError({"window_start": "window_start and window_end must be set together."})
 
         if window_start is not None and window_end is not None and window_start >= window_end:
             raise serializers.ValidationError(
@@ -212,27 +202,19 @@ class DoorCodeUpdateSerializer(serializers.Serializer):
         start_at = attrs.get("start_at", instance.start_at)
         end_at = attrs.get("end_at", instance.end_at)
         if start_at and end_at and start_at > end_at:
-            raise serializers.ValidationError(
-                {"end_at": "end_at must be after or equal to start_at."}
-            )
+            raise serializers.ValidationError({"end_at": "end_at must be after or equal to start_at."})
 
         days_of_week = attrs.get("days_of_week", instance.days_of_week)
         if days_of_week is not None:
             if days_of_week < 0 or days_of_week > 127:
-                raise serializers.ValidationError(
-                    {"days_of_week": "days_of_week must be between 0 and 127."}
-                )
+                raise serializers.ValidationError({"days_of_week": "days_of_week must be between 0 and 127."})
             if days_of_week == 0:
-                raise serializers.ValidationError(
-                    {"days_of_week": "Select at least one day."}
-                )
+                raise serializers.ValidationError({"days_of_week": "Select at least one day."})
 
         window_start = attrs.get("window_start", instance.window_start)
         window_end = attrs.get("window_end", instance.window_end)
         if (window_start is None) != (window_end is None):
-            raise serializers.ValidationError(
-                {"window_start": "window_start and window_end must be set together."}
-            )
+            raise serializers.ValidationError({"window_start": "window_start and window_end must be set together."})
         if window_start is not None and window_end is not None and window_start >= window_end:
             raise serializers.ValidationError(
                 {"window_end": "window_end must be after window_start (same-day window)."}

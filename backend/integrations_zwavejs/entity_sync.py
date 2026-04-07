@@ -52,7 +52,9 @@ def sync_entities_from_zwavejs(*, zwavejs: ZwavejsGateway, now=None, per_node_li
     nodes_obj = None
     state_obj = None
     if isinstance(controller_state, dict):
-        state_obj = controller_state.get("state") if isinstance(controller_state.get("state"), dict) else controller_state
+        state_obj = (
+            controller_state.get("state") if isinstance(controller_state.get("state"), dict) else controller_state
+        )
         nodes_obj = state_obj.get("nodes") if isinstance(state_obj, dict) else None
 
     nodes = _extract_nodes(controller_state)
@@ -88,7 +90,8 @@ def sync_entities_from_zwavejs(*, zwavejs: ZwavejsGateway, now=None, per_node_li
             nodes_value_ids_failed += 1
             if len(warnings) < 10:
                 warnings.append(
-                    f"Node {node_id}: failed to fetch value IDs ({exc.__class__.__name__}: {str(exc) or 'unknown error'})."
+                    f"Node {node_id}: failed to fetch value IDs"
+                    f" ({exc.__class__.__name__}: {str(exc) or 'unknown error'})."
                 )
             continue
         if not value_ids:
@@ -147,8 +150,8 @@ def sync_entities_from_zwavejs(*, zwavejs: ZwavejsGateway, now=None, per_node_li
             updated += 0 if created else 1
 
     if candidate_node_count == 0:
-        keys = sorted([str(k) for k in controller_state.keys()]) if isinstance(controller_state, dict) else []
-        state_keys = sorted([str(k) for k in state_obj.keys()]) if isinstance(state_obj, dict) else []
+        keys = sorted([str(k) for k in controller_state]) if isinstance(controller_state, dict) else []
+        state_keys = sorted([str(k) for k in state_obj]) if isinstance(state_obj, dict) else []
         warnings.append(
             "No Z-Wave nodes found in controller state."
             + (f" controller_state_keys={keys}." if keys else "")
@@ -156,7 +159,9 @@ def sync_entities_from_zwavejs(*, zwavejs: ZwavejsGateway, now=None, per_node_li
             + (f" nodes_type={type(nodes_obj).__name__}." if nodes_obj is not None else "")
         )
     elif value_ids_total == 0 and nodes_value_ids_failed == 0:
-        warnings.append("No value IDs found on any node (nodes may still be interviewing or unsupported by the server API).")
+        warnings.append(
+            "No value IDs found on any node (nodes may still be interviewing or unsupported by the server API)."
+        )
 
     return {
         "imported": imported,

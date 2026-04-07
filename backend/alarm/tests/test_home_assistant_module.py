@@ -3,12 +3,10 @@ from __future__ import annotations
 import io
 import json
 import os
-from datetime import timezone as dt_timezone
 from unittest.mock import patch
 from urllib.error import HTTPError, URLError
 
 from django.test import SimpleTestCase
-
 from integrations_home_assistant import api as home_assistant
 from integrations_home_assistant.connection import clear_cached_connection, set_cached_connection
 
@@ -43,12 +41,15 @@ class HomeAssistantModuleTests(SimpleTestCase):
         super().tearDown()
 
     def _set_configured_connection(self, *, base_url: str = "http://ha:8123", token: str = "token"):
-        self._env_patcher = patch.dict(os.environ, {
-            "HA_ENABLED": "true",
-            "HA_BASE_URL": base_url,
-            "HA_TOKEN": token,
-            "HA_CONNECT_TIMEOUT": "2",
-        })
+        self._env_patcher = patch.dict(
+            os.environ,
+            {
+                "HA_ENABLED": "true",
+                "HA_BASE_URL": base_url,
+                "HA_TOKEN": token,
+                "HA_CONNECT_TIMEOUT": "2",
+            },
+        )
         self._env_patcher.start()
         set_cached_connection()
 
@@ -207,6 +208,7 @@ class HomeAssistantModuleTests(SimpleTestCase):
     @patch("integrations_home_assistant.api._get_client")
     def test_call_service_uses_client_when_available(self, mock_get_client, mock_urlopen):
         self._set_configured_connection(base_url="http://ha:8123", token="token")
+
         class _Client:
             def __init__(self):
                 self.calls = []

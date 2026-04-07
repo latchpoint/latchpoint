@@ -19,7 +19,9 @@ def execute(action: dict[str, Any], ctx: ActionContext) -> tuple[dict[str, Any],
         return {"ok": True, "type": "zigbee2mqtt_set_value", "entity_id": entity_id.strip()}, None
     except Exception as exc:
         logger.warning("zigbee2mqtt_set_value failed for rule %s: %s", ctx.rule.id, exc, exc_info=True)
-        return {"ok": False, "type": "zigbee2mqtt_set_value", "entity_id": entity_id.strip(), "error": str(exc)}, str(exc)
+        return {"ok": False, "type": "zigbee2mqtt_set_value", "entity_id": entity_id.strip(), "error": str(exc)}, str(
+            exc
+        )
 
 
 register("zigbee2mqtt_set_value", execute)

@@ -757,6 +757,7 @@ export function ActionsEditor({ actions, onChange, disabled = false }: ActionsEd
 
   // Stable keys for React reconciliation (avoid index-based keys)
   const nextActionId = useRef(0)
+  /* eslint-disable react-hooks/refs */
   const actionKeysRef = useRef<string[]>(
     actions.map(() => `action-${nextActionId.current++}`)
   )
@@ -765,6 +766,7 @@ export function ActionsEditor({ actions, onChange, disabled = false }: ActionsEd
   if (actionKeysRef.current.length !== actions.length) {
     actionKeysRef.current = actions.map(() => `action-${nextActionId.current++}`)
   }
+  /* eslint-enable react-hooks/refs */
 
   const handleAddAction = () => {
     actionKeysRef.current.push(`action-${nextActionId.current++}`)
@@ -802,6 +804,7 @@ export function ActionsEditor({ actions, onChange, disabled = false }: ActionsEd
           </div>
         ) : (
           <div className="space-y-2">
+            {/* eslint-disable react-hooks/refs */}
             {actions.map((action, index) => (
               <ActionRow
                 key={actionKeysRef.current[index]}
@@ -814,6 +817,7 @@ export function ActionsEditor({ actions, onChange, disabled = false }: ActionsEd
                 availableActionTypes={availableActionTypes}
               />
             ))}
+            {/* eslint-enable react-hooks/refs */}
           </div>
         )}
 

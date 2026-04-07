@@ -10,8 +10,8 @@ from accounts.models import User
 from alarm.models import AlarmEvent, AlarmEventType, AlarmSettingsProfile, AlarmState, AlarmStateSnapshot, Sensor
 from alarm.state_machine.errors import TransitionError
 from alarm.state_machine.snapshot_store import transition as do_transition
-from alarm.state_machine.transitions import cancel_arming, sensor_triggered, timer_expired, trigger
 from alarm.state_machine.timing import base_timing
+from alarm.state_machine.transitions import cancel_arming, sensor_triggered, timer_expired, trigger
 from alarm.tests.settings_test_utils import set_profile_settings
 
 
@@ -46,7 +46,11 @@ class TransitionEdgeCaseTests(TestCase):
         self.assertEqual(snapshot.current_state, AlarmState.DISARMED)
 
     def test_timer_expired_is_noop_when_exit_at_in_future(self):
-        self._create_snapshot(state=AlarmState.ARMING, exit_at=timezone.now() + timedelta(seconds=10), target_armed_state=AlarmState.ARMED_AWAY)
+        self._create_snapshot(
+            state=AlarmState.ARMING,
+            exit_at=timezone.now() + timedelta(seconds=10),
+            target_armed_state=AlarmState.ARMED_AWAY,
+        )
         snapshot = timer_expired()
         self.assertEqual(snapshot.current_state, AlarmState.ARMING)
 
@@ -59,13 +63,21 @@ class TransitionEdgeCaseTests(TestCase):
         self._create_snapshot(state=AlarmState.DISARMED)
         snapshot = sensor_triggered(sensor=self.sensor, user=self.user)
         self.assertEqual(snapshot.current_state, AlarmState.DISARMED)
-        self.assertTrue(AlarmEvent.objects.filter(event_type=AlarmEventType.SENSOR_TRIGGERED, sensor=self.sensor).exists())
+        self.assertTrue(
+            AlarmEvent.objects.filter(event_type=AlarmEventType.SENSOR_TRIGGERED, sensor=self.sensor).exists()
+        )
 
     def test_sensor_triggered_ignored_when_already_pending_but_records_event(self):
-        self._create_snapshot(state=AlarmState.PENDING, exit_at=timezone.now() + timedelta(seconds=10), previous_state=AlarmState.ARMED_AWAY)
+        self._create_snapshot(
+            state=AlarmState.PENDING,
+            exit_at=timezone.now() + timedelta(seconds=10),
+            previous_state=AlarmState.ARMED_AWAY,
+        )
         snapshot = sensor_triggered(sensor=self.sensor, user=self.user)
         self.assertEqual(snapshot.current_state, AlarmState.PENDING)
-        self.assertTrue(AlarmEvent.objects.filter(event_type=AlarmEventType.SENSOR_TRIGGERED, sensor=self.sensor).exists())
+        self.assertTrue(
+            AlarmEvent.objects.filter(event_type=AlarmEventType.SENSOR_TRIGGERED, sensor=self.sensor).exists()
+        )
 
     def test_trigger_raises_while_disarmed(self):
         self._create_snapshot(state=AlarmState.DISARMED)
@@ -73,7 +85,11 @@ class TransitionEdgeCaseTests(TestCase):
             trigger(user=self.user)
 
     def test_trigger_noops_when_already_triggered(self):
-        self._create_snapshot(state=AlarmState.TRIGGERED, exit_at=timezone.now() + timedelta(seconds=10), previous_state=AlarmState.ARMED_AWAY)
+        self._create_snapshot(
+            state=AlarmState.TRIGGERED,
+            exit_at=timezone.now() + timedelta(seconds=10),
+            previous_state=AlarmState.ARMED_AWAY,
+        )
         snapshot = trigger(user=self.user)
         self.assertEqual(snapshot.current_state, AlarmState.TRIGGERED)
 
@@ -117,6 +133,7 @@ class TimerTransitionTests(TestCase):
 
     def _create_snapshot(self, *, state: str, exit_at=None, target_armed_state=None, previous_state=None):
         from alarm.state_machine.timing import base_timing
+
         return AlarmStateSnapshot.objects.create(
             current_state=state,
             previous_state=previous_state,
@@ -172,6 +189,7 @@ class ArmingTransitionTests(TestCase):
 
     def test_arm_to_armed_immediately_when_arming_time_is_zero(self):
         from alarm.state_machine.transitions import arm, disarm
+
         set_profile_settings(
             self.profile,
             state_overrides={AlarmState.ARMED_HOME: {"arming_time": 0}},
@@ -182,8 +200,7 @@ class ArmingTransitionTests(TestCase):
 
     def test_arm_records_state_changed_event(self):
         from alarm.state_machine.transitions import arm, disarm
+
         disarm(reason="setup")
         arm(target_state=AlarmState.ARMED_AWAY, user=self.user, reason="test")
-        self.assertTrue(
-            AlarmEvent.objects.filter(event_type=AlarmEventType.STATE_CHANGED).exists()
-        )
+        self.assertTrue(AlarmEvent.objects.filter(event_type=AlarmEventType.STATE_CHANGED).exists())

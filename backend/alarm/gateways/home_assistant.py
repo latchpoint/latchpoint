@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Protocol
-
 from urllib.request import urlopen
 
 from integrations_home_assistant import impl as ha_impl

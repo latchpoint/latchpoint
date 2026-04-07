@@ -27,9 +27,7 @@ class OnboardingApiTests(APITestCase):
         self.assertEqual(user.timezone, settings.TIME_ZONE)
 
         role = Role.objects.get(slug="admin")
-        self.assertTrue(
-            UserRoleAssignment.objects.filter(user=user, role=role).exists()
-        )
+        self.assertTrue(UserRoleAssignment.objects.filter(user=user, role=role).exists())
         self.assertFalse(AlarmSettingsProfile.objects.filter(is_active=True).exists())
         self.assertFalse(AlarmStateSnapshot.objects.exists())
 

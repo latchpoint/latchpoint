@@ -53,7 +53,6 @@ class AlarmSettingsProfileMetaSerializer(serializers.ModelSerializer):
         )
 
 
-
 class AlarmEventSerializer(serializers.ModelSerializer):
     user_id = serializers.UUIDField(allow_null=True, read_only=True)
     code_id = serializers.IntegerField(allow_null=True, read_only=True)

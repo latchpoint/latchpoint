@@ -103,7 +103,9 @@ def update_task_health_scheduling(*, task: ScheduledTask, next_run_at) -> None:
     )
 
 
-def update_task_health_started(*, task: ScheduledTask, started_at, consecutive_failures_at_start: int, thread_name: str) -> None:
+def update_task_health_started(
+    *, task: ScheduledTask, started_at, consecutive_failures_at_start: int, thread_name: str
+) -> None:
     instance_id = get_instance_id()
     schedule_type, schedule_payload = serialize_schedule(task)
     _best_effort_update_health(
@@ -279,4 +281,3 @@ def maybe_emit_stuck_event(*, task_name: str, runtime_seconds: float, max_runtim
         )
     except Exception:
         return
-

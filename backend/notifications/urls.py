@@ -11,9 +11,7 @@ app_name = "notifications"
 urlpatterns = [
     # Provider CRUD
     path("providers/", views.ProviderListCreateView.as_view(), name="provider-list"),
-    path(
-        "providers/<uuid:pk>/", views.ProviderDetailView.as_view(), name="provider-detail"
-    ),
+    path("providers/<uuid:pk>/", views.ProviderDetailView.as_view(), name="provider-detail"),
     # HA system provider test must come before UUID pattern
     path(
         "providers/ha-system-provider/test/",

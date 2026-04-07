@@ -1,0 +1,68 @@
+[project]
+name = "latchpoint"
+version = "0.1.0"
+description = "Home security and automation platform"
+requires-python = ">=3.12"
+dependencies = [
+    "Django>=6.0,<7.0",
+    "djangorestframework>=3.16.1",
+    "channels>=4.3.2",
+    "daphne>=4.1",
+    "psycopg2-binary>=2.9",
+    "django-environ>=0.11",
+    "django-cors-headers>=4.3",
+    "argon2-cffi>=23.1",
+    "gunicorn>=21.2",
+    "uvicorn>=0.27",
+    "homeassistant-api",
+    "paho-mqtt>=2.0",
+    "httpx>=0.27",
+    "websocket-client>=1.8",
+    "zwave-js-server-python>=0.62.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "pytest-django>=4.7",
+    "pytest-cov>=4.1",
+    "ruff",
+]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 120
+include = ["backend/**/*.py"]
+exclude = ["backend/*/migrations/*.py"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W", "B", "SIM", "DJ"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["accounts", "alarm", "config", "control_panels", "locks", "notifications", "scheduler"]
+
+[tool.pytest.ini_options]
+DJANGO_SETTINGS_MODULE = "config.settings"
+pythonpath = ["backend"]
+python_files = ["test_*.py", "*_test.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+testpaths = ["backend"]
+addopts = ["-v", "--strict-markers", "--tb=short"]
+filterwarnings = ["ignore::DeprecationWarning"]
+
+[tool.coverage.run]
+source = ["backend/accounts", "backend/alarm", "backend/control_panels", "backend/locks", "backend/notifications", "backend/scheduler"]
+branch = true
+omit = ["*/migrations/*", "*/tests/*", "*/__init__.py"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise NotImplementedError",
+    "if TYPE_CHECKING:",
+    "if __name__ == .__main__.:",
+]
+show_missing = true
+skip_covered = false

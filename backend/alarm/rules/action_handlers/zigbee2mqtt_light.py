@@ -15,9 +15,19 @@ def execute(action: dict[str, Any], ctx: ActionContext) -> tuple[dict[str, Any],
     if not isinstance(entity_id, str) or not entity_id.strip():
         return {"ok": False, "type": "zigbee2mqtt_light", "error": "missing_entity_id"}, None
     if state not in ("on", "off"):
-        return {"ok": False, "type": "zigbee2mqtt_light", "entity_id": entity_id.strip(), "error": "invalid_state"}, None
+        return {
+            "ok": False,
+            "type": "zigbee2mqtt_light",
+            "entity_id": entity_id.strip(),
+            "error": "invalid_state",
+        }, None
     if brightness is not None and not isinstance(brightness, int):
-        return {"ok": False, "type": "zigbee2mqtt_light", "entity_id": entity_id.strip(), "error": "invalid_brightness"}, None
+        return {
+            "ok": False,
+            "type": "zigbee2mqtt_light",
+            "entity_id": entity_id.strip(),
+            "error": "invalid_brightness",
+        }, None
 
     payload: dict[str, Any] = {"state": state == "on"}
     if brightness is not None:

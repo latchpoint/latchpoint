@@ -79,4 +79,3 @@ class CleanupDoorCodeEventsTests(TestCase):
         self.assertEqual(DoorCodeEvent.objects.count(), 2)
         self.assertTrue(DoorCodeEvent.objects.filter(pk=boundary.pk).exists())
         self.assertTrue(DoorCodeEvent.objects.filter(pk=recent.pk).exists())
-

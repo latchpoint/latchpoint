@@ -10,7 +10,7 @@ from django.test import TestCase
 from django.utils import timezone
 
 from alarm.models import AlarmEvent, AlarmEventType, SystemConfig
-from alarm.tasks import cleanup_old_events, _get_retention_days
+from alarm.tasks import _get_retention_days, cleanup_old_events
 
 
 class CleanupOldEventsTests(TestCase):

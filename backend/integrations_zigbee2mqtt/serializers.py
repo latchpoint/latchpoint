@@ -23,4 +23,3 @@ class Zigbee2mqttSettingsUpdateSerializer(serializers.Serializer):
     run_rules_debounce_seconds = serializers.IntegerField(required=False)
     run_rules_max_per_minute = serializers.IntegerField(required=False)
     run_rules_kinds = serializers.ListField(child=serializers.CharField(), required=False)
-

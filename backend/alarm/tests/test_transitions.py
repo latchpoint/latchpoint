@@ -7,7 +7,7 @@ from django.utils import timezone
 
 from accounts.models import User
 from alarm.models import AlarmSettingsProfile, AlarmState, AlarmStateSnapshot, Sensor
-from alarm.state_machine.transitions import arm, disarm, get_current_snapshot, sensor_triggered, timer_expired
+from alarm.state_machine.transitions import arm, disarm, sensor_triggered, timer_expired
 from alarm.tests.settings_test_utils import set_profile_setting, set_profile_settings
 
 

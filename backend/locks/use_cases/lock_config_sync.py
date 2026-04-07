@@ -349,7 +349,8 @@ def _extract_weekday_schedule_windows(
 ) -> tuple[dict[int, dict[str, Any] | None], dict[int, str]]:
     """
     Return:
-    - schedule_by_slot: slot_index -> {"days_of_week": int, "window_start": "HH:MM:SS", "window_end": "HH:MM:SS"} or None
+    - schedule_by_slot: slot_index -> {"days_of_week": int, "window_start": "HH:MM:SS",
+      "window_end": "HH:MM:SS"} or None
     - unsupported_by_slot: slot_index -> reason
     """
     weekday_value_ids: list[dict[str, Any]] = []
@@ -373,7 +374,9 @@ def _extract_weekday_schedule_windows(
     # If no weekday schedule value IDs exist at all, the lock doesn't support CC 76
     # weekday schedules. Treat all slots as unsupported to avoid erasing existing schedules.
     if not weekday_value_ids and not unsupported_value_ids:
-        return {si: None for si in slot_indices}, {si: "Lock does not expose CC 76 schedule value IDs." for si in slot_indices}
+        return {si: None for si in slot_indices}, {
+            si: "Lock does not expose CC 76 schedule value IDs." for si in slot_indices
+        }
 
     # Weekday windows aggregated by slot -> weekday -> list[(start,end)]
     windows: dict[int, dict[int, list[tuple[time, time]]]] = {}
@@ -398,7 +401,10 @@ def _extract_weekday_schedule_windows(
         entries: list[dict[str, Any]] = []
         if isinstance(raw_value, dict):
             # Sometimes a single entry, sometimes a mapping of entries.
-            if any(k in raw_value for k in ("startHour", "start_hour", "durationHour", "duration_hour", "endHour", "end_hour")):
+            if any(
+                k in raw_value
+                for k in ("startHour", "start_hour", "durationHour", "duration_hour", "endHour", "end_hour")
+            ):
                 entries = [raw_value]
             else:
                 for v in raw_value.values():
@@ -463,7 +469,7 @@ def _extract_weekday_schedule_windows(
             continue
 
         days_mask = 0
-        for day_idx in normalized.keys():
+        for day_idx in normalized:
             days_mask |= 1 << int(day_idx)
 
         schedule_by_slot[slot_index] = {
@@ -620,7 +626,11 @@ def sync_lock_config(
             pin_length_by_slot[slot_index] = len(pin) if known and pin is not None else None
 
         logger.info(
-            "Lock %s (node %d): %d occupied slots out of %d", lock_entity_id, node_id, len(occupied_slots), max_slots,
+            "Lock %s (node %d): %d occupied slots out of %d",
+            lock_entity_id,
+            node_id,
+            len(occupied_slots),
+            max_slots,
         )
 
         schedule_by_slot, unsupported_schedule_by_slot = _extract_weekday_schedule_windows(
@@ -804,7 +814,8 @@ def sync_lock_config(
                 # with our freshly-read data so it isn't silently discarded.
                 logger.warning(
                     "IntegrityError on slot %d for lock %s — updating existing assignment",
-                    slot_index, lock_entity_id,
+                    slot_index,
+                    lock_entity_id,
                 )
                 existing = (
                     DoorCodeLockAssignment.objects.select_related("door_code")
@@ -851,7 +862,9 @@ def sync_lock_config(
             )
 
             result.created += 1
-            logger.info("Slot %d on %s: created (code_id=%d, pin_known=%s)", slot_index, lock_entity_id, code.id, pin_known)
+            logger.info(
+                "Slot %d on %s: created (code_id=%d, pin_known=%s)", slot_index, lock_entity_id, code.id, pin_known
+            )
             result.slots.append(
                 SlotSyncResult(
                     slot_index=slot_index,
@@ -867,9 +880,8 @@ def sync_lock_config(
             )
 
         # Deactivate previously-synced slots that are now empty.
-        previously_synced = (
-            DoorCodeLockAssignment.objects.select_related("door_code")
-            .filter(lock_entity_id=lock_entity_id, slot_index__isnull=False, sync_dismissed=False)
+        previously_synced = DoorCodeLockAssignment.objects.select_related("door_code").filter(
+            lock_entity_id=lock_entity_id, slot_index__isnull=False, sync_dismissed=False
         )
         for assignment in previously_synced:
             if assignment.slot_index is None:
@@ -881,7 +893,9 @@ def sync_lock_config(
                 continue
             code = assignment.door_code
             if code and code.source == DoorCode.Source.SYNCED and code.is_active:
-                logger.info("Deactivating slot %d on %s (code_id=%d): slot now empty", slot_index, lock_entity_id, code.id)
+                logger.info(
+                    "Deactivating slot %d on %s (code_id=%d): slot now empty", slot_index, lock_entity_id, code.id
+                )
                 code.is_active = False
                 code.save(update_fields=["is_active", "updated_at"])
                 DoorCodeEvent.objects.create(
@@ -917,8 +931,15 @@ def sync_lock_config(
         logger.info(
             "Lock config sync complete for %s (node %d): created=%d updated=%d unchanged=%d "
             "deactivated=%d dismissed=%d skipped=%d errors=%d",
-            lock_entity_id, node_id, result.created, result.updated, result.unchanged,
-            result.deactivated, result.dismissed, result.skipped, result.errors,
+            lock_entity_id,
+            node_id,
+            result.created,
+            result.updated,
+            result.unchanged,
+            result.deactivated,
+            result.dismissed,
+            result.skipped,
+            result.errors,
         )
 
         # Emit dispatcher event so rules referencing this lock can react (ADR 0069 finding 14).

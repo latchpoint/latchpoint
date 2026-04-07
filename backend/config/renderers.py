@@ -29,4 +29,3 @@ class EnvelopeJSONRenderer(JSONRenderer):
         if "data" not in data:
             return False
         return set(data.keys()).issubset(_SUCCESS_ENVELOPE_KEYS)
-

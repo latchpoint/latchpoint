@@ -8,7 +8,7 @@ from django.test import TestCase
 from django.utils import timezone
 
 from alarm.models import RuleActionLog, RuleKind, SystemConfig
-from alarm.tasks import cleanup_rule_action_logs, _get_rule_log_retention_days
+from alarm.tasks import _get_rule_log_retention_days, cleanup_rule_action_logs
 
 
 class CleanupRuleActionLogsTests(TestCase):

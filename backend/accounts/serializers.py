@@ -80,8 +80,7 @@ class UserSerializer(serializers.ModelSerializer):
         prefetched = getattr(obj, "_prefetched_objects_cache", {}) or {}
         if "totp_devices" in prefetched:
             return any(
-                bool(getattr(device, "is_active", False))
-                and getattr(device, "confirmed_at", None) is not None
+                bool(getattr(device, "is_active", False)) and getattr(device, "confirmed_at", None) is not None
                 for device in obj.totp_devices.all()
             )
         return obj.totp_devices.filter(is_active=True, confirmed_at__isnull=False).exists()
@@ -188,27 +187,17 @@ class UserCodeCreateSerializer(serializers.Serializer):
             or window_start is not None
             or window_end is not None
         ):
-            raise serializers.ValidationError(
-                {"code_type": "Only temporary codes can set an active time range."}
-            )
+            raise serializers.ValidationError({"code_type": "Only temporary codes can set an active time range."})
         if code_type == UserCode.CodeType.TEMPORARY and start_at and end_at and start_at > end_at:
-            raise serializers.ValidationError(
-                {"end_at": "end_at must be after or equal to start_at."}
-            )
+            raise serializers.ValidationError({"end_at": "end_at must be after or equal to start_at."})
         if code_type == UserCode.CodeType.TEMPORARY:
             if days_of_week is not None:
                 if days_of_week < 0 or days_of_week > 127:
-                    raise serializers.ValidationError(
-                        {"days_of_week": "days_of_week must be between 0 and 127."}
-                    )
+                    raise serializers.ValidationError({"days_of_week": "days_of_week must be between 0 and 127."})
                 if days_of_week == 0:
-                    raise serializers.ValidationError(
-                        {"days_of_week": "Select at least one day."}
-                    )
+                    raise serializers.ValidationError({"days_of_week": "Select at least one day."})
             if (window_start is None) != (window_end is None):
-                raise serializers.ValidationError(
-                    {"window_start": "window_start and window_end must be set together."}
-                )
+                raise serializers.ValidationError({"window_start": "window_start and window_end must be set together."})
             if window_start is not None and window_end is not None and window_start >= window_end:
                 raise serializers.ValidationError(
                     {"window_end": "window_end must be after window_start (same-day window)."}
@@ -254,34 +243,24 @@ class UserCodeUpdateSerializer(serializers.Serializer):
             return attrs
 
         if instance.code_type != UserCode.CodeType.TEMPORARY:
-            raise serializers.ValidationError(
-                {"code_type": "Only temporary codes can set an active time range."}
-            )
+            raise serializers.ValidationError({"code_type": "Only temporary codes can set an active time range."})
 
         start_at = attrs.get("start_at", instance.start_at)
         end_at = attrs.get("end_at", instance.end_at)
         if start_at and end_at and start_at > end_at:
-            raise serializers.ValidationError(
-                {"end_at": "end_at must be after or equal to start_at."}
-            )
+            raise serializers.ValidationError({"end_at": "end_at must be after or equal to start_at."})
 
         days_of_week = attrs.get("days_of_week", instance.days_of_week)
         if days_of_week is not None:
             if days_of_week < 0 or days_of_week > 127:
-                raise serializers.ValidationError(
-                    {"days_of_week": "days_of_week must be between 0 and 127."}
-                )
+                raise serializers.ValidationError({"days_of_week": "days_of_week must be between 0 and 127."})
             if days_of_week == 0:
-                raise serializers.ValidationError(
-                    {"days_of_week": "Select at least one day."}
-                )
+                raise serializers.ValidationError({"days_of_week": "Select at least one day."})
 
         window_start = attrs.get("window_start", instance.window_start)
         window_end = attrs.get("window_end", instance.window_end)
         if (window_start is None) != (window_end is None):
-            raise serializers.ValidationError(
-                {"window_start": "window_start and window_end must be set together."}
-            )
+            raise serializers.ValidationError({"window_start": "window_start and window_end must be set together."})
         if window_start is not None and window_end is not None and window_start >= window_end:
             raise serializers.ValidationError(
                 {"window_end": "window_end must be after window_start (same-day window)."}

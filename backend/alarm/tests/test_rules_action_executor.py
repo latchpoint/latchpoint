@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import os
-from datetime import datetime, timezone as dt_timezone
+from datetime import datetime
+from datetime import timezone as dt_timezone
 from unittest.mock import patch
 
 from django.test import TestCase
 
-from alarm.models import AlarmSettingsProfile
 from alarm.models import Rule
 from alarm.rules.action_executor import execute_actions
 
@@ -42,7 +42,9 @@ class _HA:
     def __init__(self):
         self.calls = []
 
-    def call_service(self, *, domain: str, service: str, target=None, service_data=None, timeout_seconds: float = 5.0) -> None:
+    def call_service(
+        self, *, domain: str, service: str, target=None, service_data=None, timeout_seconds: float = 5.0
+    ) -> None:
         self.calls.append((domain, service, target, service_data, timeout_seconds))
 
 
@@ -95,10 +97,18 @@ class ActionExecutorTests(TestCase):
         ha = _HA()
         now = datetime(2025, 1, 1, tzinfo=dt_timezone.utc)
         # Missing action field
-        result = execute_actions(rule=rule, actions=[{"type": "ha_call_service"}], now=now, alarm_services=alarm_services, ha=ha)
+        result = execute_actions(
+            rule=rule, actions=[{"type": "ha_call_service"}], now=now, alarm_services=alarm_services, ha=ha
+        )
         self.assertEqual(result["actions"][0]["error"], "invalid_action_format")
         # Invalid action format (no dot)
-        result = execute_actions(rule=rule, actions=[{"type": "ha_call_service", "action": "nodot"}], now=now, alarm_services=alarm_services, ha=ha)
+        result = execute_actions(
+            rule=rule,
+            actions=[{"type": "ha_call_service", "action": "nodot"}],
+            now=now,
+            alarm_services=alarm_services,
+            ha=ha,
+        )
         self.assertEqual(result["actions"][0]["error"], "invalid_action_format")
 
     @patch.dict(os.environ, {"ZWAVEJS_ENABLED": "true", "ZWAVEJS_WS_URL": "ws://zwavejs.local:3000"})
@@ -179,7 +189,12 @@ class ActionExecutorTests(TestCase):
             rule=rule,
             actions=[
                 {"type": "zigbee2mqtt_switch", "entity_id": "z2m_switch.0x00124b_state", "state": "on"},
-                {"type": "zigbee2mqtt_light", "entity_id": "z2m_switch.0x00124b_state", "state": "off", "brightness": 200},
+                {
+                    "type": "zigbee2mqtt_light",
+                    "entity_id": "z2m_switch.0x00124b_state",
+                    "state": "off",
+                    "brightness": 200,
+                },
             ],
             now=now,
             alarm_services=alarm_services,
@@ -189,4 +204,6 @@ class ActionExecutorTests(TestCase):
         self.assertEqual(result["actions"][0]["ok"], True)
         self.assertEqual(result["actions"][1]["ok"], True)
         self.assertEqual(z2m.calls[0], ("set_entity_value", "z2m_switch.0x00124b_state", {"state": True}))
-        self.assertEqual(z2m.calls[1], ("set_entity_value", "z2m_switch.0x00124b_state", {"state": False, "brightness": 200}))
+        self.assertEqual(
+            z2m.calls[1], ("set_entity_value", "z2m_switch.0x00124b_state", {"state": False, "brightness": 200})
+        )

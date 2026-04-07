@@ -10,4 +10,3 @@ urlpatterns = [
     path("devices/", views.Zigbee2mqttDevicesView.as_view(), name="zigbee2mqtt-devices"),
     path("devices/sync/", views.Zigbee2mqttDevicesSyncView.as_view(), name="zigbee2mqtt-devices-sync"),
 ]
-

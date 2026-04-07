@@ -9,12 +9,11 @@ from django.conf import settings
 from django.contrib.auth.hashers import make_password
 from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
-from django.utils.dateparse import parse_datetime
 from django.utils import timezone
+from django.utils.dateparse import parse_datetime
+from integrations_home_assistant import api as home_assistant
 
 from accounts.models import Role, User, UserCode, UserCodeAllowedState, UserRoleAssignment
-from alarm.state_machine.transitions import get_current_snapshot
-from integrations_home_assistant import api as home_assistant
 from alarm.models import (
     AlarmSettingsProfile,
     AlarmState,
@@ -26,6 +25,7 @@ from alarm.models import (
     RuleRuntimeState,
     Sensor,
 )
+from alarm.state_machine.transitions import get_current_snapshot
 
 
 @dataclass(frozen=True)
@@ -258,9 +258,7 @@ class Command(BaseCommand):
         status_obj = home_assistant.get_status()
         if not options["no_ha_sync"]:
             if not status_obj.configured:
-                raise CommandError(
-                    "Home Assistant is not configured (configure it in the UI Settings first)."
-                )
+                raise CommandError("Home Assistant is not configured (configure it in the UI Settings first).")
             if not status_obj.reachable:
                 raise CommandError(f"Home Assistant is not reachable: {status_obj.error or 'unknown error'}")
 
@@ -352,8 +350,7 @@ class Command(BaseCommand):
             if not options["no_ha_sync"] and required_entity_ids - seen_entity_ids:
                 missing = sorted(required_entity_ids - seen_entity_ids)
                 raise CommandError(
-                    "Some configured entity_ids were not found in Home Assistant states: "
-                    + ", ".join(missing)
+                    "Some configured entity_ids were not found in Home Assistant states: " + ", ".join(missing)
                 )
 
             Sensor.objects.create(

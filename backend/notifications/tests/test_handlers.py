@@ -45,9 +45,7 @@ class TestPushbulletHandler(TestCase):
             "target_type": "device",
         }
         errors = self.handler.validate_config(config)
-        self.assertIn(
-            "Device identifier is required when target type is 'device'", errors
-        )
+        self.assertIn("Device identifier is required when target type is 'device'", errors)
 
     def test_build_payload_note(self):
         """Test building a note payload."""
@@ -60,9 +58,7 @@ class TestPushbulletHandler(TestCase):
     def test_build_payload_link(self):
         """Test building a link payload."""
         config = {"access_token": "o.test"}
-        payload = self.handler._build_payload(
-            config, "Check this", "Link", {"url": "https://example.com"}
-        )
+        payload = self.handler._build_payload(config, "Check this", "Link", {"url": "https://example.com"})
         self.assertEqual(payload["type"], "link")
         self.assertEqual(payload["url"], "https://example.com")
 
@@ -150,9 +146,7 @@ class TestWebhookHandler(TestCase):
             "auth_value": "no_colon",
         }
         errors = self.handler.validate_config(config)
-        self.assertIn(
-            "Basic auth value must be in 'username:password' format", errors
-        )
+        self.assertIn("Basic auth value must be in 'username:password' format", errors)
 
     def test_build_headers_basic_auth(self):
         """Test basic auth header generation."""

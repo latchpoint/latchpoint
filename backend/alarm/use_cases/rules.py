@@ -112,10 +112,7 @@ def create_rule(*, validated_data: dict, entity_ids: list[str] | None) -> Rule:
     entity_sources = extract_entity_sources_from_definition(definition)
     extracted_entity_ids = set(extract_entity_ids_from_definition(definition))
 
-    if entity_ids is None:
-        entity_ids = sorted(extracted_entity_ids)
-    else:
-        entity_ids = sorted(set(entity_ids) | extracted_entity_ids)
+    entity_ids = sorted(extracted_entity_ids) if entity_ids is None else sorted(set(entity_ids) | extracted_entity_ids)
 
     with transaction.atomic():
         rule = Rule.objects.create(**data)

@@ -1,11 +1,11 @@
 from __future__ import annotations
 
+import os
+from unittest.mock import patch
+
 from django.urls import reverse
 from django.utils import timezone
 from rest_framework.test import APIClient, APITestCase
-
-import os
-from unittest.mock import patch
 
 from accounts.models import Role, User, UserRoleAssignment
 from alarm.models import AlarmSettingsProfile

@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-import os
-import sys
 import json
+import sys
 from pathlib import Path
 
 import environ
@@ -10,7 +9,7 @@ import environ
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 env = environ.Env()
-IS_TESTING = "test" in sys.argv
+IS_TESTING = "test" in sys.argv or "pytest" in sys.modules
 
 env_file = env.str("ENV_FILE", default=None)
 for candidate in [env_file, BASE_DIR / ".env", BASE_DIR.parent / ".env"]:
@@ -40,9 +39,7 @@ if DEBUG and not CSRF_TRUSTED_ORIGINS:
     dev_ports = (5427, 5428, 5173, 3000)
     dev_hosts = {"localhost", "127.0.0.1", *RAW_ALLOWED_HOSTS}
     dev_hosts.discard("*")
-    CSRF_TRUSTED_ORIGINS = [
-        f"http://{host}:{port}" for host in sorted(dev_hosts) for port in dev_ports
-    ]
+    CSRF_TRUSTED_ORIGINS = [f"http://{host}:{port}" for host in sorted(dev_hosts) for port in dev_ports]
 
 INSTALLED_APPS = [
     "django.contrib.admin",
@@ -179,9 +176,7 @@ SCHEDULER_RUN_HISTORY_RETENTION_DAYS = env.int("SCHEDULER_RUN_HISTORY_RETENTION_
 SCHEDULER_RUN_HISTORY_MAX_PER_TASK = env.int("SCHEDULER_RUN_HISTORY_MAX_PER_TASK", default=500)
 _SCHEDULER_TASK_OVERRIDES_RAW = env.str("SCHEDULER_TASK_OVERRIDES", default="{}").strip()
 try:
-    SCHEDULER_TASK_OVERRIDES = (
-        json.loads(_SCHEDULER_TASK_OVERRIDES_RAW) if _SCHEDULER_TASK_OVERRIDES_RAW else {}
-    )
+    SCHEDULER_TASK_OVERRIDES = json.loads(_SCHEDULER_TASK_OVERRIDES_RAW) if _SCHEDULER_TASK_OVERRIDES_RAW else {}
 except Exception:
     SCHEDULER_TASK_OVERRIDES = {}
 

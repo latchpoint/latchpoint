@@ -280,9 +280,7 @@ class Migration(migrations.Migration):
         ),
         migrations.AddConstraint(
             model_name="userroleassignment",
-            constraint=models.UniqueConstraint(
-                fields=("user", "role"), name="user_role_assignments_unique_user_role"
-            ),
+            constraint=models.UniqueConstraint(fields=("user", "role"), name="user_role_assignments_unique_user_role"),
         ),
         migrations.AddIndex(
             model_name="usercodeallowedstate",

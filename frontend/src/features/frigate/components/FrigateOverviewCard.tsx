@@ -55,7 +55,7 @@ export function FrigateOverviewCard({
         trueClassName="text-success"
       />
       <BooleanStatusPill
-        value={!Boolean(ingestLastError)}
+        value={!ingestLastError}
         trueLabel="Ingest OK"
         falseLabel="Ingest error"
         trueVariant="muted"

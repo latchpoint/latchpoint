@@ -28,6 +28,7 @@ class NotificationsConfig(AppConfig):
             warnings.filterwarnings("ignore", message="Accessing the database during app initialization")
             try:
                 from alarm.models import AlarmSettingsProfile
+
                 from .provider_registry import ensure_env_providers_exist
 
                 profile = AlarmSettingsProfile.objects.filter(is_active=True).first()

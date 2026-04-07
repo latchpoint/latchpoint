@@ -8,4 +8,3 @@ ARMED_STATES = {
     AlarmState.ARMED_NIGHT,
     AlarmState.ARMED_VACATION,
 }
-

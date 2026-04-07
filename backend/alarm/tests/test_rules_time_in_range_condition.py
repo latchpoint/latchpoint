@@ -136,4 +136,3 @@ class RulesTimeInRangeValidationTests(TestCase):
             }
         )
         self.assertIsNone(errors)
-

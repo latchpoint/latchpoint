@@ -4,25 +4,24 @@ from django.db import migrations
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
-        ('control_panels', '0002_controlpaneldevice_beep_volume'),
+        ("control_panels", "0002_controlpaneldevice_beep_volume"),
     ]
 
     operations = [
         migrations.RenameIndex(
-            model_name='controlpaneldevice',
-            new_name='control_pan_integra_6a0c65_idx',
-            old_name='control_pan_integra_8bd633_idx',
+            model_name="controlpaneldevice",
+            new_name="control_pan_integra_6a0c65_idx",
+            old_name="control_pan_integra_8bd633_idx",
         ),
         migrations.RenameIndex(
-            model_name='controlpaneldevice',
-            new_name='control_pan_kind_75c5f6_idx',
-            old_name='control_pan_kind_5a53ad_idx',
+            model_name="controlpaneldevice",
+            new_name="control_pan_kind_75c5f6_idx",
+            old_name="control_pan_kind_5a53ad_idx",
         ),
         migrations.RenameIndex(
-            model_name='controlpaneldevice',
-            new_name='control_pan_enabled_2f2bd9_idx',
-            old_name='control_pan_enable_9b3b75_idx',
+            model_name="controlpaneldevice",
+            new_name="control_pan_enabled_2f2bd9_idx",
+            old_name="control_pan_enable_9b3b75_idx",
         ),
     ]

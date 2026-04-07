@@ -2,8 +2,7 @@ from __future__ import annotations
 
 from django.test import SimpleTestCase
 
-from transports_mqtt.manager import _format_connect_error
-from transports_mqtt.manager import MqttConnectionManager
+from transports_mqtt.manager import MqttConnectionManager, _format_connect_error
 
 
 class MqttConnectErrorFormattingTests(SimpleTestCase):

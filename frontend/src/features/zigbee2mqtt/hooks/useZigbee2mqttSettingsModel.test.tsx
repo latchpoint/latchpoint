@@ -1,4 +1,3 @@
-import React from 'react'
 import { describe, expect, it, vi } from 'vitest'
 import { renderHook, act } from '@testing-library/react'
 import { useZigbee2mqttSettingsModel } from '@/features/zigbee2mqtt/hooks/useZigbee2mqttSettingsModel'

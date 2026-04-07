@@ -3,7 +3,6 @@ from __future__ import annotations
 from alarm.models import AlarmSettingsEntry, AlarmSettingsProfile
 from alarm.settings_registry import ALARM_PROFILE_SETTINGS_BY_KEY
 
-
 # Deprecated settings not in registry but still supported in tests
 DEPRECATED_SETTINGS = {
     "home_assistant_notify": "json",
@@ -32,4 +31,3 @@ def set_profile_setting(profile: AlarmSettingsProfile, key: str, value):
 def set_profile_settings(profile: AlarmSettingsProfile, **values):
     for key, value in values.items():
         set_profile_setting(profile, key, value)
-

@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from unittest import TestCase
 from unittest.mock import MagicMock, patch
 
+from django.test import TestCase
 from django.utils import timezone
 
 from alarm.dispatcher.config import DispatcherConfig
@@ -40,18 +40,22 @@ class TestDispatcherEventTime(TestCase):
         runtime.next_allowed_at = None
         runtime.consecutive_failures = 0
 
-        with patch("alarm.dispatcher.dispatcher.cache.add", return_value=True), patch(
-            "alarm.dispatcher.dispatcher.cache.delete"
-        ), patch(
-            "alarm.models.RuleRuntimeState.objects.get_or_create",
-            return_value=(runtime, True),
-        ), patch(
-            "alarm.dispatcher.dispatcher.is_rule_allowed",
-            return_value=(True, "allowed"),
-        ) as mock_allowed, patch(
-            "alarm.rules_engine.run_rules",
-            return_value=MagicMock(evaluated=1, fired=0, scheduled=0, errors=0),
-        ) as mock_run:
+        with (
+            patch("alarm.dispatcher.dispatcher.cache.add", return_value=True),
+            patch("alarm.dispatcher.dispatcher.cache.delete"),
+            patch(
+                "alarm.models.RuleRuntimeState.objects.get_or_create",
+                return_value=(runtime, True),
+            ),
+            patch(
+                "alarm.dispatcher.dispatcher.is_rule_allowed",
+                return_value=(True, "allowed"),
+            ) as mock_allowed,
+            patch(
+                "alarm.rules_engine.run_rules",
+                return_value=MagicMock(evaluated=1, fired=0, scheduled=0, errors=0),
+            ) as mock_run,
+        ):
             dispatcher._dispatch_batch(batch)
 
         self.assertEqual(mock_run.call_args.kwargs.get("now"), batch_changed_at)

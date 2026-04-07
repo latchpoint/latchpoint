@@ -5,9 +5,8 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
-        ('alarm', '0005_systemconfig'),
+        ("alarm", "0005_systemconfig"),
     ]
 
     def _seed_entries(apps, schema_editor):
@@ -15,6 +14,7 @@ class Migration(migrations.Migration):
         AlarmSettingsEntry = apps.get_model("alarm", "AlarmSettingsEntry")
 
         for profile in AlarmSettingsProfile.objects.all():
+
             def upsert(key: str, value_type: str, value):
                 AlarmSettingsEntry.objects.update_or_create(
                     profile=profile,
@@ -34,55 +34,79 @@ class Migration(migrations.Migration):
 
     operations = [
         migrations.CreateModel(
-            name='AlarmSettingsEntry',
+            name="AlarmSettingsEntry",
             fields=[
-                ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
-                ('key', models.CharField(max_length=128)),
-                ('value_type', models.CharField(choices=[('boolean', 'Boolean'), ('integer', 'Integer'), ('float', 'Float'), ('string', 'String'), ('json', 'JSON')], max_length=16)),
-                ('value', models.JSONField(blank=True, default=dict)),
-                ('updated_at', models.DateTimeField(auto_now=True)),
-                ('profile', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='entries', to='alarm.alarmsettingsprofile')),
+                ("id", models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name="ID")),
+                ("key", models.CharField(max_length=128)),
+                (
+                    "value_type",
+                    models.CharField(
+                        choices=[
+                            ("boolean", "Boolean"),
+                            ("integer", "Integer"),
+                            ("float", "Float"),
+                            ("string", "String"),
+                            ("json", "JSON"),
+                        ],
+                        max_length=16,
+                    ),
+                ),
+                ("value", models.JSONField(blank=True, default=dict)),
+                ("updated_at", models.DateTimeField(auto_now=True)),
+                (
+                    "profile",
+                    models.ForeignKey(
+                        on_delete=django.db.models.deletion.CASCADE,
+                        related_name="entries",
+                        to="alarm.alarmsettingsprofile",
+                    ),
+                ),
             ],
             options={
-                'indexes': [models.Index(fields=['profile', 'key'], name='alarm_alarm_profile_500b55_idx'), models.Index(fields=['key'], name='alarm_alarm_key_9007be_idx')],
-                'constraints': [models.UniqueConstraint(fields=('profile', 'key'), name='alarm_settings_entries_unique_profile_key')],
+                "indexes": [
+                    models.Index(fields=["profile", "key"], name="alarm_alarm_profile_500b55_idx"),
+                    models.Index(fields=["key"], name="alarm_alarm_key_9007be_idx"),
+                ],
+                "constraints": [
+                    models.UniqueConstraint(fields=("profile", "key"), name="alarm_settings_entries_unique_profile_key")
+                ],
             },
         ),
         migrations.RunPython(_seed_entries, reverse_code=migrations.RunPython.noop),
         migrations.RemoveField(
-            model_name='alarmsettingsprofile',
-            name='arming_time',
+            model_name="alarmsettingsprofile",
+            name="arming_time",
         ),
         migrations.RemoveField(
-            model_name='alarmsettingsprofile',
-            name='audio_visual_settings',
+            model_name="alarmsettingsprofile",
+            name="audio_visual_settings",
         ),
         migrations.RemoveField(
-            model_name='alarmsettingsprofile',
-            name='available_arming_states',
+            model_name="alarmsettingsprofile",
+            name="available_arming_states",
         ),
         migrations.RemoveField(
-            model_name='alarmsettingsprofile',
-            name='code_arm_required',
+            model_name="alarmsettingsprofile",
+            name="code_arm_required",
         ),
         migrations.RemoveField(
-            model_name='alarmsettingsprofile',
-            name='delay_time',
+            model_name="alarmsettingsprofile",
+            name="delay_time",
         ),
         migrations.RemoveField(
-            model_name='alarmsettingsprofile',
-            name='disarm_after_trigger',
+            model_name="alarmsettingsprofile",
+            name="disarm_after_trigger",
         ),
         migrations.RemoveField(
-            model_name='alarmsettingsprofile',
-            name='sensor_behavior',
+            model_name="alarmsettingsprofile",
+            name="sensor_behavior",
         ),
         migrations.RemoveField(
-            model_name='alarmsettingsprofile',
-            name='state_overrides',
+            model_name="alarmsettingsprofile",
+            name="state_overrides",
         ),
         migrations.RemoveField(
-            model_name='alarmsettingsprofile',
-            name='trigger_time',
+            model_name="alarmsettingsprofile",
+            name="trigger_time",
         ),
     ]

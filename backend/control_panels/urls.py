@@ -4,7 +4,6 @@ from django.urls import path
 
 from control_panels import views
 
-
 urlpatterns = [
     path("", views.ControlPanelDeviceListCreateView.as_view(), name="control-panel-device-list-create"),
     path("<int:device_id>/", views.ControlPanelDeviceDetailView.as_view(), name="control-panel-device-detail"),

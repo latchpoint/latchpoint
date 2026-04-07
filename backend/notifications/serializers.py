@@ -10,9 +10,7 @@ from .models import NotificationLog, NotificationProvider
 class NotificationProviderSerializer(serializers.ModelSerializer):
     """Serializer for NotificationProvider model (read-only)."""
 
-    provider_type_display = serializers.CharField(
-        source="get_provider_type_display", read_only=True
-    )
+    provider_type_display = serializers.CharField(source="get_provider_type_display", read_only=True)
 
     class Meta:
         model = NotificationProvider

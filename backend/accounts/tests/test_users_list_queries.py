@@ -21,4 +21,3 @@ class TestUsersListQueries(APITestCase):
         with self.assertNumQueries(4):
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
-

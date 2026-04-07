@@ -8,15 +8,13 @@ from typing import Any
 from django.core.cache import cache
 from django.db import close_old_connections
 from django.utils import timezone
+from transports_mqtt.manager import mqtt_connection_manager
 
 from alarm.models import Entity
 from alarm.state_machine.settings import get_active_settings_profile, get_setting_json
-from integrations_zigbee2mqtt.config import Zigbee2mqttSettings, normalize_zigbee2mqtt_settings
-from integrations_zigbee2mqtt.entity_mapping import build_entities_for_z2m_device, extract_ieee_mapping
 from integrations_zigbee2mqtt import status_store
-from integrations_zigbee2mqtt.config import slugify_fragment
-from transports_mqtt.manager import MqttNotReachable, mqtt_connection_manager
-
+from integrations_zigbee2mqtt.config import Zigbee2mqttSettings, normalize_zigbee2mqtt_settings, slugify_fragment
+from integrations_zigbee2mqtt.entity_mapping import build_entities_for_z2m_device, extract_ieee_mapping
 
 logger = logging.getLogger(__name__)
 
@@ -146,9 +144,8 @@ def _known_entity_ids_for_ieee(*, ieee: str) -> set[str]:
 
 def _is_allowed(*, settings: Zigbee2mqttSettings, ieee: str, friendly_name: str) -> bool:
     """Return True if a device is allowed by allowlist/denylist settings."""
-    if settings.denylist:
-        if ieee in settings.denylist or friendly_name in settings.denylist:
-            return False
+    if settings.denylist and (ieee in settings.denylist or friendly_name in settings.denylist):
+        return False
     if settings.allowlist:
         return ieee in settings.allowlist or friendly_name in settings.allowlist
     return True
@@ -333,10 +330,7 @@ def _incr_cache_counter(key: str, *, ttl_seconds: int | None = None) -> int:
     """Increment an integer cache counter and return the new value (best-effort)."""
     try:
         value = cache.get(key)
-        if isinstance(value, int):
-            next_val = value + 1
-        else:
-            next_val = 1
+        next_val = value + 1 if isinstance(value, int) else 1
         cache.set(key, next_val, timeout=ttl_seconds)
         return next_val
     except Exception:
@@ -350,6 +344,7 @@ def _notify_dispatcher(*, entity_ids: list[str], changed_at=None) -> None:
 
     try:
         from alarm.dispatcher import notify_entities_changed
+
         notify_entities_changed(source="zigbee2mqtt", entity_ids=entity_ids, changed_at=changed_at)
     except Exception as exc:
         logger.debug("Dispatcher notification failed: %s", exc)

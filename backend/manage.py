@@ -10,8 +10,7 @@ def main() -> None:
         from django.core.management import execute_from_command_line
     except ImportError as exc:
         raise ImportError(
-            "Couldn't import Django. Make sure it is installed and "
-            "available on your PYTHONPATH environment variable."
+            "Couldn't import Django. Make sure it is installed and available on your PYTHONPATH environment variable."
         ) from exc
     execute_from_command_line(sys.argv)
 

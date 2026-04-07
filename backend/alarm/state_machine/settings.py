@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from alarm.models import AlarmSettingsEntry, AlarmSettingsProfile, SystemConfig
 from alarm.settings_registry import ALARM_PROFILE_SETTINGS_BY_KEY, SYSTEM_CONFIG_SETTINGS_BY_KEY
+from alarm.use_cases.settings_profile import ensure_active_settings_profile
 
 from .errors import TransitionError
-from alarm.use_cases.settings_profile import ensure_active_settings_profile
 
 
 def get_active_settings_profile() -> AlarmSettingsProfile:
@@ -12,7 +12,7 @@ def get_active_settings_profile() -> AlarmSettingsProfile:
     profile = ensure_active_settings_profile()
     # Best-effort: keep a local cache of settings values to avoid per-key queries.
     preloaded = AlarmSettingsEntry.objects.filter(profile=profile).only("key", "value")
-    setattr(profile, "_settings_cache", {e.key: e.value for e in preloaded})
+    profile._settings_cache = {e.key: e.value for e in preloaded}
     return profile
 
 
@@ -23,7 +23,7 @@ def _settings_cache(profile: AlarmSettingsProfile) -> dict[str, object]:
         return cached
     rows = AlarmSettingsEntry.objects.filter(profile=profile).only("key", "value")
     cache = {row.key: row.value for row in rows}
-    setattr(profile, "_settings_cache", cache)
+    profile._settings_cache = cache
     return cache
 
 
