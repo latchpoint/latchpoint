@@ -18,11 +18,13 @@ env:
 
 jobs:
   tests:
+    if: github.event_name != 'release' || startsWith(github.event.release.tag_name, 'v')
     permissions:
       contents: read
     uses: ./.github/workflows/tests.yml
 
   build-and-push:
+    if: github.event_name != 'release' || startsWith(github.event.release.tag_name, 'v')
     permissions:
       contents: read
       packages: write

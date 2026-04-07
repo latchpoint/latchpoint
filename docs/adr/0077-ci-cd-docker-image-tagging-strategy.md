@@ -42,7 +42,7 @@ Fork PRs are excluded from the build step via an `if:` guard (`github.event.pull
 Pushes to main produce a `main` tag instead of `latest`. This clearly communicates "latest code on the default branch" without implying release stability.
 
 #### 3. Release applies `latest` during build
-When a GitHub Release is published, `build-and-push.yml` triggers via its `release: types: [published]` event. The `docker/metadata-action` conditionally adds the `latest` tag when `github.event_name == 'release'`. This means the release build produces the version tag, `sha-{hash}`, and `latest` in a single build-and-push step — no separate workflow, no `crane` dependency, and no retry logic for race conditions.
+When a GitHub Release is published, `build-and-push.yml` triggers via its `release: types: [published]` event. A job-level `if:` guard (`startsWith(github.event.release.tag_name, 'v')`) ensures only `v*`-tagged releases proceed — non-version releases are skipped entirely. The `docker/metadata-action` conditionally adds the `latest` tag when `github.event_name == 'release'`. This means the release build produces the version tag, `sha-{hash}`, and `latest` in a single build-and-push step — no separate workflow, no `crane` dependency, and no retry logic for race conditions.
 
 #### 4. Version tag pattern: `v*`
 The tag trigger is narrowed from `**` (any tag) to `v*` (version tags). This avoids accidental builds from non-version tags.
