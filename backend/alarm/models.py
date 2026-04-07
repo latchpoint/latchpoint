@@ -68,12 +68,8 @@ class AlarmSettingsProfile(models.Model):
 
 class AlarmStateSnapshot(models.Model):
     current_state = models.CharField(max_length=32, choices=AlarmState.choices)
-    previous_state = models.CharField(
-        max_length=32, choices=AlarmState.choices, null=True, blank=True
-    )
-    target_armed_state = models.CharField(
-        max_length=32, choices=AlarmState.choices, null=True, blank=True
-    )
+    previous_state = models.CharField(max_length=32, choices=AlarmState.choices, null=True, blank=True)  # noqa: DJ001
+    target_armed_state = models.CharField(max_length=32, choices=AlarmState.choices, null=True, blank=True)  # noqa: DJ001
     settings_profile = models.ForeignKey(
         AlarmSettingsProfile,
         on_delete=models.PROTECT,
@@ -145,12 +141,8 @@ class Sensor(models.Model):
 
 class AlarmEvent(models.Model):
     event_type = models.CharField(max_length=32, choices=AlarmEventType.choices)
-    state_from = models.CharField(
-        max_length=32, choices=AlarmState.choices, null=True, blank=True
-    )
-    state_to = models.CharField(
-        max_length=32, choices=AlarmState.choices, null=True, blank=True
-    )
+    state_from = models.CharField(max_length=32, choices=AlarmState.choices, null=True, blank=True)  # noqa: DJ001
+    state_to = models.CharField(max_length=32, choices=AlarmState.choices, null=True, blank=True)  # noqa: DJ001
     timestamp = models.DateTimeField()
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -210,8 +202,8 @@ class Entity(models.Model):
     entity_id = models.CharField(max_length=255, unique=True)
     domain = models.CharField(max_length=64, db_index=True)
     name = models.CharField(max_length=255)
-    device_class = models.CharField(max_length=64, null=True, blank=True, db_index=True)
-    last_state = models.CharField(max_length=255, null=True, blank=True)
+    device_class = models.CharField(max_length=64, null=True, blank=True, db_index=True)  # noqa: DJ001
+    last_state = models.CharField(max_length=255, null=True, blank=True)  # noqa: DJ001
     last_changed = models.DateTimeField(null=True, blank=True, db_index=True)
     last_seen = models.DateTimeField(null=True, blank=True, db_index=True)
     attributes = models.JSONField(default=dict, blank=True)
@@ -297,9 +289,7 @@ class RuleRuntimeStatus(models.TextChoices):
 class RuleRuntimeState(models.Model):
     rule = models.ForeignKey(Rule, on_delete=models.CASCADE, related_name="runtime_states")
     node_id = models.CharField(max_length=128)
-    status = models.CharField(
-        max_length=32, choices=RuleRuntimeStatus.choices, default=RuleRuntimeStatus.PENDING
-    )
+    status = models.CharField(max_length=32, choices=RuleRuntimeStatus.choices, default=RuleRuntimeStatus.PENDING)
     became_true_at = models.DateTimeField(null=True, blank=True)
     scheduled_for = models.DateTimeField(null=True, blank=True, db_index=True)
     last_when_matched = models.BooleanField(null=True, blank=True)

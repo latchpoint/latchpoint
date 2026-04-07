@@ -1,9 +1,6 @@
 from __future__ import annotations
 
-from datetime import timedelta
-
 from django.urls import reverse
-from django.utils import timezone
 from rest_framework.test import APIClient, APITestCase
 
 from accounts.models import User
@@ -58,6 +55,4 @@ class CancelArmingApiTests(APITestCase):
         self.assertEqual(response.status_code, 200)
 
         # Should have recorded a disarmed event
-        self.assertTrue(
-            AlarmEvent.objects.filter(event_type=AlarmEventType.DISARMED).exists()
-        )
+        self.assertTrue(AlarmEvent.objects.filter(event_type=AlarmEventType.DISARMED).exists())

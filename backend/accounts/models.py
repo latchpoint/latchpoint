@@ -86,12 +86,8 @@ class Role(models.Model):
 
 
 class UserRoleAssignment(models.Model):
-    user = models.ForeignKey(
-        User, on_delete=models.CASCADE, related_name="role_assignments"
-    )
-    role = models.ForeignKey(
-        Role, on_delete=models.PROTECT, related_name="user_assignments"
-    )
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="role_assignments")
+    role = models.ForeignKey(Role, on_delete=models.PROTECT, related_name="user_assignments")
     assigned_by = models.ForeignKey(
         User,
         null=True,
@@ -103,9 +99,7 @@ class UserRoleAssignment(models.Model):
 
     class Meta:
         constraints = [
-            models.UniqueConstraint(
-                fields=["user", "role"], name="user_role_assignments_unique_user_role"
-            ),
+            models.UniqueConstraint(fields=["user", "role"], name="user_role_assignments_unique_user_role"),
         ]
         indexes = [models.Index(fields=["role"])]
 
@@ -126,17 +120,13 @@ class UserCode(models.Model):
     code_hash = models.TextField()
     label = models.CharField(max_length=150, blank=True)
     code_type = models.CharField(max_length=16, choices=CodeType.choices)
-    pin_length = models.PositiveSmallIntegerField(
-        validators=[MinValueValidator(4), MaxValueValidator(8)]
-    )
+    pin_length = models.PositiveSmallIntegerField(validators=[MinValueValidator(4), MaxValueValidator(8)])
     is_active = models.BooleanField(default=True)
     max_uses = models.PositiveIntegerField(null=True, blank=True)
     uses_count = models.PositiveIntegerField(default=0)
     start_at = models.DateTimeField(null=True, blank=True)
     end_at = models.DateTimeField(null=True, blank=True)
-    days_of_week = models.PositiveSmallIntegerField(
-        null=True, blank=True, validators=[MaxValueValidator(127)]
-    )
+    days_of_week = models.PositiveSmallIntegerField(null=True, blank=True, validators=[MaxValueValidator(127)])
     window_start = models.TimeField(null=True, blank=True)
     window_end = models.TimeField(null=True, blank=True)
     last_used_at = models.DateTimeField(null=True, blank=True)
@@ -164,8 +154,7 @@ class UserCode(models.Model):
                 name="user_codes_pin_length_between_4_8",
             ),
             models.CheckConstraint(
-                condition=Q(days_of_week__isnull=True)
-                | (Q(days_of_week__gte=0) & Q(days_of_week__lte=127)),
+                condition=Q(days_of_week__isnull=True) | (Q(days_of_week__gte=0) & Q(days_of_week__lte=127)),
                 name="user_codes_days_of_week_between_0_127",
             ),
             models.CheckConstraint(
@@ -191,17 +180,13 @@ class UserCodeAllowedState(models.Model):
         TRIGGERED = "triggered", "Triggered"
 
     id = models.BigAutoField(primary_key=True)
-    code = models.ForeignKey(
-        UserCode, on_delete=models.CASCADE, related_name="allowed_states"
-    )
+    code = models.ForeignKey(UserCode, on_delete=models.CASCADE, related_name="allowed_states")
     state = models.CharField(max_length=32, choices=AlarmState.choices)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         constraints = [
-            models.UniqueConstraint(
-                fields=["code", "state"], name="user_code_allowed_states_unique_code_state"
-            ),
+            models.UniqueConstraint(fields=["code", "state"], name="user_code_allowed_states_unique_code_state"),
         ]
         indexes = [models.Index(fields=["state"])]
 

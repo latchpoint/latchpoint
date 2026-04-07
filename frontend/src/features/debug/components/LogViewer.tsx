@@ -76,7 +76,7 @@ export function LogViewer() {
     fit.fit()
 
     fitAddonRef.current = fit
-    setTerminal(term)
+    setTerminal(term) // eslint-disable-line react-hooks/set-state-in-effect
 
     // Handle resize
     const resizeObserver = new ResizeObserver(() => {
@@ -136,7 +136,7 @@ export function LogViewer() {
         count++
       }
     }
-    setEntryCount(count)
+    setEntryCount(count) // eslint-disable-line react-hooks/set-state-in-effect
 
     if (autoScroll) {
       terminal.scrollToBottom()

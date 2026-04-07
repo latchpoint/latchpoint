@@ -23,6 +23,7 @@ class HomeAssistantHandler(NotificationHandler):
 
     provider_type = "home_assistant"
     display_name = "Home Assistant"
+
     @classmethod
     def from_env(cls) -> dict:
         from alarm.env_config import get_ha_notify_config

@@ -5,11 +5,11 @@ from unittest.mock import patch
 
 from django.contrib.auth.hashers import make_password
 from django.urls import reverse
+from integrations_home_assistant.models import HomeAssistantMqttAlarmEntityStatus
 from rest_framework.test import APIClient, APITestCase
 
 from accounts.models import Role, User, UserCode, UserRoleAssignment
 from alarm.models import AlarmSettingsProfile
-from integrations_home_assistant.models import HomeAssistantMqttAlarmEntityStatus
 from alarm.tests.settings_test_utils import set_profile_settings
 
 
@@ -57,18 +57,21 @@ class MqttApiTests(APITestCase):
             },
         )
 
-    @patch.dict(os.environ, {
-        "MQTT_ENABLED": "true",
-        "MQTT_HOST": "mqtt.local",
-        "MQTT_PORT": "1883",
-        "MQTT_USERNAME": "u",
-        "MQTT_PASSWORD": "supersecret",
-        "MQTT_USE_TLS": "false",
-        "MQTT_TLS_INSECURE": "false",
-        "MQTT_CLIENT_ID": "latchpoint-alarm",
-        "MQTT_KEEPALIVE_SECONDS": "30",
-        "MQTT_CONNECT_TIMEOUT": "5",
-    })
+    @patch.dict(
+        os.environ,
+        {
+            "MQTT_ENABLED": "true",
+            "MQTT_HOST": "mqtt.local",
+            "MQTT_PORT": "1883",
+            "MQTT_USERNAME": "u",
+            "MQTT_PASSWORD": "supersecret",
+            "MQTT_USE_TLS": "false",
+            "MQTT_TLS_INSECURE": "false",
+            "MQTT_CLIENT_ID": "latchpoint-alarm",
+            "MQTT_KEEPALIVE_SECONDS": "30",
+            "MQTT_CONNECT_TIMEOUT": "5",
+        },
+    )
     def test_mqtt_password_is_masked_in_mqtt_settings_endpoint(self):
         url = reverse("mqtt-settings")
         response = self.client.get(url)

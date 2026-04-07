@@ -5,7 +5,6 @@ from __future__ import annotations
 from unittest.mock import MagicMock, patch
 
 from django.test import TestCase
-from django.utils import timezone
 
 from alarm.gateways.home_assistant import (
     HomeAssistantNotConfigured,
@@ -43,9 +42,7 @@ class GetEntitySyncIntervalTests(TestCase):
 
 class SyncEntityStatesTests(TestCase):
     def setUp(self):
-        self.gateway_patch = patch(
-            "alarm.gateways.home_assistant.default_home_assistant_gateway"
-        )
+        self.gateway_patch = patch("alarm.gateways.home_assistant.default_home_assistant_gateway")
         self.mock_gateway = self.gateway_patch.start()
 
     def tearDown(self):
@@ -68,9 +65,7 @@ class SyncEntityStatesTests(TestCase):
 
     def test_skips_when_ha_not_configured(self):
         """Returns skipped when Home Assistant is not configured."""
-        self.mock_gateway.ensure_available.side_effect = HomeAssistantNotConfigured(
-            "Not configured"
-        )
+        self.mock_gateway.ensure_available.side_effect = HomeAssistantNotConfigured("Not configured")
 
         result = sync_entity_states()
 
@@ -79,9 +74,7 @@ class SyncEntityStatesTests(TestCase):
 
     def test_skips_when_ha_not_reachable(self):
         """Returns skipped when Home Assistant is not reachable."""
-        self.mock_gateway.ensure_available.side_effect = HomeAssistantNotReachable(
-            "Connection refused"
-        )
+        self.mock_gateway.ensure_available.side_effect = HomeAssistantNotReachable("Connection refused")
 
         result = sync_entity_states()
 
@@ -109,9 +102,7 @@ class SyncEntityStatesTests(TestCase):
         )
 
         self.mock_gateway.ensure_available.return_value = MagicMock()
-        self.mock_gateway.list_entities.return_value = [
-            {"entity_id": "binary_sensor.door", "state": "off"}
-        ]
+        self.mock_gateway.list_entities.return_value = [{"entity_id": "binary_sensor.door", "state": "off"}]
 
         result = sync_entity_states()
 
@@ -132,9 +123,7 @@ class SyncEntityStatesTests(TestCase):
         )
 
         self.mock_gateway.ensure_available.return_value = MagicMock()
-        self.mock_gateway.list_entities.return_value = [
-            {"entity_id": "binary_sensor.door", "state": "on"}
-        ]
+        self.mock_gateway.list_entities.return_value = [{"entity_id": "binary_sensor.door", "state": "on"}]
 
         result = sync_entity_states()
 
@@ -157,9 +146,7 @@ class SyncEntityStatesTests(TestCase):
         )
 
         self.mock_gateway.ensure_available.return_value = MagicMock()
-        self.mock_gateway.list_entities.return_value = [
-            {"entity_id": "sensor.local", "state": "off"}
-        ]
+        self.mock_gateway.list_entities.return_value = [{"entity_id": "sensor.local", "state": "off"}]
 
         result = sync_entity_states()
 
@@ -224,9 +211,7 @@ class SyncEntityStatesTests(TestCase):
         )
 
         self.mock_gateway.ensure_available.return_value = MagicMock()
-        self.mock_gateway.list_entities.return_value = [
-            {"entity_id": "binary_sensor.door", "state": "on"}
-        ]
+        self.mock_gateway.list_entities.return_value = [{"entity_id": "binary_sensor.door", "state": "on"}]
 
         sync_entity_states()
 
@@ -250,9 +235,7 @@ class SyncEntityStatesTests(TestCase):
         )
 
         self.mock_gateway.ensure_available.return_value = MagicMock()
-        self.mock_gateway.list_entities.return_value = [
-            {"entity_id": "binary_sensor.door", "state": "off"}
-        ]
+        self.mock_gateway.list_entities.return_value = [{"entity_id": "binary_sensor.door", "state": "off"}]
 
         sync_entity_states()
 

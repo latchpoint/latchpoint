@@ -59,7 +59,15 @@ class _FakeMqttManager:
                 ).start()
 
 
-@patch.dict(os.environ, {"ZIGBEE2MQTT_ENABLED": "true", "ZIGBEE2MQTT_BASE_TOPIC": "zigbee2mqtt", "MQTT_ENABLED": "true", "MQTT_HOST": "mqtt.local"})
+@patch.dict(
+    os.environ,
+    {
+        "ZIGBEE2MQTT_ENABLED": "true",
+        "ZIGBEE2MQTT_BASE_TOPIC": "zigbee2mqtt",
+        "MQTT_ENABLED": "true",
+        "MQTT_HOST": "mqtt.local",
+    },
+)
 class Zigbee2mqttSyncDevicesTests(TestCase):
     def test_sync_devices_upserts_entities(self):
         profile = ensure_active_settings_profile()
@@ -78,5 +86,7 @@ class Zigbee2mqttSyncDevicesTests(TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(result["devices"], 1)
         self.assertTrue(
-            Entity.objects.filter(entity_id="z2m_binary_sensor.0x00124b0018e2abcd_contact", source="zigbee2mqtt").exists()
+            Entity.objects.filter(
+                entity_id="z2m_binary_sensor.0x00124b0018e2abcd_contact", source="zigbee2mqtt"
+            ).exists()
         )

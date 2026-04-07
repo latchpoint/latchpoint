@@ -1,4 +1,3 @@
-import React from 'react'
 import { describe, expect, it, beforeEach } from 'vitest'
 import { renderHook, act } from '@testing-library/react'
 import { useModalStore, useModal } from '@/stores'

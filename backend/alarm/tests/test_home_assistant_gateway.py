@@ -3,9 +3,13 @@ from __future__ import annotations
 from unittest.mock import patch
 
 from django.test import SimpleTestCase
-
 from integrations_home_assistant import impl as ha_impl
-from alarm.gateways.home_assistant import DefaultHomeAssistantGateway, HomeAssistantNotConfigured, HomeAssistantNotReachable
+
+from alarm.gateways.home_assistant import (
+    DefaultHomeAssistantGateway,
+    HomeAssistantNotConfigured,
+    HomeAssistantNotReachable,
+)
 
 
 class HomeAssistantGatewayTests(SimpleTestCase):

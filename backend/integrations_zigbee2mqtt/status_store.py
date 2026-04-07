@@ -6,7 +6,6 @@ from typing import Any
 from django.core.cache import cache
 from django.utils import timezone
 
-
 _PREFIX = "zigbee2mqtt:"
 _CACHE_LAST_SEEN_AT = f"{_PREFIX}last_seen_at"
 _CACHE_LAST_STATE = f"{_PREFIX}last_state"

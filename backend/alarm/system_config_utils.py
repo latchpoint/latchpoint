@@ -24,4 +24,3 @@ def get_int_system_config_value(*, key: str) -> int:
     except (TypeError, ValueError):
         logger.warning("Invalid %s value, using default %d", key, default)
         return default
-

@@ -2,10 +2,10 @@ from __future__ import annotations
 
 from django.test import TestCase
 from django.utils import timezone
+from integrations_frigate.models import FrigateDetection
 
 from alarm.rules.conditions import eval_condition_explain_with_context, eval_condition_with_context
 from alarm.rules.repositories import default_rule_engine_repositories
-from integrations_frigate.models import FrigateDetection
 
 
 class RulesFrigatePersonDetectedConditionTests(TestCase):

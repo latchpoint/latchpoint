@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import contextlib
+import logging
 import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
-import logging
 from typing import Any, TypedDict
 
 from config.domain_exceptions import GatewayError, GatewayValidationError
@@ -246,7 +247,9 @@ class MqttConnectionManager:
         client.on_disconnect = on_disconnect
 
         try:
-            client.connect_async(settings.get("host", ""), int(settings.get("port", 1883)), int(settings.get("keepalive_seconds", 30)))
+            client.connect_async(
+                settings.get("host", ""), int(settings.get("port", 1883)), int(settings.get("keepalive_seconds", 30))
+            )
             client.loop_start()
             if not connected_evt.wait(timeout=timeout):
                 raise MqttNotReachable("Timed out connecting to MQTT broker.")
@@ -438,10 +441,8 @@ class MqttConnectionManager:
             if callback is None:
                 callbacks.clear()
             else:
-                try:
+                with contextlib.suppress(ValueError):
                     callbacks.remove(callback)
-                except ValueError:
-                    pass
 
             should_unsubscribe = not callbacks
             if should_unsubscribe:

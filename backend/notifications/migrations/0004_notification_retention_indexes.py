@@ -18,4 +18,3 @@ class Migration(migrations.Migration):
             index=models.Index(fields=["status", "created_at"], name="notificati_status_created_at_idx"),
         ),
     ]
-

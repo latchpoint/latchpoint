@@ -113,7 +113,10 @@ class SupportedActionsView(APIView):
 
             actions.append(action_info)
 
-        return Response({
-            "schema_version": 1,
-            "actions": actions,
-        }, status=status.HTTP_200_OK)
+        return Response(
+            {
+                "schema_version": 1,
+                "actions": actions,
+            },
+            status=status.HTTP_200_OK,
+        )

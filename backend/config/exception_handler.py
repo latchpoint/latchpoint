@@ -64,9 +64,13 @@ def _extract_first_message(data: Any) -> str | None:
     for key, value in data.items():
         if key in {"detail", "message", "non_field_errors"}:
             continue
-        if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
-            if value and isinstance(value[0], str):
-                return f"{key}: {value[0]}"
+        if (
+            isinstance(value, Sequence)
+            and not isinstance(value, (str, bytes, bytearray))
+            and value
+            and isinstance(value[0], str)
+        ):
+            return f"{key}: {value[0]}"
         if isinstance(value, str) and value:
             return f"{key}: {value}"
     return None
@@ -88,7 +92,9 @@ def _flatten_error_details(details: Any) -> dict[str, list[str]]:
 
         if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
             # Treat a list of scalar messages as a leaf list.
-            if all(not isinstance(item, (Mapping, Sequence)) or isinstance(item, (str, bytes, bytearray)) for item in value):
+            if all(
+                not isinstance(item, (Mapping, Sequence)) or isinstance(item, (str, bytes, bytearray)) for item in value
+            ):
                 for item in value:
                     add(path, item)
                 return
@@ -136,11 +142,8 @@ def _wrap_drf_error(exc: Exception, response: Response) -> Response:
     if isinstance(exc, drf_exceptions.ValidationError):
         details = _flatten_error_details(data)
         if len(details) == 1:
-            (only_key, messages), = details.items()
-            if messages:
-                message = messages[0]
-            else:
-                message = "One or more fields failed validation."
+            ((only_key, messages),) = details.items()
+            message = messages[0] if messages else "One or more fields failed validation."
         else:
             message = "One or more fields failed validation."
 

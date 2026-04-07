@@ -23,4 +23,3 @@ class DefaultAuthRequiredApiTests(APITestCase):
         url = reverse("alarm-rules")
         response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
-

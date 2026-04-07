@@ -258,11 +258,7 @@ class NotificationDispatcher:
                 provider=None,  # No provider record for system provider
                 provider_name=f"Home Assistant ({service})",
                 provider_type="home_assistant",
-                status=(
-                    NotificationLog.Status.SUCCESS
-                    if result.success
-                    else NotificationLog.Status.FAILED
-                ),
+                status=(NotificationLog.Status.SUCCESS if result.success else NotificationLog.Status.FAILED),
                 message_preview=message[:200] if message else "",
                 error_message=result.message if not result.success else "",
                 error_code=result.error_code or "",
@@ -312,11 +308,7 @@ class NotificationDispatcher:
                 provider=provider,
                 provider_name=provider.name,
                 provider_type=provider.provider_type,
-                status=(
-                    NotificationLog.Status.SUCCESS
-                    if result.success
-                    else NotificationLog.Status.FAILED
-                ),
+                status=(NotificationLog.Status.SUCCESS if result.success else NotificationLog.Status.FAILED),
                 message_preview=message[:200] if message else "",
                 error_message=result.message if not result.success else "",
                 error_code=result.error_code or "",

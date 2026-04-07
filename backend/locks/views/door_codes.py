@@ -26,9 +26,7 @@ class DoorCodesView(APIView):
     def get(self, request):
         """List door codes for the current user (or another user when admin + user_id)."""
         user_id = request.query_params.get("user_id")
-        target_user = door_codes_uc.resolve_list_target_user(
-            actor_user=request.user, requested_user_id=user_id
-        )
+        target_user = door_codes_uc.resolve_list_target_user(actor_user=request.user, requested_user_id=user_id)
         codes = door_codes_uc.list_door_codes_for_user(user=target_user)
         return Response(DoorCodeSerializer(codes, many=True).data, status=status.HTTP_200_OK)
 
@@ -64,11 +62,7 @@ class DoorCodesView(APIView):
             lock_entity_ids=validated.get("lock_entity_ids"),
             actor_user=request.user,
         )
-        code = (
-            DoorCode.objects.select_related("user")
-            .prefetch_related("lock_assignments")
-            .get(id=code.id)
-        )
+        code = DoorCode.objects.select_related("user").prefetch_related("lock_assignments").get(id=code.id)
         return Response(DoorCodeSerializer(code).data, status=status.HTTP_201_CREATED)
 
 
@@ -103,11 +97,7 @@ class DoorCodeDetailView(ObjectPermissionMixin, APIView):
         changes.pop("reauth_password", None)
 
         code = door_codes_uc.update_door_code(code=code, changes=changes, actor_user=request.user)
-        code = (
-            DoorCode.objects.select_related("user")
-            .prefetch_related("lock_assignments")
-            .get(id=code.id)
-        )
+        code = DoorCode.objects.select_related("user").prefetch_related("lock_assignments").get(id=code.id)
         return Response(DoorCodeSerializer(code).data, status=status.HTTP_200_OK)
 
     def delete(self, request, code_id: int):

@@ -23,8 +23,8 @@ class EnsureActiveSettingsProfileTests(TestCase):
         self.assertEqual(profile.name, "Default")
 
     def test_activates_first_existing_when_none_active(self):
-        profile1 = AlarmSettingsProfile.objects.create(name="Profile 1", is_active=False)
-        profile2 = AlarmSettingsProfile.objects.create(name="Profile 2", is_active=False)
+        AlarmSettingsProfile.objects.create(name="Profile 1", is_active=False)
+        AlarmSettingsProfile.objects.create(name="Profile 2", is_active=False)
 
         result = ensure_active_settings_profile()
         result.refresh_from_db()

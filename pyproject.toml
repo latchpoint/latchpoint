@@ -33,6 +33,7 @@ dev = [
 target-version = "py312"
 line-length = 120
 include = ["backend/**/*.py"]
+exclude = ["backend/*/migrations/*.py"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "W", "B", "SIM", "DJ"]

@@ -16,9 +16,7 @@ class NotificationResult:
     provider_response: dict | None = None
 
     @classmethod
-    def ok(
-        cls, message: str = "Sent successfully", response: dict | None = None
-    ) -> "NotificationResult":
+    def ok(cls, message: str = "Sent successfully", response: dict | None = None) -> "NotificationResult":
         """Create a successful result."""
         return cls(success=True, message=message, provider_response=response)
 

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from .alarm_state import AlarmStateView
+from .debug_logs import DebugLogsView
+from .dispatcher import DispatcherConfigView, DispatcherStatusView, SuspendedRulesView
 from .entities import EntitiesView, EntitySyncView
 from .events import AlarmEventsView
 from .rules import RuleDetailView, RuleRunView, RuleSimulateView, RulesView, SupportedActionsView
@@ -14,8 +16,6 @@ from .settings_profiles import (
 )
 from .system_config import SystemConfigDetailView, SystemConfigListView
 from .transitions import ArmAlarmView, CancelArmingView, DisarmAlarmView
-from .debug_logs import DebugLogsView
-from .dispatcher import DispatcherConfigView, DispatcherStatusView, SuspendedRulesView
 
 __all__ = [
     "DebugLogsView",

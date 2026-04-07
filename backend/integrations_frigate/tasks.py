@@ -13,6 +13,7 @@ from scheduler import Every, register
 
 logger = logging.getLogger(__name__)
 
+
 def _is_frigate_active() -> bool:
     """Return True if Frigate integration is enabled (scheduler gating predicate)."""
     try:

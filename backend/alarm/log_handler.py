@@ -15,6 +15,7 @@ within a logging handler because ``emit()`` may fire from any thread context
 
 from __future__ import annotations
 
+import contextlib
 import itertools
 import logging
 import queue
@@ -28,10 +29,10 @@ from typing import Any
 # ANSI color codes per log level
 # ---------------------------------------------------------------------------
 _LEVEL_ANSI: dict[int, str] = {
-    logging.DEBUG: "\033[90m",     # Gray (bright black)
-    logging.INFO: "\033[36m",      # Cyan
-    logging.WARNING: "\033[33m",   # Yellow
-    logging.ERROR: "\033[31m",     # Red
+    logging.DEBUG: "\033[90m",  # Gray (bright black)
+    logging.INFO: "\033[36m",  # Cyan
+    logging.WARNING: "\033[33m",  # Yellow
+    logging.ERROR: "\033[31m",  # Red
     logging.CRITICAL: "\033[1;31m",  # Bold red
 }
 _ANSI_RESET = "\033[0m"
@@ -96,6 +97,7 @@ def clear_buffer() -> None:
 # ANSI formatting
 # ---------------------------------------------------------------------------
 
+
 def _format_ansi(entry: dict[str, Any]) -> str:
     """Build a pre-formatted ANSI string for direct xterm.js rendering."""
     level_no = entry["level_no"]
@@ -104,13 +106,14 @@ def _format_ansi(entry: dict[str, Any]) -> str:
 
     # Timestamp: dim gray
     ts = entry["timestamp"]
-    if isinstance(ts, str):
+    if isinstance(ts, str):  # noqa: SIM108
         # Extract HH:MM:SS from ISO timestamp
         time_part = ts[11:19] if len(ts) >= 19 else ts
     else:
         time_part = ts.strftime("%H:%M:%S")
 
-    line = f"{_ANSI_DIM}{time_part}{_ANSI_RESET} {color}{level_name}{_ANSI_RESET} {_ANSI_DIM}{entry['logger']}{_ANSI_RESET}"
+    logger_name = entry['logger']
+    line = f"{_ANSI_DIM}{time_part}{_ANSI_RESET} {color}{level_name}{_ANSI_RESET} {_ANSI_DIM}{logger_name}{_ANSI_RESET}"
     line += f"\n  {color}{entry['message']}{_ANSI_RESET}"
 
     # Stack trace: same level color with cyan file paths
@@ -181,15 +184,14 @@ _broadcast_thread.start()
 
 def _enqueue_broadcast(entry: dict[str, Any]) -> None:
     """Enqueue a log entry for WebSocket broadcast (non-blocking)."""
-    try:
+    with contextlib.suppress(Exception):
         _broadcast_queue.put_nowait(entry)
-    except Exception:
-        pass
 
 
 # ---------------------------------------------------------------------------
 # The handler
 # ---------------------------------------------------------------------------
+
 
 class BufferedWebSocketHandler(logging.Handler):
     """

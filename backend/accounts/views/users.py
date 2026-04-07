@@ -6,7 +6,6 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from accounts.permissions import IsAdminRole
-from accounts.models import User
 from accounts.serializers import UserSerializer
 from accounts.use_cases import users as users_uc
 

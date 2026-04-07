@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from datetime import datetime, time, timezone as dt_timezone
+from datetime import datetime, time
+from datetime import timezone as dt_timezone
 
 from django.contrib.auth.hashers import make_password
 from django.test import TestCase

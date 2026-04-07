@@ -11,19 +11,19 @@ class AlarmConfig(AppConfig):
         """Wire websocket/system-status hooks for the alarm app at startup."""
         # Keep `alarm` core free of integration initialization; integrations bind via `alarm.signals`.
         # Core realtime updates are wired here to avoid import side effects at module load time.
-        from . import ws_signals  # noqa: F401
-        from . import receivers  # noqa: F401
-        from . import system_status  # noqa: F401
-
-        # Import tasks to register them with the scheduler
-        from . import tasks  # noqa: F401
-
         # Configure the in-memory log viewer buffer (ADR 0072)
         import logging
 
         from django.conf import settings
 
-        from . import log_handler
+        # Import tasks to register them with the scheduler
+        from . import (
+            log_handler,
+            receivers,  # noqa: F401
+            system_status,  # noqa: F401
+            tasks,  # noqa: F401
+            ws_signals,  # noqa: F401
+        )
 
         log_handler.configure(
             buffer_size=settings.LOG_VIEWER_BUFFER_SIZE,

@@ -20,4 +20,3 @@ class EntityStateNormalizationTests(SimpleTestCase):
 
     def test_normalize_contact_state_fallback(self):
         self.assertEqual(normalize_contact_state("weird"), "unknown")
-

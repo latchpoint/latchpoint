@@ -7,7 +7,6 @@ from django.db.models import Q
 
 
 class Migration(migrations.Migration):
-
     initial = True
 
     dependencies: list[tuple[str, str]] = []

@@ -48,7 +48,19 @@ class Migration(migrations.Migration):
                 ("instance_id", models.CharField(max_length=128)),
                 ("started_at", models.DateTimeField()),
                 ("finished_at", models.DateTimeField(blank=True, null=True)),
-                ("status", models.CharField(choices=[("running", "Running"), ("success", "Success"), ("failure", "Failure"), ("skipped", "Skipped"), ("timeout", "Timeout")], max_length=16)),
+                (
+                    "status",
+                    models.CharField(
+                        choices=[
+                            ("running", "Running"),
+                            ("success", "Success"),
+                            ("failure", "Failure"),
+                            ("skipped", "Skipped"),
+                            ("timeout", "Timeout"),
+                        ],
+                        max_length=16,
+                    ),
+                ),
                 ("duration_seconds", models.FloatField(blank=True, null=True)),
                 ("error_message", models.TextField(blank=True)),
                 ("error_traceback", models.TextField(blank=True)),
@@ -66,7 +78,8 @@ class Migration(migrations.Migration):
         ),
         migrations.AddConstraint(
             model_name="schedulertaskhealth",
-            constraint=models.UniqueConstraint(fields=("task_name", "instance_id"), name="scheduler_task_health_unique_task_instance"),
+            constraint=models.UniqueConstraint(
+                fields=("task_name", "instance_id"), name="scheduler_task_health_unique_task_instance"
+            ),
         ),
     ]
-

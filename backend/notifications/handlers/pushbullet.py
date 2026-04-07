@@ -22,6 +22,7 @@ class PushbulletHandler(NotificationHandler):
 
     provider_type = "pushbullet"
     display_name = "Pushbullet"
+
     @classmethod
     def from_env(cls) -> dict:
         from alarm.env_config import get_pushbullet_config

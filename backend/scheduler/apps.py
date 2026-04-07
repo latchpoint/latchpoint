@@ -51,7 +51,6 @@ class SchedulerConfig(AppConfig):
             # Apps should register their tasks in their own ready() method
             # or via autodiscovery of tasks.py modules
             from . import tasks  # noqa: F401
-
             from .runner import start_scheduler
 
             start_scheduler()

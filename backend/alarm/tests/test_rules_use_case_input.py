@@ -22,4 +22,3 @@ class RulesUseCaseInputTests(SimpleTestCase):
     def test_parse_simulate_input_rejects_non_int_assume_for_seconds(self):
         with self.assertRaises(rules_uc.RuleSimulateInputError):
             rules_uc.parse_simulate_input({"assume_for_seconds": "5"})
-

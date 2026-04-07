@@ -1,11 +1,10 @@
-import React, { type PropsWithChildren } from 'react'
-import { describe, expect, it, vi } from 'vitest'
+import { type PropsWithChildren } from 'react'
+import { describe, expect, it } from 'vitest'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { renderHook, waitFor } from '@testing-library/react'
 import { http, HttpResponse } from 'msw'
 import { server } from '@/test/msw/server'
 import {
-  notificationKeys,
   useEnabledNotificationProviders,
   useNotificationProvider,
   useNotificationProviders,

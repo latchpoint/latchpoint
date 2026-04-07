@@ -47,4 +47,3 @@ class RuleConditionsTests(SimpleTestCase):
         self.assertFalse(ok)
         self.assertEqual(trace["expected"], "on")
         self.assertEqual(trace["actual"], "off")
-

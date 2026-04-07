@@ -7,7 +7,6 @@ from rest_framework.test import APIClient, APITestCase
 
 from accounts.models import Role, User, UserRoleAssignment
 from alarm.models import AlarmSettingsProfile
-from alarm.tests.settings_test_utils import set_profile_settings
 
 
 class HomeAssistantEntitiesApiTests(APITestCase):

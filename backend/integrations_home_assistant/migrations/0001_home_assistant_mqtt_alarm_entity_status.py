@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from django.db import migrations, models
 import django.db.models.deletion
+from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
@@ -18,7 +18,12 @@ class Migration(migrations.Migration):
                 migrations.CreateModel(
                     name="HomeAssistantMqttAlarmEntityStatus",
                     fields=[
-                        ("id", models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name="ID")),
+                        (
+                            "id",
+                            models.BigAutoField(
+                                auto_created=True, primary_key=True, serialize=False, verbose_name="ID"
+                            ),
+                        ),
                         ("last_discovery_publish_at", models.DateTimeField(blank=True, null=True)),
                         ("last_state_publish_at", models.DateTimeField(blank=True, null=True)),
                         ("last_availability_publish_at", models.DateTimeField(blank=True, null=True)),
@@ -41,4 +46,3 @@ class Migration(migrations.Migration):
             ],
         ),
     ]
-

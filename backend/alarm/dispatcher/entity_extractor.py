@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from typing import Any
 
-
 SYSTEM_ALARM_STATE_ENTITY_ID = "__system.alarm_state"
 
 
@@ -178,9 +177,7 @@ def validate_entity_ids_exist(entity_ids: set[str]) -> tuple[set[str], set[str]]
 
     from alarm.models import Entity
 
-    existing = set(
-        Entity.objects.filter(entity_id__in=entity_ids).values_list("entity_id", flat=True)
-    )
+    existing = set(Entity.objects.filter(entity_id__in=entity_ids).values_list("entity_id", flat=True))
     missing = entity_ids - existing
 
     return existing, missing

@@ -41,11 +41,14 @@ def _value_id_key(value_id: dict) -> str:
     return f"{command_class}:{prop}:{prop_key}"
 
 
-@patch.dict(os.environ, {
-    "ZWAVEJS_ENABLED": "true",
-    "ZWAVEJS_WS_URL": "ws://example.invalid:3000",
-    "ZWAVEJS_CONNECT_TIMEOUT": "1",
-})
+@patch.dict(
+    os.environ,
+    {
+        "ZWAVEJS_ENABLED": "true",
+        "ZWAVEJS_WS_URL": "ws://example.invalid:3000",
+        "ZWAVEJS_CONNECT_TIMEOUT": "1",
+    },
+)
 class LockConfigSyncApiTests(APITestCase):
     def setUp(self):
         self.admin = User.objects.create_superuser(email="admin@example.com", password="pass")
@@ -77,7 +80,16 @@ class LockConfigSyncApiTests(APITestCase):
             (5, _value_id_key({"commandClass": 99, "property": "userCode", "propertyKey": 1})): "1234",
             (5, _value_id_key({"commandClass": 99, "property": "userIdStatus", "propertyKey": 2})): 1,
             (5, _value_id_key({"commandClass": 99, "property": "userCode", "propertyKey": 2})): "****",
-            (5, _value_id_key({"commandClass": 76, "property": "weekDaySchedule", "propertyKey": {"userId": 1, "weekday": 1, "slot": 1}})): {
+            (
+                5,
+                _value_id_key(
+                    {
+                        "commandClass": 76,
+                        "property": "weekDaySchedule",
+                        "propertyKey": {"userId": 1, "weekday": 1, "slot": 1},
+                    }
+                ),
+            ): {
                 "startHour": 8,
                 "startMinute": 0,
                 "durationHour": 8,
@@ -99,7 +111,9 @@ class LockConfigSyncApiTests(APITestCase):
         self.assertEqual(body["created"], 2)
         self.assertEqual(body["errors"], 0)
 
-        slot1 = DoorCodeLockAssignment.objects.select_related("door_code").get(lock_entity_id="lock.front_door", slot_index=1)
+        slot1 = DoorCodeLockAssignment.objects.select_related("door_code").get(
+            lock_entity_id="lock.front_door", slot_index=1
+        )
         self.assertEqual(slot1.door_code.user_id, self.user.id)
         self.assertEqual(slot1.door_code.source, DoorCode.Source.SYNCED)
         self.assertEqual(slot1.door_code.code_type, DoorCode.CodeType.TEMPORARY)
@@ -109,7 +123,9 @@ class LockConfigSyncApiTests(APITestCase):
         self.assertIsNotNone(slot1.door_code.code_hash)
         self.assertEqual(slot1.door_code.pin_length, 4)
 
-        slot2 = DoorCodeLockAssignment.objects.select_related("door_code").get(lock_entity_id="lock.front_door", slot_index=2)
+        slot2 = DoorCodeLockAssignment.objects.select_related("door_code").get(
+            lock_entity_id="lock.front_door", slot_index=2
+        )
         self.assertIsNone(slot2.door_code.code_hash)
         self.assertIsNone(slot2.door_code.pin_length)
 
@@ -203,7 +219,8 @@ class LockConfigSyncApiTests(APITestCase):
         self.assertEqual(resp1.json()["data"]["created"], 1)
 
         original = DoorCodeLockAssignment.objects.select_related("door_code").get(
-            lock_entity_id="lock.front_door", slot_index=1,
+            lock_entity_id="lock.front_door",
+            slot_index=1,
         )
         self.assertIsNone(original.door_code.code_hash)
 
@@ -223,7 +240,8 @@ class LockConfigSyncApiTests(APITestCase):
         self.assertEqual(resp1.status_code, 200)
 
         original = DoorCodeLockAssignment.objects.select_related("door_code").get(
-            lock_entity_id="lock.front_door", slot_index=1,
+            lock_entity_id="lock.front_door",
+            slot_index=1,
         )
         original_hash = original.door_code.code_hash
 
@@ -248,7 +266,8 @@ class LockConfigSyncApiTests(APITestCase):
         self.assertEqual(resp1.status_code, 200)
 
         assignment = DoorCodeLockAssignment.objects.select_related("door_code").get(
-            lock_entity_id="lock.front_door", slot_index=1,
+            lock_entity_id="lock.front_door",
+            slot_index=1,
         )
         self.assertTrue(assignment.door_code.is_active)
 
@@ -294,7 +313,8 @@ class LockConfigSyncApiTests(APITestCase):
         self.assertIn(body["unchanged"] + body["updated"], [1])  # slot 1 either unchanged or updated
 
         self.assertEqual(
-            DoorCodeLockAssignment.objects.filter(lock_entity_id="lock.front_door").count(), 2,
+            DoorCodeLockAssignment.objects.filter(lock_entity_id="lock.front_door").count(),
+            2,
         )
 
     # --- Slot 0 (master code) skipped ---
@@ -325,9 +345,7 @@ class LockConfigSyncApiTests(APITestCase):
         self.assertEqual(slot_actions.get(1), "created")
 
         # No assignment for slot 0.
-        self.assertFalse(
-            DoorCodeLockAssignment.objects.filter(lock_entity_id="lock.front_door", slot_index=0).exists()
-        )
+        self.assertFalse(DoorCodeLockAssignment.objects.filter(lock_entity_id="lock.front_door", slot_index=0).exists())
 
     # --- Node doesn't support CC 0x63 (User Code) ---
 

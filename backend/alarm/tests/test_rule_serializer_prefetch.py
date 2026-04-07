@@ -22,11 +22,7 @@ class TestRuleSerializerPrefetch(TestCase):
         RuleEntityRef.objects.create(rule=rule, entity=door)
         RuleEntityRef.objects.create(rule=rule, entity=window)
 
-        prefetched = (
-            Rule.objects.filter(id=rule.id)
-            .prefetch_related("entity_refs__entity")
-            .get()
-        )
+        prefetched = Rule.objects.filter(id=rule.id).prefetch_related("entity_refs__entity").get()
         with self.assertNumQueries(0):
             data = RuleSerializer(prefetched).data
 
@@ -46,4 +42,3 @@ class TestRuleSerializerPrefetch(TestCase):
         self.assertEqual(len(data), 2)
         self.assertEqual(data[0]["entity_ids"], ["binary_sensor.motion"])
         self.assertEqual(data[1]["entity_ids"], ["binary_sensor.motion"])
-

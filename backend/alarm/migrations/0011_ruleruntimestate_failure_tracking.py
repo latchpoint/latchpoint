@@ -10,7 +10,6 @@ class Migration(migrations.Migration):
 
     operations = [
         # Add new status choice (handled by model change, no migration needed for TextChoices)
-
         # Add failure tracking fields
         migrations.AddField(
             model_name="ruleruntimestate",

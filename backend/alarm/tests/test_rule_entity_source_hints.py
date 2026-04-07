@@ -70,4 +70,3 @@ class TestRuleEntitySourceHints(APITestCase):
 
         entity = Entity.objects.get(entity_id="binary_sensor.front_door")
         self.assertEqual(entity.source, "zwavejs")
-

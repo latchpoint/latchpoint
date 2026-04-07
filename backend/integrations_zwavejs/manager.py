@@ -1,12 +1,11 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import concurrent.futures
+import contextlib
 import logging
 import threading
 import time
-import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Callable, TypedDict
@@ -262,9 +261,9 @@ class ZwavejsConnectionManager:
             if isinstance(event, dict):
                 payload: dict[str, Any] = event
             elif hasattr(event, "data"):
-                payload = dict(getattr(event, "data") or {})
+                payload = dict(event.data or {})
             elif hasattr(event, "__dict__"):
-                payload = dict(getattr(event, "__dict__") or {})
+                payload = dict(event.__dict__ or {})
             else:
                 payload = {"value": event}
         except Exception:
@@ -422,7 +421,8 @@ class ZwavejsConnectionManager:
             time.sleep(0.05)
         status = self.get_status()
         raise ZwavejsNotReachable(
-            "Timed out waiting for Z-Wave JS driver ready." + (f" last_error={status.last_error}" if status.last_error else "")
+            "Timed out waiting for Z-Wave JS driver ready."
+            + (f" last_error={status.last_error}" if status.last_error else "")
         )
 
     def get_home_id(self) -> int | None:
@@ -473,7 +473,9 @@ class ZwavejsConnectionManager:
         """Return the node's defined value IDs as dicts suitable for API transport."""
         return self._run_coro(self._async_node_get_defined_value_ids(node_id=node_id), timeout_seconds=timeout_seconds)
 
-    def node_get_value_metadata(self, *, node_id: int, value_id: dict[str, Any], timeout_seconds: float = 5.0) -> dict[str, Any]:
+    def node_get_value_metadata(
+        self, *, node_id: int, value_id: dict[str, Any], timeout_seconds: float = 5.0
+    ) -> dict[str, Any]:
         """Return metadata for the given value id on a node."""
         return self._run_coro(
             self._async_node_get_value_metadata(node_id=node_id, value_id=value_id),
@@ -483,7 +485,9 @@ class ZwavejsConnectionManager:
     def node_get_value(self, *, node_id: int, value_id: dict[str, Any], timeout_seconds: float = 5.0) -> object:
         """Return the current cached value for a node value id (no network I/O expected)."""
         # Cached read; no I/O expected.
-        return self._run_coro(self._async_node_get_value(node_id=node_id, value_id=value_id), timeout_seconds=timeout_seconds)
+        return self._run_coro(
+            self._async_node_get_value(node_id=node_id, value_id=value_id), timeout_seconds=timeout_seconds
+        )
 
     def set_value(
         self,
@@ -669,7 +673,9 @@ class ZwavejsConnectionManager:
                     while not self._stop_event.is_set() and not listen_task.done():
                         with self._lock:
                             current = dict(self._settings)
-                        if (current.get("ws_url") or "").strip() != settings_fingerprint[0] or bool(current.get("enabled")) != settings_fingerprint[1]:
+                        if (current.get("ws_url") or "").strip() != settings_fingerprint[0] or bool(
+                            current.get("enabled")
+                        ) != settings_fingerprint[1]:
                             break
                         await asyncio.sleep(0.2)
 

@@ -4,15 +4,14 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
-        ('notifications', '0005_rename_notificati_status_created_at_idx_notificatio_status_1e9b53_idx_and_more'),
+        ("notifications", "0005_rename_notificati_status_created_at_idx_notificatio_status_1e9b53_idx_and_more"),
     ]
 
     operations = [
         migrations.AlterField(
-            model_name='notificationprovider',
-            name='config',
-            field=models.JSONField(default=dict, help_text='Provider configuration (env-sourced, kept empty)'),
+            model_name="notificationprovider",
+            name="config",
+            field=models.JSONField(default=dict, help_text="Provider configuration (env-sourced, kept empty)"),
         ),
     ]

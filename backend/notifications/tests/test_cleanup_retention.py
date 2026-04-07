@@ -211,4 +211,3 @@ class CleanupNotificationDeliveriesTests(TestCase):
         self.assertIn(dead_recent.pk, remaining)
         self.assertNotIn(sent_old.pk, remaining)
         self.assertNotIn(dead_old.pk, remaining)
-

@@ -463,7 +463,9 @@ def list_notify_services(
     """
     Returns a sorted list of notify services like: ["notify.notify", "notify.mobile_app_phone"].
     """
-    rows = list_services(base_url=base_url, token=token, urlopen=urlopen, timeout_seconds=timeout_seconds, logger_obj=logger_obj)
+    rows = list_services(
+        base_url=base_url, token=token, urlopen=urlopen, timeout_seconds=timeout_seconds, logger_obj=logger_obj
+    )
     out: set[str] = set()
     for row in rows:
         if row.get("domain") != "notify":
@@ -471,7 +473,7 @@ def list_notify_services(
         services = row.get("services")
         if not isinstance(services, dict):
             continue
-        for service_name in services.keys():
+        for service_name in services:
             if isinstance(service_name, str) and service_name:
                 out.add(f"notify.{service_name}")
     return sorted(out)

@@ -4,7 +4,6 @@ from django.contrib.auth.hashers import make_password
 
 from accounts.models import User, UserCode, UserCodeAllowedState
 
-
 DEFAULT_CODE_ALLOWED_STATES = [
     UserCodeAllowedState.AlarmState.ARMED_HOME,
     UserCodeAllowedState.AlarmState.ARMED_AWAY,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from datetime import datetime, time, timezone as dt_timezone
+from datetime import datetime, time
+from datetime import timezone as dt_timezone
 
 from django.contrib.auth.hashers import make_password
 from django.test import TestCase
@@ -72,4 +73,3 @@ class CodeValidationTests(TestCase):
         now = datetime(2025, 1, 1, 12, 0, tzinfo=dt_timezone.utc)
         result = code_validation.validate_user_code(user=self.user, raw_code=self.raw_code, now=now)
         self.assertEqual(result.code.id, self.code.id)
-

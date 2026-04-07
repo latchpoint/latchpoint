@@ -15,9 +15,7 @@ class LocksAvailableApiTests(APITestCase):
         self.client = APIClient()
         self.client.force_authenticate(self.user)
         # Use get_or_create to avoid duplicate key errors
-        self.profile, _ = AlarmSettingsProfile.objects.get_or_create(
-            name="Default", defaults={"is_active": True}
-        )
+        self.profile, _ = AlarmSettingsProfile.objects.get_or_create(name="Default", defaults={"is_active": True})
 
     def test_available_locks_requires_auth(self):
         client = APIClient()

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import uuid
 
 from django.core.paginator import Paginator
@@ -56,22 +57,16 @@ class AlarmEventsView(APIView):
                 queryset = queryset.filter(timestamp__lte=parsed)
 
         if user_id:
-            try:
+            with contextlib.suppress(ValueError):
                 queryset = queryset.filter(user_id=uuid.UUID(user_id))
-            except ValueError:
-                pass
 
         if sensor_id:
-            try:
+            with contextlib.suppress(TypeError, ValueError):
                 queryset = queryset.filter(sensor_id=int(sensor_id))
-            except (TypeError, ValueError):
-                pass
 
         if code_id:
-            try:
+            with contextlib.suppress(TypeError, ValueError):
                 queryset = queryset.filter(code_id=int(code_id))
-            except (TypeError, ValueError):
-                pass
 
         queryset = queryset.order_by(ordering)
         paginator = Paginator(queryset, page_size)

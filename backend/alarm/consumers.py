@@ -8,8 +8,8 @@ from channels.generic.websocket import AsyncJsonWebsocketConsumer
 from rest_framework.utils.encoders import JSONEncoder
 
 from alarm.state_machine import transitions
-from alarm.websocket import build_alarm_state_message
 from alarm.system_status import get_current_system_status_message
+from alarm.websocket import build_alarm_state_message
 
 logger = logging.getLogger(__name__)
 

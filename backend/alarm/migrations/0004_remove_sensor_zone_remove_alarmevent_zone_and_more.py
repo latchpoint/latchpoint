@@ -4,34 +4,32 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
-        ('alarm', '0003_entitytag_entity_rule_ruleactionlog_ruleentityref_and_more'),
+        ("alarm", "0003_entitytag_entity_rule_ruleactionlog_ruleentityref_and_more"),
     ]
 
     operations = [
         migrations.RemoveConstraint(
-            model_name='sensor',
-            name='sensors_zone_name',
+            model_name="sensor",
+            name="sensors_zone_name",
         ),
         migrations.RemoveIndex(
-            model_name='sensor',
-            name='alarm_senso_zone_id_0d401e_idx',
+            model_name="sensor",
+            name="alarm_senso_zone_id_0d401e_idx",
         ),
         migrations.RemoveField(
-            model_name='sensor',
-            name='zone',
+            model_name="sensor",
+            name="zone",
         ),
         migrations.RemoveField(
-            model_name='alarmevent',
-            name='zone',
+            model_name="alarmevent",
+            name="zone",
         ),
         migrations.AddIndex(
-            model_name='sensor',
-            index=models.Index(fields=['is_active'], name='alarm_senso_is_acti_de738f_idx'),
+            model_name="sensor",
+            index=models.Index(fields=["is_active"], name="alarm_senso_is_acti_de738f_idx"),
         ),
         migrations.DeleteModel(
-            name='Zone',
+            name="Zone",
         ),
     ]
-

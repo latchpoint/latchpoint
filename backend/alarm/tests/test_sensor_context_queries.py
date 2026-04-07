@@ -42,5 +42,4 @@ class TestSensorContextQueries(TestCase):
                 sensors=sensors,
                 prefer_home_assistant_live_state=False,
             )
-            SensorSerializer(sensors, many=True, context=context).data
-
+            _ = SensorSerializer(sensors, many=True, context=context).data

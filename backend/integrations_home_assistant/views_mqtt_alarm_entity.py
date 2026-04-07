@@ -7,10 +7,8 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from accounts.permissions import IsAdminRole
-from alarm.gateways.mqtt import default_mqtt_gateway
-from integrations_home_assistant import mqtt_alarm_entity_status_store
-from integrations_home_assistant.mqtt_alarm_entity import publish_discovery
 from alarm.env_config import get_mqtt_config
+from alarm.gateways.mqtt import default_mqtt_gateway
 from alarm.models import AlarmSettingsEntry
 from alarm.serializers import (
     HomeAssistantAlarmEntitySettingsSerializer,
@@ -19,7 +17,8 @@ from alarm.serializers import (
 from alarm.settings_registry import ALARM_PROFILE_SETTINGS_BY_KEY
 from alarm.state_machine.settings import get_setting_json
 from alarm.use_cases.settings_profile import ensure_active_settings_profile
-
+from integrations_home_assistant import mqtt_alarm_entity_status_store
+from integrations_home_assistant.mqtt_alarm_entity import publish_discovery
 
 mqtt_gateway = default_mqtt_gateway
 
@@ -99,13 +98,13 @@ class HomeAssistantMqttAlarmEntitySettingsView(APIView):
             defaults={"value": merged, "value_type": definition.value_type},
         )
 
-        if merged.get("enabled"):
-            # If the user just enabled the entity, or if they changed the name and want HA updated,
-            # publish discovery and push an immediate state/availability update.
-            if ("enabled" in serializer.validated_data) or (
-                merged.get("also_rename_in_home_assistant") and "entity_name" in serializer.validated_data
-            ):
-                publish_discovery(force=True)
+        # If the user just enabled the entity, or if they changed the name and want HA updated,
+        # publish discovery and push an immediate state/availability update.
+        if merged.get("enabled") and (
+            ("enabled" in serializer.validated_data)
+            or (merged.get("also_rename_in_home_assistant") and "entity_name" in serializer.validated_data)
+        ):
+            publish_discovery(force=True)
 
         return Response(HomeAssistantAlarmEntitySettingsSerializer(merged).data, status=status.HTTP_200_OK)
 

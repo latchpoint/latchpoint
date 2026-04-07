@@ -17,4 +17,3 @@ class ShouldStartTests(SimpleTestCase):
     def test_does_not_start_for_migrate(self):
         with patch("scheduler.apps.sys.argv", ["manage.py", "migrate"]):
             self.assertFalse(_should_start())
-

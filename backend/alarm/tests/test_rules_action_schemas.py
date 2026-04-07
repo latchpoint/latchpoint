@@ -1,6 +1,7 @@
 """
 Tests for rules engine action schema validation and permissions.
 """
+
 from __future__ import annotations
 
 from django.contrib.auth import get_user_model
@@ -8,10 +9,9 @@ from django.test import TestCase
 from django.urls import reverse
 from rest_framework.test import APIRequestFactory
 
-from alarm.models import Rule
 from alarm.rules.action_schemas import (
-    ADMIN_ONLY_ACTION_TYPES,
     ACTION_TYPES,
+    ADMIN_ONLY_ACTION_TYPES,
     get_action_schemas,
     validate_action,
 )
@@ -49,116 +49,142 @@ class ValidateActionTests(TestCase):
         self.assertTrue(any("Invalid mode" in e for e in errors))
 
     def test_valid_ha_call_service_minimal(self):
-        errors = validate_action({
-            "type": "ha_call_service",
-            "action": "light.turn_on",
-        })
+        errors = validate_action(
+            {
+                "type": "ha_call_service",
+                "action": "light.turn_on",
+            }
+        )
         self.assertEqual(errors, [])
 
     def test_valid_ha_call_service_with_target_and_data(self):
-        errors = validate_action({
-            "type": "ha_call_service",
-            "action": "lock.lock",
-            "target": {"entity_id": ["lock.front_door"]},
-            "data": {"code": "1234"},
-        })
+        errors = validate_action(
+            {
+                "type": "ha_call_service",
+                "action": "lock.lock",
+                "target": {"entity_id": ["lock.front_door"]},
+                "data": {"code": "1234"},
+            }
+        )
         self.assertEqual(errors, [])
 
     def test_ha_call_service_missing_action(self):
-        errors = validate_action({
-            "type": "ha_call_service",
-        })
+        errors = validate_action(
+            {
+                "type": "ha_call_service",
+            }
+        )
         self.assertTrue(any("action" in e for e in errors))
 
     def test_ha_call_service_invalid_action_format(self):
-        errors = validate_action({
-            "type": "ha_call_service",
-            "action": "invalid_no_dot",
-        })
+        errors = validate_action(
+            {
+                "type": "ha_call_service",
+                "action": "invalid_no_dot",
+            }
+        )
         self.assertTrue(any("domain.service" in e for e in errors))
 
     def test_ha_call_service_invalid_target_type(self):
-        errors = validate_action({
-            "type": "ha_call_service",
-            "action": "light.turn_on",
-            "target": "not_an_object",
-        })
+        errors = validate_action(
+            {
+                "type": "ha_call_service",
+                "action": "light.turn_on",
+                "target": "not_an_object",
+            }
+        )
         self.assertTrue(any("target" in e for e in errors))
 
     def test_ha_call_service_invalid_data_type(self):
-        errors = validate_action({
-            "type": "ha_call_service",
-            "action": "light.turn_on",
-            "data": "not_an_object",
-        })
+        errors = validate_action(
+            {
+                "type": "ha_call_service",
+                "action": "light.turn_on",
+                "data": "not_an_object",
+            }
+        )
         self.assertTrue(any("data" in e for e in errors))
 
     def test_valid_zwavejs_set_value(self):
-        errors = validate_action({
-            "type": "zwavejs_set_value",
-            "node_id": 12,
-            "value_id": {
-                "commandClass": 38,
-                "property": "targetValue",
-            },
-            "value": 100,
-        })
+        errors = validate_action(
+            {
+                "type": "zwavejs_set_value",
+                "node_id": 12,
+                "value_id": {
+                    "commandClass": 38,
+                    "property": "targetValue",
+                },
+                "value": 100,
+            }
+        )
         self.assertEqual(errors, [])
 
     def test_valid_zwavejs_set_value_with_optional_fields(self):
-        errors = validate_action({
-            "type": "zwavejs_set_value",
-            "node_id": 12,
-            "value_id": {
-                "commandClass": 38,
-                "property": "targetValue",
-                "endpoint": 1,
-                "propertyKey": "some_key",
-            },
-            "value": True,
-        })
+        errors = validate_action(
+            {
+                "type": "zwavejs_set_value",
+                "node_id": 12,
+                "value_id": {
+                    "commandClass": 38,
+                    "property": "targetValue",
+                    "endpoint": 1,
+                    "propertyKey": "some_key",
+                },
+                "value": True,
+            }
+        )
         self.assertEqual(errors, [])
 
     def test_valid_zigbee2mqtt_set_value(self):
-        errors = validate_action({
-            "type": "zigbee2mqtt_set_value",
-            "entity_id": "z2m_switch.0x00124b0018e2abcd_state",
-            "value": True,
-        })
+        errors = validate_action(
+            {
+                "type": "zigbee2mqtt_set_value",
+                "entity_id": "z2m_switch.0x00124b0018e2abcd_state",
+                "value": True,
+            }
+        )
         self.assertEqual(errors, [])
 
     def test_valid_zigbee2mqtt_switch(self):
-        errors = validate_action({
-            "type": "zigbee2mqtt_switch",
-            "entity_id": "z2m_switch.0x00124b0018e2abcd_state",
-            "state": "on",
-        })
+        errors = validate_action(
+            {
+                "type": "zigbee2mqtt_switch",
+                "entity_id": "z2m_switch.0x00124b0018e2abcd_state",
+                "state": "on",
+            }
+        )
         self.assertEqual(errors, [])
 
     def test_zigbee2mqtt_switch_invalid_state(self):
-        errors = validate_action({
-            "type": "zigbee2mqtt_switch",
-            "entity_id": "z2m_switch.0x00124b0018e2abcd_state",
-            "state": "maybe",
-        })
+        errors = validate_action(
+            {
+                "type": "zigbee2mqtt_switch",
+                "entity_id": "z2m_switch.0x00124b0018e2abcd_state",
+                "state": "maybe",
+            }
+        )
         self.assertTrue(any("state" in e for e in errors))
 
     def test_valid_zigbee2mqtt_light(self):
-        errors = validate_action({
-            "type": "zigbee2mqtt_light",
-            "entity_id": "z2m_switch.0x00124b0018e2abcd_state",
-            "state": "on",
-            "brightness": 200,
-        })
+        errors = validate_action(
+            {
+                "type": "zigbee2mqtt_light",
+                "entity_id": "z2m_switch.0x00124b0018e2abcd_state",
+                "state": "on",
+                "brightness": 200,
+            }
+        )
         self.assertEqual(errors, [])
 
     def test_zigbee2mqtt_light_invalid_brightness(self):
-        errors = validate_action({
-            "type": "zigbee2mqtt_light",
-            "entity_id": "z2m_switch.0x00124b0018e2abcd_state",
-            "state": "on",
-            "brightness": "200",
-        })
+        errors = validate_action(
+            {
+                "type": "zigbee2mqtt_light",
+                "entity_id": "z2m_switch.0x00124b0018e2abcd_state",
+                "state": "on",
+                "brightness": "200",
+            }
+        )
         self.assertTrue(any("brightness" in e for e in errors))
 
     def test_zigbee2mqtt_set_value_missing_entity_id(self):
@@ -170,45 +196,55 @@ class ValidateActionTests(TestCase):
         self.assertTrue(any("value" in e for e in errors))
 
     def test_zwavejs_set_value_missing_node_id(self):
-        errors = validate_action({
-            "type": "zwavejs_set_value",
-            "value_id": {"commandClass": 38, "property": "targetValue"},
-            "value": 100,
-        })
+        errors = validate_action(
+            {
+                "type": "zwavejs_set_value",
+                "value_id": {"commandClass": 38, "property": "targetValue"},
+                "value": 100,
+            }
+        )
         self.assertTrue(any("node_id" in e for e in errors))
 
     def test_zwavejs_set_value_missing_value_id(self):
-        errors = validate_action({
-            "type": "zwavejs_set_value",
-            "node_id": 12,
-            "value": 100,
-        })
+        errors = validate_action(
+            {
+                "type": "zwavejs_set_value",
+                "node_id": 12,
+                "value": 100,
+            }
+        )
         self.assertTrue(any("value_id" in e for e in errors))
 
     def test_zwavejs_set_value_missing_value(self):
-        errors = validate_action({
-            "type": "zwavejs_set_value",
-            "node_id": 12,
-            "value_id": {"commandClass": 38, "property": "targetValue"},
-        })
+        errors = validate_action(
+            {
+                "type": "zwavejs_set_value",
+                "node_id": 12,
+                "value_id": {"commandClass": 38, "property": "targetValue"},
+            }
+        )
         self.assertTrue(any("value" in e for e in errors))
 
     def test_zwavejs_set_value_invalid_value_id_missing_command_class(self):
-        errors = validate_action({
-            "type": "zwavejs_set_value",
-            "node_id": 12,
-            "value_id": {"property": "targetValue"},
-            "value": 100,
-        })
+        errors = validate_action(
+            {
+                "type": "zwavejs_set_value",
+                "node_id": 12,
+                "value_id": {"property": "targetValue"},
+                "value": 100,
+            }
+        )
         self.assertTrue(any("commandClass" in e for e in errors))
 
     def test_zwavejs_set_value_invalid_value_id_missing_property(self):
-        errors = validate_action({
-            "type": "zwavejs_set_value",
-            "node_id": 12,
-            "value_id": {"commandClass": 38},
-            "value": 100,
-        })
+        errors = validate_action(
+            {
+                "type": "zwavejs_set_value",
+                "node_id": 12,
+                "value_id": {"commandClass": 38},
+                "value": 100,
+            }
+        )
         self.assertTrue(any("property" in e for e in errors))
 
     def test_action_must_be_object(self):
@@ -242,17 +278,20 @@ class ActionSchemaMetadataTests(TestCase):
         self.assertNotIn("alarm_arm", ADMIN_ONLY_ACTION_TYPES)
 
     def test_all_action_types_defined(self):
-        self.assertEqual(ACTION_TYPES, {
-            "alarm_trigger",
-            "alarm_disarm",
-            "alarm_arm",
-            "ha_call_service",
-            "zwavejs_set_value",
-            "zigbee2mqtt_set_value",
-            "zigbee2mqtt_switch",
-            "zigbee2mqtt_light",
-            "send_notification",
-        })
+        self.assertEqual(
+            ACTION_TYPES,
+            {
+                "alarm_trigger",
+                "alarm_disarm",
+                "alarm_arm",
+                "ha_call_service",
+                "zwavejs_set_value",
+                "zigbee2mqtt_set_value",
+                "zigbee2mqtt_switch",
+                "zigbee2mqtt_light",
+                "send_notification",
+            },
+        )
 
     def test_get_action_schemas_returns_all_types(self):
         schemas = get_action_schemas()

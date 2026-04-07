@@ -85,4 +85,3 @@ class SchedulerTaskRun(models.Model):
 
     def __str__(self) -> str:  # pragma: no cover
         return f"{self.instance_id}:{self.task_name}:{self.status}:{self.started_at.isoformat()}"
-

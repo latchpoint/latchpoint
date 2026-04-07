@@ -14,14 +14,23 @@ def execute(action: dict[str, Any], ctx: ActionContext) -> tuple[dict[str, Any],
     if not isinstance(entity_id, str) or not entity_id.strip():
         return {"ok": False, "type": "zigbee2mqtt_switch", "error": "missing_entity_id"}, None
     if state not in ("on", "off"):
-        return {"ok": False, "type": "zigbee2mqtt_switch", "entity_id": entity_id.strip(), "error": "invalid_state"}, None
+        return {
+            "ok": False,
+            "type": "zigbee2mqtt_switch",
+            "entity_id": entity_id.strip(),
+            "error": "invalid_state",
+        }, None
     try:
         ctx.zigbee2mqtt.set_entity_value(entity_id=entity_id.strip(), value={"state": state == "on"})
         return {"ok": True, "type": "zigbee2mqtt_switch", "entity_id": entity_id.strip(), "state": state}, None
     except Exception as exc:
         logger.warning("zigbee2mqtt_switch failed for rule %s: %s", ctx.rule.id, exc, exc_info=True)
         return {
-            "ok": False, "type": "zigbee2mqtt_switch", "entity_id": entity_id.strip(), "state": state, "error": str(exc)
+            "ok": False,
+            "type": "zigbee2mqtt_switch",
+            "entity_id": entity_id.strip(),
+            "state": state,
+            "error": str(exc),
         }, str(exc)
 
 

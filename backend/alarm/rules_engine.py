@@ -2,14 +2,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import timedelta
-from typing import Any
-
 from typing import Any, Callable
 
 from django.db import transaction
 from django.utils import timezone
 
-from .models import RuleRuntimeState
+from config.domain_exceptions import DomainError
+
 from .rules.action_executor import execute_actions
 from .rules.audit_log import log_rule_action
 from .rules.conditions import (
@@ -20,7 +19,6 @@ from .rules.conditions import (
 from .rules.repositories import RuleEngineRepositories, default_rule_engine_repositories
 from .rules.runtime_state import cooldown_active
 
-from config.domain_exceptions import DomainError
 
 class RuleEngineError(DomainError):
     pass
@@ -294,7 +292,9 @@ def simulate_rules(
         seconds, child = extract_for(when_node)
 
         if seconds:
-            ok_child, trace = eval_condition_explain_with_context(child, entity_state=merged_state, now=now, repos=repos)
+            ok_child, trace = eval_condition_explain_with_context(
+                child, entity_state=merged_state, now=now, repos=repos
+            )
             if not ok_child:
                 not_matched.append(
                     {
@@ -330,7 +330,11 @@ def simulate_rules(
                     "kind": rule.kind,
                     "priority": rule.priority,
                     "matched": True,
-                    "for": {"seconds": seconds, "status": "assumed_satisfied", "assumed_for_seconds": assume_for_seconds},
+                    "for": {
+                        "seconds": seconds,
+                        "status": "assumed_satisfied",
+                        "assumed_for_seconds": assume_for_seconds,
+                    },
                     "trace": trace,
                     "actions": definition.get("then") if isinstance(definition.get("then"), list) else [],
                 }

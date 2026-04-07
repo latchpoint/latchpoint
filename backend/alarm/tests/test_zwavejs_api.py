@@ -29,14 +29,17 @@ class ZwavejsApiTests(APITestCase):
 
         self.profile = AlarmSettingsProfile.objects.create(name="Default", is_active=True)
 
-    @patch.dict(os.environ, {
-        "ZWAVEJS_ENABLED": "true",
-        "ZWAVEJS_WS_URL": "ws://zwavejs.local:3000",
-        "ZWAVEJS_API_TOKEN": "supersecret",
-        "ZWAVEJS_CONNECT_TIMEOUT": "5",
-        "ZWAVEJS_RECONNECT_MIN": "1",
-        "ZWAVEJS_RECONNECT_MAX": "30",
-    })
+    @patch.dict(
+        os.environ,
+        {
+            "ZWAVEJS_ENABLED": "true",
+            "ZWAVEJS_WS_URL": "ws://zwavejs.local:3000",
+            "ZWAVEJS_API_TOKEN": "supersecret",
+            "ZWAVEJS_CONNECT_TIMEOUT": "5",
+            "ZWAVEJS_RECONNECT_MIN": "1",
+            "ZWAVEJS_RECONNECT_MAX": "30",
+        },
+    )
     def test_zwavejs_token_is_masked_in_zwavejs_settings_endpoint(self):
         url = reverse("zwavejs-settings")
         response = self.client.get(url)
@@ -50,10 +53,13 @@ class ZwavejsApiTests(APITestCase):
         response = self.client.patch(url, data={"ws_url": "wss://zwavejs2.local:3000"}, format="json")
         self.assertEqual(response.status_code, 405)
 
-    @patch.dict(os.environ, {
-        "ZWAVEJS_ENABLED": "true",
-        "ZWAVEJS_WS_URL": "ws://zwavejs.local:3000",
-    })
+    @patch.dict(
+        os.environ,
+        {
+            "ZWAVEJS_ENABLED": "true",
+            "ZWAVEJS_WS_URL": "ws://zwavejs.local:3000",
+        },
+    )
     def test_zwavejs_status_endpoint_does_not_connect_during_tests(self):
         url = reverse("zwavejs-status")
         response = self.client.get(url)

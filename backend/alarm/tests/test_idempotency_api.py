@@ -64,9 +64,7 @@ class IdempotencyApiTests(APITestCase):
         self.assertEqual(first.status_code, 200)
         self.assertEqual(second.status_code, 200)
 
-        active_ids = list(
-            AlarmSettingsProfile.objects.filter(is_active=True).values_list("id", flat=True)
-        )
+        active_ids = list(AlarmSettingsProfile.objects.filter(is_active=True).values_list("id", flat=True))
         self.assertEqual(active_ids, [candidate.id])
 
         active_profile.refresh_from_db()

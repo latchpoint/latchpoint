@@ -34,6 +34,7 @@ class RuleEngineRepositories:
 
 def default_rule_engine_repositories() -> RuleEngineRepositories:
     """Build the default repositories adapter used by the rules engine orchestration."""
+
     def _list_enabled_rules() -> list[Rule]:
         """Return enabled rules ordered by priority."""
         return list(Rule.objects.filter(enabled=True).order_by("-priority", "id"))
@@ -77,7 +78,9 @@ def default_rule_engine_repositories() -> RuleEngineRepositories:
         if since is None:
             since = timezone.now() - timezone.timedelta(minutes=5)
         qs = (
-            FrigateDetection.objects.filter(provider="frigate", label=label, camera__in=cleaned_cameras, observed_at__gte=since)
+            FrigateDetection.objects.filter(
+                provider="frigate", label=label, camera__in=cleaned_cameras, observed_at__gte=since
+            )
             .order_by("observed_at", "id")
             .only("provider", "event_id", "label", "camera", "zones", "confidence_pct", "observed_at")
         )
@@ -97,9 +100,7 @@ def default_rule_engine_repositories() -> RuleEngineRepositories:
     def _get_alarm_state() -> str | None:
         """Return the current alarm state from the active snapshot, if any."""
         try:
-            snapshot = (
-                AlarmStateSnapshot.objects.filter(exit_at__isnull=True).order_by("-entered_at", "-id").first()
-            )
+            snapshot = AlarmStateSnapshot.objects.filter(exit_at__isnull=True).order_by("-entered_at", "-id").first()
             return snapshot.current_state if snapshot else None
         except Exception:
             return None

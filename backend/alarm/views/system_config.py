@@ -29,5 +29,7 @@ class SystemConfigDetailView(APIView):
         row = get_object_or_404(SystemConfig, key=key)
         serializer = SystemConfigUpdateSerializer(row, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
-        row = system_config_uc.update_system_config(row=row, changes=dict(serializer.validated_data), actor_user=request.user)
+        row = system_config_uc.update_system_config(
+            row=row, changes=dict(serializer.validated_data), actor_user=request.user
+        )
         return Response(SystemConfigSerializer(row).data, status=status.HTTP_200_OK)

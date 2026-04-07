@@ -5,8 +5,8 @@ from datetime import datetime
 from django.utils import timezone
 
 from alarm.models import AlarmSettingsProfile
-from integrations_home_assistant.models import HomeAssistantMqttAlarmEntityStatus
 from alarm.use_cases.settings_profile import ensure_active_settings_profile
+from integrations_home_assistant.models import HomeAssistantMqttAlarmEntityStatus
 
 
 def _get_or_create_status(profile: AlarmSettingsProfile) -> HomeAssistantMqttAlarmEntityStatus:
@@ -61,9 +61,13 @@ def read_status() -> dict[str, object]:
             "last_error": None,
         }
     return {
-        "last_discovery_publish_at": status.last_discovery_publish_at.isoformat() if status.last_discovery_publish_at else None,
+        "last_discovery_publish_at": status.last_discovery_publish_at.isoformat()
+        if status.last_discovery_publish_at
+        else None,
         "last_state_publish_at": status.last_state_publish_at.isoformat() if status.last_state_publish_at else None,
-        "last_availability_publish_at": status.last_availability_publish_at.isoformat() if status.last_availability_publish_at else None,
+        "last_availability_publish_at": status.last_availability_publish_at.isoformat()
+        if status.last_availability_publish_at
+        else None,
         "last_error_at": status.last_error_at.isoformat() if status.last_error_at else None,
         "last_error": status.last_error or None,
     }

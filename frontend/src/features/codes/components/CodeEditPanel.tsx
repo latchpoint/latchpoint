@@ -36,6 +36,7 @@ export function CodeEditPanel({ code, armableStates, isPending, onUpdate, onCanc
   const [editReauthPassword, setEditReauthPassword] = useState<string>('')
   const [editError, setEditError] = useState<string | null>(null)
 
+  /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
     setEditLabel(code.label || '')
     setEditNewCode('')
@@ -49,6 +50,7 @@ export function CodeEditPanel({ code, armableStates, isPending, onUpdate, onCanc
     setEditReauthPassword('')
     setEditError(null)
   }, [code])
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   const submitEdit = async () => {
     setEditError(null)

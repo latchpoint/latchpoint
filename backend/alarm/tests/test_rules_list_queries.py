@@ -28,4 +28,3 @@ class TestRulesListQueries(APITestCase):
         with self.assertNumQueries(3):
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
-

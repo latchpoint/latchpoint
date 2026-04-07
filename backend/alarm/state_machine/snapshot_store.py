@@ -84,7 +84,6 @@ def set_previous_armed_state(snapshot: AlarmStateSnapshot) -> None:
         snapshot.previous_state = snapshot.target_armed_state
 
 
-
 def _schedule_integrations_alarm_state_change(*, state_to: str) -> None:
     """Schedule an `alarm_state_change_committed` signal after DB commit."""
     from alarm.signals import alarm_state_change_committed

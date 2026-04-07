@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import threading
 import uuid
@@ -18,10 +19,10 @@ from django.db import close_old_connections
 from django.utils import timezone
 
 from .config import DispatcherConfig, get_dispatcher_config
+from .entity_extractor import extract_entity_ids_from_definition
 from .failure_handler import is_rule_allowed, record_rule_failure, record_rule_success
 from .rate_limiter import TokenBucket
 from .stats import DispatcherStats
-from .entity_extractor import extract_entity_ids_from_definition
 
 if TYPE_CHECKING:
     from alarm.models import Rule
@@ -74,9 +75,7 @@ class RuleDispatcher:
         self._lock = threading.Lock()
         # entity_id -> (first_seen, source) to track which integration notified
         self._pending_entities: dict[str, tuple[datetime, str]] = {}
-        self._pending_batches: deque[EntityChangeBatch] = deque(
-            maxlen=self._config.queue_max_depth
-        )
+        self._pending_batches: deque[EntityChangeBatch] = deque(maxlen=self._config.queue_max_depth)
         self._stats = DispatcherStats()
         self._rate_limiter = TokenBucket(
             rate_per_sec=self._config.rate_limit_per_sec,
@@ -254,9 +253,7 @@ class RuleDispatcher:
 
             # Snapshot only the entity states required to evaluate the impacted rules.
             snapshot_started = perf_counter()
-            entity_state_map = self._get_entity_state_map_for_rules(
-                rules=rules, changed_entity_ids=batch.entity_ids
-            )
+            entity_state_map = self._get_entity_state_map_for_rules(rules=rules, changed_entity_ids=batch.entity_ids)
             snapshot_ms = (perf_counter() - snapshot_started) * 1000.0
             self._stats.record_entity_state_snapshot(size=len(entity_state_map), query_ms=snapshot_ms)
 
@@ -275,12 +272,8 @@ class RuleDispatcher:
 
         finally:
             # Remove from pending batches
-            with self._lock:
-                try:
-                    self._pending_batches.remove(batch)
-                except ValueError:
-                    # Batch was already removed (e.g., by queue overflow or shutdown)
-                    pass
+            with self._lock, contextlib.suppress(ValueError):
+                self._pending_batches.remove(batch)
 
     def _resolve_impacted_rules(self, entity_ids: set[str]) -> list[Rule]:
         """
@@ -303,9 +296,7 @@ class RuleDispatcher:
             return []
 
         # Fetch the actual Rule objects (this is cheap - just fetching by PK)
-        rules = list(
-            Rule.objects.filter(id__in=rule_ids, enabled=True).order_by("-priority", "id")
-        )
+        rules = list(Rule.objects.filter(id__in=rule_ids, enabled=True).order_by("-priority", "id"))
         return rules
 
     def _get_rule_ids_from_cache(self, entity_ids: set[str]) -> set[int]:
@@ -324,8 +315,7 @@ class RuleDispatcher:
             shared_version = self._get_or_init_shared_entity_rule_cache_version()
             last_updated = _entity_rule_cache_updated_at
             needs_refresh = shared_version != _entity_rule_cache_version or (
-                last_updated is None
-                or (now - last_updated).total_seconds() > _ENTITY_RULE_CACHE_TTL_SECONDS
+                last_updated is None or (now - last_updated).total_seconds() > _ENTITY_RULE_CACHE_TTL_SECONDS
             )
             if needs_refresh:
                 self._refresh_entity_rule_cache()
@@ -352,9 +342,7 @@ class RuleDispatcher:
         new_cache: dict[str, set[int]] = {}
 
         # Single query to get all entity->rule mappings
-        refs = RuleEntityRef.objects.select_related("entity").values_list(
-            "entity__entity_id", "rule_id"
-        )
+        refs = RuleEntityRef.objects.select_related("entity").values_list("entity__entity_id", "rule_id")
 
         for entity_id, rule_id in refs:
             if entity_id not in new_cache:
@@ -393,15 +381,11 @@ class RuleDispatcher:
 
         # Find rule IDs that reference any of the changed entities
         rule_ids = (
-            RuleEntityRef.objects.filter(entity__entity_id__in=entity_ids)
-            .values_list("rule_id", flat=True)
-            .distinct()
+            RuleEntityRef.objects.filter(entity__entity_id__in=entity_ids).values_list("rule_id", flat=True).distinct()
         )
 
         # Fetch enabled rules ordered by priority
-        rules = list(
-            Rule.objects.filter(id__in=rule_ids, enabled=True).order_by("-priority", "id")
-        )
+        rules = list(Rule.objects.filter(id__in=rule_ids, enabled=True).order_by("-priority", "id"))
 
         return rules
 
@@ -429,7 +413,7 @@ class RuleDispatcher:
 
         # Prefer the dependency index (RuleEntityRef) and augment with a best-effort
         # extraction from the in-memory rule definitions (defensive if refs are stale).
-        rule_ids = [int(getattr(r, "id")) for r in rules if getattr(r, "id", None) is not None]
+        rule_ids = [int(r.id) for r in rules if getattr(r, "id", None) is not None]
         if rule_ids:
             try:
                 ref_entity_ids = RuleEntityRef.objects.filter(rule_id__in=rule_ids).values_list(

@@ -121,7 +121,13 @@ class TestExtractEntityIds(TestCase):
                 "op": "all",
                 "children": [
                     {"op": "alarm_state_in", "states": ["armed_home", "armed_away"]},
-                    {"op": "frigate_person_detected", "cameras": ["front"], "zones": [], "within_seconds": 60, "min_confidence_pct": 60},
+                    {
+                        "op": "frigate_person_detected",
+                        "cameras": ["front"],
+                        "zones": [],
+                        "within_seconds": 60,
+                        "min_confidence_pct": 60,
+                    },
                     {"op": "entity_state", "entity_id": "sensor.real", "equals": "on"},
                 ],
             },

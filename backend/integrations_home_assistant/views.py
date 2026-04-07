@@ -9,12 +9,12 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from accounts.permissions import IsAdminRole
-from config.domain_exceptions import ServiceUnavailableError
 from alarm.env_config import get_home_assistant_config
 from alarm.gateways.home_assistant import (
     HomeAssistantGateway,
     default_home_assistant_gateway,
 )
+from config.domain_exceptions import ServiceUnavailableError
 
 ha_gateway: HomeAssistantGateway = default_home_assistant_gateway
 logger = logging.getLogger(__name__)
@@ -51,7 +51,9 @@ class HomeAssistantSettingsView(APIView):
 
     def patch(self, request):
         """Home Assistant settings are now configured via environment variables."""
-        raise MethodNotAllowed(request.method, detail="Home Assistant settings are configured via environment variables.")
+        raise MethodNotAllowed(
+            request.method, detail="Home Assistant settings are configured via environment variables."
+        )
 
 
 class HomeAssistantEntitiesView(_HomeAssistantBaseView):

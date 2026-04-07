@@ -18,6 +18,7 @@ class DiscordHandler(NotificationHandler):
 
     provider_type = "discord"
     display_name = "Discord"
+
     @classmethod
     def from_env(cls) -> dict:
         from alarm.env_config import get_discord_config

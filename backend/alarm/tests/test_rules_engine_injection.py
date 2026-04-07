@@ -70,7 +70,9 @@ class RulesEngineInjectionTests(TestCase):
 
         now = timezone.now()
 
-        result = run_rules(now=now, actor_user=None, repos=repos, execute_actions_func=_exec, log_action_func=lambda **_: None)
+        result = run_rules(
+            now=now, actor_user=None, repos=repos, execute_actions_func=_exec, log_action_func=lambda **_: None
+        )
         self.assertEqual(result.fired, 1)
 
         # Condition remains true; repeated evaluation should not re-fire.
@@ -168,7 +170,9 @@ class RulesEngineInjectionTests(TestCase):
             return {}
 
         now = timezone.now()
-        result = run_rules(now=now, actor_user=None, repos=repos, execute_actions_func=_exec, log_action_func=lambda **_: None)
+        result = run_rules(
+            now=now, actor_user=None, repos=repos, execute_actions_func=_exec, log_action_func=lambda **_: None
+        )
         self.assertEqual(result.evaluated, 1)
         self.assertEqual(result.fired, 0)
         self.assertEqual(result.scheduled, 1)

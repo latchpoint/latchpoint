@@ -92,4 +92,3 @@ class RulesEngineRepositoryInjectionTests(SimpleTestCase):
         result = simulate_rules(entity_states={}, assume_for_seconds=5, repos=repos)
         self.assertEqual(result["summary"]["evaluated"], 1)
         self.assertEqual(result["summary"]["matched"], 1)
-

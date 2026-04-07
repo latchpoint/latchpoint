@@ -73,10 +73,12 @@ class TestNormalizeDispatcherConfig(TestCase):
 
     def test_rate_limits_minimum(self):
         """Rate limit values have a minimum of 1."""
-        config = normalize_dispatcher_config({
-            "rate_limit_per_sec": 0,
-            "rate_limit_burst": 0,
-        })
+        config = normalize_dispatcher_config(
+            {
+                "rate_limit_per_sec": 0,
+                "rate_limit_burst": 0,
+            }
+        )
         self.assertEqual(config.rate_limit_per_sec, 1)
         self.assertEqual(config.rate_limit_burst, 1)
 

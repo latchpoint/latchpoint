@@ -6,10 +6,9 @@ from django.test import TestCase
 
 from accounts.models import User
 from accounts.use_cases.user_codes import create_user_code
-from alarm.models import AlarmSettingsProfile, AlarmState
-from alarm.tests.settings_test_utils import set_profile_settings
-from alarm.models import Sensor
+from alarm.models import AlarmSettingsProfile, AlarmState, Sensor
 from alarm.state_machine.transitions import arm, get_current_snapshot, sensor_triggered
+from alarm.tests.settings_test_utils import set_profile_settings
 from control_panels.models import ControlPanelDevice, ControlPanelIntegrationType, ControlPanelKind
 from control_panels.zwave_ring_keypad_v2 import handle_zwavejs_ring_keypad_v2_event, sync_ring_keypad_v2_devices_state
 
@@ -53,9 +52,10 @@ class RingKeypadV2ControlPanelTests(TestCase):
             },
         }
 
-        with patch("alarm.gateways.zwavejs.DefaultZwavejsGateway.get_home_id", return_value=4170970308), patch(
-            "alarm.gateways.zwavejs.DefaultZwavejsGateway.set_value"
-        ) as set_value:
+        with (
+            patch("alarm.gateways.zwavejs.DefaultZwavejsGateway.get_home_id", return_value=4170970308),
+            patch("alarm.gateways.zwavejs.DefaultZwavejsGateway.set_value"),
+        ):
             handle_zwavejs_ring_keypad_v2_event(msg)
 
             snapshot = get_current_snapshot(process_timers=False)
@@ -78,8 +78,9 @@ class RingKeypadV2ControlPanelTests(TestCase):
             },
         }
 
-        with patch("alarm.gateways.zwavejs.DefaultZwavejsGateway.get_home_id", return_value=4170970308), patch(
-            "alarm.gateways.zwavejs.DefaultZwavejsGateway.set_value"
+        with (
+            patch("alarm.gateways.zwavejs.DefaultZwavejsGateway.get_home_id", return_value=4170970308),
+            patch("alarm.gateways.zwavejs.DefaultZwavejsGateway.set_value"),
         ):
             handle_zwavejs_ring_keypad_v2_event(msg)
 
@@ -96,15 +97,21 @@ class RingKeypadV2ControlPanelTests(TestCase):
             },
         }
 
-        with patch("alarm.gateways.zwavejs.DefaultZwavejsGateway.get_home_id", return_value=4170970308), patch(
-            "alarm.gateways.zwavejs.DefaultZwavejsGateway.set_value"
-        ) as set_value:
+        with (
+            patch("alarm.gateways.zwavejs.DefaultZwavejsGateway.get_home_id", return_value=4170970308),
+            patch("alarm.gateways.zwavejs.DefaultZwavejsGateway.set_value") as set_value,
+        ):
             handle_zwavejs_ring_keypad_v2_event(msg)
 
             # property=9 is "Code not accepted" for Ring Keypad v2.
             calls = [kwargs for _args, kwargs in set_value.call_args_list]
             self.assertTrue(any(call.get("property") == 9 for call in calls))
-            self.assertTrue(any(call.get("property") == 9 and call.get("property_key") == 9 and call.get("value") == 77 for call in calls))
+            self.assertTrue(
+                any(
+                    call.get("property") == 9 and call.get("property_key") == 9 and call.get("value") == 77
+                    for call in calls
+                )
+            )
 
     def test_sync_maps_armed_night_to_armed_home_indicator(self):
         arm(target_state=AlarmState.ARMED_NIGHT, user=None, code=None, reason="test")
@@ -143,7 +150,12 @@ class RingKeypadV2ControlPanelTests(TestCase):
 
         calls = [kwargs for _args, kwargs in set_value.call_args_list]
         self.assertTrue(any(call.get("property") == 18 and call.get("property_key") == 7 for call in calls))
-        self.assertTrue(any(call.get("property") == 18 and call.get("property_key") == 9 and call.get("value") == 77 for call in calls))
+        self.assertTrue(
+            any(
+                call.get("property") == 18 and call.get("property_key") == 9 and call.get("value") == 77
+                for call in calls
+            )
+        )
 
     def test_sync_pending_sets_entry_delay_indicator(self):
         arm(target_state=AlarmState.ARMED_AWAY, user=None, code=None, reason="test")
@@ -158,4 +170,9 @@ class RingKeypadV2ControlPanelTests(TestCase):
 
         calls = [kwargs for _args, kwargs in set_value.call_args_list]
         self.assertTrue(any(call.get("property") == 17 and call.get("property_key") == 7 for call in calls))
-        self.assertTrue(any(call.get("property") == 17 and call.get("property_key") == 9 and call.get("value") == 77 for call in calls))
+        self.assertTrue(
+            any(
+                call.get("property") == 17 and call.get("property_key") == 9 and call.get("value") == 77
+                for call in calls
+            )
+        )

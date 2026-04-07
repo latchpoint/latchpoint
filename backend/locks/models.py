@@ -6,6 +6,7 @@ from django.db.models import Q
 
 from accounts.models import User
 
+
 class DoorCode(models.Model):
     """Door lock access code."""
 
@@ -22,7 +23,7 @@ class DoorCode(models.Model):
     id = models.BigAutoField(primary_key=True)
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="door_codes")
     source = models.CharField(max_length=16, choices=Source.choices, default=Source.MANUAL)
-    code_hash = models.TextField(null=True, blank=True)
+    code_hash = models.TextField(null=True, blank=True)  # noqa: DJ001
     label = models.CharField(max_length=150, blank=True)
     code_type = models.CharField(max_length=16, choices=CodeType.choices)
     pin_length = models.PositiveSmallIntegerField(
@@ -35,9 +36,7 @@ class DoorCode(models.Model):
     uses_count = models.PositiveIntegerField(default=0)
     start_at = models.DateTimeField(null=True, blank=True)
     end_at = models.DateTimeField(null=True, blank=True)
-    days_of_week = models.PositiveSmallIntegerField(
-        null=True, blank=True, validators=[MaxValueValidator(127)]
-    )
+    days_of_week = models.PositiveSmallIntegerField(null=True, blank=True, validators=[MaxValueValidator(127)])
     window_start = models.TimeField(null=True, blank=True)
     window_end = models.TimeField(null=True, blank=True)
     last_used_at = models.DateTimeField(null=True, blank=True)
@@ -66,8 +65,7 @@ class DoorCode(models.Model):
                 name="door_codes_pin_length_between_4_8",
             ),
             models.CheckConstraint(
-                condition=Q(days_of_week__isnull=True)
-                | (Q(days_of_week__gte=0) & Q(days_of_week__lte=127)),
+                condition=Q(days_of_week__isnull=True) | (Q(days_of_week__gte=0) & Q(days_of_week__lte=127)),
                 name="door_codes_days_of_week_between_0_127",
             ),
             models.CheckConstraint(
@@ -85,9 +83,7 @@ class DoorCodeLockAssignment(models.Model):
     """Assignment of door codes to specific locks."""
 
     id = models.BigAutoField(primary_key=True)
-    door_code = models.ForeignKey(
-        DoorCode, on_delete=models.CASCADE, related_name="lock_assignments"
-    )
+    door_code = models.ForeignKey(DoorCode, on_delete=models.CASCADE, related_name="lock_assignments")
     lock_entity_id = models.CharField(max_length=255)
     slot_index = models.PositiveSmallIntegerField(null=True, blank=True)
     sync_dismissed = models.BooleanField(default=False)

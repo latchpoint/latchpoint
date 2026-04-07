@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from django.test import SimpleTestCase, override_settings
+from django.test import SimpleTestCase
 
 
 class HomeAssistantConfigTest(SimpleTestCase):

@@ -61,14 +61,16 @@ class MaskZigbee2mqttSettingsRunRulesTests(SimpleTestCase):
     """Regression tests: mask output must include run_rules_* fields."""
 
     def test_mask_includes_run_rules_fields(self):
-        masked = mask_zigbee2mqtt_settings({
-            "enabled": True,
-            "base_topic": "zigbee2mqtt",
-            "run_rules_on_event": True,
-            "run_rules_debounce_seconds": 3,
-            "run_rules_max_per_minute": 30,
-            "run_rules_kinds": ["trigger"],
-        })
+        masked = mask_zigbee2mqtt_settings(
+            {
+                "enabled": True,
+                "base_topic": "zigbee2mqtt",
+                "run_rules_on_event": True,
+                "run_rules_debounce_seconds": 3,
+                "run_rules_max_per_minute": 30,
+                "run_rules_kinds": ["trigger"],
+            }
+        )
         self.assertTrue(masked["run_rules_on_event"])
         self.assertEqual(masked["run_rules_debounce_seconds"], 3)
         self.assertEqual(masked["run_rules_max_per_minute"], 30)

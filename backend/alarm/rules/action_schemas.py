@@ -12,31 +12,36 @@ Supports schema_version=1 action types:
 - zigbee2mqtt_light: Zigbee2MQTT light on/off + brightness (guided)
 - send_notification: Send a notification via configured provider
 """
+
 from __future__ import annotations
 
 from typing import Any
 
 ARMED_MODES = ("armed_home", "armed_away", "armed_night", "armed_vacation")
 
-ADMIN_ONLY_ACTION_TYPES = frozenset({
-    "ha_call_service",
-    "zwavejs_set_value",
-    "zigbee2mqtt_set_value",
-    "zigbee2mqtt_switch",
-    "zigbee2mqtt_light",
-})
+ADMIN_ONLY_ACTION_TYPES = frozenset(
+    {
+        "ha_call_service",
+        "zwavejs_set_value",
+        "zigbee2mqtt_set_value",
+        "zigbee2mqtt_switch",
+        "zigbee2mqtt_light",
+    }
+)
 
-ACTION_TYPES = frozenset({
-    "alarm_trigger",
-    "alarm_disarm",
-    "alarm_arm",
-    "ha_call_service",
-    "zwavejs_set_value",
-    "zigbee2mqtt_set_value",
-    "zigbee2mqtt_switch",
-    "zigbee2mqtt_light",
-    "send_notification",
-})
+ACTION_TYPES = frozenset(
+    {
+        "alarm_trigger",
+        "alarm_disarm",
+        "alarm_arm",
+        "ha_call_service",
+        "zwavejs_set_value",
+        "zigbee2mqtt_set_value",
+        "zigbee2mqtt_switch",
+        "zigbee2mqtt_light",
+        "send_notification",
+    }
+)
 
 ZIGBEE2MQTT_ON_OFF = ("on", "off")
 
@@ -257,7 +262,10 @@ def get_action_schemas() -> dict[str, dict[str, Any]]:
             "type": "object",
             "properties": {
                 "type": {"const": "ha_call_service"},
-                "action": {"type": "string", "description": "Home Assistant action in domain.service format (e.g., 'light.turn_on')"},
+                "action": {
+                    "type": "string",
+                    "description": "Home Assistant action in domain.service format (e.g., 'light.turn_on')",
+                },
                 "target": {"type": "object"},
                 "data": {"type": "object"},
             },
@@ -288,7 +296,10 @@ def get_action_schemas() -> dict[str, dict[str, Any]]:
             "type": "object",
             "properties": {
                 "type": {"const": "zigbee2mqtt_set_value"},
-                "entity_id": {"type": "string", "description": "Target Zigbee2MQTT entity_id (e.g., 'z2m_switch.0x..._state')"},
+                "entity_id": {
+                    "type": "string",
+                    "description": "Target Zigbee2MQTT entity_id (e.g., 'z2m_switch.0x..._state')",
+                },
                 "value": {},
             },
             "required": ["type", "entity_id", "value"],

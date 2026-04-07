@@ -9,8 +9,7 @@ import time
 from datetime import datetime, timedelta
 
 from django.conf import settings
-from django.db import close_old_connections
-from django.db import connection
+from django.db import close_old_connections, connection
 from django.utils import timezone
 
 from .registry import ScheduledTask, evaluate_task_enabled, get_tasks
@@ -53,9 +52,7 @@ def _compute_next_run(schedule: Schedule, now: datetime) -> datetime:
             next_run += timedelta(days=1)
         return next_run
     elif isinstance(schedule, Every):
-        jitter_offset = (
-            random.randint(-schedule.jitter, schedule.jitter) if schedule.jitter > 0 else 0
-        )
+        jitter_offset = random.randint(-schedule.jitter, schedule.jitter) if schedule.jitter > 0 else 0
         delay_seconds = max(0, schedule.seconds + jitter_offset)
         return now + timedelta(seconds=delay_seconds)
     raise ValueError(f"Unknown schedule type: {type(schedule)}")
@@ -137,6 +134,7 @@ def _maybe_acquire_leader_lock() -> bool:
         _leader_lock_error = str(exc)
         logger.exception("Scheduler leader lock acquisition failed; scheduler will not start")
         return False
+
 
 def _run_task_loop(*, task: ScheduledTask, stop_event: threading.Event) -> None:
     """Run a task on its schedule forever."""
@@ -356,12 +354,7 @@ def _run_watchdog() -> None:
                 last_started_at = _task_status.get(name, {}).get("last_started_at")
                 already_stuck = bool(_task_status.get(name, {}).get("stuck"))
 
-            if (
-                is_running
-                and task.max_runtime_seconds
-                and isinstance(last_started_at, str)
-                and not already_stuck
-            ):
+            if is_running and task.max_runtime_seconds and isinstance(last_started_at, str) and not already_stuck:
                 try:
                     started_at = datetime.fromisoformat(last_started_at)
                     if timezone.is_naive(started_at):
@@ -466,8 +459,7 @@ def get_scheduler_status() -> dict:
             },
             "tasks": {
                 name: {
-                    "thread_alive": _threads.get(name) is not None
-                    and _threads[name].is_alive(),
+                    "thread_alive": _threads.get(name) is not None and _threads[name].is_alive(),
                     "currently_running": name in _running,
                     "status": dict(_task_status.get(name) or {}),
                 }

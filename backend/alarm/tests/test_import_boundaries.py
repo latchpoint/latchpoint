@@ -11,9 +11,8 @@ def _iter_imported_modules(tree: ast.AST) -> set[str]:
             for alias in node.names:
                 if isinstance(alias.name, str) and alias.name:
                     modules.add(alias.name)
-        elif isinstance(node, ast.ImportFrom):
-            if isinstance(node.module, str) and node.module:
-                modules.add(node.module)
+        elif isinstance(node, ast.ImportFrom) and isinstance(node.module, str) and node.module:
+            modules.add(node.module)
     return modules
 
 

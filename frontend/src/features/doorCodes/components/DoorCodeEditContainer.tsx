@@ -50,6 +50,7 @@ export function DoorCodeEditContainer({ code, locks, locksIsLoading, locksError,
   const [editReauthPassword, setEditReauthPassword] = useState<string>('')
   const [editError, setEditError] = useState<string | null>(null)
 
+  /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
     setEditLabel(code.label || '')
     setEditNewCode('')
@@ -66,6 +67,7 @@ export function DoorCodeEditContainer({ code, locks, locksIsLoading, locksError,
     setEditReauthPassword('')
     setEditError(null)
   }, [code])
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   const resolvedLockEntityIds = useMemo(() => {
     const locksFromPicker = Array.from(editSelectedLocks)

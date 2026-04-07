@@ -8,14 +8,14 @@ from dataclasses import dataclass
 from django.core.cache import cache
 from django.db import close_old_connections
 from django.utils import timezone
+from transports_mqtt.manager import MqttNotReachable, mqtt_connection_manager
 
 from accounts.use_cases import code_validation
+from alarm.models import AlarmState
 from alarm.state_machine.events import record_code_used, record_failed_code
 from alarm.state_machine.settings import get_active_settings_profile, get_setting_bool, get_setting_json
-from alarm.state_machine.transitions import arm, cancel_arming, disarm, get_current_snapshot
+from alarm.state_machine.transitions import arm, disarm, get_current_snapshot
 from integrations_home_assistant import mqtt_alarm_entity_status_store as status_store
-from alarm.models import AlarmState
-from transports_mqtt.manager import MqttNotReachable, mqtt_connection_manager
 
 logger = logging.getLogger(__name__)
 

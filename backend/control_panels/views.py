@@ -13,13 +13,13 @@ from accounts.permissions import IsAdminRole
 from config.domain_exceptions import ServiceUnavailableError, ValidationError
 from config.view_utils import ObjectPermissionMixin
 from control_panels.models import ControlPanelDevice
-from control_panels.zwave_ring_keypad_v2 import test_ring_keypad_v2_beep
 from control_panels.serializers import (
     ControlPanelDeviceCreateSerializer,
     ControlPanelDeviceSerializer,
     ControlPanelDeviceTestSerializer,
     ControlPanelDeviceUpdateSerializer,
 )
+from control_panels.zwave_ring_keypad_v2 import test_ring_keypad_v2_beep
 
 logger = logging.getLogger(__name__)
 
@@ -61,9 +61,9 @@ class ControlPanelDeviceListCreateView(APIView):
                 external_id=data["external_id"],
                 action_map=data.get("action_map") or {},
             )
-        except IntegrityError:
+        except IntegrityError as exc:
             # external_key is unique; return a friendly 400 instead of a 500.
-            raise ValidationError("A control panel is already configured for this device.")
+            raise ValidationError("A control panel is already configured for this device.") from exc
         return Response(ControlPanelDeviceSerializer(device).data, status=status.HTTP_201_CREATED)
 
 
@@ -91,8 +91,8 @@ class ControlPanelDeviceDetailView(ObjectPermissionMixin, APIView):
 
         try:
             device.save()
-        except IntegrityError:
-            raise ValidationError("A control panel is already configured for this device.")
+        except IntegrityError as exc:
+            raise ValidationError("A control panel is already configured for this device.") from exc
         return Response(ControlPanelDeviceSerializer(device).data, status=status.HTTP_200_OK)
 
     def delete(self, request, device_id: int):

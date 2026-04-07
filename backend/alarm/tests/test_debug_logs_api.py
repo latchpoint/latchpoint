@@ -9,7 +9,6 @@ from django.urls import reverse
 from rest_framework.test import APITestCase
 
 from accounts.models import User
-from alarm import log_handler
 from alarm.log_handler import BufferedWebSocketHandler, _broadcast_queue, clear_buffer, configure
 
 
@@ -18,12 +17,8 @@ class DebugLogsApiTestCase(APITestCase):
 
     @classmethod
     def setUpTestData(cls):
-        cls.admin_user = User.objects.create_user(
-            email="admin@example.com", password="pass", is_staff=True
-        )
-        cls.regular_user = User.objects.create_user(
-            email="user@example.com", password="pass", is_staff=False
-        )
+        cls.admin_user = User.objects.create_user(email="admin@example.com", password="pass", is_staff=True)
+        cls.regular_user = User.objects.create_user(email="user@example.com", password="pass", is_staff=False)
 
     def setUp(self):
         configure(buffer_size=500, capture_level=logging.DEBUG, broadcast_level=logging.WARNING)

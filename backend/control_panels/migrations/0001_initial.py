@@ -6,7 +6,6 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     initial = True
 
     dependencies: list[tuple[str, str]] = []
@@ -19,7 +18,9 @@ class Migration(migrations.Migration):
                 ("name", models.CharField(max_length=150)),
                 (
                     "integration_type",
-                    models.CharField(choices=[("zwavejs", "Z-Wave JS"), ("home_assistant", "Home Assistant")], max_length=32),
+                    models.CharField(
+                        choices=[("zwavejs", "Z-Wave JS"), ("home_assistant", "Home Assistant")], max_length=32
+                    ),
                 ),
                 ("kind", models.CharField(choices=[("ring_keypad_v2", "Ring Keypad v2")], max_length=64)),
                 ("enabled", models.BooleanField(default=True)),
@@ -40,4 +41,3 @@ class Migration(migrations.Migration):
             },
         ),
     ]
-

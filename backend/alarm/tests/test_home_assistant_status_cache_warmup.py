@@ -6,11 +6,11 @@ from unittest.mock import patch
 
 from django.test import override_settings
 from django.urls import reverse
+from integrations_home_assistant.connection import clear_cached_connection
 from rest_framework.test import APIClient, APITestCase
 
 from accounts.models import User
 from alarm.models import AlarmSettingsProfile
-from integrations_home_assistant.connection import clear_cached_connection
 
 
 class _DummyResponse:
@@ -31,12 +31,15 @@ class _DummyResponse:
         return False
 
 
-@patch.dict(os.environ, {
-    "HA_ENABLED": "true",
-    "HA_BASE_URL": "http://homeassistant.local:8123",
-    "HA_TOKEN": "supersecret",
-    "HA_CONNECT_TIMEOUT": "2",
-})
+@patch.dict(
+    os.environ,
+    {
+        "HA_ENABLED": "true",
+        "HA_BASE_URL": "http://homeassistant.local:8123",
+        "HA_TOKEN": "supersecret",
+        "HA_CONNECT_TIMEOUT": "2",
+    },
+)
 class HomeAssistantStatusCacheWarmupTests(APITestCase):
     def setUp(self):
         self.user = User.objects.create_user(email="ha-status@example.com", password="pass")

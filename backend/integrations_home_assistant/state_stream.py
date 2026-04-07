@@ -23,9 +23,9 @@ _LEADER_HEARTBEAT_SECONDS = 20
 def _build_ws_url(base_url: str) -> str:
     base_url = (base_url or "").strip().rstrip("/")
     if base_url.startswith("https://"):
-        return f"wss://{base_url[len('https://'):]}/api/websocket"
+        return f"wss://{base_url[len('https://') :]}/api/websocket"
     if base_url.startswith("http://"):
-        return f"ws://{base_url[len('http://'):]}/api/websocket"
+        return f"ws://{base_url[len('http://') :]}/api/websocket"
     # Fallback: assume http and let HA/infra redirect if needed (best-effort).
     return f"ws://{base_url}/api/websocket"
 
@@ -330,4 +330,3 @@ def apply_runtime_settings_from_active_profile() -> None:
 
 def shutdown() -> None:
     _stream.stop()
-

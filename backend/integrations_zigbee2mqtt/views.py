@@ -2,33 +2,32 @@ from __future__ import annotations
 
 import logging
 
-from django.utils import timezone
 from django.db import transaction
+from django.utils import timezone
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from transports_mqtt.manager import mqtt_connection_manager
 
 from accounts.permissions import IsAdminRole
-from config.domain_exceptions import OperationTimeoutError, ServiceUnavailableError, ValidationError
 from alarm.models import AlarmSettingsEntry, Entity
 from alarm.serializers import EntitySerializer
 from alarm.settings_registry import ALARM_PROFILE_SETTINGS_BY_KEY
+from alarm.signals import settings_profile_changed
 from alarm.state_machine.settings import get_setting_json
 from alarm.use_cases.settings_profile import ensure_active_settings_profile
-from alarm.signals import settings_profile_changed
+from config.domain_exceptions import OperationTimeoutError, ServiceUnavailableError, ValidationError
 from integrations_zigbee2mqtt.config import (
     mask_zigbee2mqtt_settings,
     normalize_zigbee2mqtt_settings,
 )
+from integrations_zigbee2mqtt.runtime import apply_runtime_settings_from_active_profile, sync_devices_via_mqtt
 from integrations_zigbee2mqtt.serializers import (
     Zigbee2mqttSettingsSerializer,
     Zigbee2mqttSettingsUpdateSerializer,
 )
-from integrations_zigbee2mqtt.status_store import get_last_sync
-from integrations_zigbee2mqtt.status_store import get_last_seen_at, get_last_state
-from integrations_zigbee2mqtt.runtime import apply_runtime_settings_from_active_profile, sync_devices_via_mqtt
-from transports_mqtt.manager import mqtt_connection_manager
+from integrations_zigbee2mqtt.status_store import get_last_seen_at, get_last_state, get_last_sync
 
 _Z2M_ALIVE_GRACE_SECONDS = 75
 logger = logging.getLogger(__name__)
@@ -96,6 +95,7 @@ class Zigbee2mqttSettingsView(APIView):
 
         if changes.get("enabled") is True:
             from alarm.env_config import get_mqtt_config
+
             conn = get_mqtt_config()
             mqtt_ok = bool(conn.get("enabled") and conn.get("host"))
             if not mqtt_ok:
@@ -113,7 +113,9 @@ class Zigbee2mqttSettingsView(APIView):
         )
 
         apply_runtime_settings_from_active_profile()
-        transaction.on_commit(lambda: settings_profile_changed.send(sender=None, profile_id=profile.id, reason="updated"))
+        transaction.on_commit(
+            lambda: settings_profile_changed.send(sender=None, profile_id=profile.id, reason="updated")
+        )
         return Response(
             Zigbee2mqttSettingsSerializer(mask_zigbee2mqtt_settings(normalized.__dict__)).data,
             status=status.HTTP_200_OK,

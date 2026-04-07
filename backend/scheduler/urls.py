@@ -12,4 +12,3 @@ urlpatterns = [
         name="scheduler-task-runs",
     ),
 ]
-

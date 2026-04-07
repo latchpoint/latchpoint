@@ -119,8 +119,11 @@ class ControlPanelDeviceUpdateSerializer(serializers.Serializer):
                     external_id=external_id,
                 )
 
-        if "external_key" in attrs and attrs["external_key"]:
-            if ControlPanelDevice.objects.filter(external_key=attrs["external_key"]).exclude(id=device.id).exists():
+        if (
+            "external_key" in attrs
+            and attrs["external_key"]
+            and ControlPanelDevice.objects.filter(external_key=attrs["external_key"]).exclude(id=device.id).exists()
+        ):
                 raise serializers.ValidationError("A control panel is already configured for this device.")
         return attrs
 

@@ -96,9 +96,7 @@ class DispatcherStats:
         with self._lock:
             self.rules_stopped += count
 
-    def record_rules_result(
-        self, evaluated: int = 0, fired: int = 0, scheduled: int = 0, errors: int = 0
-    ) -> None:
+    def record_rules_result(self, evaluated: int = 0, fired: int = 0, scheduled: int = 0, errors: int = 0) -> None:
         """Record rule evaluation results."""
         with self._lock:
             self.rules_evaluated += evaluated
@@ -143,9 +141,7 @@ class DispatcherStats:
                 "rules_scheduled": self.rules_scheduled,
                 "rules_errors": self.rules_errors,
                 "rules_stopped": self.rules_stopped,
-                "last_dispatch_at": (
-                    self.last_dispatch_at.isoformat() if self.last_dispatch_at else None
-                ),
+                "last_dispatch_at": (self.last_dispatch_at.isoformat() if self.last_dispatch_at else None),
                 "entity_state_snapshot_size_last": self.entity_state_snapshot_size_last,
                 "entity_state_snapshot_size_total": self.entity_state_snapshot_size_total,
                 "snapshot_query_ms_last": self.snapshot_query_ms_last,

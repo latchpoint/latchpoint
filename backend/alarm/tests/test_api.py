@@ -1,16 +1,14 @@
 from __future__ import annotations
 
-from unittest.mock import patch
 from datetime import timezone as dt_timezone
+from unittest.mock import patch
 
-from django.utils import timezone
-from django.urls import reverse
 from django.contrib.auth.hashers import make_password
-from django.test import override_settings
+from django.urls import reverse
+from django.utils import timezone
 from rest_framework.test import APIClient, APITestCase
 
-from accounts.models import User
-from accounts.models import UserCode
+from accounts.models import User, UserCode
 from alarm.models import AlarmEvent, AlarmEventType, AlarmSettingsProfile, AlarmState, Entity, Rule, Sensor
 from alarm.tests.settings_test_utils import set_profile_settings
 
@@ -76,9 +74,7 @@ class AlarmApiTests(APITestCase):
         )
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["data"]["current_state"], AlarmState.ARMING)
-        self.assertTrue(
-            AlarmEvent.objects.filter(event_type=AlarmEventType.CODE_USED, metadata__action="arm").exists()
-        )
+        self.assertTrue(AlarmEvent.objects.filter(event_type=AlarmEventType.CODE_USED, metadata__action="arm").exists())
 
     def test_disarm_requires_code(self):
         url = reverse("alarm-disarm")

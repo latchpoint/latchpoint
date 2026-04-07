@@ -36,7 +36,13 @@ def execute(action: dict[str, Any], ctx: ActionContext) -> tuple[dict[str, Any],
         return {"ok": True, "type": "zwavejs_set_value", "node_id": node_id, "value_id": value_id}, None
     except Exception as exc:
         logger.warning("zwavejs_set_value failed for rule %s: %s", ctx.rule.id, exc, exc_info=True)
-        return {"ok": False, "type": "zwavejs_set_value", "node_id": node_id, "value_id": value_id, "error": str(exc)}, str(exc)
+        return {
+            "ok": False,
+            "type": "zwavejs_set_value",
+            "node_id": node_id,
+            "value_id": value_id,
+            "error": str(exc),
+        }, str(exc)
 
 
 register("zwavejs_set_value", execute)

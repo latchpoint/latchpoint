@@ -24,7 +24,14 @@ class Zigbee2mqttGatewayTests(TestCase):
         self.definition = {
             "exposes": [
                 {"type": "binary", "name": "state", "property": "state", "access": 3},
-                {"type": "numeric", "name": "brightness", "property": "brightness", "access": 3, "value_min": 0, "value_max": 255},
+                {
+                    "type": "numeric",
+                    "name": "brightness",
+                    "property": "brightness",
+                    "access": 3,
+                    "value_min": 0,
+                    "value_max": 255,
+                },
             ]
         }
 
@@ -66,7 +73,14 @@ class Zigbee2mqttGatewayTests(TestCase):
                     "type": "light",
                     "features": [
                         {"type": "binary", "name": "state", "property": "state", "access": 3},
-                        {"type": "numeric", "name": "brightness", "property": "brightness", "access": 3, "value_min": 0, "value_max": 255},
+                        {
+                            "type": "numeric",
+                            "name": "brightness",
+                            "property": "brightness",
+                            "access": 3,
+                            "value_min": 0,
+                            "value_max": 255,
+                        },
                     ],
                 }
             ]

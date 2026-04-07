@@ -164,7 +164,7 @@ class ControlPanelsApiValidationTests(APITestCase):
         self.assertIn("already configured", str(errs[0]).lower())
 
     def test_patch_rejects_duplicate_external_key(self):
-        a = ControlPanelDevice.objects.create(
+        ControlPanelDevice.objects.create(
             name="A",
             integration_type="zwavejs",
             kind="ring_keypad_v2",

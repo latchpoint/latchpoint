@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from accounts.models import UserCode
-from accounts.use_cases import code_validation
 from django.utils import timezone
 
+from accounts.models import UserCode
+from accounts.use_cases import code_validation
 from alarm.models import AlarmState
 from alarm.state_machine.errors import CodeRequiredError, InvalidCodeError
 from alarm.state_machine.events import record_code_used, record_failed_code

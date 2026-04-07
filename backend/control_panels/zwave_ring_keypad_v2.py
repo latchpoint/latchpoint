@@ -14,7 +14,6 @@ from alarm.state_machine.settings import get_active_settings_profile, get_settin
 from alarm.state_machine.transitions import arm, cancel_arming, disarm, get_current_snapshot
 from control_panels.models import ControlPanelDevice, ControlPanelIntegrationType, ControlPanelKind
 
-
 logger = logging.getLogger(__name__)
 
 
@@ -145,10 +144,7 @@ def _extract_entry_control_notification(msg: dict[str, Any]) -> RingKeypadV2Acti
 
     # `eventData` is optional for some events (e.g. cancel); for disarm/arm it's typically the entered code.
     # Keep it as best-effort string extraction.
-    if isinstance(event_data, str):
-        event_data = event_data
-    else:
-        event_data = None
+    event_data = event_data if isinstance(event_data, str) else None
     # Z-Wave JS provides homeId via the version message; use the current connection home_id.
     try:
         from alarm.gateways.zwavejs import default_zwavejs_gateway
@@ -261,7 +257,8 @@ def _apply_ring_keypad_v2_volume(*, device: ControlPanelDevice, property_id: int
     """
     Best-effort: set Indicator CC volume (property_key=9) for a given property_id.
 
-    This is used for Ring Keypad v2 "sound-capable" indicators like entry/exit delay, code rejected, alarm, and test beeps.
+    This is used for Ring Keypad v2 "sound-capable" indicators like
+    entry/exit delay, code rejected, alarm, and test beeps.
     """
 
     try:
@@ -442,7 +439,11 @@ def handle_zwavejs_ring_keypad_v2_event(msg: dict[str, Any]) -> None:
         if not _rate_limit(device_id=device.id, action="disarm"):
             return
         if not raw_code:
-            record_failed_code(user=None, action="disarm", metadata={"source": "control_panel", "device_id": device.id, "reason": "missing"})
+            record_failed_code(
+                user=None,
+                action="disarm",
+                metadata={"source": "control_panel", "device_id": device.id, "reason": "missing"},
+            )
             _apply_ring_keypad_v2_volume(device=device, property_id=_IND_CODE_NOT_ACCEPTED)
             _indicator_set(device=device, property_id=_IND_CODE_NOT_ACCEPTED, property_key=1, value=1)
             logger.info("Ring Keypad v2 disarm rejected: missing code device_id=%s", device.id)
@@ -459,7 +460,9 @@ def handle_zwavejs_ring_keypad_v2_event(msg: dict[str, Any]) -> None:
         user = code_obj.user
         try:
             disarm(user=user, code=code_obj, reason="control_panel_disarm")
-            record_code_used(user=user, code=code_obj, action="disarm", metadata={"source": "control_panel", "device_id": device.id})
+            record_code_used(
+                user=user, code=code_obj, action="disarm", metadata={"source": "control_panel", "device_id": device.id}
+            )
             # Alarm state sync -> keypads happens via `alarm_state_change_committed`.
             logger.info("Ring Keypad v2 disarm ok device_id=%s user_id=%s", device.id, getattr(user, "id", None))
         except Exception as exc:
@@ -484,7 +487,12 @@ def handle_zwavejs_ring_keypad_v2_event(msg: dict[str, Any]) -> None:
                 record_failed_code(
                     user=None,
                     action="arm",
-                    metadata={"source": "control_panel", "device_id": device.id, "target_state": target_state, "reason": "missing"},
+                    metadata={
+                        "source": "control_panel",
+                        "device_id": device.id,
+                        "target_state": target_state,
+                        "reason": "missing",
+                    },
                 )
                 _apply_ring_keypad_v2_volume(device=device, property_id=_IND_CODE_NOT_ACCEPTED)
                 _indicator_set(device=device, property_id=_IND_CODE_NOT_ACCEPTED, property_key=1, value=1)
@@ -506,13 +514,25 @@ def handle_zwavejs_ring_keypad_v2_event(msg: dict[str, Any]) -> None:
         try:
             arm(target_state=target_state, user=user, code=code_obj, reason="control_panel_arm")
             if code_obj is not None and user is not None:
-                record_code_used(user=user, code=code_obj, action="arm", metadata={"source": "control_panel", "device_id": device.id, "target_state": target_state})
+                record_code_used(
+                    user=user,
+                    code=code_obj,
+                    action="arm",
+                    metadata={"source": "control_panel", "device_id": device.id, "target_state": target_state},
+                )
             # Alarm state sync -> keypads happens via `alarm_state_change_committed`.
-            logger.info("Ring Keypad v2 arm ok device_id=%s target_state=%s user_id=%s", device.id, target_state, getattr(user, "id", None))
+            logger.info(
+                "Ring Keypad v2 arm ok device_id=%s target_state=%s user_id=%s",
+                device.id,
+                target_state,
+                getattr(user, "id", None),
+            )
         except Exception as exc:
             device.last_error = str(exc)
             device.save(update_fields=["last_error", "updated_at"])
-            logger.info("Ring Keypad v2 arm failed device_id=%s target_state=%s error=%s", device.id, target_state, str(exc))
+            logger.info(
+                "Ring Keypad v2 arm failed device_id=%s target_state=%s error=%s", device.id, target_state, str(exc)
+            )
         return
 
     # Ignore other Entry Control events.

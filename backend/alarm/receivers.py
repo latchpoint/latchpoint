@@ -54,7 +54,9 @@ _tracker = IntegrationOutageTracker()
 
 
 @receiver(integration_status_changed)
-def log_integration_transition(sender, *, integration: str, is_healthy: bool, previous_healthy: bool | None, **kwargs) -> None:
+def log_integration_transition(
+    sender, *, integration: str, is_healthy: bool, previous_healthy: bool | None, **kwargs
+) -> None:
     """Persist significant integration state transitions as AlarmEvents."""
     now = timezone.now()
 
@@ -85,7 +87,9 @@ def log_integration_transition(sender, *, integration: str, is_healthy: bool, pr
 
 
 @receiver(integration_status_observed)
-def log_prolonged_outage(sender, *, integration: str, is_healthy: bool, checked_at: timezone.datetime, **kwargs) -> None:
+def log_prolonged_outage(
+    sender, *, integration: str, is_healthy: bool, checked_at: timezone.datetime, **kwargs
+) -> None:
     """Create outage event once an integration is offline for the threshold duration."""
     if is_healthy:
         return

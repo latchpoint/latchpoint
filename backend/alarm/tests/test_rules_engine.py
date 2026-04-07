@@ -7,8 +7,8 @@ from django.utils import timezone
 
 from accounts.models import User
 from alarm import rules_engine
-from alarm.state_machine.transitions import arm, get_current_snapshot, timer_expired
 from alarm.models import AlarmSettingsProfile, AlarmState, Entity, Rule, RuleRuntimeState
+from alarm.state_machine.transitions import arm, get_current_snapshot, timer_expired
 from alarm.tests.settings_test_utils import set_profile_settings
 
 

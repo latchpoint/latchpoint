@@ -3,16 +3,15 @@ from __future__ import annotations
 import asyncio
 from unittest.mock import patch
 
-from channels.testing import WebsocketCommunicator
 from channels.db import database_sync_to_async
-from django.test import Client
-from django.test import TransactionTestCase
+from channels.testing import WebsocketCommunicator
+from django.test import Client, TransactionTestCase
 from rest_framework.authtoken.models import Token
 
 from accounts.models import User
-from config.asgi import application
 from alarm.models import AlarmState
 from alarm.state_machine import transitions
+from config.asgi import application
 
 
 class AlarmWebSocketTests(TransactionTestCase):

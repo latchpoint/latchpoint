@@ -50,4 +50,3 @@ class CleanupExpiredSessionsTests(TestCase):
 
         self.assertEqual(deleted, 0)
         self.assertEqual(Session.objects.count(), 1)
-

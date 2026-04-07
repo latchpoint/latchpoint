@@ -226,9 +226,9 @@ class StopProcessingTests(TestCase):
         self._make_rule("Disarm Blocked", RuleKind.DISARM, 1)
 
         result = run_rules()
-        self.assertEqual(result.fired, 2)       # Both stoppers fire
+        self.assertEqual(result.fired, 2)  # Both stoppers fire
         self.assertEqual(result.skipped_stopped, 2)  # Both lower-priority rules blocked
-        self.assertEqual(result.evaluated, 2)    # Only the stoppers were evaluated
+        self.assertEqual(result.evaluated, 2)  # Only the stoppers were evaluated
 
     def test_stop_processing_only_blocks_same_kind_with_many_kinds(self):
         """With 4 kinds in play, stop only blocks the matching kind."""
@@ -238,7 +238,7 @@ class StopProcessingTests(TestCase):
         self._make_rule("Trigger Blocked", RuleKind.TRIGGER, 1)
 
         result = run_rules()
-        self.assertEqual(result.fired, 3)        # Stopper + disarm + arm
+        self.assertEqual(result.fired, 3)  # Stopper + disarm + arm
         self.assertEqual(result.skipped_stopped, 1)  # Only trigger blocked
         self.assertEqual(result.evaluated, 3)
 
@@ -288,7 +288,7 @@ class StopProcessingTests(TestCase):
         self._make_rule("Low Runner", RuleKind.TRIGGER, 1)
 
         result = run_rules()
-        self.assertEqual(result.fired, 1)        # Only high stopper
+        self.assertEqual(result.fired, 1)  # Only high stopper
         self.assertEqual(result.skipped_stopped, 2)  # Mid stopper + low runner
 
     # --- Stopper that doesn't match leaves subsequent stoppers intact ---
@@ -300,9 +300,9 @@ class StopProcessingTests(TestCase):
         self._make_rule("Low Runner", RuleKind.TRIGGER, 1)
 
         result = run_rules()
-        self.assertEqual(result.fired, 1)        # Only mid stopper
+        self.assertEqual(result.fired, 1)  # Only mid stopper
         self.assertEqual(result.skipped_stopped, 1)  # Low runner blocked
-        self.assertEqual(result.evaluated, 2)    # High (non-match) + mid evaluated
+        self.assertEqual(result.evaluated, 2)  # High (non-match) + mid evaluated
 
 
 class StopProcessingTimerTests(TestCase):
@@ -404,7 +404,7 @@ class StopProcessingTimerTests(TestCase):
         self._make_immediate_rule("Disarm OK", RuleKind.DISARM, 1)
 
         result = run_rules(now=self.now)
-        self.assertEqual(result.fired, 2)        # Timer stopper + disarm
+        self.assertEqual(result.fired, 2)  # Timer stopper + disarm
         self.assertEqual(result.skipped_stopped, 2)  # Blocked A + Blocked B
         # evaluated = len(rules=4) - skipped_stopped(2) = 2
         self.assertEqual(result.evaluated, 2)
@@ -416,7 +416,7 @@ class StopProcessingTimerTests(TestCase):
         self._make_runtime_due(timer_rule)
 
         result = run_rules(now=self.now)
-        self.assertEqual(result.fired, 1)           # Only the immediate stopper
+        self.assertEqual(result.fired, 1)  # Only the immediate stopper
         self.assertEqual(result.skipped_stopped, 1)  # Timer blocked
 
     def test_timer_priority_wins_over_chronological_order(self):
@@ -428,7 +428,7 @@ class StopProcessingTimerTests(TestCase):
         self._make_runtime_due(timer_high, scheduled_for=self.now - timedelta(seconds=1))
 
         result = run_rules(now=self.now)
-        self.assertEqual(result.fired, 1)           # Only the high-priority stopper
+        self.assertEqual(result.fired, 1)  # Only the high-priority stopper
         self.assertEqual(result.skipped_stopped, 1)  # Low timer blocked
 
 
@@ -538,7 +538,7 @@ class StopProcessingSimulationTests(TestCase):
     def test_simulate_for_rule_non_matching_does_not_block(self):
         """A for-rule stopper whose child condition is false should not block."""
         self._make_rule("For Stopper", RuleKind.TRIGGER, 100, stop_processing=True, for_seconds=30, match="off")
-        runner = self._make_rule("Runner", RuleKind.TRIGGER, 1)
+        self._make_rule("Runner", RuleKind.TRIGGER, 1)
 
         result = simulate_rules(entity_states={"binary_sensor.test": "on"})
         self.assertEqual(result["summary"]["blocked"], 0)

@@ -11,4 +11,3 @@ class ProcessTimersUseCaseTests(TestCase):
         AlarmSettingsProfile.objects.create(name="Default", is_active=True)
         result = tick_alarm_timers()
         self.assertEqual(result.state, AlarmState.DISARMED)
-

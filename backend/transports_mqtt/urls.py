@@ -9,4 +9,3 @@ urlpatterns = [
     path("settings/", views.MqttSettingsView.as_view(), name="mqtt-settings"),
     path("test/", views.MqttTestConnectionView.as_view(), name="mqtt-test"),
 ]
-

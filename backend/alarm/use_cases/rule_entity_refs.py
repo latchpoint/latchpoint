@@ -25,11 +25,7 @@ def sync_rule_entity_refs(*, rule: Rule, entity_ids: list[str], entity_sources: 
         entities.append(entity)
 
     RuleEntityRef.objects.filter(rule=rule).exclude(entity__in=entities).delete()
-    existing = set(
-        RuleEntityRef.objects.filter(rule=rule, entity__in=entities).values_list(
-            "entity_id", flat=True
-        )
-    )
+    existing = set(RuleEntityRef.objects.filter(rule=rule, entity__in=entities).values_list("entity_id", flat=True))
     RuleEntityRef.objects.bulk_create(
         [RuleEntityRef(rule=rule, entity=e) for e in entities if e.id not in existing],
         ignore_conflicts=True,

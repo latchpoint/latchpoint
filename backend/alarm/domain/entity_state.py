@@ -16,4 +16,3 @@ def normalize_contact_state(raw_state: str | None) -> str:
     if state in {"off", "closed", "false", "0"}:
         return "closed"
     return "unknown"
-

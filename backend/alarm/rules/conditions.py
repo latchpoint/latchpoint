@@ -3,9 +3,9 @@ from __future__ import annotations
 import math
 import re
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from django.utils import timezone
-from zoneinfo import ZoneInfo
 
 
 def _nearest_rank_percentile(scores: list[float], *, p: int) -> float | None:
@@ -238,15 +238,8 @@ def _validate_when_node(node: Any, *, is_root: bool) -> dict[str, Any] | None:
         errors["op"] = [f"unsupported op: {op}"]
 
     # Guardrail: time-only rules won't fire without a time-based dispatcher.
-    if (
-        is_root
-        and not errors
-        and _when_has_time_in_range(node)
-        and not _when_has_triggerable_condition(node)
-    ):
-        errors["non_field_errors"] = [
-            "time_in_range must be combined with at least one entity/alarm/frigate condition"
-        ]
+    if is_root and not errors and _when_has_time_in_range(node) and not _when_has_triggerable_condition(node):
+        errors["non_field_errors"] = ["time_in_range must be combined with at least one entity/alarm/frigate condition"]
 
     return errors or None
 
@@ -274,7 +267,9 @@ def eval_condition_with_context(
         children = node.get("children")
         if not isinstance(children, list) or not children:
             return False
-        return all(eval_condition_with_context(child, entity_state=entity_state, now=now, repos=repos) for child in children)
+        return all(
+            eval_condition_with_context(child, entity_state=entity_state, now=now, repos=repos) for child in children
+        )
 
     if op == "any":
         if not _is_mapping(node):
@@ -282,7 +277,9 @@ def eval_condition_with_context(
         children = node.get("children")
         if not isinstance(children, list) or not children:
             return False
-        return any(eval_condition_with_context(child, entity_state=entity_state, now=now, repos=repos) for child in children)
+        return any(
+            eval_condition_with_context(child, entity_state=entity_state, now=now, repos=repos) for child in children
+        )
 
     if op == "not":
         if not _is_mapping(node):
@@ -364,7 +361,7 @@ def eval_condition_with_context(
         scores: list[float] = []
         for c in candidates:
             try:
-                scores.append(float(getattr(c, "confidence_pct")))
+                scores.append(float(c.confidence_pct))
             except Exception:
                 continue
 
@@ -372,7 +369,7 @@ def eval_condition_with_context(
             if aggregation == "latest":
                 latest = max(candidates, key=lambda c: getattr(c, "observed_at", now_dt))
                 try:
-                    value = float(getattr(latest, "confidence_pct"))
+                    value = float(latest.confidence_pct)
                 except Exception:
                     value = None
             elif aggregation == "percentile":
@@ -392,9 +389,7 @@ def eval_condition_with_context(
         except Exception:
             available = False
 
-        if not available and on_unavailable == "treat_as_match":
-            return True
-        return False
+        return bool(not available and on_unavailable == "treat_as_match")
 
     if op == "time_in_range":
         if not _is_mapping(node):
@@ -458,14 +453,18 @@ def eval_condition_explain_with_context(
         if op == "all":
             ok_all = True
             for child in children:
-                ok_child, trace = eval_condition_explain_with_context(child, entity_state=entity_state, now=now, repos=repos)
+                ok_child, trace = eval_condition_explain_with_context(
+                    child, entity_state=entity_state, now=now, repos=repos
+                )
                 explained.append(trace)
                 if not ok_child:
                     ok_all = False
             return ok_all, {"op": "all", "ok": ok_all, "children": explained}
         ok_any = False
         for child in children:
-            ok_child, trace = eval_condition_explain_with_context(child, entity_state=entity_state, now=now, repos=repos)
+            ok_child, trace = eval_condition_explain_with_context(
+                child, entity_state=entity_state, now=now, repos=repos
+            )
             explained.append(trace)
             if ok_child:
                 ok_any = True
@@ -474,7 +473,9 @@ def eval_condition_explain_with_context(
     if op == "not":
         if not _is_mapping(node):
             return False, {"op": "not", "ok": False, "reason": "invalid_node"}
-        ok_child, trace = eval_condition_explain_with_context(node.get("child"), entity_state=entity_state, now=now, repos=repos)
+        ok_child, trace = eval_condition_explain_with_context(
+            node.get("child"), entity_state=entity_state, now=now, repos=repos
+        )
         return (not ok_child), {"op": "not", "ok": (not ok_child), "child": trace}
 
     if op == "time_in_range":
@@ -627,7 +628,7 @@ def eval_condition_explain_with_context(
         scores: list[float] = []
         for c in candidates:
             try:
-                scores.append(float(getattr(c, "confidence_pct")))
+                scores.append(float(c.confidence_pct))
             except Exception:
                 continue
 
@@ -636,7 +637,7 @@ def eval_condition_explain_with_context(
             if aggregation == "latest":
                 latest = max(candidates, key=lambda c: getattr(c, "observed_at", now_dt))
                 try:
-                    value = float(getattr(latest, "confidence_pct"))
+                    value = float(latest.confidence_pct)
                 except Exception:
                     value = None
             elif aggregation == "percentile":
