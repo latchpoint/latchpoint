@@ -10,7 +10,7 @@ services:
       - db_data:/var/lib/postgresql/data
 
   app:
-    image: ghcr.io/ljmerza/latchpoint:latest
+    image: ghcr.io/ljmerza/latchpoint:main
     restart: unless-stopped
     env_file:
       - .env

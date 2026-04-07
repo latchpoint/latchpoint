@@ -1,14 +1,10 @@
-name: Build and Push Image
+name: CI
 
 on:
-  push:
-    branches:
-      - main
-    tags:
-      - "v*"
+  pull_request: {}
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ci-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 env:
@@ -26,6 +22,7 @@ jobs:
       packages: write
     runs-on: ubuntu-latest
     needs: tests
+    if: github.event.pull_request.head.repo.full_name == github.repository
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -46,9 +43,8 @@ jobs:
         with:
           images: ${{ env.IMAGE_NAME }}
           tags: |
-            type=ref,event=tag
+            type=raw,value=pr-${{ github.event.pull_request.number }}
             type=sha,prefix=sha-
-            type=raw,value=main,enable={{is_default_branch}}
 
       - name: Build and push (production image)
         uses: docker/build-push-action@v7
