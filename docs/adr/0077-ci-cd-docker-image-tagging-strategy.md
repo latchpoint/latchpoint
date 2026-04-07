@@ -51,7 +51,7 @@ The tag trigger is narrowed from `**` (any tag) to `v*` (version tags). This avo
 
 ### Workflow files
 
-- **`.github/workflows/tests.yml`** — Unchanged. Reusable workflow for backend (Django) and frontend (Vitest) tests.
+- **`.github/workflows/tests.yml`** — Reusable workflow for backend (Django) and frontend (Vitest) tests. Role and job structure unchanged; action versions updated separately.
 - **`.github/workflows/ci.yml`** — Replaces `ci-tests.yml`. Runs tests + builds/pushes `pr-N` images on PRs.
 - **`.github/workflows/build-and-push.yml`** — Modified. Tags `main` instead of `latest`; triggers on `v*` tags only.
 - **`.github/workflows/release.yml`** — New. Re-tags a release version as `latest` using `crane`.
