@@ -7,30 +7,32 @@ concurrency:
   group: ci-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
-env:
-  IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/latchpoint
-
 jobs:
   tests:
     permissions:
       contents: read
-    uses: ./.github/workflows/tests.yml
+    uses: ljmerza/misc-actions/.github/workflows/fullstack-tests.yml@v2
+    with:
+      coverage-source: accounts,alarm,control_panels,locks,notifications,scheduler
+      codecov-backend-flags: backend
+      env-vars: |
+        SECRET_KEY=ci
+        DEBUG=True
+        API_RESPONSE_ENVELOPE_ENABLED=True
+        LOG_LEVEL=INFO
+        ALLOWED_HOSTS=localhost,127.0.0.1
+      frontend-working-directory: frontend
+      frontend-test-command: "npm test"
+      codecov-frontend-flags: frontend
     secrets: inherit
 
-  build-and-push:
+  build:
+    needs: tests
     permissions:
       contents: read
       packages: write
-    runs-on: ubuntu-latest
-    needs: tests
-    if: github.event.pull_request.head.repo.full_name == github.repository
-    steps:
-      - uses: actions/checkout@v6
-      - uses: ljmerza/misc-actions/actions/docker-build-push@v1
-        with:
-          image-name: ${{ env.IMAGE_NAME }}
-          build-target: production
-          registry-password: ${{ secrets.GITHUB_TOKEN }}
-          tags: |
-            type=raw,value=pr-${{ github.event.pull_request.number }}
-            type=sha,prefix=sha-
+    uses: ljmerza/misc-actions/.github/workflows/docker-ci.yml@v2
+    with:
+      image-name: ghcr.io/${{ github.repository_owner }}/latchpoint
+      build-target: production
+    secrets: inherit
