@@ -10,40 +10,34 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-env:
-  IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/latchpoint
-
 jobs:
   tests:
     permissions:
       contents: read
-    uses: ./.github/workflows/tests.yml
+    uses: ljmerza/misc-actions/.github/workflows/fullstack-tests.yml@v2
+    with:
+      coverage-source: accounts,alarm,control_panels,locks,notifications,scheduler
+      codecov-backend-flags: backend
+      env-vars: |
+        SECRET_KEY=ci
+        DEBUG=True
+        API_RESPONSE_ENVELOPE_ENABLED=True
+        LOG_LEVEL=INFO
+        ALLOWED_HOSTS=localhost,127.0.0.1
+      frontend-working-directory: frontend
+      frontend-test-command: "npm test"
+      codecov-frontend-flags: frontend
     secrets: inherit
 
-  build-and-push:
+  build:
+    needs: tests
     permissions:
       contents: read
       packages: write
       attestations: write
       id-token: write
-    runs-on: ubuntu-latest
-    needs: tests
-    steps:
-      - uses: actions/checkout@v6
-
-      - uses: ljmerza/misc-actions/actions/docker-build-push@v1
-        id: build
-        with:
-          image-name: ${{ env.IMAGE_NAME }}
-          build-target: production
-          registry-password: ${{ secrets.GITHUB_TOKEN }}
-          tags: |
-            type=ref,event=tag
-            type=sha,prefix=sha-
-            type=raw,value=main,enable={{is_default_branch}}
-            type=raw,value=latest,enable=${{ github.event_name == 'release' }}
-
-      - uses: ljmerza/misc-actions/actions/provenance-attest@v1
-        with:
-          image-name: ${{ env.IMAGE_NAME }}
-          digest: ${{ steps.build.outputs.digest }}
+    uses: ljmerza/misc-actions/.github/workflows/docker-release.yml@v2
+    with:
+      image-name: ghcr.io/${{ github.repository_owner }}/latchpoint
+      build-target: production
+    secrets: inherit
