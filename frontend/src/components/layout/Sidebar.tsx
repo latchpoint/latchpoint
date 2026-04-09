@@ -1,10 +1,14 @@
 import { Link, useLocation } from 'react-router-dom'
-import { ChevronLeft, ChevronRight } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Github } from 'lucide-react'
 import { useLayoutStore } from '@/stores/layoutStore'
 import { cn } from '@/lib/utils'
 import { Routes } from '@/lib/constants'
 import { Button } from '@/components/ui/button'
 import { navItems } from './navItems'
+
+const appVersion = __APP_VERSION__
+const gitCommit = __GIT_COMMIT__
+const repoUrl = __REPO_URL__
 
 export function Sidebar() {
   const location = useLocation()
@@ -61,8 +65,22 @@ export function Sidebar() {
         })}
       </nav>
 
-      {/* Collapse Toggle */}
-      <div className="absolute bottom-4 left-0 right-0 px-2">
+      {/* Version + Collapse */}
+      <div className="absolute bottom-4 left-0 right-0 px-2 space-y-2">
+        {!sidebarCollapsed ? (
+          <div className="flex items-center justify-between px-3 text-[11px] text-muted-foreground">
+            <span>v{appVersion}{gitCommit !== 'dev' ? `+${gitCommit}` : ''}</span>
+            <a href={repoUrl} target="_blank" rel="noopener noreferrer" className="hover:text-foreground transition-colors" title="GitHub">
+              <Github className="h-3.5 w-3.5" />
+            </a>
+          </div>
+        ) : (
+          <div className="flex justify-center">
+            <a href={repoUrl} target="_blank" rel="noopener noreferrer" className="text-muted-foreground hover:text-foreground transition-colors" title="GitHub">
+              <Github className="h-4 w-4" />
+            </a>
+          </div>
+        )}
         <Button
           variant="ghost"
           size="sm"

@@ -3,11 +3,19 @@
 # =============================================================================
 FROM node:20-slim AS frontend-builder
 
-WORKDIR /app/frontend
-COPY frontend/package*.json ./
-RUN npm ci --no-audit --no-fund
-COPY frontend/ ./
-RUN npm run build
+ARG GIT_COMMIT_SHORT=dev
+ARG BUILD_REPO=latchpoint/latchpoint
+
+WORKDIR /app
+COPY pyproject.toml ./
+COPY frontend/package*.json ./frontend/
+RUN cd frontend && npm ci --no-audit --no-fund
+COPY frontend/ ./frontend/
+
+ENV VITE_GIT_COMMIT=${GIT_COMMIT_SHORT}
+ENV VITE_REPO_URL=https://github.com/${BUILD_REPO}
+
+RUN cd frontend && npm run build
 
 # =============================================================================
 # Stage 2: Runtime base
