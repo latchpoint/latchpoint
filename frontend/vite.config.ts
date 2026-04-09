@@ -23,6 +23,11 @@ const apiProxyTarget =
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [react(), tailwindcss()],
+  define: {
+    __APP_VERSION__: JSON.stringify(process.env.BUILD_REF || 'dev'),
+    __APP_GIT_HASH__: JSON.stringify(process.env.GIT_COMMIT_SHORT || ''),
+    __APP_REPO__: JSON.stringify(process.env.BUILD_REPO || ''),
+  },
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),

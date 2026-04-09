@@ -1,9 +1,10 @@
 import { Link, useLocation } from 'react-router-dom'
-import { ChevronLeft, ChevronRight } from 'lucide-react'
+import { ChevronLeft, ChevronRight, GitCommit } from 'lucide-react'
 import { useLayoutStore } from '@/stores/layoutStore'
 import { cn } from '@/lib/utils'
 import { Routes } from '@/lib/constants'
 import { Button } from '@/components/ui/button'
+import { Tooltip } from '@/components/ui/tooltip'
 import { navItems } from './navItems'
 
 export function Sidebar() {
@@ -61,8 +62,9 @@ export function Sidebar() {
         })}
       </nav>
 
-      {/* Collapse Toggle */}
-      <div className="absolute bottom-4 left-0 right-0 px-2">
+      {/* Version Info + Collapse Toggle */}
+      <div className="absolute bottom-4 left-0 right-0 px-2 space-y-2">
+        <VersionInfo collapsed={sidebarCollapsed} />
         <Button
           variant="ghost"
           size="sm"
@@ -80,6 +82,72 @@ export function Sidebar() {
         </Button>
       </div>
     </aside>
+  )
+}
+
+function VersionInfo({ collapsed }: { collapsed: boolean }) {
+  const version = __APP_VERSION__
+  const hash = __APP_GIT_HASH__
+  const repo = __APP_REPO__
+
+  const repoUrl = repo ? `https://github.com/${repo}` : ''
+  const commitUrl = repo && hash ? `https://github.com/${repo}/commit/${hash}` : ''
+
+  if (collapsed) {
+    return (
+      <div className="flex justify-center">
+        <Tooltip content={`${version}${hash ? ` (${hash})` : ''}`} side="right">
+          {commitUrl ? (
+            <a
+              href={commitUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-muted-foreground hover:text-foreground transition-colors"
+            >
+              <GitCommit className="h-4 w-4" />
+            </a>
+          ) : (
+            <GitCommit className="h-4 w-4 text-muted-foreground" />
+          )}
+        </Tooltip>
+      </div>
+    )
+  }
+
+  return (
+    <div className="text-xs text-muted-foreground px-1">
+      <div className="flex items-center gap-1.5">
+        <GitCommit className="h-3 w-3 shrink-0" />
+        {repoUrl ? (
+          <a
+            href={repoUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="hover:text-foreground transition-colors truncate"
+          >
+            {version}
+          </a>
+        ) : (
+          <span>{version}</span>
+        )}
+        {hash && (
+          <>
+            {commitUrl ? (
+              <a
+                href={commitUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="font-mono hover:text-foreground transition-colors"
+              >
+                {hash}
+              </a>
+            ) : (
+              <span className="font-mono">{hash}</span>
+            )}
+          </>
+        )}
+      </div>
+    </div>
   )
 }
 

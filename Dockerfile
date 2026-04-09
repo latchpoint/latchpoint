@@ -6,6 +6,12 @@ FROM node:20-slim AS frontend-builder
 WORKDIR /app/frontend
 COPY frontend/package*.json ./
 RUN npm ci --no-audit --no-fund
+
+# Build args auto-injected by misc-actions docker-build-push
+ARG GIT_COMMIT_SHORT=""
+ARG BUILD_REF=""
+ARG BUILD_REPO=""
+
 COPY frontend/ ./
 RUN npm run build
 
