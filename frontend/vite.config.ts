@@ -13,7 +13,7 @@ function readVersionFromToml(): string {
   try {
     const tomlPath = path.resolve(__dirname, '../pyproject.toml')
     const content = fs.readFileSync(tomlPath, 'utf-8')
-    const match = content.match(/^version\s*=\s*"(.+)"/m)
+    const match = content.match(/^version\s*=\s*"([^"]+)"/m)
     return match?.[1] ?? '0.0.0'
   } catch {
     return '0.0.0'

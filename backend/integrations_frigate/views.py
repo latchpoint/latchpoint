@@ -100,7 +100,7 @@ class FrigateOptionsView(APIView):
 
         return Response(
             {
-                "cameras": [c for c in cameras if isinstance(c, str) and c.strip()],
+                "cameras": [c.strip() for c in cameras if isinstance(c, str) and c.strip()],
                 "zones_by_camera": {cam: sorted(zones) for cam, zones in zones_by_camera.items()},
             },
             status=status.HTTP_200_OK,

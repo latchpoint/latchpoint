@@ -70,13 +70,13 @@ export function Sidebar() {
         {!sidebarCollapsed ? (
           <div className="flex items-center justify-between px-3 text-[11px] text-muted-foreground">
             <span>v{appVersion}{gitCommit !== 'dev' ? `+${gitCommit}` : ''}</span>
-            <a href={repoUrl} target="_blank" rel="noopener noreferrer" className="hover:text-foreground transition-colors" title="GitHub">
+            <a href={repoUrl} target="_blank" rel="noopener noreferrer" className="hover:text-foreground transition-colors" title="GitHub" aria-label="Open GitHub repository">
               <Github className="h-3.5 w-3.5" />
             </a>
           </div>
         ) : (
           <div className="flex justify-center">
-            <a href={repoUrl} target="_blank" rel="noopener noreferrer" className="text-muted-foreground hover:text-foreground transition-colors" title="GitHub">
+            <a href={repoUrl} target="_blank" rel="noopener noreferrer" className="text-muted-foreground hover:text-foreground transition-colors" title="GitHub" aria-label="Open GitHub repository">
               <Github className="h-4 w-4" />
             </a>
           </div>

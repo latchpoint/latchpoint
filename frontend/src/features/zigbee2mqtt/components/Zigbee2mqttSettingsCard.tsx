@@ -109,10 +109,10 @@ export function Zigbee2mqttSettingsCard({
             <span className="break-all">{settings.baseTopic || '(not set)'}</span>
 
             <span className="text-muted-foreground">Allowlist</span>
-            <span>{settings.allowlist?.length ? (settings.allowlist as string[]).join(', ') : '(all devices)'}</span>
+            <span>{settings.allowlist?.length ? settings.allowlist.join(', ') : '(all devices)'}</span>
 
             <span className="text-muted-foreground">Denylist</span>
-            <span>{settings.denylist?.length ? (settings.denylist as string[]).join(', ') : '(none)'}</span>
+            <span>{settings.denylist?.length ? settings.denylist.join(', ') : '(none)'}</span>
 
             <span className="text-muted-foreground">Run rules on event</span>
             <span>{settings.runRulesOnEvent ? 'Yes' : 'No'}</span>

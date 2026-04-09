@@ -16,8 +16,8 @@ export type ArmedState = 'armed_home' | 'armed_away' | 'armed_night' | 'armed_va
 export interface Zigbee2mqttSettings {
   enabled: boolean
   baseTopic: string
-  allowlist?: unknown[]
-  denylist?: unknown[]
+  allowlist?: string[]
+  denylist?: string[]
   runRulesOnEvent?: boolean
   runRulesDebounceSeconds?: number
   runRulesMaxPerMinute?: number
