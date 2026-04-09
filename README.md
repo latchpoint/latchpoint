@@ -152,3 +152,77 @@ docker compose exec app python backend/manage.py shell
 | DATABASE_URL | PostgreSQL connection URL | SQLite fallback |
 | CSRF_TRUSTED_ORIGINS | Trusted origins for CSRF | Auto-configured in debug |
 | CORS_ALLOWED_ORIGINS | Allowed CORS origins | - |
+
+#### Home Assistant
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| HA_ENABLED | Enable Home Assistant integration | false |
+| HA_BASE_URL | Home Assistant instance URL | http://localhost:8123 |
+| HA_TOKEN | Long-lived access token | - |
+| HA_CONNECT_TIMEOUT | Connection timeout (seconds) | 2 |
+
+#### MQTT
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| MQTT_ENABLED | Enable MQTT broker connection | false |
+| MQTT_HOST | Broker hostname | localhost |
+| MQTT_PORT | Broker port | 1883 |
+| MQTT_USERNAME | Broker username | - |
+| MQTT_PASSWORD | Broker password | - |
+| MQTT_USE_TLS | Enable TLS | false |
+| MQTT_TLS_INSECURE | Skip TLS certificate verification | false |
+| MQTT_CLIENT_ID | MQTT client ID | latchpoint-alarm |
+| MQTT_KEEPALIVE_SECONDS | Keepalive interval | 30 |
+| MQTT_CONNECT_TIMEOUT | Connection timeout (seconds) | 5 |
+
+#### Z-Wave JS
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| ZWAVEJS_ENABLED | Enable Z-Wave JS integration | false |
+| ZWAVEJS_WS_URL | WebSocket URL for Z-Wave JS UI | ws://localhost:3000 |
+| ZWAVEJS_API_TOKEN | API token from Z-Wave JS UI | - |
+| ZWAVEJS_CONNECT_TIMEOUT | Connection timeout (seconds) | 5 |
+| ZWAVEJS_RECONNECT_MIN | Min reconnect backoff (seconds) | 1 |
+| ZWAVEJS_RECONNECT_MAX | Max reconnect backoff (seconds) | 30 |
+
+#### Zigbee2MQTT
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| ZIGBEE2MQTT_ENABLED | Enable Zigbee2MQTT integration | false |
+| ZIGBEE2MQTT_BASE_TOPIC | MQTT base topic | zigbee2mqtt |
+| ZIGBEE2MQTT_ALLOWLIST | Comma-separated device IDs to include | - (all) |
+| ZIGBEE2MQTT_DENYLIST | Comma-separated device IDs to exclude | - |
+| ZIGBEE2MQTT_RUN_RULES_ON_EVENT | Trigger rules on Z2M events | false |
+| ZIGBEE2MQTT_RUN_RULES_DEBOUNCE_SECONDS | Debounce interval for rule evaluation | 5 |
+| ZIGBEE2MQTT_RUN_RULES_MAX_PER_MINUTE | Max rule evaluations per minute | 60 |
+| ZIGBEE2MQTT_RUN_RULES_KINDS | Comma-separated rule kinds to auto-run | - |
+
+#### Frigate
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| FRIGATE_ENABLED | Enable Frigate event ingest | false |
+| FRIGATE_EVENTS_TOPIC | MQTT topic for Frigate events | frigate/events |
+| FRIGATE_RETENTION_SECONDS | Detection retention (seconds) | 3600 |
+
+#### Notification Providers
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| PUSHBULLET_ENABLED | Enable Pushbullet notifications | false |
+| PUSHBULLET_ACCESS_TOKEN | Pushbullet access token | - |
+| DISCORD_ENABLED | Enable Discord notifications | false |
+| DISCORD_WEBHOOK_URL | Discord webhook URL | - |
+| SLACK_ENABLED | Enable Slack notifications | false |
+| SLACK_BOT_TOKEN | Slack bot token | - |
+| SLACK_DEFAULT_CHANNEL | Default Slack channel | - |
+| WEBHOOK_ENABLED | Enable generic webhook | false |
+| WEBHOOK_URL | Webhook URL | - |
+| HA_NOTIFY_ENABLED | Enable HA notify service | false |
+| HA_NOTIFY_SERVICE | HA notification service name | notify.notify |
+
+See [`.env.example`](.env.example) for the complete list with all optional fields.
