@@ -77,7 +77,7 @@ def _build_system_status_message(*, payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _refresh_settings_snapshot_from_db() -> None:
+def _refresh_settings_snapshot() -> None:
     """
     Reads integration settings and stores a small, thread-safe snapshot
     used by periodic status checks. Avoid calling this in a tight loop.
@@ -104,7 +104,7 @@ def _refresh_settings_snapshot_from_db() -> None:
 def _on_settings_profile_changed(sender, *, profile_id: int, reason: str, **kwargs) -> None:
     """Refresh cached settings snapshot and broadcast updated status on profile changes."""
     try:
-        _refresh_settings_snapshot_from_db()
+        _refresh_settings_snapshot()
     except Exception:
         logger.exception(
             "system_status: failed to refresh settings snapshot (profile_id=%s reason=%s)", profile_id, reason
@@ -118,12 +118,12 @@ def _on_settings_profile_changed(sender, *, profile_id: int, reason: str, **kwar
 
 
 def _get_settings_snapshot() -> _IntegrationSettingsSnapshot:
-    """Return the last settings snapshot, refreshing from DB if needed."""
+    """Return the last settings snapshot, refreshing from env config if needed."""
     with _settings_lock:
         snap = _settings_snapshot
     if snap is not None:
         return snap
-    _refresh_settings_snapshot_from_db()
+    _refresh_settings_snapshot()
     with _settings_lock:
         return _settings_snapshot or _IntegrationSettingsSnapshot(
             frigate_enabled=False,
