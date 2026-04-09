@@ -2,40 +2,28 @@ from __future__ import annotations
 
 import logging
 
-from django.db import transaction
 from django.utils import timezone
 from rest_framework import status
+from rest_framework.exceptions import MethodNotAllowed
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from transports_mqtt.manager import mqtt_connection_manager
 
 from accounts.permissions import IsAdminRole
-from alarm.models import AlarmSettingsEntry, Entity
+from alarm.models import Entity
 from alarm.serializers import EntitySerializer
-from alarm.settings_registry import ALARM_PROFILE_SETTINGS_BY_KEY
-from alarm.signals import settings_profile_changed
-from alarm.state_machine.settings import get_setting_json
-from alarm.use_cases.settings_profile import ensure_active_settings_profile
 from config.domain_exceptions import OperationTimeoutError, ServiceUnavailableError, ValidationError
-from integrations_zigbee2mqtt.config import (
-    mask_zigbee2mqtt_settings,
-    normalize_zigbee2mqtt_settings,
+from integrations_zigbee2mqtt.runtime import (
+    apply_runtime_settings_from_active_profile,
+    get_settings,
+    sync_devices_via_mqtt,
 )
-from integrations_zigbee2mqtt.runtime import apply_runtime_settings_from_active_profile, sync_devices_via_mqtt
-from integrations_zigbee2mqtt.serializers import (
-    Zigbee2mqttSettingsSerializer,
-    Zigbee2mqttSettingsUpdateSerializer,
-)
+from integrations_zigbee2mqtt.serializers import Zigbee2mqttSettingsSerializer
 from integrations_zigbee2mqtt.status_store import get_last_seen_at, get_last_state, get_last_sync
 
 _Z2M_ALIVE_GRACE_SECONDS = 75
 logger = logging.getLogger(__name__)
-
-
-def _get_profile():
-    """Return the active settings profile, creating one if needed."""
-    return ensure_active_settings_profile()
 
 
 class Zigbee2mqttStatusView(APIView):
@@ -43,8 +31,7 @@ class Zigbee2mqttStatusView(APIView):
 
     def get(self, request):
         """Return Zigbee2MQTT runtime status including MQTT status and last sync/seen info."""
-        profile = _get_profile()
-        settings_obj = normalize_zigbee2mqtt_settings(get_setting_json(profile, "zigbee2mqtt") or {})
+        settings_obj = get_settings()
         apply_runtime_settings_from_active_profile()
         mqtt_status = mqtt_connection_manager.get_status()
         now = timezone.now()
@@ -79,46 +66,14 @@ class Zigbee2mqttSettingsView(APIView):
     permission_classes = [IsAuthenticated, IsAdminRole]
 
     def get(self, request):
-        """Return the current Zigbee2MQTT settings."""
-        profile = _get_profile()
-        value = mask_zigbee2mqtt_settings(get_setting_json(profile, "zigbee2mqtt") or {})
-        return Response(Zigbee2mqttSettingsSerializer(value).data, status=status.HTTP_200_OK)
+        """Return the current Zigbee2MQTT settings (read-only, from environment variables)."""
+        settings_obj = get_settings()
+        return Response(Zigbee2mqttSettingsSerializer(settings_obj.__dict__).data, status=status.HTTP_200_OK)
 
     def patch(self, request):
-        """Update Zigbee2MQTT settings and apply runtime changes (admin-only)."""
-        profile = _get_profile()
-        current = normalize_zigbee2mqtt_settings(get_setting_json(profile, "zigbee2mqtt") or {})
-
-        serializer = Zigbee2mqttSettingsUpdateSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        changes = dict(serializer.validated_data)
-
-        if changes.get("enabled") is True:
-            from alarm.env_config import get_mqtt_config
-
-            conn = get_mqtt_config()
-            mqtt_ok = bool(conn.get("enabled") and conn.get("host"))
-            if not mqtt_ok:
-                raise ValidationError("MQTT must be enabled/configured before enabling Zigbee2MQTT.")
-
-        merged = dict(current.__dict__)
-        merged.update(changes)
-        normalized = normalize_zigbee2mqtt_settings(merged)
-
-        definition = ALARM_PROFILE_SETTINGS_BY_KEY["zigbee2mqtt"]
-        AlarmSettingsEntry.objects.update_or_create(
-            profile=profile,
-            key="zigbee2mqtt",
-            defaults={"value": normalized.__dict__, "value_type": definition.value_type},
-        )
-
-        apply_runtime_settings_from_active_profile()
-        transaction.on_commit(
-            lambda: settings_profile_changed.send(sender=None, profile_id=profile.id, reason="updated")
-        )
-        return Response(
-            Zigbee2mqttSettingsSerializer(mask_zigbee2mqtt_settings(normalized.__dict__)).data,
-            status=status.HTTP_200_OK,
+        """Zigbee2MQTT settings are now configured via environment variables."""
+        raise MethodNotAllowed(
+            request.method, detail="Zigbee2MQTT settings are configured via environment variables."
         )
 
 

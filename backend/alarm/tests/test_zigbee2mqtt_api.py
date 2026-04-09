@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from unittest.mock import Mock, patch
 
 from django.contrib.auth.hashers import make_password
@@ -43,6 +44,9 @@ class Zigbee2mqttApiTests(APITestCase):
 class Zigbee2mqttApiPermissionsTests(APITestCase):
     def setUp(self):
         self.user = User.objects.create_user(email="nonadmin-z2m@example.com", password="pass")
+        self.admin = User.objects.create_user(email="admin-z2m-perms@example.com", password="pass")
+        role, _ = Role.objects.get_or_create(slug="admin", defaults={"name": "Admin"})
+        UserRoleAssignment.objects.create(user=self.admin, role=role)
         self.client = APIClient()
         self.client.force_authenticate(self.user)
 
@@ -51,12 +55,21 @@ class Zigbee2mqttApiPermissionsTests(APITestCase):
         response = self.client.patch(url, data={"enabled": True}, format="json")
         self.assertEqual(response.status_code, 403)
 
+    def test_patch_settings_returns_405_for_admin(self):
+        """Zigbee2MQTT settings are configured via environment variables (ADR 0078)."""
+        client = APIClient()
+        client.force_authenticate(self.admin)
+        url = reverse("zigbee2mqtt-settings")
+        response = client.patch(url, data={"enabled": True}, format="json")
+        self.assertEqual(response.status_code, 405)
+
 
 class Zigbee2mqttEndpointApiTests(Zigbee2mqttApiTests):
     def test_status_requires_auth(self):
         response = APIClient().get(reverse("zigbee2mqtt-status"))
         self.assertEqual(response.status_code, 401)
 
+    @patch.dict(os.environ, {"ZIGBEE2MQTT_ENABLED": "true", "ZIGBEE2MQTT_BASE_TOPIC": "zigbee2mqtt"})
     @patch("integrations_zigbee2mqtt.views.apply_runtime_settings_from_active_profile")
     @patch("integrations_zigbee2mqtt.views.mqtt_connection_manager.get_status")
     @patch("integrations_zigbee2mqtt.views.get_last_sync")

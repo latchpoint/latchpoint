@@ -1,5 +1,5 @@
 import api from './api'
-import type { Zigbee2mqttEntity, Zigbee2mqttSettings, Zigbee2mqttSettingsUpdate, Zigbee2mqttStatus, Zigbee2mqttSyncResult } from '@/types'
+import type { Zigbee2mqttEntity, Zigbee2mqttSettings, Zigbee2mqttStatus, Zigbee2mqttSyncResult } from '@/types'
 import { apiEndpoints } from './endpoints'
 
 export const zigbee2mqttService = {
@@ -9,10 +9,6 @@ export const zigbee2mqttService = {
 
   async getSettings(): Promise<Zigbee2mqttSettings> {
     return api.get<Zigbee2mqttSettings>(apiEndpoints.integrations.zigbee2mqtt.settings)
-  },
-
-  async updateSettings(changes: Zigbee2mqttSettingsUpdate): Promise<Zigbee2mqttSettings> {
-    return api.patch<Zigbee2mqttSettings>(apiEndpoints.integrations.zigbee2mqtt.settings, changes)
   },
 
   async listDevices(): Promise<Zigbee2mqttEntity[]> {

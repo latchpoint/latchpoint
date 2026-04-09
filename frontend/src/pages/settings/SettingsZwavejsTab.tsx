@@ -17,11 +17,9 @@ export function SettingsZwavejsTab() {
         lastError={model.statusQuery.data?.lastError ?? undefined}
         onRefresh={model.refresh}
         onSync={() => void model.sync()}
-        onSetDraft={model.setDraft}
       />
     </SettingsTabShell>
   )
 }
 
 export default SettingsZwavejsTab
-

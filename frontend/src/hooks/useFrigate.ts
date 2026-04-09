@@ -1,8 +1,7 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQuery } from '@tanstack/react-query'
 
 import { frigateService } from '@/services'
 import { queryKeys } from '@/types'
-import type { FrigateSettingsUpdate } from '@/types'
 import { useAuthSessionQuery, useCurrentUserQuery } from '@/hooks/useAuthQueries'
 import { ONE_MINUTE_MS, UserRole } from '@/lib/constants'
 
@@ -25,17 +24,6 @@ export function useFrigateSettingsQuery() {
     queryKey: queryKeys.frigate.settings,
     queryFn: frigateService.getSettings,
     enabled: isAuthenticated && isAdmin,
-  })
-}
-
-export function useUpdateFrigateSettingsMutation() {
-  const queryClient = useQueryClient()
-  return useMutation({
-    mutationFn: (changes: FrigateSettingsUpdate) => frigateService.updateSettings(changes),
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: queryKeys.frigate.settings })
-      await queryClient.invalidateQueries({ queryKey: queryKeys.frigate.status })
-    },
   })
 }
 

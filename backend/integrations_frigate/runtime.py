@@ -9,7 +9,6 @@ from django.db import close_old_connections
 from django.utils import timezone
 from transports_mqtt.manager import mqtt_connection_manager
 
-from alarm.state_machine.settings import get_active_settings_profile, get_setting_json
 from integrations_frigate.config import FrigateSettings, normalize_frigate_settings
 from integrations_frigate.models import FrigateDetection
 from integrations_frigate.parsing import parse_frigate_events_payload
@@ -36,18 +35,10 @@ def _mqtt_enabled() -> bool:
 
 
 def get_settings() -> FrigateSettings:
-    """Read Frigate settings from DB (cameras stay) with env overrides."""
-    from alarm.env_config import get_frigate_env_overrides
+    """Read Frigate settings from environment variables (ADR 0078)."""
+    from alarm.env_config import get_frigate_config
 
-    profile = get_active_settings_profile()
-    raw = get_setting_json(profile, "frigate") or {}
-    if not isinstance(raw, dict):
-        raw = {}
-    overrides = get_frigate_env_overrides()
-    raw["enabled"] = overrides["enabled"]
-    raw["events_topic"] = overrides["events_topic"]
-    raw["retention_seconds"] = overrides["retention_seconds"]
-    return normalize_frigate_settings(raw)
+    return normalize_frigate_settings(get_frigate_config())
 
 
 def mark_error(error: str) -> None:

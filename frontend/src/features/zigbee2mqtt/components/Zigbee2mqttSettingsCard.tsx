@@ -1,15 +1,12 @@
 import { Radio } from 'lucide-react'
 import { LoadingInline } from '@/components/ui/loading-inline'
 import { Alert, AlertDescription } from '@/components/ui/alert'
-import type { Zigbee2mqttDraft } from '@/features/zigbee2mqtt/hooks/useZigbee2mqttSettingsModel'
 import { Zigbee2mqttStatusPills } from '@/features/zigbee2mqtt/components/Zigbee2mqttStatusPills'
-import { Zigbee2mqttRulesAndPanelSection } from '@/features/zigbee2mqtt/components/Zigbee2mqttRulesAndPanelSection'
 import { Button } from '@/components/ui/button'
-import { FormField } from '@/components/ui/form-field'
 import { HelpTip } from '@/components/ui/help-tip'
-import { Input } from '@/components/ui/input'
 import { IntegrationConnectionCard } from '@/features/integrations/components/IntegrationConnectionCard'
 import { IntegrationOverviewCard } from '@/features/integrations/components/IntegrationOverviewCard'
+import type { Zigbee2mqttSettings } from '@/types'
 
 type Props = {
   isAdmin: boolean
@@ -21,13 +18,9 @@ type Props = {
   lastSyncAt: string | null
   lastDeviceCount: number | null
   lastSyncError: string | null
-  draft: Zigbee2mqttDraft | null
-  isLoadingDraft: boolean
-  onUpdateDraft: (patch: Partial<Zigbee2mqttDraft>) => void
-  onSetError: (msg: string | null) => void
+  settings: Zigbee2mqttSettings | null
+  isLoadingSettings: boolean
   onRefresh: () => void
-  onSave: () => void
-  onReset: () => void
   onRunSync: () => void
 }
 
@@ -41,18 +34,13 @@ export function Zigbee2mqttSettingsCard({
   lastSyncAt,
   lastDeviceCount,
   lastSyncError,
-  draft,
-  isLoadingDraft,
-  onUpdateDraft,
-  onSetError,
+  settings,
+  isLoadingSettings,
   onRefresh,
-  onSave,
-  onReset,
   onRunSync,
 }: Props) {
   const showAdminGate = !isAdmin
-
-  const canSync = Boolean(draft?.enabled && mqttConnected)
+  const canSync = Boolean(z2mEnabled && mqttConnected)
 
   return (
     <div className="space-y-3 sm:space-y-4">
@@ -63,7 +51,7 @@ export function Zigbee2mqttSettingsCard({
             <span>Zigbee2MQTT</span>
           </div>
         }
-        description="Sync Zigbee devices from Zigbee2MQTT via MQTT and ingest state/action updates (Home Assistant not required)."
+        description="Zigbee2MQTT settings are configured via environment variables."
         isAdmin={isAdmin}
         isBusy={isBusy}
         statusExtra={
@@ -79,22 +67,17 @@ export function Zigbee2mqttSettingsCard({
         enableLabel={
           <span className="flex items-center gap-1">
             Enable Zigbee2MQTT
-            <HelpTip content="Requires MQTT to be enabled first (Settings → MQTT)." />
+            <HelpTip content="Zigbee2MQTT is enabled/disabled via environment variables." />
           </span>
         }
-        enabled={draft?.enabled ?? false}
-        onEnabledChange={(checked) => {
-          if (checked && !mqttReady) {
-            onSetError('Enable MQTT first (Settings → MQTT) before enabling Zigbee2MQTT.')
-            return
-          }
-          onUpdateDraft({ enabled: checked })
-        }}
-        enableDisabled={!draft || (!draft?.enabled && !mqttReady)}
+        enabled={settings?.enabled ?? false}
+        onEnabledChange={() => {}}
+        enableDisabled={true}
         onRefresh={onRefresh}
-        onReset={onReset}
-        onSave={onSave}
-        saveDisabled={!draft}
+        onReset={() => {}}
+        onSave={() => {}}
+        resetDisabled={true}
+        saveDisabled={true}
         opsActions={
           <Button type="button" variant="secondary" onClick={onRunSync} disabled={!isAdmin || isBusy || !canSync}>
             Sync devices
@@ -102,13 +85,13 @@ export function Zigbee2mqttSettingsCard({
         }
       >
         {showAdminGate ? (
-          <div className="text-sm text-muted-foreground">Only admins can view and edit Zigbee2MQTT settings.</div>
-        ) : isLoadingDraft || !draft ? (
+          <div className="text-sm text-muted-foreground">Only admins can view Zigbee2MQTT settings.</div>
+        ) : isLoadingSettings || !settings ? (
           <LoadingInline label="Loading Zigbee2MQTT settings…" />
         ) : !mqttReady ? (
           <Alert variant="warning">
             <AlertDescription>
-              {draft.enabled
+              {settings.enabled
                 ? 'Zigbee2MQTT is enabled, but MQTT is disabled. Zigbee2MQTT events will not be ingested until MQTT is enabled in Settings → MQTT.'
                 : 'MQTT is not enabled/configured. Enable MQTT in Settings → MQTT before enabling Zigbee2MQTT.'}
             </AlertDescription>
@@ -116,24 +99,36 @@ export function Zigbee2mqttSettingsCard({
         ) : null}
       </IntegrationOverviewCard>
 
-      <IntegrationConnectionCard title="Setup / settings">
+      <IntegrationConnectionCard description="Settings are configured via environment variables.">
         {showAdminGate ? (
-          <div className="text-sm text-muted-foreground">Only admins can view and edit Zigbee2MQTT settings.</div>
-        ) : isLoadingDraft || !draft ? (
+          <div className="text-sm text-muted-foreground">Only admins can view Zigbee2MQTT settings.</div>
+        ) : isLoadingSettings || !settings ? (
           <LoadingInline label="Loading Zigbee2MQTT settings…" />
         ) : (
-          <div className="space-y-3 sm:space-y-4">
-            <FormField label="Base topic" htmlFor="z2mBaseTopic" help="Zigbee2MQTT base topic (default: zigbee2mqtt).">
-              <Input
-                id="z2mBaseTopic"
-                value={draft.baseTopic}
-                onChange={(e) => onUpdateDraft({ baseTopic: e.target.value })}
-                placeholder="zigbee2mqtt"
-                disabled={!isAdmin || isBusy}
-              />
-            </FormField>
+          <div className="grid grid-cols-2 gap-2 text-sm">
+            <span className="text-muted-foreground">Enabled</span>
+            <span>{settings.enabled ? 'Yes' : 'No'}</span>
 
-            <Zigbee2mqttRulesAndPanelSection isAdmin={isAdmin} isBusy={isBusy} draft={draft} onUpdateDraft={onUpdateDraft} />
+            <span className="text-muted-foreground">Base topic</span>
+            <span className="break-all">{settings.baseTopic || '(not set)'}</span>
+
+            <span className="text-muted-foreground">Allowlist</span>
+            <span>{settings.allowlist?.length ? (settings.allowlist as string[]).join(', ') : '(all devices)'}</span>
+
+            <span className="text-muted-foreground">Denylist</span>
+            <span>{settings.denylist?.length ? (settings.denylist as string[]).join(', ') : '(none)'}</span>
+
+            <span className="text-muted-foreground">Run rules on event</span>
+            <span>{settings.runRulesOnEvent ? 'Yes' : 'No'}</span>
+
+            <span className="text-muted-foreground">Rules debounce</span>
+            <span>{settings.runRulesDebounceSeconds ?? 5}s</span>
+
+            <span className="text-muted-foreground">Rules max/min</span>
+            <span>{settings.runRulesMaxPerMinute ?? 60}</span>
+
+            <span className="text-muted-foreground">Rule kinds</span>
+            <span>{settings.runRulesKinds?.length ? settings.runRulesKinds.join(', ') : '(none)'}</span>
           </div>
         )}
       </IntegrationConnectionCard>

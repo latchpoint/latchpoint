@@ -92,6 +92,9 @@ This document tracks all Architecture Decision Records (ADRs) and their implemen
 | [0073](0073-backend-endpoint-test-baseline-expansion.md) | Backend Endpoint Test Baseline Expansion (Useful Gaps) | **Implemented** |
 | [0074](0074-test-suite-expansion-beyond-endpoint-baseline.md) | Test Suite Expansion Beyond Endpoint Baseline | **Implemented** |
 | [0075](0075-env-var-credentials-remove-encryption.md) | Move Integration Credentials to Env Vars, Remove Encryption | **Implemented** |
+| [0076](0076-per-rule-stop-processing-flag.md) | Per-Rule Stop Processing Flag | **Implemented** |
+| [0077](0077-ci-cd-docker-image-tagging-strategy.md) | CI/CD Docker Image Tagging Strategy | **Implemented** |
+| [0078](0078-complete-env-var-migration-frigate-zigbee2mqtt.md) | Complete Env-Var Migration for Frigate and Zigbee2MQTT | **Proposed** |
 
 ---
 
@@ -99,14 +102,14 @@ This document tracks all Architecture Decision Records (ADRs) and their implemen
 
 | Status | Count |
 |--------|-------|
-| **Implemented** | 58 |
+| **Implemented** | 60 |
 | **Partially Implemented** | 1 |
-| **Proposed** | 3 |
+| **Proposed** | 4 |
 | **Superseded** | 13 |
-| **Total** | 75 |
+| **Total** | 78 |
 
 Note: **Superseded** includes entries marked as "Superseded by …" in the table above.
 
 ---
 
-*Last updated: 2026-03-03* (ADR 0075 implemented; ADRs 0017, 0038 superseded)
+*Last updated: 2026-04-09* (ADR 0078 proposed; ADRs 0076, 0077 added to index)

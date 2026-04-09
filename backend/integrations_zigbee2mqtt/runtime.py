@@ -11,7 +11,6 @@ from django.utils import timezone
 from transports_mqtt.manager import mqtt_connection_manager
 
 from alarm.models import Entity
-from alarm.state_machine.settings import get_active_settings_profile, get_setting_json
 from integrations_zigbee2mqtt import status_store
 from integrations_zigbee2mqtt.config import Zigbee2mqttSettings, normalize_zigbee2mqtt_settings, slugify_fragment
 from integrations_zigbee2mqtt.entity_mapping import build_entities_for_z2m_device, extract_ieee_mapping
@@ -94,17 +93,10 @@ def _mqtt_enabled() -> bool:
 
 
 def get_settings() -> Zigbee2mqttSettings:
-    """Read Zigbee2MQTT settings from DB (allowlists stay) with env overrides."""
-    from alarm.env_config import get_zigbee2mqtt_env_overrides
+    """Read Zigbee2MQTT settings from environment variables (ADR 0078)."""
+    from alarm.env_config import get_zigbee2mqtt_config
 
-    profile = get_active_settings_profile()
-    raw = get_setting_json(profile, "zigbee2mqtt") or {}
-    if not isinstance(raw, dict):
-        raw = {}
-    overrides = get_zigbee2mqtt_env_overrides()
-    raw["enabled"] = overrides["enabled"]
-    raw["base_topic"] = overrides["base_topic"]
-    return normalize_zigbee2mqtt_settings(raw)
+    return normalize_zigbee2mqtt_settings(get_zigbee2mqtt_config())
 
 
 def _topic(*, base_topic: str, suffix: str) -> str:

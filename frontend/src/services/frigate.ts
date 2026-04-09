@@ -4,7 +4,6 @@ import type {
   FrigateDetectionDetail,
   FrigateOptions,
   FrigateSettings,
-  FrigateSettingsUpdate,
   FrigateStatus,
 } from '@/types'
 import { apiEndpoints } from './endpoints'
@@ -16,10 +15,6 @@ export const frigateService = {
 
   async getSettings(): Promise<FrigateSettings> {
     return api.get<FrigateSettings>(apiEndpoints.integrations.frigate.settings)
-  },
-
-  async updateSettings(changes: FrigateSettingsUpdate): Promise<FrigateSettings> {
-    return api.patch<FrigateSettings>(apiEndpoints.integrations.frigate.settings, changes)
   },
 
   async getOptions(): Promise<FrigateOptions> {

@@ -55,14 +55,23 @@ def get_zwavejs_config() -> dict:
     }
 
 
-def get_zigbee2mqtt_env_overrides() -> dict:
+def get_zigbee2mqtt_config() -> dict:
+    allowlist_raw = env.str("ZIGBEE2MQTT_ALLOWLIST", default="")
+    denylist_raw = env.str("ZIGBEE2MQTT_DENYLIST", default="")
+    kinds_raw = env.str("ZIGBEE2MQTT_RUN_RULES_KINDS", default="")
     return {
         "enabled": env.bool("ZIGBEE2MQTT_ENABLED", default=False),
         "base_topic": env.str("ZIGBEE2MQTT_BASE_TOPIC", default="zigbee2mqtt"),
+        "allowlist": [s.strip() for s in allowlist_raw.split(",") if s.strip()] if allowlist_raw.strip() else [],
+        "denylist": [s.strip() for s in denylist_raw.split(",") if s.strip()] if denylist_raw.strip() else [],
+        "run_rules_on_event": env.bool("ZIGBEE2MQTT_RUN_RULES_ON_EVENT", default=False),
+        "run_rules_debounce_seconds": env.int("ZIGBEE2MQTT_RUN_RULES_DEBOUNCE_SECONDS", default=5),
+        "run_rules_max_per_minute": env.int("ZIGBEE2MQTT_RUN_RULES_MAX_PER_MINUTE", default=60),
+        "run_rules_kinds": [s.strip() for s in kinds_raw.split(",") if s.strip()] if kinds_raw.strip() else [],
     }
 
 
-def get_frigate_env_overrides() -> dict:
+def get_frigate_config() -> dict:
     return {
         "enabled": env.bool("FRIGATE_ENABLED", default=False),
         "events_topic": env.str("FRIGATE_EVENTS_TOPIC", default="frigate/events"),

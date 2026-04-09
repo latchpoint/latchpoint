@@ -2,41 +2,29 @@ from __future__ import annotations
 
 import logging
 
-from django.db import transaction
 from django.utils import timezone
 from rest_framework import status
-from rest_framework.exceptions import NotFound, ValidationError
+from rest_framework.exceptions import MethodNotAllowed, NotFound
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from transports_mqtt.manager import mqtt_connection_manager
 
 from accounts.permissions import IsAdminRole
-from alarm.models import AlarmSettingsEntry
-from alarm.settings_registry import ALARM_PROFILE_SETTINGS_BY_KEY
-from alarm.signals import settings_profile_changed
-from alarm.state_machine.settings import get_setting_json
-from alarm.use_cases.settings_profile import ensure_active_settings_profile
-from integrations_frigate.config import normalize_frigate_settings
 from integrations_frigate.models import FrigateDetection
 from integrations_frigate.runtime import (
     apply_runtime_settings_from_active_profile,
     get_last_error,
     get_last_ingest_at,
+    get_settings,
     is_available,
 )
 from integrations_frigate.serializers import (
     FrigateDetectionDetailSerializer,
     FrigateSettingsSerializer,
-    FrigateSettingsUpdateSerializer,
 )
 
 logger = logging.getLogger(__name__)
-
-
-def _get_profile():
-    """Return the active settings profile, creating one if needed."""
-    return ensure_active_settings_profile()
 
 
 class FrigateStatusView(APIView):
@@ -44,8 +32,7 @@ class FrigateStatusView(APIView):
 
     def get(self, request):
         """Return Frigate runtime status including MQTT status and ingest/rules stats."""
-        profile = _get_profile()
-        settings_obj = normalize_frigate_settings(get_setting_json(profile, "frigate") or {})
+        settings_obj = get_settings()
         apply_runtime_settings_from_active_profile()
         return Response(
             {
@@ -64,64 +51,32 @@ class FrigateSettingsView(APIView):
     permission_classes = [IsAuthenticated, IsAdminRole]
 
     def get(self, request):
-        """Return the current persisted Frigate settings."""
-        profile = _get_profile()
-        value = normalize_frigate_settings(get_setting_json(profile, "frigate") or {})
+        """Return the current Frigate settings (read-only, from environment variables)."""
+        value = get_settings()
         return Response(FrigateSettingsSerializer(value.__dict__).data, status=status.HTTP_200_OK)
 
     def patch(self, request):
-        """Update Frigate settings and apply runtime changes (admin-only)."""
-        profile = _get_profile()
-        current = normalize_frigate_settings(get_setting_json(profile, "frigate") or {})
-
-        serializer = FrigateSettingsUpdateSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        changes = dict(serializer.validated_data)
-
-        if changes.get("enabled") is True:
-            from alarm.env_config import get_mqtt_config
-
-            conn = get_mqtt_config()
-            mqtt_ok = bool(conn.get("enabled") and conn.get("host"))
-            if not mqtt_ok:
-                raise ValidationError(
-                    {"non_field_errors": ["MQTT must be enabled/configured before enabling Frigate."]}
-                )
-
-        merged = dict(current.__dict__)
-        merged.update(changes)
-        normalized = normalize_frigate_settings(merged)
-
-        definition = ALARM_PROFILE_SETTINGS_BY_KEY["frigate"]
-        AlarmSettingsEntry.objects.update_or_create(
-            profile=profile,
-            key="frigate",
-            defaults={"value": normalized.__dict__, "value_type": definition.value_type},
+        """Frigate settings are now configured via environment variables."""
+        raise MethodNotAllowed(
+            request.method, detail="Frigate settings are configured via environment variables."
         )
-
-        apply_runtime_settings_from_active_profile()
-        transaction.on_commit(
-            lambda: settings_profile_changed.send(sender=None, profile_id=profile.id, reason="updated")
-        )
-        return Response(FrigateSettingsSerializer(normalized.__dict__).data, status=status.HTTP_200_OK)
 
 
 class FrigateOptionsView(APIView):
     """
     Helper endpoint for UI rule builders:
-    returns known cameras/zones based on recently ingested detections.
+    returns known cameras/zones auto-discovered from recent detections (ADR 0078).
     """
 
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        """Return available cameras/zones for rule builders based on recent detections and config."""
-        profile = _get_profile()
-        settings_obj = normalize_frigate_settings(get_setting_json(profile, "frigate") or {})
+        """Return available cameras/zones for rule builders based on recent detections."""
+        settings_obj = get_settings()
         now = timezone.now()
         since = now - timezone.timedelta(seconds=int(settings_obj.retention_seconds))
 
-        cameras_from_ingest = list(
+        cameras = list(
             FrigateDetection.objects.filter(provider="frigate", observed_at__gte=since)
             .values_list("camera", flat=True)
             .distinct()
@@ -129,7 +84,6 @@ class FrigateOptionsView(APIView):
         )
 
         zones_by_camera: dict[str, set[str]] = {}
-        zones_by_camera_out: dict[str, list[str]] = {}
         for row in (
             FrigateDetection.objects.filter(provider="frigate", observed_at__gte=since)
             .only("camera", "zones")
@@ -145,26 +99,11 @@ class FrigateOptionsView(APIView):
             for z in zones:
                 if isinstance(z, str) and z.strip():
                     bucket.add(z.strip())
-        zones_by_camera_out = {cam: sorted(list(zones)) for cam, zones in zones_by_camera.items()}
-
-        cameras = sorted(
-            {
-                *(settings_obj.known_cameras or []),
-                *[c for c in cameras_from_ingest if isinstance(c, str) and c.strip()],
-            }
-        )
-        # Merge configured zones with observed zones.
-        for cam, zones in (settings_obj.known_zones_by_camera or {}).items():
-            if not isinstance(cam, str) or not cam.strip():
-                continue
-            bucket = zones_by_camera_out.setdefault(cam.strip(), [])
-            merged = sorted({*bucket, *[z for z in zones if isinstance(z, str) and z.strip()]})
-            zones_by_camera_out[cam.strip()] = merged
 
         return Response(
             {
-                "cameras": cameras,
-                "zones_by_camera": zones_by_camera_out,
+                "cameras": [c for c in cameras if isinstance(c, str) and c.strip()],
+                "zones_by_camera": {cam: sorted(zones) for cam, zones in zones_by_camera.items()},
             },
             status=status.HTTP_200_OK,
         )

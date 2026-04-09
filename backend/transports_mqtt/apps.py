@@ -21,7 +21,7 @@ class TransportsMqttConfig(AppConfig):
             return
 
         try:
-            from alarm.env_config import get_frigate_env_overrides, get_mqtt_config, get_zigbee2mqtt_env_overrides
+            from alarm.env_config import get_frigate_config, get_mqtt_config, get_zigbee2mqtt_config
             from alarm.gateways.mqtt import default_mqtt_gateway
         except Exception:
             return
@@ -37,8 +37,8 @@ class TransportsMqttConfig(AppConfig):
         # Startup validation: warn if MQTT is disabled but dependents are enabled.
         mqtt_cfg = get_mqtt_config()
         if not mqtt_cfg["enabled"]:
-            z2m = get_zigbee2mqtt_env_overrides()
-            frigate = get_frigate_env_overrides()
+            z2m = get_zigbee2mqtt_config()
+            frigate = get_frigate_config()
             if z2m["enabled"]:
                 logger.warning("ZIGBEE2MQTT_ENABLED=true but MQTT_ENABLED=false; Zigbee2MQTT will not function")
             if frigate["enabled"]:

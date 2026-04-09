@@ -9,19 +9,14 @@ export function SettingsFrigateTab() {
   const status = model.statusQuery.data
 
   return (
-    <SettingsTabShell isAdmin={model.isAdmin} error={model.error} notice={model.notice} adminMessage="Admin role required to edit Frigate settings.">
+    <SettingsTabShell isAdmin={model.isAdmin} error={model.error} notice={model.notice}>
       <div className="space-y-6 pt-6">
         <FrigateOverviewCard
           isAdmin={model.isAdmin}
           isBusy={model.isBusy}
           mqttReady={model.mqttReady}
-          hasDraft={Boolean(model.draft)}
-          draftEnabled={model.draft?.enabled ?? false}
-          onSetEnabled={(enabled) => model.setDraft((prev) => (prev ? { ...prev, enabled } : prev))}
-          onSetError={model.setError}
+          enabled={model.settings?.enabled ?? false}
           onRefresh={model.refresh}
-          onReset={model.reset}
-          onSave={() => void model.save()}
           mqttConnected={model.mqttConnected}
           available={status?.available}
           ingestLastError={status?.ingest?.lastError}
@@ -33,10 +28,8 @@ export function SettingsFrigateTab() {
 
         <FrigateSettingsCard
           isAdmin={model.isAdmin}
-          isBusy={model.isBusy}
-          draft={model.draft}
+          settings={model.settings}
           isLoading={model.settingsQuery.isLoading}
-          onSetDraft={model.setDraft}
         />
 
         <FrigateRecentDetectionsCard

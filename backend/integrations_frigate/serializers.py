@@ -30,13 +30,3 @@ class FrigateSettingsSerializer(serializers.Serializer):
     enabled = serializers.BooleanField()
     events_topic = serializers.CharField()
     retention_seconds = serializers.IntegerField()
-    known_cameras = serializers.ListField(child=serializers.CharField(), required=False)
-    known_zones_by_camera = serializers.DictField(required=False)
-
-
-class FrigateSettingsUpdateSerializer(serializers.Serializer):
-    enabled = serializers.BooleanField(required=False)
-    events_topic = serializers.CharField(required=False, allow_blank=True)
-    retention_seconds = serializers.IntegerField(required=False)
-    known_cameras = serializers.ListField(child=serializers.CharField(), required=False)
-    known_zones_by_camera = serializers.DictField(required=False)

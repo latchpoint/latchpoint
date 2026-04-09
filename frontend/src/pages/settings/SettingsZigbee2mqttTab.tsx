@@ -18,13 +18,9 @@ export function SettingsZigbee2mqttTab() {
           lastSyncAt={model.lastSyncAt}
           lastDeviceCount={model.lastDeviceCount}
           lastSyncError={model.lastSyncError}
-          draft={model.draft}
-          isLoadingDraft={model.settingsQuery.isLoading}
-          onUpdateDraft={model.updateDraft}
-          onSetError={model.setError}
+          settings={model.settings}
+          isLoadingSettings={model.settingsQuery.isLoading}
           onRefresh={model.refresh}
-          onSave={() => void model.save()}
-          onReset={model.reset}
           onRunSync={() => void model.runSync()}
         />
       </div>

@@ -80,21 +80,6 @@ def normalize_zigbee2mqtt_settings(raw: object) -> Zigbee2mqttSettings:
     )
 
 
-def mask_zigbee2mqtt_settings(raw: object) -> dict[str, Any]:
-    """Return a safe-for-API view of Zigbee2MQTT settings."""
-    normalized = normalize_zigbee2mqtt_settings(raw)
-    return {
-        "enabled": normalized.enabled,
-        "base_topic": normalized.base_topic,
-        "allowlist": normalized.allowlist,
-        "denylist": normalized.denylist,
-        "run_rules_on_event": normalized.run_rules_on_event,
-        "run_rules_debounce_seconds": normalized.run_rules_debounce_seconds,
-        "run_rules_max_per_minute": normalized.run_rules_max_per_minute,
-        "run_rules_kinds": normalized.run_rules_kinds,
-    }
-
-
 _slug_re = re.compile(r"[^a-z0-9_]+")
 
 

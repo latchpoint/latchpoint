@@ -110,31 +110,6 @@ ALARM_PROFILE_SETTINGS: list[SettingDefinition] = [
         },
         description="Home Assistant alarm entity settings (MQTT discovery).",
     ),
-    SettingDefinition(
-        key="zigbee2mqtt",
-        name="Zigbee2MQTT",
-        value_type=SystemConfigValueType.JSON,
-        default={
-            "enabled": False,
-            "base_topic": "zigbee2mqtt",
-            "allowlist": [],
-            "denylist": [],
-        },
-        description="Zigbee2MQTT integration settings (inventory sync and ingest).",
-    ),
-    SettingDefinition(
-        key="frigate",
-        name="Frigate",
-        value_type=SystemConfigValueType.JSON,
-        default={
-            "enabled": False,
-            "events_topic": "frigate/events",
-            "retention_seconds": 3600,
-            "known_cameras": [],
-            "known_zones_by_camera": {},
-        },
-        description="Frigate integration settings (MQTT events ingest for rules conditions).",
-    ),
 ]
 
 ALARM_PROFILE_SETTINGS_BY_KEY = {d.key: d for d in ALARM_PROFILE_SETTINGS}

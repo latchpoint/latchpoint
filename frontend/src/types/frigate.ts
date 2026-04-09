@@ -4,24 +4,6 @@ export interface FrigateSettings {
   enabled: boolean
   eventsTopic: string
   retentionSeconds: number
-  runRulesOnEvent: boolean
-  runRulesDebounceSeconds: number
-  runRulesMaxPerMinute: number
-  runRulesKinds?: string[]
-  knownCameras?: string[]
-  knownZonesByCamera?: Record<string, string[]>
-}
-
-export interface FrigateSettingsUpdate {
-  enabled?: boolean
-  eventsTopic?: string
-  retentionSeconds?: number
-  runRulesOnEvent?: boolean
-  runRulesDebounceSeconds?: number
-  runRulesMaxPerMinute?: number
-  runRulesKinds?: string[]
-  knownCameras?: string[]
-  knownZonesByCamera?: Record<string, string[]>
 }
 
 export interface FrigateStatus {

@@ -1,7 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { zigbee2mqttService } from '@/services'
 import { queryKeys } from '@/types'
-import type { Zigbee2mqttSettingsUpdate } from '@/types'
 import { useAuthSessionQuery, useCurrentUserQuery } from '@/hooks/useAuthQueries'
 import { UserRole } from '@/lib/constants'
 
@@ -24,17 +23,6 @@ export function useZigbee2mqttSettingsQuery() {
     queryKey: queryKeys.zigbee2mqtt.settings,
     queryFn: zigbee2mqttService.getSettings,
     enabled: isAuthenticated && isAdmin,
-  })
-}
-
-export function useUpdateZigbee2mqttSettingsMutation() {
-  const queryClient = useQueryClient()
-  return useMutation({
-    mutationFn: (changes: Zigbee2mqttSettingsUpdate) => zigbee2mqttService.updateSettings(changes),
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: queryKeys.zigbee2mqtt.settings })
-      await queryClient.invalidateQueries({ queryKey: queryKeys.zigbee2mqtt.status })
-    },
   })
 }
 

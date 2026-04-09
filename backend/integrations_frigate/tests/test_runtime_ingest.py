@@ -16,8 +16,6 @@ class FrigateRuntimeIngestTests(TestCase):
             enabled=True,
             events_topic="frigate/events",
             retention_seconds=3600,
-            known_cameras=[],
-            known_zones_by_camera={},
         )
         now = timezone.now()
         payload = {
@@ -47,8 +45,6 @@ class FrigateRuntimeIngestTests(TestCase):
             enabled=True,
             events_topic="frigate/events",
             retention_seconds=3600,
-            known_cameras=[],
-            known_zones_by_camera={},
         )
         payload = {
             "type": "new",

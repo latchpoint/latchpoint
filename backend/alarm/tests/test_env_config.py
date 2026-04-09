@@ -119,32 +119,53 @@ class ZwavejsConfigTest(SimpleTestCase):
             self.assertEqual(cfg["reconnect_max_seconds"], 60)
 
 
-class Zigbee2mqttEnvOverridesTest(SimpleTestCase):
+class Zigbee2mqttConfigTest(SimpleTestCase):
     def test_defaults(self):
-        from alarm.env_config import get_zigbee2mqtt_env_overrides
+        from alarm.env_config import get_zigbee2mqtt_config
 
-        cfg = get_zigbee2mqtt_env_overrides()
+        cfg = get_zigbee2mqtt_config()
         self.assertFalse(cfg["enabled"])
         self.assertEqual(cfg["base_topic"], "zigbee2mqtt")
+        self.assertEqual(cfg["allowlist"], [])
+        self.assertEqual(cfg["denylist"], [])
+        self.assertFalse(cfg["run_rules_on_event"])
+        self.assertEqual(cfg["run_rules_debounce_seconds"], 5)
+        self.assertEqual(cfg["run_rules_max_per_minute"], 60)
+        self.assertEqual(cfg["run_rules_kinds"], [])
 
     def test_env_overrides(self):
         import os
         from unittest.mock import patch
 
-        env = {"ZIGBEE2MQTT_ENABLED": "true", "ZIGBEE2MQTT_BASE_TOPIC": "z2m"}
+        env = {
+            "ZIGBEE2MQTT_ENABLED": "true",
+            "ZIGBEE2MQTT_BASE_TOPIC": "z2m",
+            "ZIGBEE2MQTT_ALLOWLIST": "0x001,0x002",
+            "ZIGBEE2MQTT_DENYLIST": "0x003",
+            "ZIGBEE2MQTT_RUN_RULES_ON_EVENT": "true",
+            "ZIGBEE2MQTT_RUN_RULES_DEBOUNCE_SECONDS": "10",
+            "ZIGBEE2MQTT_RUN_RULES_MAX_PER_MINUTE": "120",
+            "ZIGBEE2MQTT_RUN_RULES_KINDS": "state_change,action",
+        }
         with patch.dict(os.environ, env):
-            from alarm.env_config import get_zigbee2mqtt_env_overrides
+            from alarm.env_config import get_zigbee2mqtt_config
 
-            cfg = get_zigbee2mqtt_env_overrides()
+            cfg = get_zigbee2mqtt_config()
             self.assertTrue(cfg["enabled"])
             self.assertEqual(cfg["base_topic"], "z2m")
+            self.assertEqual(cfg["allowlist"], ["0x001", "0x002"])
+            self.assertEqual(cfg["denylist"], ["0x003"])
+            self.assertTrue(cfg["run_rules_on_event"])
+            self.assertEqual(cfg["run_rules_debounce_seconds"], 10)
+            self.assertEqual(cfg["run_rules_max_per_minute"], 120)
+            self.assertEqual(cfg["run_rules_kinds"], ["state_change", "action"])
 
 
-class FrigateEnvOverridesTest(SimpleTestCase):
+class FrigateConfigTest(SimpleTestCase):
     def test_defaults(self):
-        from alarm.env_config import get_frigate_env_overrides
+        from alarm.env_config import get_frigate_config
 
-        cfg = get_frigate_env_overrides()
+        cfg = get_frigate_config()
         self.assertFalse(cfg["enabled"])
         self.assertEqual(cfg["events_topic"], "frigate/events")
         self.assertEqual(cfg["retention_seconds"], 3600)
@@ -159,9 +180,9 @@ class FrigateEnvOverridesTest(SimpleTestCase):
             "FRIGATE_RETENTION_SECONDS": "7200",
         }
         with patch.dict(os.environ, env):
-            from alarm.env_config import get_frigate_env_overrides
+            from alarm.env_config import get_frigate_config
 
-            cfg = get_frigate_env_overrides()
+            cfg = get_frigate_config()
             self.assertTrue(cfg["enabled"])
             self.assertEqual(cfg["events_topic"], "my/frigate/events")
             self.assertEqual(cfg["retention_seconds"], 7200)

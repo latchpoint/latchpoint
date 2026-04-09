@@ -9,13 +9,8 @@ type Props = {
   isAdmin: boolean
   isBusy: boolean
   mqttReady: boolean
-  hasDraft: boolean
-  draftEnabled: boolean
-  onSetEnabled: (enabled: boolean) => void
-  onSetError: (msg: string | null) => void
+  enabled: boolean
   onRefresh: () => void
-  onReset: () => void
-  onSave: () => void
   mqttConnected: boolean
   available: boolean | undefined
   ingestLastError: string | null | undefined
@@ -29,13 +24,8 @@ export function FrigateOverviewCard({
   isAdmin,
   isBusy,
   mqttReady,
-  hasDraft,
-  draftEnabled,
-  onSetEnabled,
-  onSetError,
+  enabled,
   onRefresh,
-  onReset,
-  onSave,
   mqttConnected,
   available,
   ingestLastError,
@@ -73,37 +63,32 @@ export function FrigateOverviewCard({
           <span>Frigate</span>
         </div>
       }
-      description="Ingest Frigate MQTT person events so you can use them as conditions in alarm rules."
+      description="Frigate settings are configured via environment variables."
       isAdmin={isAdmin}
       isBusy={isBusy}
       status={{
         connected: Boolean(available),
-        enabled: draftEnabled,
+        enabled,
         lastError: ingestLastError,
         labels: { connected: 'Available', disconnected: 'Not available', disabled: 'Disabled' },
       }}
       statusExtra={statusPills}
       enableLabel="Enable Frigate ingest"
-      enableHelp="Requires MQTT to be enabled first (Settings → MQTT)."
-      enabled={draftEnabled}
-      onEnabledChange={(checked) => {
-        if (checked && !mqttReady) {
-          onSetError('Enable MQTT first (Settings → MQTT) before enabling Frigate.')
-          return
-        }
-        onSetEnabled(checked)
-      }}
-      enableDisabled={!hasDraft || (!draftEnabled && !mqttReady)}
+      enableHelp="Frigate is enabled/disabled via environment variables."
+      enabled={enabled}
+      onEnabledChange={() => {}}
+      enableDisabled={true}
       onRefresh={onRefresh}
-      onReset={onReset}
-      onSave={onSave}
-      saveDisabled={!hasDraft}
+      onReset={() => {}}
+      onSave={() => {}}
+      resetDisabled={true}
+      saveDisabled={true}
     >
       <div className="space-y-3 sm:space-y-4">
         {!mqttReady ? (
           <Alert variant="warning">
             <AlertDescription>
-              {draftEnabled
+              {enabled
                 ? 'Frigate is enabled, but MQTT is disabled. Frigate events will not be ingested until MQTT is enabled in Settings → MQTT.'
                 : 'MQTT is not enabled/configured. Enable MQTT in Settings → MQTT before enabling Frigate.'}
             </AlertDescription>

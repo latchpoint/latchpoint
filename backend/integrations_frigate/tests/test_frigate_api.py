@@ -1,8 +1,5 @@
 from __future__ import annotations
 
-import os
-from unittest.mock import patch
-
 from django.urls import reverse
 from django.utils import timezone
 from rest_framework.test import APIClient, APITestCase
@@ -47,6 +44,13 @@ class FrigateApiPermissionTests(APITestCase):
         response = client.patch(url, data={"enabled": True}, format="json")
         self.assertEqual(response.status_code, 403)
 
+    def test_settings_patch_returns_405_for_admin(self):
+        client = APIClient()
+        client.force_authenticate(self.admin)
+        url = reverse("frigate-settings")
+        response = client.patch(url, data={"enabled": True}, format="json")
+        self.assertEqual(response.status_code, 405)
+
     def test_detections_requires_admin(self):
         client = APIClient()
         client.force_authenticate(self.user)
@@ -87,19 +91,11 @@ class FrigateApiStatusTests(APITestCase):
         self.assertIn("enabled", body["data"])
         self.assertIn("events_topic", body["data"])
 
-    def test_settings_patch_requires_mqtt_when_enabling(self):
-        # MQTT is not enabled by default
+    def test_settings_patch_returns_405(self):
+        """Frigate settings are configured via environment variables (ADR 0078)."""
         url = reverse("frigate-settings")
         response = self.client.patch(url, data={"enabled": True}, format="json")
-        self.assertEqual(response.status_code, 400)
-        self.assertIn("MQTT", response.json()["error"]["message"])
-
-    @patch.dict(os.environ, {"MQTT_ENABLED": "true", "MQTT_HOST": "mqtt.local"})
-    def test_settings_patch_updates_topic(self):
-        url = reverse("frigate-settings")
-        response = self.client.patch(url, data={"events_topic": "frigate/custom"}, format="json")
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["data"]["events_topic"], "frigate/custom")
+        self.assertEqual(response.status_code, 405)
 
     def test_options_returns_cameras_and_zones(self):
         url = reverse("frigate-options")

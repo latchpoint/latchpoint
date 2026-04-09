@@ -24,17 +24,6 @@ export interface Zigbee2mqttSettings {
   runRulesKinds?: string[]
 }
 
-export interface Zigbee2mqttSettingsUpdate {
-  enabled?: boolean
-  baseTopic?: string
-  allowlist?: unknown[]
-  denylist?: unknown[]
-  runRulesOnEvent?: boolean
-  runRulesDebounceSeconds?: number
-  runRulesMaxPerMinute?: number
-  runRulesKinds?: string[]
-}
-
 export interface Zigbee2mqttLastSync {
   lastSyncAt: string | null
   lastDeviceCount: number | null
