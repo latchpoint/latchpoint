@@ -72,9 +72,7 @@ class Zigbee2mqttSettingsView(APIView):
 
     def patch(self, request):
         """Zigbee2MQTT settings are now configured via environment variables."""
-        raise MethodNotAllowed(
-            request.method, detail="Zigbee2MQTT settings are configured via environment variables."
-        )
+        raise MethodNotAllowed(request.method, detail="Zigbee2MQTT settings are configured via environment variables.")
 
 
 class Zigbee2mqttDevicesView(APIView):

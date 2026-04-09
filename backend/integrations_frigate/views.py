@@ -57,9 +57,7 @@ class FrigateSettingsView(APIView):
 
     def patch(self, request):
         """Frigate settings are now configured via environment variables."""
-        raise MethodNotAllowed(
-            request.method, detail="Frigate settings are configured via environment variables."
-        )
+        raise MethodNotAllowed(request.method, detail="Frigate settings are configured via environment variables.")
 
 
 class FrigateOptionsView(APIView):
