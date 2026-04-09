@@ -3,12 +3,12 @@ import { Button } from '@/components/ui/button'
 import { LoadingInline } from '@/components/ui/loading-inline'
 import { IntegrationConnectionCard } from '@/features/integrations/components/IntegrationConnectionCard'
 import { IntegrationOverviewCard } from '@/features/integrations/components/IntegrationOverviewCard'
-import type { ZwavejsDraft } from '@/features/zwavejs/hooks/useZwavejsSettingsModel'
+import type { ZwavejsSettings } from '@/types'
 
 type Props = {
   isAdmin: boolean
   isBusy: boolean
-  draft: ZwavejsDraft | null
+  settings: ZwavejsSettings | null
   isLoading: boolean
   connected: boolean | undefined
   enabled: boolean | undefined
@@ -20,7 +20,7 @@ type Props = {
 export function ZwavejsSettingsCard({
   isAdmin,
   isBusy,
-  draft,
+  settings,
   isLoading,
   connected,
   enabled,
@@ -43,47 +43,43 @@ export function ZwavejsSettingsCard({
         status={{ connected, enabled, lastError }}
         enableLabel="Enable Z-Wave JS"
         enableHelp="Z-Wave JS is enabled/disabled via environment variables."
-        enabled={draft?.enabled ?? false}
+        enabled={settings?.enabled ?? false}
         onEnabledChange={() => {}}
         enableDisabled={true}
         onRefresh={onRefresh}
-        onReset={() => {}}
-        onSave={() => {}}
-        resetDisabled={true}
-        saveDisabled={true}
         opsActions={
-          <Button type="button" variant="outline" onClick={onSync} disabled={!isAdmin || isBusy || !draft}>
+          <Button type="button" variant="outline" onClick={onSync} disabled={!isAdmin || isBusy || !settings}>
             Sync Entities
           </Button>
         }
       >
-        {isLoading && !draft ? <LoadingInline /> : !draft ? <div className="text-sm text-muted-foreground">Z-Wave JS settings unavailable.</div> : null}
+        {isLoading && !settings ? <LoadingInline /> : !settings ? <div className="text-sm text-muted-foreground">Z-Wave JS settings unavailable.</div> : null}
       </IntegrationOverviewCard>
 
       <IntegrationConnectionCard description="Connection settings are configured via environment variables.">
-        {isLoading && !draft ? (
+        {isLoading && !settings ? (
           <LoadingInline />
-        ) : !draft ? (
+        ) : !settings ? (
           <div className="text-sm text-muted-foreground">Z-Wave JS settings unavailable.</div>
         ) : (
           <div className="grid grid-cols-2 gap-2 text-sm">
             <span className="text-muted-foreground">Enabled</span>
-            <span>{draft.enabled ? 'Yes' : 'No'}</span>
+            <span>{settings.enabled ? 'Yes' : 'No'}</span>
 
             <span className="text-muted-foreground">WebSocket URL</span>
-            <span className="break-all">{draft.wsUrl || '(not set)'}</span>
+            <span className="break-all">{settings.wsUrl || '(not set)'}</span>
 
             <span className="text-muted-foreground">API token</span>
-            <span>{draft.wsUrl ? 'Configured' : 'Not set'}</span>
+            <span>{settings.hasApiToken ? 'Configured' : 'Not set'}</span>
 
             <span className="text-muted-foreground">Connect timeout</span>
-            <span>{draft.connectTimeoutSeconds}s</span>
+            <span>{settings.connectTimeoutSeconds}s</span>
 
             <span className="text-muted-foreground">Reconnect min</span>
-            <span>{draft.reconnectMinSeconds}s</span>
+            <span>{settings.reconnectMinSeconds}s</span>
 
             <span className="text-muted-foreground">Reconnect max</span>
-            <span>{draft.reconnectMaxSeconds}s</span>
+            <span>{settings.reconnectMaxSeconds}s</span>
           </div>
         )}
       </IntegrationConnectionCard>

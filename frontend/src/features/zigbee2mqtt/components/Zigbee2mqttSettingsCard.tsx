@@ -74,10 +74,6 @@ export function Zigbee2mqttSettingsCard({
         onEnabledChange={() => {}}
         enableDisabled={true}
         onRefresh={onRefresh}
-        onReset={() => {}}
-        onSave={() => {}}
-        resetDisabled={true}
-        saveDisabled={true}
         opsActions={
           <Button type="button" variant="secondary" onClick={onRunSync} disabled={!isAdmin || isBusy || !canSync}>
             Sync devices

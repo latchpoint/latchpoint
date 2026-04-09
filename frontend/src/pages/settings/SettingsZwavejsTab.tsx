@@ -10,7 +10,7 @@ export function SettingsZwavejsTab() {
       <ZwavejsSettingsCard
         isAdmin={model.isAdmin}
         isBusy={model.isBusy}
-        draft={model.draft}
+        settings={model.settings}
         isLoading={model.settingsQuery.isLoading}
         connected={model.statusQuery.data?.connected}
         enabled={model.statusQuery.data?.enabled}

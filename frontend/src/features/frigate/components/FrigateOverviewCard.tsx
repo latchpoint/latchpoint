@@ -79,10 +79,6 @@ export function FrigateOverviewCard({
       onEnabledChange={() => {}}
       enableDisabled={true}
       onRefresh={onRefresh}
-      onReset={() => {}}
-      onSave={() => {}}
-      resetDisabled={true}
-      saveDisabled={true}
     >
       <div className="space-y-3 sm:space-y-4">
         {!mqttReady ? (
