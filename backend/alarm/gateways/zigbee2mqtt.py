@@ -4,13 +4,11 @@ import json
 from dataclasses import dataclass
 from typing import Any, Protocol
 
-from integrations_zigbee2mqtt.config import normalize_zigbee2mqtt_settings
 from transports_mqtt.manager import MqttNotReachable, mqtt_connection_manager
 
-from alarm.env_config import get_mqtt_config
+from alarm.env_config import get_mqtt_config, get_zigbee2mqtt_config
 from alarm.gateways.mqtt import default_mqtt_gateway
 from alarm.models import Entity
-from alarm.state_machine.settings import get_active_settings_profile, get_setting_json
 
 
 class Zigbee2mqttGateway(Protocol):
@@ -136,16 +134,13 @@ def _validate_payload_against_definition(*, payload: dict[str, Any], definition:
 @dataclass(frozen=True)
 class DefaultZigbee2mqttGateway:
     def set_entity_value(self, *, entity_id: str, value: Any) -> None:
-        profile = get_active_settings_profile()
-
         mqtt_config = get_mqtt_config()
         if not bool(mqtt_config.get("enabled")):
             raise ValueError("MQTT is disabled.")
         default_mqtt_gateway.apply_settings(settings=mqtt_config)
 
-        z2m_raw = get_setting_json(profile, "zigbee2mqtt") or {}
-        z2m_settings = normalize_zigbee2mqtt_settings(z2m_raw)
-        if not z2m_settings.enabled:
+        z2m_config = get_zigbee2mqtt_config()
+        if not z2m_config.get("enabled"):
             raise ValueError("Zigbee2MQTT is disabled.")
 
         entity = Entity.objects.filter(entity_id=entity_id).first()
@@ -162,8 +157,8 @@ class DefaultZigbee2mqttGateway:
             raise ValueError("Missing Zigbee2MQTT friendly_name/ieee_address on entity.")
         target_name = friendly_name or ieee_address
 
-        denylist = {str(v).strip() for v in (z2m_settings.denylist or []) if str(v).strip()}
-        allowlist = {str(v).strip() for v in (z2m_settings.allowlist or []) if str(v).strip()}
+        denylist = {str(v).strip() for v in (z2m_config.get("denylist") or []) if str(v).strip()}
+        allowlist = {str(v).strip() for v in (z2m_config.get("allowlist") or []) if str(v).strip()}
         if denylist and (target_name in denylist or ieee_address in denylist):
             raise ValueError("Zigbee2MQTT device is denylisted.")
         if allowlist and (target_name not in allowlist and (not ieee_address or ieee_address not in allowlist)):
@@ -183,7 +178,7 @@ class DefaultZigbee2mqttGateway:
             _validate_value_against_expose(prop=prop, expose=expose, value=payload_value)
             payload_obj = {prop: payload_value}
 
-        topic = _topic(base_topic=z2m_settings.base_topic, suffix=f"{target_name}/set")
+        topic = _topic(base_topic=z2m_config.get("base_topic", "zigbee2mqtt"), suffix=f"{target_name}/set")
         payload = json.dumps(payload_obj)
         try:
             mqtt_connection_manager.publish(topic=topic, payload=payload, qos=0, retain=False)

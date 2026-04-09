@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from django.core.management.base import BaseCommand
 
-from alarm.env_config import get_mqtt_config, get_zwavejs_config
+from alarm.env_config import get_frigate_config, get_mqtt_config, get_zigbee2mqtt_config, get_zwavejs_config
 from alarm.gateways.mqtt import default_mqtt_gateway
 from alarm.gateways.zwavejs import default_zwavejs_gateway
 from alarm.state_machine.settings import get_active_settings_profile, get_setting_json
@@ -35,8 +35,8 @@ class Command(BaseCommand):
                 self.stderr.write(f"Failed to publish HA MQTT alarm entity discovery: {exc}")
 
         # Best-effort: if Zigbee2MQTT is enabled, set up subscriptions and allow sync/ingest.
-        z2m_raw = get_setting_json(profile, "zigbee2mqtt") or {}
-        if isinstance(z2m_raw, dict) and z2m_raw.get("enabled"):
+        z2m_cfg = get_zigbee2mqtt_config()
+        if z2m_cfg.get("enabled"):
             try:
                 from integrations_zigbee2mqtt.runtime import apply_runtime_settings_from_active_profile
 
@@ -46,8 +46,8 @@ class Command(BaseCommand):
                 self.stderr.write(f"Failed to apply Zigbee2MQTT integration settings: {exc}")
 
         # Best-effort: if Frigate is enabled, set up MQTT subscriptions for event ingest.
-        frigate_raw = get_setting_json(profile, "frigate") or {}
-        if isinstance(frigate_raw, dict) and frigate_raw.get("enabled"):
+        frigate_cfg = get_frigate_config()
+        if frigate_cfg.get("enabled"):
             try:
                 from integrations_frigate.runtime import apply_runtime_settings_from_active_profile
 

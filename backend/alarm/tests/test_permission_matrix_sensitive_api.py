@@ -8,7 +8,6 @@ from rest_framework.test import APIClient, APITestCase
 
 from accounts.models import Role, User, UserRoleAssignment
 from alarm.models import AlarmSettingsProfile
-from alarm.tests.settings_test_utils import set_profile_settings
 
 
 class SensitiveApiPermissionMatrixTests(APITestCase):
@@ -27,10 +26,6 @@ class SensitiveApiPermissionMatrixTests(APITestCase):
 
         AlarmSettingsProfile.objects.update(is_active=False)
         self.profile = AlarmSettingsProfile.objects.create(name="Default", is_active=True)
-        set_profile_settings(
-            self.profile,
-            zigbee2mqtt={"enabled": True, "base_topic": "zigbee2mqtt"},
-        )
 
     def _assert_get_matrix(self, *, url_name: str):
         url = reverse(url_name)

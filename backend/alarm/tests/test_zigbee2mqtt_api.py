@@ -10,7 +10,6 @@ from rest_framework.test import APIClient, APITestCase
 
 from accounts.models import Role, User, UserCode, UserRoleAssignment
 from alarm.models import AlarmSettingsProfile, Entity
-from alarm.tests.settings_test_utils import set_profile_settings
 
 
 class Zigbee2mqttApiTests(APITestCase):
@@ -30,15 +29,6 @@ class Zigbee2mqttApiTests(APITestCase):
         )
 
         self.profile = AlarmSettingsProfile.objects.create(name="Default", is_active=True)
-        set_profile_settings(
-            self.profile,
-            zigbee2mqtt={
-                "enabled": True,
-                "base_topic": "zigbee2mqtt",
-                "allowlist": [],
-                "denylist": [],
-            },
-        )
 
 
 class Zigbee2mqttApiPermissionsTests(APITestCase):

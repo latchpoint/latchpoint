@@ -44,17 +44,6 @@ class MqttApiTests(APITestCase):
                 "also_rename_in_home_assistant": True,
                 "ha_entity_id": "alarm_control_panel.latchpoint_alarm",
             },
-            zigbee2mqtt={
-                "enabled": True,
-                "base_topic": "zigbee2mqtt",
-                "allowlist": [],
-                "denylist": [],
-            },
-            frigate={
-                "enabled": True,
-                "events_topic": "frigate/events",
-                "retention_seconds": 3600,
-            },
         )
 
     @patch.dict(

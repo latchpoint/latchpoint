@@ -10,24 +10,21 @@ from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
 from django.dispatch import receiver
 from django.utils import timezone
-from integrations_frigate.config import normalize_frigate_settings
 from integrations_frigate.runtime import get_availability_state as frigate_availability_state
 from integrations_frigate.runtime import get_last_error as frigate_last_error
 from integrations_frigate.runtime import get_last_ingest_at as frigate_last_ingest_at
-from integrations_zigbee2mqtt.config import normalize_zigbee2mqtt_settings
 from integrations_zigbee2mqtt.status_store import get_last_seen_at as z2m_last_seen_at
 from integrations_zigbee2mqtt.status_store import get_last_state as z2m_last_state
 from integrations_zigbee2mqtt.status_store import get_last_sync as z2m_last_sync
 from integrations_zwavejs.manager import zwavejs_connection_manager
 from transports_mqtt.manager import mqtt_connection_manager
 
-from alarm.env_config import get_home_assistant_config
+from alarm.env_config import get_frigate_config, get_home_assistant_config, get_zigbee2mqtt_config
 from alarm.signals import (
     integration_status_changed,
     integration_status_observed,
     settings_profile_changed,
 )
-from alarm.state_machine.settings import get_active_settings_profile, get_setting_json
 
 logger = logging.getLogger(__name__)
 
@@ -82,24 +79,20 @@ def _build_system_status_message(*, payload: dict[str, Any]) -> dict[str, Any]:
 
 def _refresh_settings_snapshot_from_db() -> None:
     """
-    Reads the active profile settings once and stores a small, thread-safe snapshot
+    Reads integration settings and stores a small, thread-safe snapshot
     used by periodic status checks. Avoid calling this in a tight loop.
     """
-
-    profile = get_active_settings_profile()
-
-    frigate_settings = normalize_frigate_settings(get_setting_json(profile, "frigate") or {})
-    z2m_settings = normalize_zigbee2mqtt_settings(get_setting_json(profile, "zigbee2mqtt") or {})
-
+    frigate_cfg = get_frigate_config()
+    z2m_cfg = get_zigbee2mqtt_config()
     ha_cfg = get_home_assistant_config()
     ha_enabled = bool(ha_cfg.get("enabled"))
 
     snapshot = _IntegrationSettingsSnapshot(
-        frigate_enabled=bool(frigate_settings.enabled),
-        frigate_events_topic=str(frigate_settings.events_topic or ""),
-        frigate_retention_seconds=int(frigate_settings.retention_seconds or 0),
-        zigbee2mqtt_enabled=bool(z2m_settings.enabled),
-        zigbee2mqtt_base_topic=str(z2m_settings.base_topic or "zigbee2mqtt"),
+        frigate_enabled=bool(frigate_cfg.get("enabled")),
+        frigate_events_topic=str(frigate_cfg.get("events_topic") or ""),
+        frigate_retention_seconds=int(frigate_cfg.get("retention_seconds") or 0),
+        zigbee2mqtt_enabled=bool(z2m_cfg.get("enabled")),
+        zigbee2mqtt_base_topic=str(z2m_cfg.get("base_topic") or "zigbee2mqtt"),
         home_assistant_enabled=ha_enabled,
     )
     with _settings_lock:
