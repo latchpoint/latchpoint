@@ -43,7 +43,7 @@ export function ZwavejsSettingsCard({
         status={{ connected, enabled, lastError }}
         enableLabel="Enable Z-Wave JS"
         enableHelp="Z-Wave JS is enabled/disabled via environment variables."
-        enabled={settings?.enabled ?? false}
+        enabled={settings?.enabled ?? enabled ?? false}
         onEnabledChange={() => {}}
         enableDisabled={true}
         onRefresh={onRefresh}

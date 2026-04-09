@@ -15,7 +15,7 @@ export function SettingsFrigateTab() {
           isAdmin={model.isAdmin}
           isBusy={model.isBusy}
           mqttReady={model.mqttReady}
-          enabled={model.settings?.enabled ?? false}
+          enabled={model.settings?.enabled ?? status?.enabled ?? false}
           onRefresh={model.refresh}
           mqttConnected={model.mqttConnected}
           available={status?.available}

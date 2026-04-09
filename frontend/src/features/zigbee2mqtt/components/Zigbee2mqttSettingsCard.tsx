@@ -70,7 +70,7 @@ export function Zigbee2mqttSettingsCard({
             <HelpTip content="Zigbee2MQTT is enabled/disabled via environment variables." />
           </span>
         }
-        enabled={settings?.enabled ?? false}
+        enabled={settings?.enabled ?? z2mEnabled}
         onEnabledChange={() => {}}
         enableDisabled={true}
         onRefresh={onRefresh}
@@ -109,22 +109,22 @@ export function Zigbee2mqttSettingsCard({
             <span className="break-all">{settings.baseTopic || '(not set)'}</span>
 
             <span className="text-muted-foreground">Allowlist</span>
-            <span>{settings.allowlist?.length ? settings.allowlist.join(', ') : '(all devices)'}</span>
+            <span>{settings.allowlist.length ? settings.allowlist.join(', ') : '(all devices)'}</span>
 
             <span className="text-muted-foreground">Denylist</span>
-            <span>{settings.denylist?.length ? settings.denylist.join(', ') : '(none)'}</span>
+            <span>{settings.denylist.length ? settings.denylist.join(', ') : '(none)'}</span>
 
             <span className="text-muted-foreground">Run rules on event</span>
             <span>{settings.runRulesOnEvent ? 'Yes' : 'No'}</span>
 
             <span className="text-muted-foreground">Rules debounce</span>
-            <span>{settings.runRulesDebounceSeconds ?? 5}s</span>
+            <span>{settings.runRulesDebounceSeconds}s</span>
 
             <span className="text-muted-foreground">Rules max/min</span>
-            <span>{settings.runRulesMaxPerMinute ?? 60}</span>
+            <span>{settings.runRulesMaxPerMinute}</span>
 
             <span className="text-muted-foreground">Rule kinds</span>
-            <span>{settings.runRulesKinds?.length ? settings.runRulesKinds.join(', ') : '(none)'}</span>
+            <span>{settings.runRulesKinds.length ? settings.runRulesKinds.join(', ') : '(none)'}</span>
           </div>
         )}
       </IntegrationConnectionCard>
