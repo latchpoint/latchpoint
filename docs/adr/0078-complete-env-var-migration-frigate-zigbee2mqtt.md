@@ -1,6 +1,6 @@
 # ADR 0078: Complete Env-Var Migration for Frigate and Zigbee2MQTT
 
-**Status:** Proposed
+**Status:** Implemented
 **Date:** 2026-04-09
 **Author:** Leonardo Merza
 

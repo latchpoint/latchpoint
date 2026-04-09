@@ -94,7 +94,7 @@ This document tracks all Architecture Decision Records (ADRs) and their implemen
 | [0075](0075-env-var-credentials-remove-encryption.md) | Move Integration Credentials to Env Vars, Remove Encryption | **Implemented** |
 | [0076](0076-per-rule-stop-processing-flag.md) | Per-Rule Stop Processing Flag | **Implemented** |
 | [0077](0077-ci-cd-docker-image-tagging-strategy.md) | CI/CD Docker Image Tagging Strategy | **Implemented** |
-| [0078](0078-complete-env-var-migration-frigate-zigbee2mqtt.md) | Complete Env-Var Migration for Frigate and Zigbee2MQTT | **Proposed** |
+| [0078](0078-complete-env-var-migration-frigate-zigbee2mqtt.md) | Complete Env-Var Migration for Frigate and Zigbee2MQTT | **Implemented** |
 
 ---
 
@@ -102,9 +102,9 @@ This document tracks all Architecture Decision Records (ADRs) and their implemen
 
 | Status | Count |
 |--------|-------|
-| **Implemented** | 60 |
+| **Implemented** | 61 |
 | **Partially Implemented** | 1 |
-| **Proposed** | 4 |
+| **Proposed** | 3 |
 | **Superseded** | 13 |
 | **Total** | 78 |
 

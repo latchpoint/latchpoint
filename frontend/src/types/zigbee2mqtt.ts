@@ -16,12 +16,12 @@ export type ArmedState = 'armed_home' | 'armed_away' | 'armed_night' | 'armed_va
 export interface Zigbee2mqttSettings {
   enabled: boolean
   baseTopic: string
-  allowlist?: string[]
-  denylist?: string[]
-  runRulesOnEvent?: boolean
-  runRulesDebounceSeconds?: number
-  runRulesMaxPerMinute?: number
-  runRulesKinds?: string[]
+  allowlist: string[]
+  denylist: string[]
+  runRulesOnEvent: boolean
+  runRulesDebounceSeconds: number
+  runRulesMaxPerMinute: number
+  runRulesKinds: string[]
 }
 
 export interface Zigbee2mqttLastSync {
@@ -36,10 +36,10 @@ export interface Zigbee2mqttStatus {
   connected: boolean
   mqtt: MqttStatus
   sync: Zigbee2mqttLastSync
-  runRulesOnEvent?: boolean
-  runRulesDebounceSeconds?: number
-  runRulesMaxPerMinute?: number
-  runRulesKinds?: string[]
+  runRulesOnEvent: boolean
+  runRulesDebounceSeconds: number
+  runRulesMaxPerMinute: number
+  runRulesKinds: string[]
 }
 
 export interface Zigbee2mqttSyncResult {
