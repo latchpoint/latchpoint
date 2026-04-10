@@ -13,6 +13,7 @@ vi.mock('@/hooks/useHomeAssistant', () => {
       data: { enabled: true, baseUrl: 'http://ha', connectTimeoutSeconds: 2, hasToken: true },
       refetch: vi.fn(),
     }),
+    useUpdateHomeAssistantSettingsMutation: () => ({ isPending: false, mutateAsync: vi.fn() }),
   }
 })
 

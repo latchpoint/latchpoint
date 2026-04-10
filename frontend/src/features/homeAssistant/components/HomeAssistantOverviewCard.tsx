@@ -10,8 +10,8 @@ type Props = {
   reachable: boolean | undefined
   configured: boolean | undefined
   lastError: string | null | undefined
+  saveDisabled: boolean
   onRefresh: () => void
-  onReset: () => void
   onSave: () => void
   onSetDraft: (updater: (prev: HaConnectionDraft | null) => HaConnectionDraft | null) => void
 }
@@ -23,8 +23,8 @@ export function HomeAssistantOverviewCard({
   reachable,
   configured,
   lastError,
+  saveDisabled,
   onRefresh,
-  onReset,
   onSave,
   onSetDraft,
 }: Props) {
@@ -64,10 +64,8 @@ export function HomeAssistantOverviewCard({
       onEnabledChange={(checked) => onSetDraft((prev) => (prev ? { ...prev, enabled: checked } : prev))}
       enableDisabled={true}
       onRefresh={onRefresh}
-      onReset={onReset}
       onSave={onSave}
-      resetDisabled={true}
-      saveDisabled={true}
+      saveDisabled={saveDisabled}
     />
   )
 }

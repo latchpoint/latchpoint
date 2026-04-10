@@ -48,10 +48,12 @@ class ZwavejsApiTests(APITestCase):
         self.assertNotIn("api_token", body["data"])
         self.assertEqual(body["data"]["has_api_token"], True)
 
-    def test_patch_zwavejs_settings_returns_405(self):
+    @patch("integrations_zwavejs.manager.ZwavejsConnectionManager.apply_settings")
+    def test_patch_zwavejs_settings_accepts_operational_settings(self, _mock_apply):
         url = reverse("zwavejs-settings")
-        response = self.client.patch(url, data={"ws_url": "wss://zwavejs2.local:3000"}, format="json")
-        self.assertEqual(response.status_code, 405)
+        response = self.client.patch(url, data={"connect_timeout_seconds": 10}, format="json")
+        self.assertEqual(response.status_code, 200)
+        _mock_apply.assert_called_once()
 
     @patch.dict(
         os.environ,

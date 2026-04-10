@@ -1,11 +1,14 @@
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import { UserRole } from '@/lib/constants'
 import { useCurrentUserQuery } from '@/hooks/useAuthQueries'
+import { getErrorMessage } from '@/types/errors'
+import { parseIntInRange } from '@/lib/numberParsers'
 import { useDraftFromQuery } from '@/features/settings/hooks/useDraftFromQuery'
 import { useFrigateSettingsQuery } from '@/hooks/useFrigate'
 import {
   useMqttSettingsQuery,
   useMqttStatusQuery,
+  useUpdateMqttSettingsMutation,
 } from '@/hooks/useMqtt'
 import { useZigbee2mqttSettingsQuery } from '@/hooks/useZigbee2mqtt'
 import {
@@ -31,6 +34,7 @@ export function useMqttSettingsModel() {
 
   const statusQuery = useMqttStatusQuery()
   const settingsQuery = useMqttSettingsQuery()
+  const updateSettings = useUpdateMqttSettingsMutation()
   const zigbee2mqttSettingsQuery = useZigbee2mqttSettingsQuery()
   const frigateSettingsQuery = useFrigateSettingsQuery()
   useHomeAssistantMqttAlarmEntitySettingsQuery()
@@ -52,6 +56,8 @@ export function useMqttSettingsModel() {
   }, [settingsQuery.data])
 
   const { draft, setDraft } = useDraftFromQuery<MqttDraft>(initialDraft)
+  const [error, setError] = useState<string | null>(null)
+  const [notice, setNotice] = useState<string | null>(null)
 
   const isBusy = settingsQuery.isLoading
 
@@ -60,18 +66,39 @@ export function useMqttSettingsModel() {
     void settingsQuery.refetch()
   }
 
+  const save = async () => {
+    if (!draft) return
+    setError(null)
+    setNotice(null)
+    try {
+      const keepaliveSeconds = parseIntInRange('Keepalive', draft.keepaliveSeconds, 1, 3600)
+      const connectTimeoutSeconds = parseIntInRange('Connect timeout', draft.connectTimeoutSeconds, 1, 300)
+      await updateSettings.mutateAsync({ keepaliveSeconds, connectTimeoutSeconds })
+      setNotice('Saved MQTT settings.')
+    } catch (err) {
+      setError(getErrorMessage(err) || 'Failed to save MQTT settings.')
+    }
+  }
+
+  const saveDisabled = !draft || !initialDraft || (
+    draft.keepaliveSeconds === initialDraft.keepaliveSeconds &&
+    draft.connectTimeoutSeconds === initialDraft.connectTimeoutSeconds
+  )
+
   return {
     isAdmin,
     draft,
     setDraft,
     initialDraft,
     isBusy,
-    error: null as string | null,
-    notice: null as string | null,
+    error,
+    notice,
     statusQuery,
     settingsQuery,
     zigbee2mqttSettingsQuery,
     frigateSettingsQuery,
     refresh,
+    save,
+    saveDisabled,
   }
 }

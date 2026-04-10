@@ -2,9 +2,11 @@ import { useMemo, useState } from 'react'
 import { UserRole } from '@/lib/constants'
 import { useCurrentUserQuery } from '@/hooks/useAuthQueries'
 import { getErrorMessage } from '@/types/errors'
+import { parseIntInRange } from '@/lib/numberParsers'
 import { useDraftFromQuery } from '@/features/settings/hooks/useDraftFromQuery'
 import {
   useSyncZwavejsEntitiesMutation,
+  useUpdateZwavejsSettingsMutation,
   useZwavejsSettingsQuery,
   useZwavejsStatusQuery,
 } from '@/hooks/useZwavejs'
@@ -12,6 +14,7 @@ import {
 export type ZwavejsDraft = {
   enabled: boolean
   wsUrl: string
+  hasApiToken: boolean
   connectTimeoutSeconds: string
   reconnectMinSeconds: string
   reconnectMaxSeconds: string
@@ -23,6 +26,7 @@ export function useZwavejsSettingsModel() {
 
   const statusQuery = useZwavejsStatusQuery()
   const settingsQuery = useZwavejsSettingsQuery()
+  const updateSettings = useUpdateZwavejsSettingsMutation()
   const syncEntities = useSyncZwavejsEntitiesMutation()
 
   const initialDraft = useMemo<ZwavejsDraft | null>(() => {
@@ -30,6 +34,7 @@ export function useZwavejsSettingsModel() {
     return {
       enabled: settingsQuery.data.enabled,
       wsUrl: settingsQuery.data.wsUrl || '',
+      hasApiToken: Boolean(settingsQuery.data.hasApiToken),
       connectTimeoutSeconds: String(settingsQuery.data.connectTimeoutSeconds ?? 5),
       reconnectMinSeconds: String(settingsQuery.data.reconnectMinSeconds ?? 1),
       reconnectMaxSeconds: String(settingsQuery.data.reconnectMaxSeconds ?? 30),
@@ -46,6 +51,27 @@ export function useZwavejsSettingsModel() {
     void statusQuery.refetch()
     void settingsQuery.refetch()
   }
+
+  const save = async () => {
+    if (!draft) return
+    setError(null)
+    setNotice(null)
+    try {
+      const connectTimeoutSeconds = parseIntInRange('Connect timeout', draft.connectTimeoutSeconds, 1, 300)
+      const reconnectMinSeconds = parseIntInRange('Reconnect min', draft.reconnectMinSeconds, 1, 300)
+      const reconnectMaxSeconds = parseIntInRange('Reconnect max', draft.reconnectMaxSeconds, 1, 3600)
+      await updateSettings.mutateAsync({ connectTimeoutSeconds, reconnectMinSeconds, reconnectMaxSeconds })
+      setNotice('Saved Z-Wave JS settings.')
+    } catch (err) {
+      setError(getErrorMessage(err) || 'Failed to save Z-Wave JS settings.')
+    }
+  }
+
+  const saveDisabled = !draft || !initialDraft || (
+    draft.connectTimeoutSeconds === initialDraft.connectTimeoutSeconds &&
+    draft.reconnectMinSeconds === initialDraft.reconnectMinSeconds &&
+    draft.reconnectMaxSeconds === initialDraft.reconnectMaxSeconds
+  )
 
   const sync = async () => {
     setError(null)
@@ -72,6 +98,8 @@ export function useZwavejsSettingsModel() {
     statusQuery,
     settingsQuery,
     refresh,
+    save,
+    saveDisabled,
     sync,
   }
 }

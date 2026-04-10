@@ -23,13 +23,23 @@ class TransportsMqttConfig(AppConfig):
         try:
             from alarm.env_config import get_frigate_env_overrides, get_mqtt_config, get_zigbee2mqtt_env_overrides
             from alarm.gateways.mqtt import default_mqtt_gateway
+            from alarm.signals import settings_profile_changed
         except Exception:
             return
 
-        def _apply_from_env() -> None:
-            """Apply MQTT settings from env vars to the runtime gateway (best-effort)."""
+        def _apply_mqtt_settings() -> None:
+            """Apply MQTT settings from env vars + DB operational overrides to the runtime gateway."""
             try:
+                from alarm.state_machine.settings import get_setting_json
+                from alarm.use_cases.settings_profile import ensure_active_settings_profile
+
                 cfg = get_mqtt_config()
+                profile = ensure_active_settings_profile()
+                db = get_setting_json(profile, "mqtt") or {}
+                if not isinstance(db, dict):
+                    db = {}
+                cfg["keepalive_seconds"] = int(db.get("keepalive_seconds", cfg["keepalive_seconds"]))
+                cfg["connect_timeout_seconds"] = int(db.get("connect_timeout_seconds", cfg["connect_timeout_seconds"]))
                 default_mqtt_gateway.apply_settings(settings=cfg)
             except Exception:
                 return
@@ -44,7 +54,12 @@ class TransportsMqttConfig(AppConfig):
             if frigate["enabled"]:
                 logger.warning("FRIGATE_ENABLED=true but MQTT_ENABLED=false; Frigate will not function")
 
+        def _on_settings_changed(sender, **_kwargs) -> None:
+            _apply_mqtt_settings()
+
+        settings_profile_changed.connect(_on_settings_changed, dispatch_uid="mqtt_settings_changed")
+
         # Apply settings once at process startup.
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore", message="Accessing the database during app initialization")
-            _apply_from_env()
+            _apply_mqtt_settings()

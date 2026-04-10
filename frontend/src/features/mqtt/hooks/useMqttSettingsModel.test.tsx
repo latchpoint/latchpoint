@@ -9,6 +9,7 @@ vi.mock('@/hooks/useAuthQueries', () => {
 vi.mock('@/hooks/useMqtt', () => {
   return {
     useMqttStatusQuery: () => ({ data: { enabled: true }, refetch: vi.fn() }),
+    useUpdateMqttSettingsMutation: () => ({ isPending: false, mutateAsync: vi.fn() }),
     useMqttSettingsQuery: () => ({
       data: {
         enabled: false,

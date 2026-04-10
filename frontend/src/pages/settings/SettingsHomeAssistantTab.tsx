@@ -17,9 +17,9 @@ export function SettingsHomeAssistantTab() {
           reachable={model.haStatusQuery.data?.reachable}
           configured={model.haStatusQuery.data?.configured}
           lastError={model.haStatusQuery.data?.error}
+          saveDisabled={model.connectionSaveDisabled}
           onRefresh={model.refreshConnection}
-          onReset={() => {}}
-          onSave={() => {}}
+          onSave={() => void model.saveConnection()}
           onSetDraft={model.setHaConnectionDraft}
         />
 
@@ -29,6 +29,7 @@ export function SettingsHomeAssistantTab() {
           isLoading={model.haSettingsQuery.isLoading}
           isError={model.haSettingsQuery.isError}
           loadError={model.haSettingsQuery.error}
+          onUpdateDraft={(patch) => model.setHaConnectionDraft((prev) => (prev ? { ...prev, ...patch } : prev))}
         />
 
         <HomeAssistantMqttAlarmEntityCard

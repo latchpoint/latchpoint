@@ -18,7 +18,9 @@ export function SettingsMqttTab() {
         lastError={model.statusQuery.data?.lastError ?? undefined}
         zigbee2mqttEnabled={Boolean(model.zigbee2mqttSettingsQuery.data?.enabled)}
         frigateEnabled={Boolean(model.frigateSettingsQuery.data?.enabled)}
+        saveDisabled={model.saveDisabled}
         onRefresh={model.refresh}
+        onSave={() => void model.save()}
         onSetDraft={model.setDraft}
       />
     </SettingsTabShell>

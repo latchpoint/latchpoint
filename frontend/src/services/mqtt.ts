@@ -13,6 +13,12 @@ export const mqttService = {
   async getSettings(): Promise<MqttSettings> {
     return api.get<MqttSettings>(apiEndpoints.mqtt.settings)
   },
+  async updateSettings(data: {
+    keepaliveSeconds?: number
+    connectTimeoutSeconds?: number
+  }): Promise<MqttSettings> {
+    return api.patch<MqttSettings>(apiEndpoints.mqtt.settings, data)
+  },
 }
 
 export default mqttService

@@ -46,10 +46,10 @@ class HomeAssistantSettingsApiTests(APITestCase):
         self.assertNotIn("token", body["data"])
         self.assertEqual(body["data"]["has_token"], True)
 
-    def test_patch_home_assistant_settings_returns_405(self):
+    def test_patch_home_assistant_settings_accepts_operational_settings(self):
         url = reverse("ha-settings")
-        response = self.client.patch(url, data={"base_url": "http://ha2.local:8123"}, format="json")
-        self.assertEqual(response.status_code, 405)
+        response = self.client.patch(url, data={"connect_timeout_seconds": 5}, format="json")
+        self.assertEqual(response.status_code, 200)
 
 
 class HomeAssistantSettingsApiPermissionsTests(APITestCase):

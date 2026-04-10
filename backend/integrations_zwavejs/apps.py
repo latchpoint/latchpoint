@@ -22,18 +22,34 @@ class IntegrationsZwavejsConfig(AppConfig):
         try:
             from alarm.env_config import get_zwavejs_config
             from alarm.gateways.zwavejs import default_zwavejs_gateway
+            from alarm.signals import settings_profile_changed
         except Exception:
             return
 
-        def _apply_from_env() -> None:
-            """Apply Z-Wave JS settings from env vars to the runtime gateway (best-effort)."""
+        def _apply_zwavejs_settings() -> None:
+            """Apply Z-Wave JS settings from env vars + DB operational overrides to the runtime gateway."""
             try:
+                from alarm.state_machine.settings import get_setting_json
+                from alarm.use_cases.settings_profile import ensure_active_settings_profile
+
                 cfg = get_zwavejs_config()
+                profile = ensure_active_settings_profile()
+                db = get_setting_json(profile, "zwavejs") or {}
+                if not isinstance(db, dict):
+                    db = {}
+                cfg["connect_timeout_seconds"] = int(db.get("connect_timeout_seconds", cfg["connect_timeout_seconds"]))
+                cfg["reconnect_min_seconds"] = int(db.get("reconnect_min_seconds", cfg["reconnect_min_seconds"]))
+                cfg["reconnect_max_seconds"] = int(db.get("reconnect_max_seconds", cfg["reconnect_max_seconds"]))
                 default_zwavejs_gateway.apply_settings(settings_obj=cfg)
             except Exception:
                 return
 
+        def _on_settings_changed(sender, **_kwargs) -> None:
+            _apply_zwavejs_settings()
+
+        settings_profile_changed.connect(_on_settings_changed, dispatch_uid="zwavejs_settings_changed")
+
         # Apply settings once at process startup.
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore", message="Accessing the database during app initialization")
-            _apply_from_env()
+            _apply_zwavejs_settings()

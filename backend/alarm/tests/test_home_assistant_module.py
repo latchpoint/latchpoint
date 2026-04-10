@@ -35,8 +35,10 @@ class HomeAssistantModuleTests(SimpleTestCase):
         clear_cached_connection()
 
     def tearDown(self):
-        if hasattr(self, "_env_patcher"):
-            self._env_patcher.stop()
+        for attr in ("_settings_patcher", "_profile_patcher", "_env_patcher"):
+            patcher = getattr(self, attr, None)
+            if patcher is not None:
+                patcher.stop()
         clear_cached_connection()
         super().tearDown()
 
@@ -51,6 +53,16 @@ class HomeAssistantModuleTests(SimpleTestCase):
             },
         )
         self._env_patcher.start()
+        # Mock DB calls used by set_cached_connection (SimpleTestCase has no DB access)
+        self._profile_patcher = patch(
+            "alarm.use_cases.settings_profile.ensure_active_settings_profile", return_value=None
+        )
+        self._profile_patcher.start()
+        self._settings_patcher = patch(
+            "alarm.state_machine.settings.get_setting_json",
+            return_value={"connect_timeout_seconds": 2},
+        )
+        self._settings_patcher.start()
         set_cached_connection()
 
     def test_get_status_returns_not_configured_when_missing_settings(self):

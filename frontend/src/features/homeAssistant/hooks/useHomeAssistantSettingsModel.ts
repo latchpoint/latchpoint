@@ -3,7 +3,7 @@ import { UserRole } from '@/lib/constants'
 import { useCurrentUserQuery } from '@/hooks/useAuthQueries'
 import { useDraftFromQuery } from '@/features/settings/hooks/useDraftFromQuery'
 import { useMqttSettingsQuery, useMqttStatusQuery } from '@/hooks/useMqtt'
-import { useHomeAssistantSettingsQuery, useHomeAssistantStatus } from '@/hooks/useHomeAssistant'
+import { useHomeAssistantSettingsQuery, useHomeAssistantStatus, useUpdateHomeAssistantSettingsMutation } from '@/hooks/useHomeAssistant'
 import {
   useHomeAssistantMqttAlarmEntitySettingsQuery,
   useHomeAssistantMqttAlarmEntityStatusQuery,
@@ -11,6 +11,7 @@ import {
   useUpdateHomeAssistantMqttAlarmEntitySettingsMutation,
 } from '@/hooks/useHomeAssistantMqttAlarmEntity'
 import { getErrorMessage } from '@/types/errors'
+import { parseIntInRange } from '@/lib/numberParsers'
 
 export type HaConnectionDraft = {
   enabled: boolean
@@ -39,6 +40,7 @@ export function useHomeAssistantSettingsModel() {
   const haMqttAlarmEntityStatusQuery = useHomeAssistantMqttAlarmEntityStatusQuery()
   const updateHaMqttAlarmEntityMutation = useUpdateHomeAssistantMqttAlarmEntitySettingsMutation()
   const publishHaMqttDiscoveryMutation = usePublishHomeAssistantMqttAlarmEntityDiscoveryMutation()
+  const updateHaSettings = useUpdateHomeAssistantSettingsMutation()
 
   const mqttReady = Boolean(mqttStatusQuery.data?.enabled && mqttSettingsQuery.data?.host)
   const haMqttEntityStatus = haMqttAlarmEntityStatusQuery.data?.status ?? null
@@ -70,6 +72,23 @@ export function useHomeAssistantSettingsModel() {
 
   const { draft: haConnectionDraft, setDraft: setHaConnectionDraft } = useDraftFromQuery<HaConnectionDraft>(initialHaConnectionDraft)
   const { draft: haMqttEntityDraft, setDraft: setHaMqttEntityDraft } = useDraftFromQuery<HaMqttEntityDraft>(initialHaMqttEntityDraft)
+
+  const saveConnection = async () => {
+    if (!haConnectionDraft) return
+    setError(null)
+    setNotice(null)
+    try {
+      const connectTimeoutSeconds = parseIntInRange('Connect timeout', haConnectionDraft.connectTimeoutSeconds, 1, 300)
+      await updateHaSettings.mutateAsync({ connectTimeoutSeconds })
+      setNotice('Saved Home Assistant settings.')
+    } catch (err) {
+      setError(getErrorMessage(err) || 'Failed to save Home Assistant settings.')
+    }
+  }
+
+  const connectionSaveDisabled = !haConnectionDraft || !initialHaConnectionDraft || (
+    haConnectionDraft.connectTimeoutSeconds === initialHaConnectionDraft.connectTimeoutSeconds
+  )
 
   const refreshConnection = () => {
     void haStatusQuery.refetch()
@@ -123,6 +142,8 @@ export function useHomeAssistantSettingsModel() {
     setHaMqttEntityDraft,
     updateHaMqttAlarmEntityMutation,
     publishHaMqttDiscoveryMutation,
+    saveConnection,
+    connectionSaveDisabled,
     refreshConnection,
     refreshMqttEntity,
     saveMqttEntity,

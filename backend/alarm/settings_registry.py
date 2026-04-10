@@ -135,6 +135,36 @@ ALARM_PROFILE_SETTINGS: list[SettingDefinition] = [
         },
         description="Frigate integration settings (MQTT events ingest for rules conditions).",
     ),
+    SettingDefinition(
+        key="home_assistant",
+        name="Home Assistant",
+        value_type=SystemConfigValueType.JSON,
+        default={
+            "connect_timeout_seconds": 2,
+        },
+        description="Home Assistant integration operational settings.",
+    ),
+    SettingDefinition(
+        key="mqtt",
+        name="MQTT",
+        value_type=SystemConfigValueType.JSON,
+        default={
+            "keepalive_seconds": 30,
+            "connect_timeout_seconds": 5,
+        },
+        description="MQTT transport operational settings.",
+    ),
+    SettingDefinition(
+        key="zwavejs",
+        name="Z-Wave JS",
+        value_type=SystemConfigValueType.JSON,
+        default={
+            "connect_timeout_seconds": 5,
+            "reconnect_min_seconds": 1,
+            "reconnect_max_seconds": 30,
+        },
+        description="Z-Wave JS integration operational settings.",
+    ),
 ]
 
 ALARM_PROFILE_SETTINGS_BY_KEY = {d.key: d for d in ALARM_PROFILE_SETTINGS}
