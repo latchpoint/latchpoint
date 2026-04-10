@@ -64,11 +64,15 @@ def set_cached_connection() -> None:
     from alarm.use_cases.settings_profile import ensure_active_settings_profile
 
     cfg = get_home_assistant_config()
-    profile = ensure_active_settings_profile()
     defaults = ALARM_PROFILE_SETTINGS_BY_KEY["home_assistant"].default
-    db = get_setting_json(profile, "home_assistant") or {}
-    if not isinstance(db, dict):
-        db = {}
+    db: dict[str, object] = {}
+    try:
+        profile = ensure_active_settings_profile()
+        db_value = get_setting_json(profile, "home_assistant") or {}
+        if isinstance(db_value, dict):
+            db = db_value
+    except Exception:
+        pass
 
     obj = HomeAssistantRuntimeConnection(
         enabled=bool(cfg.get("enabled")),

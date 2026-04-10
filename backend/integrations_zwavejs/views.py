@@ -108,12 +108,12 @@ def _node_summary(node: dict) -> dict:
     }
 
 
-def _ensure_zwavejs_ready(cfg: dict) -> None:
-    """Apply config and ensure gateway is connected."""
+def _ensure_zwavejs_ready() -> None:
+    """Apply merged env + DB settings and ensure gateway is connected."""
     settings = get_zwavejs_settings()
     if not settings["enabled"]:
         raise ValidationError("Z-Wave JS is disabled.")
-    if not cfg.get("ws_url"):
+    if not settings.get("ws_url"):
         raise ValidationError("Z-Wave JS ws_url is required.")
     zwavejs_gateway.apply_settings(settings_obj=settings)
     zwavejs_gateway.ensure_connected(timeout_seconds=float(settings.get("connect_timeout_seconds") or 5))
@@ -210,8 +210,7 @@ class ZwavejsEntitySyncView(APIView):
 
     def post(self, request):
         """Sync entities from Z-Wave JS into the local entity registry (admin-only)."""
-        cfg = get_zwavejs_config()
-        _ensure_zwavejs_ready(cfg)
+        _ensure_zwavejs_ready()
 
         try:
             result = sync_entities_from_zwavejs(zwavejs=zwavejs_gateway)
@@ -230,8 +229,7 @@ class ZwavejsSetValueView(APIView):
         serializer.is_valid(raise_exception=True)
         payload = serializer.validated_data
 
-        cfg = get_zwavejs_config()
-        _ensure_zwavejs_ready(cfg)
+        _ensure_zwavejs_ready()
 
         zwavejs_gateway.set_value(
             node_id=int(payload["node_id"]),
@@ -252,8 +250,7 @@ class ZwavejsNodesView(APIView):
 
     def get(self, request):
         """Return a best-effort list of controller nodes for UI discovery (admin-only)."""
-        cfg = get_zwavejs_config()
-        _ensure_zwavejs_ready(cfg)
+        _ensure_zwavejs_ready()
 
         try:
             controller_state = zwavejs_gateway.controller_get_state(timeout_seconds=10)

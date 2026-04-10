@@ -144,6 +144,7 @@ export function useHomeAssistantSettingsModel() {
     publishHaMqttDiscoveryMutation,
     saveConnection,
     connectionSaveDisabled,
+    isConnectionSaving: updateHaSettings.isPending,
     refreshConnection,
     refreshMqttEntity,
     saveMqttEntity,

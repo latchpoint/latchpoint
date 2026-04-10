@@ -110,14 +110,14 @@ npx vitest run
 
 ## Architecture
 
-- **Env vars** = connection config only (URLs, creds, ports, timeouts) via `backend/alarm/env_config.py`
+- **Env vars** = connection config only (URLs, creds, ports) via `backend/alarm/env_config.py`
 - **Operational settings** = DB-backed, UI-editable via `AlarmSettingsEntry` per profile
 - **Settings registry** (`backend/alarm/settings_registry.py`) = centralized setting definitions with defaults and types
 - **Provider registry** (`backend/notifications/provider_registry.py`) = auto-provisions notification providers from env vars; `is_enabled` managed by UI only
 - **Action handler registry** (`backend/alarm/rules/action_handlers/`) = self-registering, protocol-based rule action handlers
-- **Signal handlers** in MQTT/ZWaveJS/HA `apps.py` react to DB toggle changes at runtime
+- **Signal handlers** in MQTT/ZWaveJS/HA `apps.py` react to operational settings profile changes at runtime
 - Integration connection fields are **read-only** in the UI (configured via env vars)
-- PATCH endpoints accept `{"enabled": bool}` for all integrations; Frigate/Zigbee2MQTT also accept operational settings
+- PATCH endpoints accept operational settings updates for HA, MQTT, and Z-Wave JS; Frigate/Zigbee2MQTT also accept operational settings
 
 ### Import Boundary (enforced by test)
 `alarm/rules/` and `alarm/use_cases/` must **NOT** import from `integrations_*` or `transports_*`.

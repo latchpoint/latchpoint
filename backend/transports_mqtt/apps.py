@@ -61,7 +61,11 @@ class TransportsMqttConfig(AppConfig):
         def _on_settings_changed(sender, **_kwargs) -> None:
             _apply_mqtt_settings()
 
-        settings_profile_changed.connect(_on_settings_changed, dispatch_uid="mqtt_settings_changed")
+        settings_profile_changed.connect(
+            _on_settings_changed,
+            dispatch_uid="mqtt_settings_changed",
+            weak=False,
+        )
 
         # Apply settings once at process startup.
         with warnings.catch_warnings():

@@ -26,7 +26,7 @@ export function HomeAssistantConnectionCard({
   return (
     <IntegrationConnectionCard
       title="Connection / setup"
-      description="Home Assistant connection is configured via environment variables."
+      description="Base URL and token are configured via environment variables. Timeout can be adjusted below."
     >
       <div className="space-y-3">
         {draft ? (
