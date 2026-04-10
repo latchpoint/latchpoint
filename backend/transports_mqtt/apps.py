@@ -33,13 +33,16 @@ class TransportsMqttConfig(AppConfig):
                 from alarm.state_machine.settings import get_setting_json
                 from alarm.use_cases.settings_profile import ensure_active_settings_profile
 
+                from alarm.settings_registry import ALARM_PROFILE_SETTINGS_BY_KEY
+
                 cfg = get_mqtt_config()
                 profile = ensure_active_settings_profile()
+                defaults = ALARM_PROFILE_SETTINGS_BY_KEY["mqtt"].default
                 db = get_setting_json(profile, "mqtt") or {}
                 if not isinstance(db, dict):
                     db = {}
-                cfg["keepalive_seconds"] = int(db.get("keepalive_seconds", cfg["keepalive_seconds"]))
-                cfg["connect_timeout_seconds"] = int(db.get("connect_timeout_seconds", cfg["connect_timeout_seconds"]))
+                cfg["keepalive_seconds"] = int(db.get("keepalive_seconds", defaults["keepalive_seconds"]))
+                cfg["connect_timeout_seconds"] = int(db.get("connect_timeout_seconds", defaults["connect_timeout_seconds"]))
                 default_mqtt_gateway.apply_settings(settings=cfg)
             except Exception:
                 return

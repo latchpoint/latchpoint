@@ -13,8 +13,6 @@ class HomeAssistantConfigTest(SimpleTestCase):
         self.assertFalse(cfg["enabled"])
         self.assertEqual(cfg["base_url"], "http://localhost:8123")
         self.assertEqual(cfg["token"], "")
-        self.assertEqual(cfg["connect_timeout_seconds"], 2)
-
     def test_env_overrides(self, monkeypatch=None):
         import os
         from unittest.mock import patch
@@ -23,7 +21,6 @@ class HomeAssistantConfigTest(SimpleTestCase):
             "HA_ENABLED": "true",
             "HA_BASE_URL": "http://ha.local:8123",
             "HA_TOKEN": "my-secret-token",
-            "HA_CONNECT_TIMEOUT": "10",
         }
         with patch.dict(os.environ, env):
             from alarm.env_config import get_home_assistant_config
@@ -32,7 +29,6 @@ class HomeAssistantConfigTest(SimpleTestCase):
             self.assertTrue(cfg["enabled"])
             self.assertEqual(cfg["base_url"], "http://ha.local:8123")
             self.assertEqual(cfg["token"], "my-secret-token")
-            self.assertEqual(cfg["connect_timeout_seconds"], 10)
 
 
 class MqttConfigTest(SimpleTestCase):
@@ -48,8 +44,6 @@ class MqttConfigTest(SimpleTestCase):
         self.assertFalse(cfg["use_tls"])
         self.assertFalse(cfg["tls_insecure"])
         self.assertEqual(cfg["client_id"], "latchpoint-alarm")
-        self.assertEqual(cfg["keepalive_seconds"], 30)
-        self.assertEqual(cfg["connect_timeout_seconds"], 5)
 
     def test_env_overrides(self):
         import os
@@ -64,8 +58,6 @@ class MqttConfigTest(SimpleTestCase):
             "MQTT_USE_TLS": "true",
             "MQTT_TLS_INSECURE": "true",
             "MQTT_CLIENT_ID": "my-client",
-            "MQTT_KEEPALIVE_SECONDS": "60",
-            "MQTT_CONNECT_TIMEOUT": "10",
         }
         with patch.dict(os.environ, env):
             from alarm.env_config import get_mqtt_config
@@ -79,8 +71,6 @@ class MqttConfigTest(SimpleTestCase):
             self.assertTrue(cfg["use_tls"])
             self.assertTrue(cfg["tls_insecure"])
             self.assertEqual(cfg["client_id"], "my-client")
-            self.assertEqual(cfg["keepalive_seconds"], 60)
-            self.assertEqual(cfg["connect_timeout_seconds"], 10)
 
 
 class ZwavejsConfigTest(SimpleTestCase):
@@ -91,9 +81,6 @@ class ZwavejsConfigTest(SimpleTestCase):
         self.assertFalse(cfg["enabled"])
         self.assertEqual(cfg["ws_url"], "ws://localhost:3000")
         self.assertEqual(cfg["api_token"], "")
-        self.assertEqual(cfg["connect_timeout_seconds"], 5)
-        self.assertEqual(cfg["reconnect_min_seconds"], 1)
-        self.assertEqual(cfg["reconnect_max_seconds"], 30)
 
     def test_env_overrides(self):
         import os
@@ -103,9 +90,6 @@ class ZwavejsConfigTest(SimpleTestCase):
             "ZWAVEJS_ENABLED": "true",
             "ZWAVEJS_WS_URL": "ws://zwave.local:3000",
             "ZWAVEJS_API_TOKEN": "secret-token",
-            "ZWAVEJS_CONNECT_TIMEOUT": "15",
-            "ZWAVEJS_RECONNECT_MIN": "2",
-            "ZWAVEJS_RECONNECT_MAX": "60",
         }
         with patch.dict(os.environ, env):
             from alarm.env_config import get_zwavejs_config
@@ -114,9 +98,6 @@ class ZwavejsConfigTest(SimpleTestCase):
             self.assertTrue(cfg["enabled"])
             self.assertEqual(cfg["ws_url"], "ws://zwave.local:3000")
             self.assertEqual(cfg["api_token"], "secret-token")
-            self.assertEqual(cfg["connect_timeout_seconds"], 15)
-            self.assertEqual(cfg["reconnect_min_seconds"], 2)
-            self.assertEqual(cfg["reconnect_max_seconds"], 60)
 
 
 class Zigbee2mqttEnvOverridesTest(SimpleTestCase):

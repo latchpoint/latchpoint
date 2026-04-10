@@ -35,9 +35,6 @@ class ZwavejsApiTests(APITestCase):
             "ZWAVEJS_ENABLED": "true",
             "ZWAVEJS_WS_URL": "ws://zwavejs.local:3000",
             "ZWAVEJS_API_TOKEN": "supersecret",
-            "ZWAVEJS_CONNECT_TIMEOUT": "5",
-            "ZWAVEJS_RECONNECT_MIN": "1",
-            "ZWAVEJS_RECONNECT_MAX": "30",
         },
     )
     def test_zwavejs_token_is_masked_in_zwavejs_settings_endpoint(self):

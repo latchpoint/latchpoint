@@ -6,7 +6,6 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from alarm.env_config import get_zwavejs_config
 from alarm.gateways.zwavejs import default_zwavejs_gateway
 from config.domain_exceptions import ValidationError
 from locks.permissions import IsAdminRole
@@ -18,15 +17,17 @@ zwavejs_gateway = default_zwavejs_gateway
 
 
 def _apply_zwavejs_settings() -> float:
-    """Apply env-based Z-Wave JS connection settings to the gateway; return connect timeout seconds."""
-    config = get_zwavejs_config()
-    if not config.get("enabled"):
+    """Apply Z-Wave JS connection + operational settings to the gateway; return connect timeout seconds."""
+    from integrations_zwavejs.views import get_zwavejs_settings
+
+    settings = get_zwavejs_settings()
+    if not settings.get("enabled"):
         raise ValidationError("Z-Wave JS is disabled.")
-    if not config.get("ws_url"):
+    if not settings.get("ws_url"):
         raise ValidationError("Z-Wave JS ws_url is required.")
 
-    zwavejs_gateway.apply_settings(settings_obj=config)
-    return float(config.get("connect_timeout_seconds") or 5)
+    zwavejs_gateway.apply_settings(settings_obj=settings)
+    return float(settings.get("connect_timeout_seconds") or 5)
 
 
 class LockConfigSyncView(APIView):

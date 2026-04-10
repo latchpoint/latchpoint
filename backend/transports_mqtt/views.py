@@ -20,10 +20,11 @@ from config.domain_exceptions import ValidationError
 mqtt_gateway = default_mqtt_gateway
 
 
-def _get_mqtt_settings() -> dict:
-    """Return merged MQTT settings: env connection config + DB operational overrides."""
+def get_mqtt_settings() -> dict:
+    """Return merged MQTT settings: env connection config + DB operational settings."""
     cfg = get_mqtt_config()
     profile = ensure_active_settings_profile()
+    defaults = ALARM_PROFILE_SETTINGS_BY_KEY["mqtt"].default
     db_settings = get_setting_json(profile, "mqtt") or {}
     if not isinstance(db_settings, dict):
         db_settings = {}
@@ -36,12 +37,12 @@ def _get_mqtt_settings() -> dict:
         "use_tls": cfg["use_tls"],
         "tls_insecure": cfg["tls_insecure"],
         "client_id": cfg["client_id"],
-        "keepalive_seconds": int(db_settings.get("keepalive_seconds", cfg["keepalive_seconds"])),
-        "connect_timeout_seconds": int(db_settings.get("connect_timeout_seconds", cfg["connect_timeout_seconds"])),
+        "keepalive_seconds": int(db_settings.get("keepalive_seconds", defaults["keepalive_seconds"])),
+        "connect_timeout_seconds": int(db_settings.get("connect_timeout_seconds", defaults["connect_timeout_seconds"])),
     }
 
 
-def _mqtt_response(settings: dict) -> dict:
+def _response(settings: dict) -> dict:
     """Build the API response dict (masks password)."""
     return {
         "enabled": settings["enabled"],
@@ -71,8 +72,8 @@ class MqttSettingsView(APIView):
 
     def get(self, request):
         """Return the current MQTT connection settings (env) + operational settings (DB)."""
-        settings = _get_mqtt_settings()
-        return Response(_mqtt_response(settings), status=status.HTTP_200_OK)
+        settings = get_mqtt_settings()
+        return Response(_response(settings), status=status.HTTP_200_OK)
 
     def patch(self, request):
         """Update MQTT operational settings (admin-only)."""
@@ -103,12 +104,12 @@ class MqttSettingsView(APIView):
             defaults={"value": current, "value_type": definition.value_type},
         )
 
-        settings = _get_mqtt_settings()
+        settings = get_mqtt_settings()
         mqtt_gateway.apply_settings(settings=settings)
         transaction.on_commit(
             lambda: settings_profile_changed.send(sender=None, profile_id=profile.id, reason="updated")
         )
-        return Response(_mqtt_response(settings), status=status.HTTP_200_OK)
+        return Response(_response(settings), status=status.HTTP_200_OK)
 
 
 class MqttTestConnectionView(APIView):

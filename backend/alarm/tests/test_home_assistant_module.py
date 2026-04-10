@@ -49,7 +49,6 @@ class HomeAssistantModuleTests(SimpleTestCase):
                 "HA_ENABLED": "true",
                 "HA_BASE_URL": base_url,
                 "HA_TOKEN": token,
-                "HA_CONNECT_TIMEOUT": "2",
             },
         )
         self._env_patcher.start()

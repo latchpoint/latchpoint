@@ -3,7 +3,6 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from alarm.env_config import get_zwavejs_config
 from alarm.rules.action_handlers import ActionContext, register
 
 logger = logging.getLogger(__name__)
@@ -22,9 +21,11 @@ def execute(action: dict[str, Any], ctx: ActionContext) -> tuple[dict[str, Any],
     if not isinstance(command_class, int) or not isinstance(endpoint, int) or prop is None:
         return {"ok": False, "type": "zwavejs_set_value", "error": "invalid_value_id"}, None
     try:
-        settings_obj = get_zwavejs_config()
+        from integrations_zwavejs.views import get_zwavejs_settings
+
+        settings_obj = get_zwavejs_settings()
         ctx.zwavejs.apply_settings(settings_obj=settings_obj)
-        ctx.zwavejs.ensure_connected(timeout_seconds=float(settings_obj.get("connect_timeout_seconds") or 2))
+        ctx.zwavejs.ensure_connected(timeout_seconds=float(settings_obj.get("connect_timeout_seconds") or 5))
         ctx.zwavejs.set_value(
             node_id=node_id,
             endpoint=endpoint,

@@ -26,10 +26,11 @@ ha_gateway: HomeAssistantGateway = default_home_assistant_gateway
 logger = logging.getLogger(__name__)
 
 
-def _get_ha_settings() -> dict:
-    """Return merged HA settings: env connection config + DB operational overrides."""
+def get_ha_settings() -> dict:
+    """Return merged HA settings: env connection config + DB operational settings."""
     cfg = get_home_assistant_config()
     profile = ensure_active_settings_profile()
+    defaults = ALARM_PROFILE_SETTINGS_BY_KEY["home_assistant"].default
     db_settings = get_setting_json(profile, "home_assistant") or {}
     if not isinstance(db_settings, dict):
         db_settings = {}
@@ -38,12 +39,12 @@ def _get_ha_settings() -> dict:
         "base_url": cfg["base_url"],
         "token": cfg["token"],
         "connect_timeout_seconds": int(
-            db_settings.get("connect_timeout_seconds", cfg["connect_timeout_seconds"])
+            db_settings.get("connect_timeout_seconds", defaults["connect_timeout_seconds"])
         ),
     }
 
 
-def _ha_response(settings: dict) -> dict:
+def _response(settings: dict) -> dict:
     """Build the API response dict (masks token)."""
     return {
         "enabled": settings["enabled"],
@@ -71,8 +72,8 @@ class HomeAssistantSettingsView(APIView):
 
     def get(self, request):
         """Return the current Home Assistant connection settings (env) + operational settings (DB)."""
-        settings = _get_ha_settings()
-        return Response(_ha_response(settings), status=status.HTTP_200_OK)
+        settings = get_ha_settings()
+        return Response(_response(settings), status=status.HTTP_200_OK)
 
     def patch(self, request):
         """Update Home Assistant operational settings (admin-only)."""
@@ -99,11 +100,11 @@ class HomeAssistantSettingsView(APIView):
         )
 
         set_cached_connection()
-        settings = _get_ha_settings()
+        settings = get_ha_settings()
         transaction.on_commit(
             lambda: settings_profile_changed.send(sender=None, profile_id=profile.id, reason="updated")
         )
-        return Response(_ha_response(settings), status=status.HTTP_200_OK)
+        return Response(_response(settings), status=status.HTTP_200_OK)
 
 
 class HomeAssistantEntitiesView(_HomeAssistantBaseView):

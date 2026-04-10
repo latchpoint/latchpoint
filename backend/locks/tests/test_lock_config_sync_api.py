@@ -46,7 +46,6 @@ def _value_id_key(value_id: dict) -> str:
     {
         "ZWAVEJS_ENABLED": "true",
         "ZWAVEJS_WS_URL": "ws://example.invalid:3000",
-        "ZWAVEJS_CONNECT_TIMEOUT": "1",
     },
 )
 class LockConfigSyncApiTests(APITestCase):

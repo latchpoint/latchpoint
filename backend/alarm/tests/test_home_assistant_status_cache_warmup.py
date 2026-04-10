@@ -37,7 +37,6 @@ class _DummyResponse:
         "HA_ENABLED": "true",
         "HA_BASE_URL": "http://homeassistant.local:8123",
         "HA_TOKEN": "supersecret",
-        "HA_CONNECT_TIMEOUT": "2",
     },
 )
 class HomeAssistantStatusCacheWarmupTests(APITestCase):

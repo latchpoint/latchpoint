@@ -35,7 +35,6 @@ class HomeAssistantSettingsApiTests(APITestCase):
             "HA_ENABLED": "true",
             "HA_BASE_URL": "http://homeassistant.local:8123",
             "HA_TOKEN": "supersecret",
-            "HA_CONNECT_TIMEOUT": "2",
         },
     )
     def test_home_assistant_token_is_masked_in_home_assistant_settings_endpoint(self):

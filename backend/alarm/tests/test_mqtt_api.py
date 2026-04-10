@@ -68,8 +68,6 @@ class MqttApiTests(APITestCase):
             "MQTT_USE_TLS": "false",
             "MQTT_TLS_INSECURE": "false",
             "MQTT_CLIENT_ID": "latchpoint-alarm",
-            "MQTT_KEEPALIVE_SECONDS": "30",
-            "MQTT_CONNECT_TIMEOUT": "5",
         },
     )
     def test_mqtt_password_is_masked_in_mqtt_settings_endpoint(self):

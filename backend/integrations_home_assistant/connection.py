@@ -59,11 +59,13 @@ def set_cached_connection() -> None:
     This must not raise; callers treat caching as best-effort.
     """
     from alarm.env_config import get_home_assistant_config
+    from alarm.settings_registry import ALARM_PROFILE_SETTINGS_BY_KEY
     from alarm.state_machine.settings import get_setting_json
     from alarm.use_cases.settings_profile import ensure_active_settings_profile
 
     cfg = get_home_assistant_config()
     profile = ensure_active_settings_profile()
+    defaults = ALARM_PROFILE_SETTINGS_BY_KEY["home_assistant"].default
     db = get_setting_json(profile, "home_assistant") or {}
     if not isinstance(db, dict):
         db = {}
@@ -73,7 +75,7 @@ def set_cached_connection() -> None:
         base_url=str(cfg.get("base_url") or ""),
         token=str(cfg.get("token") or ""),
         connect_timeout_seconds=float(
-            db.get("connect_timeout_seconds", cfg.get("connect_timeout_seconds") or 2)
+            db.get("connect_timeout_seconds", defaults["connect_timeout_seconds"])
         ),
     )
     with _lock:

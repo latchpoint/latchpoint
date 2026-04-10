@@ -24,10 +24,11 @@ zwavejs_gateway = default_zwavejs_gateway
 logger = logging.getLogger(__name__)
 
 
-def _get_zwavejs_settings() -> dict:
-    """Return merged ZWaveJS settings: env connection config + DB operational overrides."""
+def get_zwavejs_settings() -> dict:
+    """Return merged ZWaveJS settings: env connection config + DB operational settings."""
     cfg = get_zwavejs_config()
     profile = ensure_active_settings_profile()
+    defaults = ALARM_PROFILE_SETTINGS_BY_KEY["zwavejs"].default
     db_settings = get_setting_json(profile, "zwavejs") or {}
     if not isinstance(db_settings, dict):
         db_settings = {}
@@ -35,13 +36,13 @@ def _get_zwavejs_settings() -> dict:
         "enabled": cfg["enabled"],
         "ws_url": cfg["ws_url"],
         "api_token": cfg["api_token"],
-        "connect_timeout_seconds": int(db_settings.get("connect_timeout_seconds", cfg["connect_timeout_seconds"])),
-        "reconnect_min_seconds": int(db_settings.get("reconnect_min_seconds", cfg["reconnect_min_seconds"])),
-        "reconnect_max_seconds": int(db_settings.get("reconnect_max_seconds", cfg["reconnect_max_seconds"])),
+        "connect_timeout_seconds": int(db_settings.get("connect_timeout_seconds", defaults["connect_timeout_seconds"])),
+        "reconnect_min_seconds": int(db_settings.get("reconnect_min_seconds", defaults["reconnect_min_seconds"])),
+        "reconnect_max_seconds": int(db_settings.get("reconnect_max_seconds", defaults["reconnect_max_seconds"])),
     }
 
 
-def _zwavejs_response(settings: dict) -> dict:
+def _response(settings: dict) -> dict:
     """Build the API response dict (masks api_token)."""
     return {
         "enabled": settings["enabled"],
@@ -109,7 +110,7 @@ def _node_summary(node: dict) -> dict:
 
 def _ensure_zwavejs_ready(cfg: dict) -> None:
     """Apply config and ensure gateway is connected."""
-    settings = _get_zwavejs_settings()
+    settings = get_zwavejs_settings()
     if not settings["enabled"]:
         raise ValidationError("Z-Wave JS is disabled.")
     if not cfg.get("ws_url"):
@@ -123,7 +124,7 @@ class ZwavejsStatusView(APIView):
 
     def get(self, request):
         """Return current Z-Wave JS connection status."""
-        settings = _get_zwavejs_settings()
+        settings = get_zwavejs_settings()
         zwavejs_gateway.apply_settings(settings_obj=settings)
         return Response(zwavejs_gateway.get_status().as_dict(), status=status.HTTP_200_OK)
 
@@ -133,8 +134,8 @@ class ZwavejsSettingsView(APIView):
 
     def get(self, request):
         """Return the current Z-Wave JS connection settings (env) + operational settings (DB)."""
-        settings = _get_zwavejs_settings()
-        return Response(_zwavejs_response(settings), status=status.HTTP_200_OK)
+        settings = get_zwavejs_settings()
+        return Response(_response(settings), status=status.HTTP_200_OK)
 
     def patch(self, request):
         """Update Z-Wave JS operational settings (admin-only)."""
@@ -170,12 +171,12 @@ class ZwavejsSettingsView(APIView):
             defaults={"value": current, "value_type": definition.value_type},
         )
 
-        settings = _get_zwavejs_settings()
+        settings = get_zwavejs_settings()
         zwavejs_gateway.apply_settings(settings_obj=settings)
         transaction.on_commit(
             lambda: settings_profile_changed.send(sender=None, profile_id=profile.id, reason="updated")
         )
-        return Response(_zwavejs_response(settings), status=status.HTTP_200_OK)
+        return Response(_response(settings), status=status.HTTP_200_OK)
 
 
 class ZwavejsTestConnectionView(APIView):
