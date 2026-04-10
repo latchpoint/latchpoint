@@ -23,14 +23,13 @@ class DiscordHandler(NotificationHandler):
     def from_env(cls) -> dict:
         from alarm.env_config import get_discord_config
 
-        config = get_discord_config()
-        return {k: v for k, v in config.items() if k != "enabled"}
+        return get_discord_config()
 
     @classmethod
-    def is_enabled_from_env(cls) -> bool:
+    def is_configured_from_env(cls) -> bool:
         from alarm.env_config import get_discord_config
 
-        return get_discord_config()["enabled"]
+        return bool(get_discord_config().get("webhook_url"))
 
     config_schema = {
         "type": "object",

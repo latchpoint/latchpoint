@@ -1,7 +1,5 @@
 import { Radio } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { FormField } from '@/components/ui/form-field'
-import { Input } from '@/components/ui/input'
 import { LoadingInline } from '@/components/ui/loading-inline'
 import { IntegrationConnectionCard } from '@/features/integrations/components/IntegrationConnectionCard'
 import { IntegrationOverviewCard } from '@/features/integrations/components/IntegrationOverviewCard'
@@ -16,6 +14,7 @@ type Props = {
   enabled: boolean | undefined
   lastError: string | null | undefined
   onRefresh: () => void
+  onSave: () => void
   onSync: () => void
   onSetDraft: (updater: (prev: ZwavejsDraft | null) => ZwavejsDraft | null) => void
 }
@@ -29,6 +28,7 @@ export function ZwavejsSettingsCard({
   enabled,
   lastError,
   onRefresh,
+  onSave,
   onSync,
   onSetDraft,
 }: Props) {
@@ -46,11 +46,13 @@ export function ZwavejsSettingsCard({
         isBusy={isBusy}
         status={{ connected, enabled, lastError }}
         enableLabel="Enable Z-Wave JS"
-        enableHelp="Enables the Z-Wave JS integration used for entity sync and set-value operations."
+        enableHelp="Enable or disable the Z-Wave JS integration."
         enabled={draft?.enabled ?? false}
         onEnabledChange={(checked) => onSetDraft((prev) => (prev ? { ...prev, enabled: checked } : prev))}
         enableDisabled={!draft}
         onRefresh={onRefresh}
+        onSave={onSave}
+        saveDisabled={!draft || draft.enabled === (enabled ?? false)}
         opsActions={
           <Button type="button" variant="outline" onClick={onSync} disabled={!isAdmin || isBusy || !draft}>
             Sync Entities
@@ -60,60 +62,27 @@ export function ZwavejsSettingsCard({
         {isLoading && !draft ? <LoadingInline /> : !draft ? <div className="text-sm text-muted-foreground">Z-Wave JS settings unavailable.</div> : null}
       </IntegrationOverviewCard>
 
-      <IntegrationConnectionCard description="Connection settings are read by the backend container.">
+      <IntegrationConnectionCard description="Connection settings are configured via environment variables.">
         {isLoading && !draft ? (
           <LoadingInline />
         ) : !draft ? (
           <div className="text-sm text-muted-foreground">Z-Wave JS settings unavailable.</div>
         ) : (
-          <div className="space-y-3 sm:space-y-4">
-            <FormField
-              label="WebSocket URL"
-              htmlFor="zwaveWsUrl"
-              help="WebSocket endpoint for Z-Wave JS UI / zwave-js-server (reachable from the backend container)."
-              required={draft.enabled}
-            >
-              <Input
-                id="zwaveWsUrl"
-                placeholder="ws://localhost:3000"
-                value={draft.wsUrl}
-                onChange={(e) => onSetDraft((prev) => (prev ? { ...prev, wsUrl: e.target.value } : prev))}
-                disabled={!isAdmin || isBusy}
-              />
-              <div className="mt-1 text-xs text-muted-foreground">Z-Wave JS UI / zwave-js-server commonly uses WS port 3000.</div>
-            </FormField>
+          <div className="grid grid-cols-2 gap-2 text-sm">
+            <span className="text-muted-foreground">WebSocket URL</span>
+            <span className="break-all">{draft.wsUrl || '(not set)'}</span>
 
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3 sm:gap-4">
-              <FormField label="Connect timeout (s)" htmlFor="zwaveConnectTimeout" help="How long to wait when establishing the WebSocket connection." required>
-                <Input
-                  id="zwaveConnectTimeout"
-                  inputMode="decimal"
-                  value={draft.connectTimeoutSeconds}
-                  onChange={(e) => onSetDraft((prev) => (prev ? { ...prev, connectTimeoutSeconds: e.target.value } : prev))}
-                  disabled={!isAdmin || isBusy}
-                />
-              </FormField>
+            <span className="text-muted-foreground">API Token</span>
+            <span>{draft.hasApiToken ? 'Configured' : 'Not set'}</span>
 
-              <FormField label="Reconnect min (s)" htmlFor="zwaveReconnectMin" help="Minimum delay before attempting to reconnect after a disconnect." required>
-                <Input
-                  id="zwaveReconnectMin"
-                  inputMode="numeric"
-                  value={draft.reconnectMinSeconds}
-                  onChange={(e) => onSetDraft((prev) => (prev ? { ...prev, reconnectMinSeconds: e.target.value } : prev))}
-                  disabled={!isAdmin || isBusy}
-                />
-              </FormField>
+            <span className="text-muted-foreground">Connect timeout</span>
+            <span>{draft.connectTimeoutSeconds}s</span>
 
-              <FormField label="Reconnect max (s)" htmlFor="zwaveReconnectMax" help="Maximum delay between reconnect attempts (must be ≥ reconnect min)." required>
-                <Input
-                  id="zwaveReconnectMax"
-                  inputMode="numeric"
-                  value={draft.reconnectMaxSeconds}
-                  onChange={(e) => onSetDraft((prev) => (prev ? { ...prev, reconnectMaxSeconds: e.target.value } : prev))}
-                  disabled={!isAdmin || isBusy}
-                />
-              </FormField>
-            </div>
+            <span className="text-muted-foreground">Reconnect min</span>
+            <span>{draft.reconnectMinSeconds}s</span>
+
+            <span className="text-muted-foreground">Reconnect max</span>
+            <span>{draft.reconnectMaxSeconds}s</span>
           </div>
         )}
       </IntegrationConnectionCard>

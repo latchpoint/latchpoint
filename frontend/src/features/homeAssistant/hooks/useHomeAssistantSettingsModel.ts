@@ -3,7 +3,7 @@ import { UserRole } from '@/lib/constants'
 import { useCurrentUserQuery } from '@/hooks/useAuthQueries'
 import { useDraftFromQuery } from '@/features/settings/hooks/useDraftFromQuery'
 import { useMqttSettingsQuery, useMqttStatusQuery } from '@/hooks/useMqtt'
-import { useHomeAssistantSettingsQuery, useHomeAssistantStatus } from '@/hooks/useHomeAssistant'
+import { useHomeAssistantSettingsQuery, useHomeAssistantStatus, useUpdateHomeAssistantSettingsMutation } from '@/hooks/useHomeAssistant'
 import {
   useHomeAssistantMqttAlarmEntitySettingsQuery,
   useHomeAssistantMqttAlarmEntityStatusQuery,
@@ -32,6 +32,7 @@ export function useHomeAssistantSettingsModel() {
 
   const haStatusQuery = useHomeAssistantStatus()
   const haSettingsQuery = useHomeAssistantSettingsQuery()
+  const updateHaSettings = useUpdateHomeAssistantSettingsMutation()
 
   const mqttStatusQuery = useMqttStatusQuery()
   const mqttSettingsQuery = useMqttSettingsQuery()
@@ -70,6 +71,18 @@ export function useHomeAssistantSettingsModel() {
 
   const { draft: haConnectionDraft, setDraft: setHaConnectionDraft } = useDraftFromQuery<HaConnectionDraft>(initialHaConnectionDraft)
   const { draft: haMqttEntityDraft, setDraft: setHaMqttEntityDraft } = useDraftFromQuery<HaMqttEntityDraft>(initialHaMqttEntityDraft)
+
+  const saveConnection = async () => {
+    if (!haConnectionDraft) return
+    setError(null)
+    setNotice(null)
+    try {
+      await updateHaSettings.mutateAsync({ enabled: haConnectionDraft.enabled })
+      setNotice('Saved Home Assistant settings.')
+    } catch (err) {
+      setError(getErrorMessage(err) || 'Failed to save Home Assistant settings.')
+    }
+  }
 
   const refreshConnection = () => {
     void haStatusQuery.refetch()
@@ -121,8 +134,10 @@ export function useHomeAssistantSettingsModel() {
     setHaConnectionDraft,
     haMqttEntityDraft,
     setHaMqttEntityDraft,
+    updateHaSettings,
     updateHaMqttAlarmEntityMutation,
     publishHaMqttDiscoveryMutation,
+    saveConnection,
     refreshConnection,
     refreshMqttEntity,
     saveMqttEntity,

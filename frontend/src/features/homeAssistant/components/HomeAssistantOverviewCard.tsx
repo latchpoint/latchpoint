@@ -10,8 +10,8 @@ type Props = {
   reachable: boolean | undefined
   configured: boolean | undefined
   lastError: string | null | undefined
+  serverEnabled: boolean | undefined
   onRefresh: () => void
-  onReset: () => void
   onSave: () => void
   onSetDraft: (updater: (prev: HaConnectionDraft | null) => HaConnectionDraft | null) => void
 }
@@ -23,8 +23,8 @@ export function HomeAssistantOverviewCard({
   reachable,
   configured,
   lastError,
+  serverEnabled,
   onRefresh,
-  onReset,
   onSave,
   onSetDraft,
 }: Props) {
@@ -59,15 +59,13 @@ export function HomeAssistantOverviewCard({
         </div>
       }
       enableLabel="Enable Home Assistant"
-      enableHelp="Home Assistant is enabled/disabled via environment variables."
+      enableHelp="Enable or disable the Home Assistant integration."
       enabled={draft?.enabled ?? false}
       onEnabledChange={(checked) => onSetDraft((prev) => (prev ? { ...prev, enabled: checked } : prev))}
-      enableDisabled={true}
+      enableDisabled={!draft}
       onRefresh={onRefresh}
-      onReset={onReset}
       onSave={onSave}
-      resetDisabled={true}
-      saveDisabled={true}
+      saveDisabled={!draft || draft.enabled === (serverEnabled ?? false)}
     />
   )
 }

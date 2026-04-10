@@ -16,6 +16,7 @@ export function SettingsZwavejsTab() {
         enabled={model.statusQuery.data?.enabled}
         lastError={model.statusQuery.data?.lastError ?? undefined}
         onRefresh={model.refresh}
+        onSave={() => void model.save()}
         onSync={() => void model.sync()}
         onSetDraft={model.setDraft}
       />
@@ -24,4 +25,3 @@ export function SettingsZwavejsTab() {
 }
 
 export default SettingsZwavejsTab
-

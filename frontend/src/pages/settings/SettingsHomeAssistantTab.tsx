@@ -12,14 +12,14 @@ export function SettingsHomeAssistantTab() {
       <div className="space-y-4">
         <HomeAssistantOverviewCard
           isAdmin={model.isAdmin}
-          isBusy={false}
+          isBusy={model.updateHaSettings.isPending}
           draft={model.haConnectionDraft}
           reachable={model.haStatusQuery.data?.reachable}
           configured={model.haStatusQuery.data?.configured}
           lastError={model.haStatusQuery.data?.error}
+          serverEnabled={model.haSettingsQuery.data?.enabled}
           onRefresh={model.refreshConnection}
-          onReset={() => {}}
-          onSave={() => {}}
+          onSave={() => void model.saveConnection()}
           onSetDraft={model.setHaConnectionDraft}
         />
 

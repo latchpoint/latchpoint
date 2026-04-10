@@ -86,24 +86,20 @@ def _get_cached_devices_response() -> tuple[str | None, list[dict[str, Any]] | N
 
 
 def _mqtt_enabled() -> bool:
-    """Return True if MQTT is enabled and minimally configured via env vars."""
+    """Return True if MQTT is enabled (DB) and minimally configured (env vars)."""
     from alarm.env_config import get_mqtt_config
+    from alarm.integration_helpers import get_integration_enabled
 
     cfg = get_mqtt_config()
-    return bool(cfg.get("enabled") and cfg.get("host"))
+    return get_integration_enabled("mqtt") and bool(cfg.get("host"))
 
 
 def get_settings() -> Zigbee2mqttSettings:
-    """Read Zigbee2MQTT settings from DB (allowlists stay) with env overrides."""
-    from alarm.env_config import get_zigbee2mqtt_env_overrides
-
+    """Read Zigbee2MQTT settings from DB."""
     profile = get_active_settings_profile()
     raw = get_setting_json(profile, "zigbee2mqtt") or {}
     if not isinstance(raw, dict):
         raw = {}
-    overrides = get_zigbee2mqtt_env_overrides()
-    raw["enabled"] = overrides["enabled"]
-    raw["base_topic"] = overrides["base_topic"]
     return normalize_zigbee2mqtt_settings(raw)
 
 

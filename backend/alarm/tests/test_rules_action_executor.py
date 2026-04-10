@@ -111,7 +111,7 @@ class ActionExecutorTests(TestCase):
         )
         self.assertEqual(result["actions"][0]["error"], "invalid_action_format")
 
-    @patch.dict(os.environ, {"ZWAVEJS_ENABLED": "true", "ZWAVEJS_WS_URL": "ws://zwavejs.local:3000"})
+    @patch.dict(os.environ, {"ZWAVEJS_WS_URL": "ws://zwavejs.local:3000"})
     def test_execute_actions_supports_zwavejs_set_value_shape(self):
         class _Zwavejs:
             def __init__(self):

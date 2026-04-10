@@ -15,10 +15,8 @@ class ApplyIntegrationSettingsCommandTests(TestCase):
     @patch.dict(
         os.environ,
         {
-            "MQTT_ENABLED": "true",
             "MQTT_HOST": "mqtt.local",
             "MQTT_PORT": "1883",
-            "ZWAVEJS_ENABLED": "true",
             "ZWAVEJS_WS_URL": "ws://zwavejs.local:3000",
         },
     )

@@ -62,9 +62,6 @@ class _FakeMqttManager:
 @patch.dict(
     os.environ,
     {
-        "ZIGBEE2MQTT_ENABLED": "true",
-        "ZIGBEE2MQTT_BASE_TOPIC": "zigbee2mqtt",
-        "MQTT_ENABLED": "true",
         "MQTT_HOST": "mqtt.local",
     },
 )
@@ -75,6 +72,11 @@ class Zigbee2mqttSyncDevicesTests(TestCase):
             profile=profile,
             key="zigbee2mqtt",
             defaults={"value_type": "json", "value": {"enabled": True, "base_topic": "zigbee2mqtt"}},
+        )
+        AlarmSettingsEntry.objects.update_or_create(
+            profile=profile,
+            key="mqtt",
+            defaults={"value_type": "json", "value": {"enabled": True}},
         )
 
         fake = _FakeMqttManager()

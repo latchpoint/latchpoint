@@ -24,14 +24,13 @@ class WebhookHandler(NotificationHandler):
     def from_env(cls) -> dict:
         from alarm.env_config import get_webhook_config
 
-        config = get_webhook_config()
-        return {k: v for k, v in config.items() if k != "enabled"}
+        return get_webhook_config()
 
     @classmethod
-    def is_enabled_from_env(cls) -> bool:
+    def is_configured_from_env(cls) -> bool:
         from alarm.env_config import get_webhook_config
 
-        return get_webhook_config()["enabled"]
+        return bool(get_webhook_config().get("url"))
 
     config_schema = {
         "type": "object",

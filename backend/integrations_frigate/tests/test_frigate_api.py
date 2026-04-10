@@ -8,7 +8,7 @@ from django.utils import timezone
 from rest_framework.test import APIClient, APITestCase
 
 from accounts.models import Role, User, UserRoleAssignment
-from alarm.models import AlarmSettingsProfile
+from alarm.models import AlarmSettingsEntry, AlarmSettingsProfile
 from integrations_frigate.models import FrigateDetection
 
 
@@ -94,8 +94,13 @@ class FrigateApiStatusTests(APITestCase):
         self.assertEqual(response.status_code, 400)
         self.assertIn("MQTT", response.json()["error"]["message"])
 
-    @patch.dict(os.environ, {"MQTT_ENABLED": "true", "MQTT_HOST": "mqtt.local"})
+    @patch.dict(os.environ, {"MQTT_HOST": "mqtt.local"})
     def test_settings_patch_updates_topic(self):
+        # Enable MQTT in DB so the view allows the update
+        AlarmSettingsEntry.objects.update_or_create(
+            profile=self.profile, key="mqtt",
+            defaults={"value": {"enabled": True}, "value_type": "json"},
+        )
         url = reverse("frigate-settings")
         response = self.client.patch(url, data={"events_topic": "frigate/custom"}, format="json")
         self.assertEqual(response.status_code, 200)

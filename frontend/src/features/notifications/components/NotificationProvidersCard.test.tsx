@@ -22,6 +22,7 @@ vi.mock('@/features/notifications/hooks/useNotificationProviders', () => {
       isLoading: false,
     }),
     useTestNotificationProvider: () => ({ mutateAsync: mutateTest, isPending: false }),
+    useToggleNotificationProviderMutation: () => ({ isPending: false, mutateAsync: vi.fn().mockResolvedValue({}) }),
   }
 })
 

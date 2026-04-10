@@ -90,6 +90,8 @@ vi.mock('@/features/homeAssistant/hooks/useHomeAssistantSettingsModel', () => {
       setHaConnectionDraft: vi.fn(),
       haStatusQuery: { data: { reachable: true, configured: true, error: null } },
       haSettingsQuery: { isLoading: false, isError: false, error: null },
+      updateHaSettings: { isPending: false },
+      saveConnection: vi.fn(),
       refreshConnection: vi.fn(),
       haMqttEntityDraft: {},
       setHaMqttEntityDraft: vi.fn(),

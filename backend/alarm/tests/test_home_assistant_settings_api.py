@@ -32,7 +32,6 @@ class HomeAssistantSettingsApiTests(APITestCase):
     @patch.dict(
         os.environ,
         {
-            "HA_ENABLED": "true",
             "HA_BASE_URL": "http://homeassistant.local:8123",
             "HA_TOKEN": "supersecret",
             "HA_CONNECT_TIMEOUT": "2",
@@ -46,10 +45,10 @@ class HomeAssistantSettingsApiTests(APITestCase):
         self.assertNotIn("token", body["data"])
         self.assertEqual(body["data"]["has_token"], True)
 
-    def test_patch_home_assistant_settings_returns_405(self):
+    def test_patch_home_assistant_settings_accepts_enabled(self):
         url = reverse("ha-settings")
-        response = self.client.patch(url, data={"base_url": "http://ha2.local:8123"}, format="json")
-        self.assertEqual(response.status_code, 405)
+        response = self.client.patch(url, data={"enabled": True}, format="json")
+        self.assertEqual(response.status_code, 200)
 
 
 class HomeAssistantSettingsApiPermissionsTests(APITestCase):

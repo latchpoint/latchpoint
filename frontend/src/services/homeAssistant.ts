@@ -34,6 +34,10 @@ export const homeAssistantService = {
     return api.get<HomeAssistantConnectionSettings>(apiEndpoints.homeAssistant.settings)
   },
 
+  async updateSettings(data: { enabled: boolean }): Promise<HomeAssistantConnectionSettings> {
+    return api.patch<HomeAssistantConnectionSettings>(apiEndpoints.homeAssistant.settings, data)
+  },
+
   async listEntities(): Promise<HomeAssistantEntity[]> {
     return api.getData<HomeAssistantEntity[]>(apiEndpoints.homeAssistant.entities)
   },

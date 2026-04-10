@@ -2,7 +2,7 @@
  * React Query hooks for notification providers (read-only)
  * Providers are now configured via environment variables (ADR-0075)
  */
-import { useQuery, useMutation } from '@tanstack/react-query'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { notificationsService } from '@/services/notifications'
 
 export const notificationKeys = {
@@ -36,6 +36,17 @@ export function useNotificationProviderTypes() {
 export function useTestNotificationProvider() {
   return useMutation({
     mutationFn: (id: string) => notificationsService.testProvider(id),
+  })
+}
+
+export function useToggleNotificationProviderMutation() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, isEnabled }: { id: string; isEnabled: boolean }) =>
+      notificationsService.toggleProvider(id, isEnabled),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: notificationKeys.all })
+    },
   })
 }
 

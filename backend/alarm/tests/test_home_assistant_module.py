@@ -35,6 +35,8 @@ class HomeAssistantModuleTests(SimpleTestCase):
         clear_cached_connection()
 
     def tearDown(self):
+        if hasattr(self, "_enabled_patcher"):
+            self._enabled_patcher.stop()
         if hasattr(self, "_env_patcher"):
             self._env_patcher.stop()
         clear_cached_connection()
@@ -44,13 +46,16 @@ class HomeAssistantModuleTests(SimpleTestCase):
         self._env_patcher = patch.dict(
             os.environ,
             {
-                "HA_ENABLED": "true",
                 "HA_BASE_URL": base_url,
                 "HA_TOKEN": token,
                 "HA_CONNECT_TIMEOUT": "2",
             },
         )
         self._env_patcher.start()
+        self._enabled_patcher = patch(
+            "integrations_home_assistant.connection.get_integration_enabled", return_value=True
+        )
+        self._enabled_patcher.start()
         set_cached_connection()
 
     def test_get_status_returns_not_configured_when_missing_settings(self):

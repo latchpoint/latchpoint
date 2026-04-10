@@ -1,11 +1,14 @@
 """
 Auto-provisioning of notification providers from environment variables.
 
-For each handler type whose ``is_enabled_from_env()`` returns ``True``, ensures
-a corresponding ``NotificationProvider`` row exists in the given profile.  The
-``config`` field is left empty — all provider configuration (including secrets)
-is read from env at dispatch time via ``handler.from_env()``.  Idempotent:
-updates existing rows if found, creates new ones otherwise.
+For each handler type whose ``is_configured_from_env()`` returns ``True``,
+ensures a corresponding ``NotificationProvider`` row exists in the given profile.
+The ``config`` field is left empty — all provider configuration (including
+secrets) is read from env at dispatch time via ``handler.from_env()``.
+
+The ``is_enabled`` flag is **not** managed here — it is controlled exclusively
+via the UI toggle (ADR 0078).  Providers are created with ``is_enabled=False``
+and must be enabled by an admin through the settings UI.
 """
 
 from __future__ import annotations
@@ -25,58 +28,44 @@ _PROVIDER_TYPES = [
 
 
 def ensure_env_providers_exist(profile) -> None:
-    """Create or update ``NotificationProvider`` rows for env-enabled providers."""
+    """Create ``NotificationProvider`` rows for env-configured providers (idempotent).
+
+    Existing rows are never modified — ``is_enabled`` is managed by the UI only.
+    """
     from .handlers import get_handler
     from .models import NotificationProvider
 
     for provider_type in _PROVIDER_TYPES:
         handler = get_handler(provider_type)
 
-        if not hasattr(handler, "is_enabled_from_env"):
+        if not hasattr(handler, "is_configured_from_env"):
             continue
 
-        enabled = handler.is_enabled_from_env()
+        configured = handler.is_configured_from_env()
 
         # Use a deterministic name keyed on display_name to avoid collisions
         # with user-created providers and ensure idempotent get_or_create.
         env_name = f"{handler.display_name} (env)"
 
-        if enabled:
+        if configured:
             obj, created = NotificationProvider.objects.get_or_create(
                 profile=profile,
                 name=env_name,
                 defaults={
                     "provider_type": provider_type,
                     "config": {},
-                    "is_enabled": True,
+                    "is_enabled": False,
                 },
             )
             if created:
-                logger.info("Created %s provider from env", provider_type)
-            else:
-                update_fields = []
-                if obj.provider_type != provider_type:
-                    old_type = obj.provider_type
-                    obj.provider_type = provider_type
-                    update_fields.append("provider_type")
-                    logger.warning(
-                        "Corrected provider_type for '%s' from %s to %s",
-                        env_name,
-                        old_type,
-                        provider_type,
-                    )
-                if not obj.is_enabled:
-                    obj.is_enabled = True
-                    update_fields.append("is_enabled")
-                if update_fields:
-                    update_fields.append("updated_at")
-                    obj.save(update_fields=update_fields)
-                    logger.info("Updated existing %s provider from env", provider_type)
-        else:
-            updated = NotificationProvider.objects.filter(
-                profile=profile,
-                name=env_name,
-                is_enabled=True,
-            ).update(is_enabled=False)
-            if updated:
-                logger.info("Disabled %s provider (env disabled)", provider_type)
+                logger.info("Created %s provider from env (disabled by default)", provider_type)
+            elif obj.provider_type != provider_type:
+                old_type = obj.provider_type
+                obj.provider_type = provider_type
+                obj.save(update_fields=["provider_type", "updated_at"])
+                logger.warning(
+                    "Corrected provider_type for '%s' from %s to %s",
+                    env_name,
+                    old_type,
+                    provider_type,
+                )

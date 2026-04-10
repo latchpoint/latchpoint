@@ -7,7 +7,7 @@ from django.urls import reverse
 from rest_framework.test import APIClient, APITestCase
 
 from accounts.models import Role, User, UserRoleAssignment
-from alarm.models import AlarmSettingsProfile
+from alarm.models import AlarmSettingsEntry, AlarmSettingsProfile
 from alarm.tests.settings_test_utils import set_profile_settings
 
 
@@ -63,13 +63,19 @@ class SensitiveApiPermissionMatrixTests(APITestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["data"]["ok"], True)
 
-    @patch.dict(os.environ, {"ZWAVEJS_ENABLED": "true", "ZWAVEJS_WS_URL": "ws://zwavejs.local:3000"})
+    @patch.dict(os.environ, {"ZWAVEJS_WS_URL": "ws://zwavejs.local:3000"})
     @patch("integrations_zwavejs.views.sync_entities_from_zwavejs")
     @patch("integrations_zwavejs.views.zwavejs_gateway")
     def test_zwavejs_sync_has_explicit_401_403_200_matrix(self, mock_gateway, mock_sync_entities):
         mock_gateway.apply_settings.return_value = None
         mock_gateway.ensure_connected.return_value = None
         mock_sync_entities.return_value = {"imported": 1, "updated": 0}
+
+        # Enable zwavejs in DB
+        AlarmSettingsEntry.objects.update_or_create(
+            profile=self.profile, key="zwavejs",
+            defaults={"value": {"enabled": True}, "value_type": "json"},
+        )
 
         url = reverse("zwavejs-entities-sync")
         self.assertEqual(APIClient().post(url, data={}, format="json").status_code, 401)

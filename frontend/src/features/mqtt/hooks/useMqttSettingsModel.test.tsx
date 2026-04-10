@@ -25,6 +25,7 @@ vi.mock('@/hooks/useMqtt', () => {
       isLoading: false,
       refetch: vi.fn(),
     }),
+    useUpdateMqttSettingsMutation: () => ({ isPending: false, mutateAsync: vi.fn().mockResolvedValue({}) }),
   }
 })
 

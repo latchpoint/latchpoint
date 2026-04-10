@@ -3,7 +3,6 @@ from __future__ import annotations
 import logging
 
 from rest_framework import status
-from rest_framework.exceptions import MethodNotAllowed
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -11,6 +10,7 @@ from rest_framework.views import APIView
 from accounts.permissions import IsAdminRole
 from alarm.env_config import get_zwavejs_config
 from alarm.gateways.zwavejs import default_zwavejs_gateway
+from alarm.integration_helpers import get_integration_enabled, set_integration_enabled
 from alarm.serializers import ZwavejsSetValueSerializer, ZwavejsTestConnectionSerializer
 from config.domain_exceptions import ServiceUnavailableError, ValidationError
 from integrations_zwavejs.entity_sync import sync_entities_from_zwavejs
@@ -74,8 +74,8 @@ def _node_summary(node: dict) -> dict:
 
 
 def _ensure_zwavejs_ready(cfg: dict) -> None:
-    """Apply env config and ensure gateway is connected."""
-    if not cfg.get("enabled"):
+    """Apply config and ensure gateway is connected."""
+    if not get_integration_enabled("zwavejs"):
         raise ValidationError("Z-Wave JS is disabled.")
     if not cfg.get("ws_url"):
         raise ValidationError("Z-Wave JS ws_url is required.")
@@ -89,6 +89,7 @@ class ZwavejsStatusView(APIView):
     def get(self, request):
         """Return current Z-Wave JS connection status."""
         cfg = get_zwavejs_config()
+        cfg["enabled"] = get_integration_enabled("zwavejs")
         zwavejs_gateway.apply_settings(settings_obj=cfg)
         return Response(zwavejs_gateway.get_status().as_dict(), status=status.HTTP_200_OK)
 
@@ -97,11 +98,12 @@ class ZwavejsSettingsView(APIView):
     permission_classes = [IsAuthenticated, IsAdminRole]
 
     def get(self, request):
-        """Return the current Z-Wave JS connection settings from env vars."""
+        """Return the current Z-Wave JS connection settings (env) + enabled state (DB)."""
         cfg = get_zwavejs_config()
+        enabled = get_integration_enabled("zwavejs")
         return Response(
             {
-                "enabled": cfg["enabled"],
+                "enabled": enabled,
                 "ws_url": cfg["ws_url"],
                 "has_api_token": bool(cfg["api_token"]),
                 "connect_timeout_seconds": cfg["connect_timeout_seconds"],
@@ -112,8 +114,25 @@ class ZwavejsSettingsView(APIView):
         )
 
     def patch(self, request):
-        """Z-Wave JS settings are now configured via environment variables."""
-        raise MethodNotAllowed(request.method, detail="Z-Wave JS settings are configured via environment variables.")
+        """Toggle Z-Wave JS enabled state (admin-only)."""
+        from config.domain_exceptions import ValidationError
+
+        enabled = request.data.get("enabled")
+        if not isinstance(enabled, bool):
+            raise ValidationError("enabled (bool) is required.")
+        set_integration_enabled("zwavejs", enabled)
+        cfg = get_zwavejs_config()
+        return Response(
+            {
+                "enabled": enabled,
+                "ws_url": cfg["ws_url"],
+                "has_api_token": bool(cfg["api_token"]),
+                "connect_timeout_seconds": cfg["connect_timeout_seconds"],
+                "reconnect_min_seconds": cfg["reconnect_min_seconds"],
+                "reconnect_max_seconds": cfg["reconnect_max_seconds"],
+            },
+            status=status.HTTP_200_OK,
+        )
 
 
 class ZwavejsTestConnectionView(APIView):

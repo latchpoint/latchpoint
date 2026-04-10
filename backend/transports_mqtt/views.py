@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from rest_framework import status
-from rest_framework.exceptions import MethodNotAllowed
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -9,7 +8,9 @@ from rest_framework.views import APIView
 from accounts.permissions import IsAdminRole
 from alarm.env_config import get_mqtt_config
 from alarm.gateways.mqtt import default_mqtt_gateway
+from alarm.integration_helpers import get_integration_enabled, set_integration_enabled
 from alarm.serializers import MqttTestConnectionSerializer
+from config.domain_exceptions import ValidationError
 
 mqtt_gateway = default_mqtt_gateway
 
@@ -27,11 +28,12 @@ class MqttSettingsView(APIView):
     permission_classes = [IsAuthenticated, IsAdminRole]
 
     def get(self, request):
-        """Return the current MQTT connection settings from env vars."""
+        """Return the current MQTT connection settings (env) + enabled state (DB)."""
         cfg = get_mqtt_config()
+        enabled = get_integration_enabled("mqtt")
         return Response(
             {
-                "enabled": cfg["enabled"],
+                "enabled": enabled,
                 "host": cfg["host"],
                 "port": cfg["port"],
                 "username": cfg["username"],
@@ -46,8 +48,27 @@ class MqttSettingsView(APIView):
         )
 
     def patch(self, request):
-        """MQTT settings are now configured via environment variables."""
-        raise MethodNotAllowed(request.method, detail="MQTT settings are configured via environment variables.")
+        """Toggle MQTT enabled state (admin-only)."""
+        enabled = request.data.get("enabled")
+        if not isinstance(enabled, bool):
+            raise ValidationError("enabled (bool) is required.")
+        set_integration_enabled("mqtt", enabled)
+        cfg = get_mqtt_config()
+        return Response(
+            {
+                "enabled": enabled,
+                "host": cfg["host"],
+                "port": cfg["port"],
+                "username": cfg["username"],
+                "has_password": bool(cfg["password"]),
+                "use_tls": cfg["use_tls"],
+                "tls_insecure": cfg["tls_insecure"],
+                "client_id": cfg["client_id"],
+                "keepalive_seconds": cfg["keepalive_seconds"],
+                "connect_timeout_seconds": cfg["connect_timeout_seconds"],
+            },
+            status=status.HTTP_200_OK,
+        )
 
 
 class MqttTestConnectionView(APIView):

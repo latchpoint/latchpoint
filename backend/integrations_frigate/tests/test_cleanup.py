@@ -2,14 +2,12 @@
 
 from __future__ import annotations
 
-import os
 from datetime import timedelta
-from unittest.mock import patch
 
 from django.test import TestCase
 from django.utils import timezone
 
-from alarm.models import AlarmSettingsProfile
+from alarm.models import AlarmSettingsEntry, AlarmSettingsProfile
 from integrations_frigate.models import FrigateDetection
 from integrations_frigate.tasks import cleanup_frigate_detections
 
@@ -18,12 +16,23 @@ class FrigateCleanupTaskTests(TestCase):
     def setUp(self):
         self.profile = AlarmSettingsProfile.objects.create(name="Default", is_active=True)
 
-    @patch.dict(
-        os.environ,
-        {"FRIGATE_ENABLED": "true", "FRIGATE_EVENTS_TOPIC": "frigate/events", "FRIGATE_RETENTION_SECONDS": "3600"},
-    )
+    def _set_frigate_settings(self, *, enabled: bool, retention_seconds: int = 3600):
+        AlarmSettingsEntry.objects.update_or_create(
+            profile=self.profile,
+            key="frigate",
+            defaults={
+                "value_type": "json",
+                "value": {
+                    "enabled": enabled,
+                    "events_topic": "frigate/events",
+                    "retention_seconds": retention_seconds,
+                },
+            },
+        )
+
     def test_cleanup_deletes_old_detections(self):
         """Detections older than retention_seconds should be deleted."""
+        self._set_frigate_settings(enabled=True, retention_seconds=3600)
 
         now = timezone.now()
 
@@ -63,12 +72,9 @@ class FrigateCleanupTaskTests(TestCase):
         # Recent detection should remain
         self.assertTrue(FrigateDetection.objects.filter(id=recent_detection.id).exists())
 
-    @patch.dict(
-        os.environ,
-        {"FRIGATE_ENABLED": "false", "FRIGATE_EVENTS_TOPIC": "frigate/events", "FRIGATE_RETENTION_SECONDS": "3600"},
-    )
     def test_cleanup_skips_when_disabled(self):
         """Cleanup should skip when Frigate is disabled."""
+        self._set_frigate_settings(enabled=False, retention_seconds=3600)
 
         now = timezone.now()
 
@@ -92,12 +98,9 @@ class FrigateCleanupTaskTests(TestCase):
         self.assertEqual(deleted_count, 0)
         self.assertEqual(FrigateDetection.objects.count(), 1)
 
-    @patch.dict(
-        os.environ,
-        {"FRIGATE_ENABLED": "true", "FRIGATE_EVENTS_TOPIC": "frigate/events", "FRIGATE_RETENTION_SECONDS": "86400"},
-    )
     def test_cleanup_respects_retention_seconds(self):
         """Cleanup should use the configured retention_seconds."""
+        self._set_frigate_settings(enabled=True, retention_seconds=86400)
 
         now = timezone.now()
 
@@ -121,12 +124,9 @@ class FrigateCleanupTaskTests(TestCase):
         self.assertEqual(deleted_count, 0)
         self.assertTrue(FrigateDetection.objects.filter(id=detection.id).exists())
 
-    @patch.dict(
-        os.environ,
-        {"FRIGATE_ENABLED": "true", "FRIGATE_EVENTS_TOPIC": "frigate/events", "FRIGATE_RETENTION_SECONDS": "3600"},
-    )
     def test_cleanup_deletes_multiple_old_detections(self):
         """Cleanup should delete all detections older than retention."""
+        self._set_frigate_settings(enabled=True, retention_seconds=3600)
 
         now = timezone.now()
 

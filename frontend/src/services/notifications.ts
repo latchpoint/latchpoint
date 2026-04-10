@@ -22,6 +22,10 @@ export const notificationsService = {
     return api.post<NotificationTestResult>(apiEndpoints.notifications.testProvider(id))
   },
 
+  async toggleProvider(id: string, isEnabled: boolean): Promise<NotificationProvider> {
+    return api.patch<NotificationProvider>(apiEndpoints.notifications.provider(id), { is_enabled: isEnabled })
+  },
+
   // Provider types metadata
   async getProviderTypes(): Promise<NotificationProviderTypeInfo[]> {
     const response = await api.get<{ providerTypes: NotificationProviderTypeInfo[] }>(

@@ -28,14 +28,14 @@ class HomeAssistantHandler(NotificationHandler):
     def from_env(cls) -> dict:
         from alarm.env_config import get_ha_notify_config
 
-        config = get_ha_notify_config()
-        return {k: v for k, v in config.items() if k != "enabled"}
+        return get_ha_notify_config()
 
     @classmethod
-    def is_enabled_from_env(cls) -> bool:
-        from alarm.env_config import get_ha_notify_config
+    def is_configured_from_env(cls) -> bool:
+        """Return True if HA notify is configured (HA integration is set up)."""
+        from alarm.integration_helpers import get_integration_enabled
 
-        return get_ha_notify_config()["enabled"]
+        return get_integration_enabled("home_assistant")
 
     config_schema = {
         "type": "object",

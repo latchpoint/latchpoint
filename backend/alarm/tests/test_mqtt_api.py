@@ -9,7 +9,7 @@ from integrations_home_assistant.models import HomeAssistantMqttAlarmEntityStatu
 from rest_framework.test import APIClient, APITestCase
 
 from accounts.models import Role, User, UserCode, UserRoleAssignment
-from alarm.models import AlarmSettingsProfile
+from alarm.models import AlarmSettingsEntry, AlarmSettingsProfile
 from alarm.tests.settings_test_utils import set_profile_settings
 
 
@@ -56,11 +56,14 @@ class MqttApiTests(APITestCase):
                 "retention_seconds": 3600,
             },
         )
+        AlarmSettingsEntry.objects.update_or_create(
+            profile=self.profile, key="mqtt",
+            defaults={"value": {"enabled": True}, "value_type": "json"},
+        )
 
     @patch.dict(
         os.environ,
         {
-            "MQTT_ENABLED": "true",
             "MQTT_HOST": "mqtt.local",
             "MQTT_PORT": "1883",
             "MQTT_USERNAME": "u",
@@ -80,12 +83,12 @@ class MqttApiTests(APITestCase):
         self.assertNotIn("password", body["data"])
         self.assertEqual(body["data"]["has_password"], True)
 
-    def test_patch_mqtt_settings_returns_405(self):
+    def test_patch_mqtt_settings_accepts_enabled(self):
         url = reverse("mqtt-settings")
-        response = self.client.patch(url, data={"host": "mqtt2.local"}, format="json")
-        self.assertEqual(response.status_code, 405)
+        response = self.client.patch(url, data={"enabled": True}, format="json")
+        self.assertEqual(response.status_code, 200)
 
-    @patch.dict(os.environ, {"MQTT_ENABLED": "true", "MQTT_HOST": "mqtt.local"})
+    @patch.dict(os.environ, {"MQTT_HOST": "mqtt.local"})
     @patch("transports_mqtt.manager.MqttConnectionManager.apply_settings")
     def test_publish_discovery_endpoint_calls_publish(self, _mock_apply):
         url = reverse("integrations-ha-mqtt-alarm-entity-publish-discovery")
@@ -94,7 +97,7 @@ class MqttApiTests(APITestCase):
         self.assertEqual(response.status_code, 200)
         self.assertTrue(publish.called)
 
-    @patch.dict(os.environ, {"MQTT_ENABLED": "true", "MQTT_HOST": "mqtt.local"})
+    @patch.dict(os.environ, {"MQTT_HOST": "mqtt.local"})
     @patch("transports_mqtt.manager.MqttConnectionManager.apply_settings")
     def test_publish_discovery_persists_status_timestamps(self, _mock_apply):
         url = reverse("integrations-ha-mqtt-alarm-entity-publish-discovery")

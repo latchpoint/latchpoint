@@ -99,6 +99,27 @@ ALARM_PROFILE_SETTINGS: list[SettingDefinition] = [
         description="Policies around open sensors at arm time.",
     ),
     SettingDefinition(
+        key="home_assistant",
+        name="Home Assistant",
+        value_type=SystemConfigValueType.JSON,
+        default={"enabled": False},
+        description="Home Assistant integration enabled state.",
+    ),
+    SettingDefinition(
+        key="mqtt",
+        name="MQTT",
+        value_type=SystemConfigValueType.JSON,
+        default={"enabled": False},
+        description="MQTT transport enabled state.",
+    ),
+    SettingDefinition(
+        key="zwavejs",
+        name="Z-Wave JS",
+        value_type=SystemConfigValueType.JSON,
+        default={"enabled": False},
+        description="Z-Wave JS integration enabled state.",
+    ),
+    SettingDefinition(
         key="home_assistant_alarm_entity",
         name="Home Assistant alarm entity",
         value_type=SystemConfigValueType.JSON,

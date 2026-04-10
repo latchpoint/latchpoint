@@ -139,7 +139,9 @@ class DefaultZigbee2mqttGateway:
         profile = get_active_settings_profile()
 
         mqtt_config = get_mqtt_config()
-        if not bool(mqtt_config.get("enabled")):
+        from alarm.integration_helpers import get_integration_enabled
+
+        if not get_integration_enabled("mqtt"):
             raise ValueError("MQTT is disabled.")
         default_mqtt_gateway.apply_settings(settings=mqtt_config)
 

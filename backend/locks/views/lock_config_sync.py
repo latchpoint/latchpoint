@@ -18,9 +18,11 @@ zwavejs_gateway = default_zwavejs_gateway
 
 
 def _apply_zwavejs_settings() -> float:
-    """Apply env-based Z-Wave JS connection settings to the gateway; return connect timeout seconds."""
+    """Apply Z-Wave JS connection settings to the gateway; return connect timeout seconds."""
+    from alarm.integration_helpers import get_integration_enabled
+
     config = get_zwavejs_config()
-    if not config.get("enabled"):
+    if not get_integration_enabled("zwavejs"):
         raise ValidationError("Z-Wave JS is disabled.")
     if not config.get("ws_url"):
         raise ValidationError("Z-Wave JS ws_url is required.")

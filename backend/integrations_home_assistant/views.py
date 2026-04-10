@@ -3,7 +3,6 @@ from __future__ import annotations
 import logging
 
 from rest_framework import status
-from rest_framework.exceptions import MethodNotAllowed
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -14,7 +13,8 @@ from alarm.gateways.home_assistant import (
     HomeAssistantGateway,
     default_home_assistant_gateway,
 )
-from config.domain_exceptions import ServiceUnavailableError
+from alarm.integration_helpers import get_integration_enabled, set_integration_enabled
+from config.domain_exceptions import ServiceUnavailableError, ValidationError
 
 ha_gateway: HomeAssistantGateway = default_home_assistant_gateway
 logger = logging.getLogger(__name__)
@@ -37,11 +37,12 @@ class HomeAssistantSettingsView(APIView):
     permission_classes = [IsAuthenticated, IsAdminRole]
 
     def get(self, request):
-        """Return the current Home Assistant connection settings from env vars."""
+        """Return the current Home Assistant connection settings (env) + enabled state (DB)."""
         cfg = get_home_assistant_config()
+        enabled = get_integration_enabled("home_assistant")
         return Response(
             {
-                "enabled": cfg["enabled"],
+                "enabled": enabled,
                 "base_url": cfg["base_url"],
                 "has_token": bool(cfg["token"]),
                 "connect_timeout_seconds": cfg["connect_timeout_seconds"],
@@ -50,9 +51,20 @@ class HomeAssistantSettingsView(APIView):
         )
 
     def patch(self, request):
-        """Home Assistant settings are now configured via environment variables."""
-        raise MethodNotAllowed(
-            request.method, detail="Home Assistant settings are configured via environment variables."
+        """Toggle Home Assistant enabled state (admin-only)."""
+        enabled = request.data.get("enabled")
+        if not isinstance(enabled, bool):
+            raise ValidationError("enabled (bool) is required.")
+        set_integration_enabled("home_assistant", enabled)
+        cfg = get_home_assistant_config()
+        return Response(
+            {
+                "enabled": enabled,
+                "base_url": cfg["base_url"],
+                "has_token": bool(cfg["token"]),
+                "connect_timeout_seconds": cfg["connect_timeout_seconds"],
+            },
+            status=status.HTTP_200_OK,
         )
 
 

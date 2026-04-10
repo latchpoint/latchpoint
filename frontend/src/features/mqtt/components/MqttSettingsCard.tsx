@@ -18,6 +18,7 @@ type Props = {
   zigbee2mqttEnabled: boolean
   frigateEnabled: boolean
   onRefresh: () => void
+  onSave: () => void
   onSetDraft: (updater: (prev: MqttDraft | null) => MqttDraft | null) => void
 }
 
@@ -33,6 +34,7 @@ export function MqttSettingsCard({
   zigbee2mqttEnabled,
   frigateEnabled,
   onRefresh,
+  onSave,
   onSetDraft,
 }: Props) {
   return (
@@ -49,15 +51,13 @@ export function MqttSettingsCard({
         isBusy={isBusy}
         status={{ connected, enabled, lastError }}
         enableLabel="Enable MQTT"
-        enableHelp="MQTT is enabled/disabled via environment variables."
+        enableHelp="Enable or disable the MQTT transport."
         enabled={draft?.enabled ?? false}
         onEnabledChange={(checked) => onSetDraft((prev) => (prev ? { ...prev, enabled: checked } : prev))}
-        enableDisabled={true}
+        enableDisabled={!draft}
         onRefresh={onRefresh}
-        onReset={() => {}}
-        onSave={() => {}}
-        resetDisabled={true}
-        saveDisabled={true}
+        onSave={onSave}
+        saveDisabled={!draft || draft.enabled === (enabled ?? false)}
       >
         {!isLoading && draft && !draft.enabled ? (
           <Alert variant="warning">

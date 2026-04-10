@@ -1,6 +1,7 @@
 /**
- * Card component for displaying notification providers (read-only)
- * Providers are now configured via environment variables (ADR-0075)
+ * Card component for displaying notification providers with enable/disable toggle.
+ * Provider credentials are configured via environment variables (ADR-0075).
+ * Enabled state is managed via UI toggle (ADR-0078).
  */
 import { useState } from 'react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -8,11 +9,13 @@ import { Button } from '@/components/ui/button'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { LoadingInline } from '@/components/ui/loading-inline'
 import { Badge } from '@/components/ui/badge'
+import { Switch } from '@/components/ui/switch'
 import { Send, Home } from 'lucide-react'
 import { useHomeAssistantStatus } from '@/hooks/useHomeAssistant'
 import {
   useNotificationProviders,
   useTestNotificationProvider,
+  useToggleNotificationProviderMutation,
 } from '../hooks/useNotificationProviders'
 import type { NotificationProvider } from '@/types/notifications'
 import { HA_SYSTEM_PROVIDER_ID } from '@/lib/constants'
@@ -37,6 +40,7 @@ export function NotificationProvidersCard() {
 
   const providersQuery = useNotificationProviders()
   const testMutation = useTestNotificationProvider()
+  const toggleMutation = useToggleNotificationProviderMutation()
   const haStatus = useHomeAssistantStatus()
 
   const isHaConfigured = haStatus.data?.configured ?? false
@@ -71,6 +75,14 @@ export function NotificationProvidersCard() {
     }
   }
 
+  const handleToggle = async (provider: NotificationProvider, enabled: boolean) => {
+    try {
+      await toggleMutation.mutateAsync({ id: provider.id, isEnabled: enabled })
+    } catch {
+      // Error will be visible via query refetch
+    }
+  }
+
   if (providersQuery.isLoading) {
     return (
       <Card>
@@ -90,7 +102,7 @@ export function NotificationProvidersCard() {
         <div>
           <CardTitle>Notification Providers</CardTitle>
           <CardDescription>
-            Notification providers are configured via environment variables.
+            Provider credentials are configured via environment variables. Enable or disable each provider below.
           </CardDescription>
         </div>
       </CardHeader>
@@ -121,9 +133,11 @@ export function NotificationProvidersCard() {
                         <Home className="h-4 w-4 text-muted-foreground" />
                       </div>
                     ) : (
-                      <Badge variant={provider.isEnabled ? 'default' : 'secondary'} className="text-xs">
-                        {provider.isEnabled ? 'Enabled' : 'Disabled'}
-                      </Badge>
+                      <Switch
+                        checked={provider.isEnabled}
+                        onCheckedChange={(checked) => handleToggle(provider, checked)}
+                        disabled={toggleMutation.isPending}
+                      />
                     )}
                     <div>
                       <div className="flex items-center gap-2">

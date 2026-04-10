@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
-from unittest.mock import patch
 
 from django.core.cache import cache
 from django.test import TestCase
@@ -17,7 +15,6 @@ from integrations_zigbee2mqtt.runtime import (
 )
 
 
-@patch.dict(os.environ, {"ZIGBEE2MQTT_ENABLED": "true", "ZIGBEE2MQTT_BASE_TOPIC": "zigbee2mqtt"})
 class Zigbee2mqttRuntimeIngestTests(TestCase):
     def test_ingest_updates_only_known_entity_ids(self):
         profile = ensure_active_settings_profile()

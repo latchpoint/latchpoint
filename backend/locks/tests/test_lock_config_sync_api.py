@@ -8,7 +8,7 @@ from django.urls import reverse
 from rest_framework.test import APITestCase
 
 from accounts.models import User
-from alarm.models import Entity
+from alarm.models import AlarmSettingsEntry, Entity
 from alarm.use_cases.settings_profile import ensure_active_settings_profile
 from locks.models import DoorCode, DoorCodeLockAssignment
 from locks.use_cases.lock_config_sync import _normalize_pin
@@ -44,7 +44,6 @@ def _value_id_key(value_id: dict) -> str:
 @patch.dict(
     os.environ,
     {
-        "ZWAVEJS_ENABLED": "true",
         "ZWAVEJS_WS_URL": "ws://example.invalid:3000",
         "ZWAVEJS_CONNECT_TIMEOUT": "1",
     },
@@ -55,7 +54,11 @@ class LockConfigSyncApiTests(APITestCase):
         self.user = User.objects.create_user(email="user@example.com", password="pass")
         self.client.force_authenticate(self.admin)
 
-        ensure_active_settings_profile()
+        profile = ensure_active_settings_profile()
+        AlarmSettingsEntry.objects.update_or_create(
+            profile=profile, key="zwavejs",
+            defaults={"value": {"enabled": True}, "value_type": "json"},
+        )
 
         Entity.objects.create(
             entity_id="lock.front_door",

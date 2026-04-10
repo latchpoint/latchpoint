@@ -23,14 +23,13 @@ class SlackHandler(NotificationHandler):
     def from_env(cls) -> dict:
         from alarm.env_config import get_slack_config
 
-        config = get_slack_config()
-        return {k: v for k, v in config.items() if k != "enabled"}
+        return get_slack_config()
 
     @classmethod
-    def is_enabled_from_env(cls) -> bool:
+    def is_configured_from_env(cls) -> bool:
         from alarm.env_config import get_slack_config
 
-        return get_slack_config()["enabled"]
+        return bool(get_slack_config().get("bot_token"))
 
     config_schema = {
         "type": "object",

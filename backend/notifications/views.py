@@ -81,16 +81,26 @@ class ProviderDetailView(APIView):
         serializer = NotificationProviderSerializer(provider)
         return Response(serializer.data)
 
+    def patch(self, request, pk):
+        """Toggle a notification provider's enabled state (admin-only)."""
+        provider = self.get_object(pk)
+        if not provider:
+            raise NotFoundError("Provider not found.")
+        is_enabled = request.data.get("is_enabled")
+        if not isinstance(is_enabled, bool):
+            raise ValidationError("is_enabled (bool) is required.")
+        provider.is_enabled = is_enabled
+        provider.save(update_fields=["is_enabled", "updated_at"])
+        return Response(NotificationProviderSerializer(provider).data)
+
     def put(self, request, pk):
-        """Notification providers are now configured via environment variables."""
+        """Full provider updates are not supported — use PATCH to toggle enabled."""
         raise MethodNotAllowed(
-            request.method, detail="Notification providers are configured via environment variables."
+            request.method, detail="Use PATCH to toggle provider enabled state."
         )
 
-    patch = put
-
     def delete(self, request, pk):
-        """Notification providers are now configured via environment variables."""
+        """Notification providers configured via env cannot be deleted."""
         raise MethodNotAllowed(
             request.method, detail="Notification providers are configured via environment variables."
         )

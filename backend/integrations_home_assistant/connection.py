@@ -54,16 +54,18 @@ def clear_cached_connection() -> None:
 
 def set_cached_connection() -> None:
     """
-    Cache the Home Assistant connection settings from environment variables.
+    Cache the Home Assistant connection settings from environment variables + DB enabled state.
 
     This must not raise; callers treat caching as best-effort.
     """
     from alarm.env_config import get_home_assistant_config
+    from alarm.integration_helpers import get_integration_enabled
 
     cfg = get_home_assistant_config()
+    enabled = get_integration_enabled("home_assistant")
 
     obj = HomeAssistantRuntimeConnection(
-        enabled=bool(cfg.get("enabled")),
+        enabled=enabled,
         base_url=str(cfg.get("base_url") or ""),
         token=str(cfg.get("token") or ""),
         connect_timeout_seconds=float(cfg.get("connect_timeout_seconds") or 2),

@@ -49,7 +49,20 @@ class IntegrationsHomeAssistantConfig(AppConfig):
         )
 
         def _on_settings_profile_changed(sender, *, profile_id: int, reason: str, **_kwargs) -> None:
-            """Publish discovery/state updates when relevant profile settings change."""
+            """Refresh HA connection cache and publish discovery/state updates on profile change."""
+            # Refresh the HA connection cache so enabled toggle takes effect.
+            try:
+                set_cached_connection()
+            except Exception:
+                logger.warning("HA connection cache refresh failed", exc_info=True)
+
+            try:
+                from integrations_home_assistant import state_stream
+
+                state_stream.apply_runtime_settings_from_active_profile()
+            except Exception:
+                logger.warning("HA state stream re-apply failed", exc_info=True)
+
             try:
                 profile = get_active_settings_profile()
                 entity_cfg = get_setting_json(profile, "home_assistant_alarm_entity") or {}

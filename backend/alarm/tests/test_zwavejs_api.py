@@ -32,7 +32,6 @@ class ZwavejsApiTests(APITestCase):
     @patch.dict(
         os.environ,
         {
-            "ZWAVEJS_ENABLED": "true",
             "ZWAVEJS_WS_URL": "ws://zwavejs.local:3000",
             "ZWAVEJS_API_TOKEN": "supersecret",
             "ZWAVEJS_CONNECT_TIMEOUT": "5",
@@ -48,15 +47,14 @@ class ZwavejsApiTests(APITestCase):
         self.assertNotIn("api_token", body["data"])
         self.assertEqual(body["data"]["has_api_token"], True)
 
-    def test_patch_zwavejs_settings_returns_405(self):
+    def test_patch_zwavejs_settings_accepts_enabled(self):
         url = reverse("zwavejs-settings")
-        response = self.client.patch(url, data={"ws_url": "wss://zwavejs2.local:3000"}, format="json")
-        self.assertEqual(response.status_code, 405)
+        response = self.client.patch(url, data={"enabled": True}, format="json")
+        self.assertEqual(response.status_code, 200)
 
     @patch.dict(
         os.environ,
         {
-            "ZWAVEJS_ENABLED": "true",
             "ZWAVEJS_WS_URL": "ws://zwavejs.local:3000",
         },
     )
@@ -69,14 +67,14 @@ class ZwavejsApiTests(APITestCase):
         self.assertEqual(body["data"]["connected"], False)
         self.assertIn("disabled during tests", (body["data"].get("last_error") or "").lower())
 
-    @patch.dict(os.environ, {"ZWAVEJS_ENABLED": "false"})
     def test_zwavejs_entities_sync_requires_enabled(self):
+        # zwavejs not enabled in DB by default
         url = reverse("zwavejs-entities-sync")
         response = self.client.post(url, data={}, format="json")
         self.assertEqual(response.status_code, 400)
 
-    @patch.dict(os.environ, {"ZWAVEJS_ENABLED": "false"})
     def test_zwavejs_set_value_requires_enabled(self):
+        # zwavejs not enabled in DB by default
         url = reverse("zwavejs-set-value")
         response = self.client.post(
             url,
@@ -131,8 +129,8 @@ class ZwavejsNodesApiTests(APITestCase):
         self.client.force_authenticate(self.user)
         self.profile = AlarmSettingsProfile.objects.create(name="Default", is_active=True)
 
-    @patch.dict(os.environ, {"ZWAVEJS_ENABLED": "false"})
     def test_nodes_returns_400_when_disabled(self):
+        # zwavejs not enabled in DB by default
         url = reverse("zwavejs-nodes")
         response = self.client.get(url)
         self.assertEqual(response.status_code, 400)

@@ -21,30 +21,32 @@ class TransportsMqttConfig(AppConfig):
             return
 
         try:
-            from alarm.env_config import get_frigate_env_overrides, get_mqtt_config, get_zigbee2mqtt_env_overrides
+            from alarm.env_config import get_mqtt_config
             from alarm.gateways.mqtt import default_mqtt_gateway
+            from alarm.integration_helpers import get_integration_enabled
+            from alarm.signals import settings_profile_changed
         except Exception:
             return
 
-        def _apply_from_env() -> None:
-            """Apply MQTT settings from env vars to the runtime gateway (best-effort)."""
+        def _apply_mqtt_settings() -> None:
+            """Apply MQTT settings from env vars + enabled from DB to the runtime gateway."""
             try:
                 cfg = get_mqtt_config()
+                cfg["enabled"] = get_integration_enabled("mqtt")
                 default_mqtt_gateway.apply_settings(settings=cfg)
             except Exception:
                 return
 
-        # Startup validation: warn if MQTT is disabled but dependents are enabled.
-        mqtt_cfg = get_mqtt_config()
-        if not mqtt_cfg["enabled"]:
-            z2m = get_zigbee2mqtt_env_overrides()
-            frigate = get_frigate_env_overrides()
-            if z2m["enabled"]:
-                logger.warning("ZIGBEE2MQTT_ENABLED=true but MQTT_ENABLED=false; Zigbee2MQTT will not function")
-            if frigate["enabled"]:
-                logger.warning("FRIGATE_ENABLED=true but MQTT_ENABLED=false; Frigate will not function")
+        def _on_settings_profile_changed(sender, *, profile_id: int, reason: str, **_kwargs) -> None:
+            """Re-apply MQTT settings when profile changes (e.g. enabled toggled)."""
+            _apply_mqtt_settings()
+
+        settings_profile_changed.connect(
+            _on_settings_profile_changed,
+            dispatch_uid="mqtt_transport_profile_changed",
+        )
 
         # Apply settings once at process startup.
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore", message="Accessing the database during app initialization")
-            _apply_from_env()
+            _apply_mqtt_settings()

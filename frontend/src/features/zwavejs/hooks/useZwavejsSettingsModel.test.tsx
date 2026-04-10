@@ -15,6 +15,7 @@ vi.mock('@/hooks/useZwavejs', () => {
       refetch: vi.fn(),
     }),
     useSyncZwavejsEntitiesMutation: () => ({ isPending: false, mutateAsync: vi.fn().mockResolvedValue({ notice: 'ok' }) }),
+    useUpdateZwavejsSettingsMutation: () => ({ isPending: false, mutateAsync: vi.fn().mockResolvedValue({}) }),
   }
 })
 
