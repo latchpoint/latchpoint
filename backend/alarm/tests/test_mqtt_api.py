@@ -57,7 +57,8 @@ class MqttApiTests(APITestCase):
             },
         )
         AlarmSettingsEntry.objects.update_or_create(
-            profile=self.profile, key="mqtt",
+            profile=self.profile,
+            key="mqtt",
             defaults={"value": {"enabled": True}, "value_type": "json"},
         )
 

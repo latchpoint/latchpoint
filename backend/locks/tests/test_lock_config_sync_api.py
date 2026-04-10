@@ -56,7 +56,8 @@ class LockConfigSyncApiTests(APITestCase):
 
         profile = ensure_active_settings_profile()
         AlarmSettingsEntry.objects.update_or_create(
-            profile=profile, key="zwavejs",
+            profile=profile,
+            key="zwavejs",
             defaults={"value": {"enabled": True}, "value_type": "json"},
         )
 

@@ -22,7 +22,8 @@ class ControlPanelsApiPermissionTests(APITestCase):
 
         self.profile = AlarmSettingsProfile.objects.create(name="Default", is_active=True)
         AlarmSettingsEntry.objects.update_or_create(
-            profile=self.profile, key="zwavejs",
+            profile=self.profile,
+            key="zwavejs",
             defaults={"value": {"enabled": True}, "value_type": "json"},
         )
 
@@ -65,7 +66,8 @@ class ControlPanelsApiCrudTests(APITestCase):
 
         self.profile = AlarmSettingsProfile.objects.create(name="Default", is_active=True)
         AlarmSettingsEntry.objects.update_or_create(
-            profile=self.profile, key="zwavejs",
+            profile=self.profile,
+            key="zwavejs",
             defaults={"value": {"enabled": True}, "value_type": "json"},
         )
 
@@ -130,7 +132,8 @@ class ControlPanelsApiCrudTests(APITestCase):
     def test_create_control_panel_without_zwavejs_enabled_fails(self):
         # Disable zwavejs in DB
         AlarmSettingsEntry.objects.update_or_create(
-            profile=self.profile, key="zwavejs",
+            profile=self.profile,
+            key="zwavejs",
             defaults={"value": {"enabled": False}, "value_type": "json"},
         )
         url = reverse("control-panel-device-list-create")
@@ -157,7 +160,8 @@ class ControlPanelsApiValidationTests(APITestCase):
 
         self.profile = AlarmSettingsProfile.objects.create(name="Default", is_active=True)
         AlarmSettingsEntry.objects.update_or_create(
-            profile=self.profile, key="zwavejs",
+            profile=self.profile,
+            key="zwavejs",
             defaults={"value": {"enabled": True}, "value_type": "json"},
         )
 

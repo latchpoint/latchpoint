@@ -20,7 +20,8 @@ class Zigbee2mqttGatewayTests(TestCase):
             zigbee2mqtt={"enabled": True, "base_topic": "zigbee2mqtt"},
         )
         AlarmSettingsEntry.objects.update_or_create(
-            profile=self.profile, key="mqtt",
+            profile=self.profile,
+            key="mqtt",
             defaults={"value": {"enabled": True}, "value_type": "json"},
         )
         self.gateway = DefaultZigbee2mqttGateway()

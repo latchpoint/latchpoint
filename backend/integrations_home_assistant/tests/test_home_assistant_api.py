@@ -111,9 +111,10 @@ class HomeAssistantSettingsApiPermissionTests(APITestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn("data", response.json())
 
-    def test_patch_settings_returns_method_not_allowed(self):
+    def test_patch_settings_toggles_enabled(self):
         client = APIClient()
         client.force_authenticate(self.admin)
         url = reverse("ha-settings")
         response = client.patch(url, data={"enabled": True}, format="json")
-        self.assertEqual(response.status_code, 405)
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()["data"]["enabled"])

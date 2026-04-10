@@ -49,7 +49,8 @@ class HomeAssistantStatusCacheWarmupTests(APITestCase):
         AlarmSettingsProfile.objects.update(is_active=False)
         self.profile = AlarmSettingsProfile.objects.create(name="HA Status Test Profile", is_active=True)
         AlarmSettingsEntry.objects.update_or_create(
-            profile=self.profile, key="home_assistant",
+            profile=self.profile,
+            key="home_assistant",
             defaults={"value": {"enabled": True}, "value_type": "json"},
         )
 

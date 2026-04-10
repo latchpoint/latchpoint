@@ -98,7 +98,8 @@ class FrigateApiStatusTests(APITestCase):
     def test_settings_patch_updates_topic(self):
         # Enable MQTT in DB so the view allows the update
         AlarmSettingsEntry.objects.update_or_create(
-            profile=self.profile, key="mqtt",
+            profile=self.profile,
+            key="mqtt",
             defaults={"value": {"enabled": True}, "value_type": "json"},
         )
         url = reverse("frigate-settings")

@@ -92,11 +92,12 @@ class NotificationsApiTests(APITestCase):
         response = self.client.put(url, data={"name": "Updated"}, format="json")
         self.assertEqual(response.status_code, 405)
 
-    def test_provider_patch_returns_405(self):
+    def test_provider_patch_toggles_enabled(self):
         provider = self._create_pushbullet_provider()
         url = self._reverse("provider-detail", pk=provider.id)
-        response = self.client.patch(url, data={"name": "Patched"}, format="json")
-        self.assertEqual(response.status_code, 405)
+        response = self.client.patch(url, data={"is_enabled": False}, format="json")
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(response.json()["data"]["is_enabled"])
 
     def test_provider_delete_returns_405(self):
         provider = self._create_pushbullet_provider()

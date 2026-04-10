@@ -73,7 +73,8 @@ class SensitiveApiPermissionMatrixTests(APITestCase):
 
         # Enable zwavejs in DB
         AlarmSettingsEntry.objects.update_or_create(
-            profile=self.profile, key="zwavejs",
+            profile=self.profile,
+            key="zwavejs",
             defaults={"value": {"enabled": True}, "value_type": "json"},
         )
 

@@ -60,7 +60,8 @@ class IntegrationFaultMappingApiTests(APITestCase):
 
         # Enable zwavejs in DB so the view proceeds past the enabled check
         AlarmSettingsEntry.objects.update_or_create(
-            profile=self.profile, key="zwavejs",
+            profile=self.profile,
+            key="zwavejs",
             defaults={"value": {"enabled": True}, "value_type": "json"},
         )
 

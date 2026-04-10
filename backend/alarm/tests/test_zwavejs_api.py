@@ -59,6 +59,9 @@ class ZwavejsApiTests(APITestCase):
         },
     )
     def test_zwavejs_status_endpoint_does_not_connect_during_tests(self):
+        from alarm.integration_helpers import set_integration_enabled
+
+        set_integration_enabled("zwavejs", True)
         url = reverse("zwavejs-status")
         response = self.client.get(url)
         self.assertEqual(response.status_code, 200)

@@ -52,9 +52,7 @@ class HomeAssistantModuleTests(SimpleTestCase):
             },
         )
         self._env_patcher.start()
-        self._enabled_patcher = patch(
-            "integrations_home_assistant.connection.get_integration_enabled", return_value=True
-        )
+        self._enabled_patcher = patch("alarm.integration_helpers.get_integration_enabled", return_value=True)
         self._enabled_patcher.start()
         set_cached_connection()
 

@@ -95,9 +95,7 @@ class ProviderDetailView(APIView):
 
     def put(self, request, pk):
         """Full provider updates are not supported — use PATCH to toggle enabled."""
-        raise MethodNotAllowed(
-            request.method, detail="Use PATCH to toggle provider enabled state."
-        )
+        raise MethodNotAllowed(request.method, detail="Use PATCH to toggle provider enabled state.")
 
     def delete(self, request, pk):
         """Notification providers configured via env cannot be deleted."""
