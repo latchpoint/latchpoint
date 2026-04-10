@@ -14,6 +14,17 @@ function toWebSocketTarget(httpTarget: string): string {
   return httpTarget
 }
 
+function getProjectVersion(): string {
+  const pyprojectPath = path.resolve(__dirname, '../pyproject.toml')
+  try {
+    const content = fs.readFileSync(pyprojectPath, 'utf-8')
+    const match = content.match(/^version\s*=\s*"([^"]+)"/m)
+    return match ? `v${match[1]}` : 'unknown'
+  } catch {
+    return 'unknown'
+  }
+}
+
 // In unified container: Vite and Daphne run in same container
 // Outside Docker: proxy to localhost:5427
 const apiProxyTarget =
@@ -24,7 +35,7 @@ const apiProxyTarget =
 export default defineConfig({
   plugins: [react(), tailwindcss()],
   define: {
-    __APP_VERSION__: JSON.stringify(process.env.BUILD_REF || 'dev'),
+    __APP_VERSION__: JSON.stringify(getProjectVersion()),
     __APP_GIT_HASH__: JSON.stringify(process.env.GIT_COMMIT_SHORT || ''),
     __APP_REPO__: JSON.stringify(process.env.BUILD_REPO || ''),
   },

@@ -9,8 +9,10 @@ RUN npm ci --no-audit --no-fund
 
 # Build args auto-injected by misc-actions docker-build-push
 ARG GIT_COMMIT_SHORT=""
-ARG BUILD_REF=""
 ARG BUILD_REPO=""
+
+# Copy pyproject.toml for version extraction during frontend build
+COPY pyproject.toml /app/pyproject.toml
 
 COPY frontend/ ./
 RUN npm run build
