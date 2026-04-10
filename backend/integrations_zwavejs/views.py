@@ -122,6 +122,9 @@ class ZwavejsSettingsView(APIView):
             raise ValidationError("enabled (bool) is required.")
         set_integration_enabled("zwavejs", enabled)
         cfg = get_zwavejs_config()
+        # Apply to runtime gateway synchronously so the status endpoint
+        # reflects the new state before the response reaches the frontend.
+        zwavejs_gateway.apply_settings(settings_obj={**cfg, "enabled": enabled})
         return Response(
             {
                 "enabled": enabled,

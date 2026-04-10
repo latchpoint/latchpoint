@@ -84,10 +84,12 @@ class MqttApiTests(APITestCase):
         self.assertNotIn("password", body["data"])
         self.assertEqual(body["data"]["has_password"], True)
 
-    def test_patch_mqtt_settings_accepts_enabled(self):
+    @patch("transports_mqtt.manager.MqttConnectionManager.apply_settings")
+    def test_patch_mqtt_settings_accepts_enabled(self, _mock_apply):
         url = reverse("mqtt-settings")
         response = self.client.patch(url, data={"enabled": True}, format="json")
         self.assertEqual(response.status_code, 200)
+        _mock_apply.assert_called_once()
 
     @patch.dict(os.environ, {"MQTT_HOST": "mqtt.local"})
     @patch("transports_mqtt.manager.MqttConnectionManager.apply_settings")

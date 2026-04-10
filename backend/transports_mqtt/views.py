@@ -54,6 +54,9 @@ class MqttSettingsView(APIView):
             raise ValidationError("enabled (bool) is required.")
         set_integration_enabled("mqtt", enabled)
         cfg = get_mqtt_config()
+        # Apply to runtime gateway synchronously so the status endpoint
+        # reflects the new state before the response reaches the frontend.
+        mqtt_gateway.apply_settings(settings={**cfg, "enabled": enabled})
         return Response(
             {
                 "enabled": enabled,

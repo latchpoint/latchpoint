@@ -15,6 +15,7 @@ from alarm.gateways.home_assistant import (
 )
 from alarm.integration_helpers import get_integration_enabled, set_integration_enabled
 from config.domain_exceptions import ServiceUnavailableError, ValidationError
+from integrations_home_assistant.connection import set_cached_connection
 
 ha_gateway: HomeAssistantGateway = default_home_assistant_gateway
 logger = logging.getLogger(__name__)
@@ -56,6 +57,9 @@ class HomeAssistantSettingsView(APIView):
         if not isinstance(enabled, bool):
             raise ValidationError("enabled (bool) is required.")
         set_integration_enabled("home_assistant", enabled)
+        # Refresh the cached connection synchronously so the status endpoint
+        # reflects the new state before the response reaches the frontend.
+        set_cached_connection()
         cfg = get_home_assistant_config()
         return Response(
             {
