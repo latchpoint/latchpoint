@@ -102,6 +102,7 @@ function VersionInfo({ collapsed }: { collapsed: boolean }) {
               href={commitUrl}
               target="_blank"
               rel="noopener noreferrer"
+              aria-label="Open commit on GitHub"
               className="text-muted-foreground hover:text-foreground transition-colors"
             >
               <GitCommit className="h-4 w-4" />
@@ -116,14 +117,14 @@ function VersionInfo({ collapsed }: { collapsed: boolean }) {
 
   return (
     <div className="text-xs text-muted-foreground px-1">
-      <div className="flex items-center gap-1.5">
+      <div className="flex min-w-0 items-center gap-1.5">
         <GitCommit className="h-3 w-3 shrink-0" />
         {repoUrl ? (
           <a
             href={repoUrl}
             target="_blank"
             rel="noopener noreferrer"
-            className="hover:text-foreground transition-colors truncate"
+            className="min-w-0 flex-1 truncate hover:text-foreground transition-colors"
           >
             {version}
           </a>
