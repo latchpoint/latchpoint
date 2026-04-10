@@ -59,7 +59,7 @@ export function useMqttSettingsModel() {
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
 
-  const isBusy = settingsQuery.isLoading
+  const isBusy = settingsQuery.isLoading || updateSettings.isPending
 
   const refresh = () => {
     void statusQuery.refetch()

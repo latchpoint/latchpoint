@@ -81,6 +81,14 @@ class MqttSettingsView(APIView):
         if not isinstance(data, dict) or not data:
             raise ValidationError("Request body must be a non-empty object.")
 
+        allowed_fields = {"keepalive_seconds", "connect_timeout_seconds"}
+        unknown_fields = sorted(set(data) - allowed_fields)
+        if unknown_fields:
+            raise ValidationError(
+                f"Unsupported field(s): {', '.join(unknown_fields)}. "
+                "Only operational settings (keepalive_seconds, connect_timeout_seconds) can be patched."
+            )
+
         profile = ensure_active_settings_profile()
         current = get_setting_json(profile, "mqtt") or {}
         if not isinstance(current, dict):
@@ -88,12 +96,12 @@ class MqttSettingsView(APIView):
 
         if "keepalive_seconds" in data:
             val = data["keepalive_seconds"]
-            if not isinstance(val, int) or val < 1 or val > 3600:
+            if type(val) is not int or val < 1 or val > 3600:
                 raise ValidationError("keepalive_seconds must be an integer between 1 and 3600.")
             current["keepalive_seconds"] = val
         if "connect_timeout_seconds" in data:
             val = data["connect_timeout_seconds"]
-            if not isinstance(val, int) or val < 1 or val > 300:
+            if type(val) is not int or val < 1 or val > 300:
                 raise ValidationError("connect_timeout_seconds must be an integer between 1 and 300.")
             current["connect_timeout_seconds"] = val
 

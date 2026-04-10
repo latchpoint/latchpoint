@@ -143,6 +143,14 @@ class ZwavejsSettingsView(APIView):
         if not isinstance(data, dict) or not data:
             raise ValidationError("Request body must be a non-empty object.")
 
+        allowed_fields = {"connect_timeout_seconds", "reconnect_min_seconds", "reconnect_max_seconds"}
+        unknown_fields = sorted(set(data) - allowed_fields)
+        if unknown_fields:
+            raise ValidationError(
+                f"Unsupported field(s): {', '.join(unknown_fields)}. "
+                "Only operational settings (connect_timeout_seconds, reconnect_min_seconds, reconnect_max_seconds) can be patched."
+            )
+
         profile = ensure_active_settings_profile()
         current = get_setting_json(profile, "zwavejs") or {}
         if not isinstance(current, dict):
@@ -150,17 +158,17 @@ class ZwavejsSettingsView(APIView):
 
         if "connect_timeout_seconds" in data:
             val = data["connect_timeout_seconds"]
-            if not isinstance(val, int) or val < 1 or val > 300:
+            if type(val) is not int or val < 1 or val > 300:
                 raise ValidationError("connect_timeout_seconds must be an integer between 1 and 300.")
             current["connect_timeout_seconds"] = val
         if "reconnect_min_seconds" in data:
             val = data["reconnect_min_seconds"]
-            if not isinstance(val, int) or val < 1 or val > 300:
+            if type(val) is not int or val < 1 or val > 300:
                 raise ValidationError("reconnect_min_seconds must be an integer between 1 and 300.")
             current["reconnect_min_seconds"] = val
         if "reconnect_max_seconds" in data:
             val = data["reconnect_max_seconds"]
-            if not isinstance(val, int) or val < 1 or val > 3600:
+            if type(val) is not int or val < 1 or val > 3600:
                 raise ValidationError("reconnect_max_seconds must be an integer between 1 and 3600.")
             current["reconnect_max_seconds"] = val
 

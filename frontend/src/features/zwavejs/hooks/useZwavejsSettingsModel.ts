@@ -45,7 +45,7 @@ export function useZwavejsSettingsModel() {
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
 
-  const isBusy = settingsQuery.isLoading || syncEntities.isPending
+  const isBusy = settingsQuery.isLoading || syncEntities.isPending || updateSettings.isPending
 
   const refresh = () => {
     void statusQuery.refetch()

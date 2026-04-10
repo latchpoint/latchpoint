@@ -12,7 +12,7 @@ export function SettingsHomeAssistantTab() {
       <div className="space-y-4">
         <HomeAssistantOverviewCard
           isAdmin={model.isAdmin}
-          isBusy={false}
+          isBusy={model.haSettingsQuery.isLoading || model.haSettingsQuery.isFetching}
           draft={model.haConnectionDraft}
           reachable={model.haStatusQuery.data?.reachable}
           configured={model.haStatusQuery.data?.configured}
