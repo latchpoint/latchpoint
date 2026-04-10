@@ -88,7 +88,6 @@ class EnsureEnvProvidersExistTest(TestCase):
                 "DISCORD_ENABLED": "true",
                 "SLACK_ENABLED": "false",
                 "WEBHOOK_ENABLED": "false",
-                "HA_NOTIFY_ENABLED": "false",
             },
         ):
             ensure_env_providers_exist(self.profile)

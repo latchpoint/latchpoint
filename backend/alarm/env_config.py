@@ -110,10 +110,3 @@ def get_webhook_config() -> dict:
         "message_field": env.str("WEBHOOK_MESSAGE_FIELD", default="message"),
         "title_field": env.str("WEBHOOK_TITLE_FIELD", default="title"),
     }
-
-
-def get_ha_notify_config() -> dict:
-    return {
-        "enabled": env.bool("HA_NOTIFY_ENABLED", default=False),
-        "service": env.str("HA_NOTIFY_SERVICE", default="notify.notify"),
-    }

@@ -20,7 +20,6 @@ _PROVIDER_TYPES = [
     "discord",
     "slack",
     "webhook",
-    "home_assistant",
 ]
 
 

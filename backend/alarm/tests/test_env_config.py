@@ -261,27 +261,3 @@ class WebhookConfigTest(SimpleTestCase):
             self.assertEqual(cfg["method"], "PUT")
             self.assertEqual(cfg["auth_type"], "bearer")
             self.assertEqual(cfg["auth_value"], "my-token")
-
-
-class HaNotifyConfigTest(SimpleTestCase):
-    def test_defaults(self):
-        from alarm.env_config import get_ha_notify_config
-
-        cfg = get_ha_notify_config()
-        self.assertFalse(cfg["enabled"])
-        self.assertEqual(cfg["service"], "notify.notify")
-
-    def test_env_overrides(self):
-        import os
-        from unittest.mock import patch
-
-        env = {
-            "HA_NOTIFY_ENABLED": "true",
-            "HA_NOTIFY_SERVICE": "notify.mobile_app_phone",
-        }
-        with patch.dict(os.environ, env):
-            from alarm.env_config import get_ha_notify_config
-
-            cfg = get_ha_notify_config()
-            self.assertTrue(cfg["enabled"])
-            self.assertEqual(cfg["service"], "notify.mobile_app_phone")

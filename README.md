@@ -182,7 +182,5 @@ docker compose exec app python backend/manage.py shell
 | SLACK_BOT_TOKEN | Slack bot token | - |
 | WEBHOOK_ENABLED | Enable generic webhook | false |
 | WEBHOOK_URL | Webhook URL | - |
-| HA_NOTIFY_ENABLED | Enable HA notify service | false |
-| HA_NOTIFY_SERVICE | HA notify service name | notify.notify |
 
 Operational settings (timeouts, keepalive, reconnect intervals) are managed via the Settings UI and stored in the database.
