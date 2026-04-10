@@ -74,9 +74,7 @@ def set_cached_connection() -> None:
         enabled=bool(cfg.get("enabled")),
         base_url=str(cfg.get("base_url") or ""),
         token=str(cfg.get("token") or ""),
-        connect_timeout_seconds=float(
-            db.get("connect_timeout_seconds", defaults["connect_timeout_seconds"])
-        ),
+        connect_timeout_seconds=float(db.get("connect_timeout_seconds", defaults["connect_timeout_seconds"])),
     )
     with _lock:
         global _cached

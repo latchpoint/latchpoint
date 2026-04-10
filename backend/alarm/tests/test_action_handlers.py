@@ -234,9 +234,7 @@ class ZwavejsSetValueHandlerTests(TestCase):
         self.assertEqual(result["error"], "invalid_value_id")
         self.assertIsNone(error)
 
-    @patch.dict(
-        os.environ, {"ZWAVEJS_ENABLED": "true", "ZWAVEJS_WS_URL": "ws://localhost:3000"}
-    )
+    @patch.dict(os.environ, {"ZWAVEJS_ENABLED": "true", "ZWAVEJS_WS_URL": "ws://localhost:3000"})
     def test_happy_path(self):
         zwave = _FakeZwavejs()
         ctx = _make_ctx(zwavejs=zwave)
@@ -254,9 +252,7 @@ class ZwavejsSetValueHandlerTests(TestCase):
         self.assertIsNone(error)
         self.assertEqual(zwave.calls[-1][0], "set_value")
 
-    @patch.dict(
-        os.environ, {"ZWAVEJS_ENABLED": "true", "ZWAVEJS_WS_URL": "ws://localhost:3000"}
-    )
+    @patch.dict(os.environ, {"ZWAVEJS_ENABLED": "true", "ZWAVEJS_WS_URL": "ws://localhost:3000"})
     def test_exception_path(self):
         ctx = _make_ctx(fail=True)
         result, error = zwavejs_set_value_execute(

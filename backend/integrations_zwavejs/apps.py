@@ -42,12 +42,8 @@ class IntegrationsZwavejsConfig(AppConfig):
                 cfg["connect_timeout_seconds"] = int(
                     db.get("connect_timeout_seconds", defaults["connect_timeout_seconds"])
                 )
-                cfg["reconnect_min_seconds"] = int(
-                    db.get("reconnect_min_seconds", defaults["reconnect_min_seconds"])
-                )
-                cfg["reconnect_max_seconds"] = int(
-                    db.get("reconnect_max_seconds", defaults["reconnect_max_seconds"])
-                )
+                cfg["reconnect_min_seconds"] = int(db.get("reconnect_min_seconds", defaults["reconnect_min_seconds"]))
+                cfg["reconnect_max_seconds"] = int(db.get("reconnect_max_seconds", defaults["reconnect_max_seconds"]))
                 default_zwavejs_gateway.apply_settings(settings_obj=cfg)
             except Exception:
                 return

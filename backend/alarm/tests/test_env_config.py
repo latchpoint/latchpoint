@@ -13,6 +13,7 @@ class HomeAssistantConfigTest(SimpleTestCase):
         self.assertFalse(cfg["enabled"])
         self.assertEqual(cfg["base_url"], "http://localhost:8123")
         self.assertEqual(cfg["token"], "")
+
     def test_env_overrides(self, monkeypatch=None):
         import os
         from unittest.mock import patch

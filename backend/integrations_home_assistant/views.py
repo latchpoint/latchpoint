@@ -38,9 +38,7 @@ def get_ha_settings() -> dict:
         "enabled": cfg["enabled"],
         "base_url": cfg["base_url"],
         "token": cfg["token"],
-        "connect_timeout_seconds": int(
-            db_settings.get("connect_timeout_seconds", defaults["connect_timeout_seconds"])
-        ),
+        "connect_timeout_seconds": int(db_settings.get("connect_timeout_seconds", defaults["connect_timeout_seconds"])),
     }
 
 
@@ -85,8 +83,7 @@ class HomeAssistantSettingsView(APIView):
         unknown_fields = sorted(set(data) - allowed_fields)
         if unknown_fields:
             raise ValidationError(
-                f"Unsupported field(s): {', '.join(unknown_fields)}. "
-                "Only connect_timeout_seconds can be patched."
+                f"Unsupported field(s): {', '.join(unknown_fields)}. Only connect_timeout_seconds can be patched."
             )
 
         profile = ensure_active_settings_profile()
