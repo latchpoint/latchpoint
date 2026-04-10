@@ -10,7 +10,7 @@ type Props = {
   reachable: boolean | undefined
   configured: boolean | undefined
   lastError: string | null | undefined
-  serverEnabled: boolean | undefined
+  saveDisabled: boolean
   onRefresh: () => void
   onSave: () => void
   onSetDraft: (updater: (prev: HaConnectionDraft | null) => HaConnectionDraft | null) => void
@@ -23,7 +23,7 @@ export function HomeAssistantOverviewCard({
   reachable,
   configured,
   lastError,
-  serverEnabled,
+  saveDisabled,
   onRefresh,
   onSave,
   onSetDraft,
@@ -65,7 +65,7 @@ export function HomeAssistantOverviewCard({
       enableDisabled={!draft}
       onRefresh={onRefresh}
       onSave={onSave}
-      saveDisabled={!draft || draft.enabled === (serverEnabled ?? false)}
+      saveDisabled={saveDisabled}
     />
   )
 }

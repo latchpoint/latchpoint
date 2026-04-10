@@ -1,5 +1,7 @@
 import { Radio } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { FormField } from '@/components/ui/form-field'
+import { Input } from '@/components/ui/input'
 import { LoadingInline } from '@/components/ui/loading-inline'
 import { IntegrationConnectionCard } from '@/features/integrations/components/IntegrationConnectionCard'
 import { IntegrationOverviewCard } from '@/features/integrations/components/IntegrationOverviewCard'
@@ -13,6 +15,7 @@ type Props = {
   connected: boolean | undefined
   enabled: boolean | undefined
   lastError: string | null | undefined
+  saveDisabled: boolean
   onRefresh: () => void
   onSave: () => void
   onSync: () => void
@@ -27,6 +30,7 @@ export function ZwavejsSettingsCard({
   connected,
   enabled,
   lastError,
+  saveDisabled,
   onRefresh,
   onSave,
   onSync,
@@ -52,7 +56,7 @@ export function ZwavejsSettingsCard({
         enableDisabled={!draft}
         onRefresh={onRefresh}
         onSave={onSave}
-        saveDisabled={!draft || draft.enabled === (enabled ?? false)}
+        saveDisabled={saveDisabled}
         opsActions={
           <Button type="button" variant="outline" onClick={onSync} disabled={!isAdmin || isBusy || !draft}>
             Sync Entities
@@ -68,21 +72,49 @@ export function ZwavejsSettingsCard({
         ) : !draft ? (
           <div className="text-sm text-muted-foreground">Z-Wave JS settings unavailable.</div>
         ) : (
-          <div className="grid grid-cols-2 gap-2 text-sm">
-            <span className="text-muted-foreground">WebSocket URL</span>
-            <span className="break-all">{draft.wsUrl || '(not set)'}</span>
+          <div className="space-y-4">
+            <div className="grid grid-cols-2 gap-2 text-sm">
+              <span className="text-muted-foreground">WebSocket URL</span>
+              <span className="break-all">{draft.wsUrl || '(not set)'}</span>
 
-            <span className="text-muted-foreground">API Token</span>
-            <span>{draft.hasApiToken ? 'Configured' : 'Not set'}</span>
+              <span className="text-muted-foreground">API Token</span>
+              <span>{draft.hasApiToken ? 'Configured' : 'Not set'}</span>
+            </div>
 
-            <span className="text-muted-foreground">Connect timeout</span>
-            <span>{draft.connectTimeoutSeconds}s</span>
-
-            <span className="text-muted-foreground">Reconnect min</span>
-            <span>{draft.reconnectMinSeconds}s</span>
-
-            <span className="text-muted-foreground">Reconnect max</span>
-            <span>{draft.reconnectMaxSeconds}s</span>
+            {isAdmin && (
+              <div className="grid grid-cols-3 gap-3">
+                <FormField label="Connect timeout (s)" htmlFor="zwave-timeout" size="compact">
+                  <Input
+                    id="zwave-timeout"
+                    type="number"
+                    min={1}
+                    max={300}
+                    value={draft.connectTimeoutSeconds}
+                    onChange={(e) => onSetDraft((prev) => (prev ? { ...prev, connectTimeoutSeconds: e.target.value } : prev))}
+                  />
+                </FormField>
+                <FormField label="Reconnect min (s)" htmlFor="zwave-reconnect-min" size="compact">
+                  <Input
+                    id="zwave-reconnect-min"
+                    type="number"
+                    min={1}
+                    max={300}
+                    value={draft.reconnectMinSeconds}
+                    onChange={(e) => onSetDraft((prev) => (prev ? { ...prev, reconnectMinSeconds: e.target.value } : prev))}
+                  />
+                </FormField>
+                <FormField label="Reconnect max (s)" htmlFor="zwave-reconnect-max" size="compact">
+                  <Input
+                    id="zwave-reconnect-max"
+                    type="number"
+                    min={1}
+                    max={3600}
+                    value={draft.reconnectMaxSeconds}
+                    onChange={(e) => onSetDraft((prev) => (prev ? { ...prev, reconnectMaxSeconds: e.target.value } : prev))}
+                  />
+                </FormField>
+              </div>
+            )}
           </div>
         )}
       </IntegrationConnectionCard>

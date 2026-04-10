@@ -17,6 +17,7 @@ type Props = {
   lastError: string | undefined
   zigbee2mqttEnabled: boolean
   frigateEnabled: boolean
+  saveDisabled: boolean
   onRefresh: () => void
   onSave: () => void
   onSetDraft: (updater: (prev: MqttDraft | null) => MqttDraft | null) => void
@@ -33,6 +34,7 @@ export function MqttSettingsCard({
   lastError,
   zigbee2mqttEnabled,
   frigateEnabled,
+  saveDisabled,
   onRefresh,
   onSave,
   onSetDraft,
@@ -57,7 +59,7 @@ export function MqttSettingsCard({
         enableDisabled={!draft}
         onRefresh={onRefresh}
         onSave={onSave}
-        saveDisabled={!draft || draft.enabled === (enabled ?? false)}
+        saveDisabled={saveDisabled}
       >
         {!isLoading && draft && !draft.enabled ? (
           <Alert variant="warning">
@@ -81,6 +83,8 @@ export function MqttSettingsCard({
           <MqttSettingsForm
             draft={draft}
             isLoading={isLoading}
+            isAdmin={isAdmin}
+            onUpdateDraft={(patch) => onSetDraft((prev) => (prev ? { ...prev, ...patch } : prev))}
           />
         </div>
       </IntegrationConnectionCard>

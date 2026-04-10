@@ -11,6 +11,7 @@ import {
   useUpdateHomeAssistantMqttAlarmEntitySettingsMutation,
 } from '@/hooks/useHomeAssistantMqttAlarmEntity'
 import { getErrorMessage } from '@/types/errors'
+import { parseIntInRange } from '@/lib/numberParsers'
 
 export type HaConnectionDraft = {
   enabled: boolean
@@ -77,12 +78,21 @@ export function useHomeAssistantSettingsModel() {
     setError(null)
     setNotice(null)
     try {
-      await updateHaSettings.mutateAsync({ enabled: haConnectionDraft.enabled })
+      const connectTimeoutSeconds = parseIntInRange('Connect timeout', haConnectionDraft.connectTimeoutSeconds, 1, 300)
+      await updateHaSettings.mutateAsync({
+        enabled: haConnectionDraft.enabled,
+        connectTimeoutSeconds,
+      })
       setNotice('Saved Home Assistant settings.')
     } catch (err) {
       setError(getErrorMessage(err) || 'Failed to save Home Assistant settings.')
     }
   }
+
+  const connectionSaveDisabled = !haConnectionDraft || !initialHaConnectionDraft || (
+    haConnectionDraft.enabled === initialHaConnectionDraft.enabled &&
+    haConnectionDraft.connectTimeoutSeconds === initialHaConnectionDraft.connectTimeoutSeconds
+  )
 
   const refreshConnection = () => {
     void haStatusQuery.refetch()
@@ -138,6 +148,7 @@ export function useHomeAssistantSettingsModel() {
     updateHaMqttAlarmEntityMutation,
     publishHaMqttDiscoveryMutation,
     saveConnection,
+    connectionSaveDisabled,
     refreshConnection,
     refreshMqttEntity,
     saveMqttEntity,

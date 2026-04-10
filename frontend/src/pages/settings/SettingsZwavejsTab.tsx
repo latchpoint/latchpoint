@@ -15,6 +15,7 @@ export function SettingsZwavejsTab() {
         connected={model.statusQuery.data?.connected}
         enabled={model.statusQuery.data?.enabled}
         lastError={model.statusQuery.data?.lastError ?? undefined}
+        saveDisabled={model.saveDisabled}
         onRefresh={model.refresh}
         onSave={() => void model.save()}
         onSync={() => void model.sync()}

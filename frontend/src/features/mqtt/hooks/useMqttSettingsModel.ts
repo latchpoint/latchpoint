@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react'
 import { UserRole } from '@/lib/constants'
 import { useCurrentUserQuery } from '@/hooks/useAuthQueries'
 import { getErrorMessage } from '@/types/errors'
+import { parseIntInRange } from '@/lib/numberParsers'
 import { useDraftFromQuery } from '@/features/settings/hooks/useDraftFromQuery'
 import { useFrigateSettingsQuery } from '@/hooks/useFrigate'
 import {
@@ -70,12 +71,24 @@ export function useMqttSettingsModel() {
     setError(null)
     setNotice(null)
     try {
-      await updateSettings.mutateAsync({ enabled: draft.enabled })
+      const keepaliveSeconds = parseIntInRange('Keepalive', draft.keepaliveSeconds, 1, 3600)
+      const connectTimeoutSeconds = parseIntInRange('Connect timeout', draft.connectTimeoutSeconds, 1, 300)
+      await updateSettings.mutateAsync({
+        enabled: draft.enabled,
+        keepaliveSeconds,
+        connectTimeoutSeconds,
+      })
       setNotice('Saved MQTT settings.')
     } catch (err) {
       setError(getErrorMessage(err) || 'Failed to save MQTT settings.')
     }
   }
+
+  const saveDisabled = !draft || !initialDraft || (
+    draft.enabled === initialDraft.enabled &&
+    draft.keepaliveSeconds === initialDraft.keepaliveSeconds &&
+    draft.connectTimeoutSeconds === initialDraft.connectTimeoutSeconds
+  )
 
   return {
     isAdmin,
@@ -91,5 +104,6 @@ export function useMqttSettingsModel() {
     frigateSettingsQuery,
     refresh,
     save,
+    saveDisabled,
   }
 }

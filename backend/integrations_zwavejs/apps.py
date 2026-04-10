@@ -22,16 +22,25 @@ class IntegrationsZwavejsConfig(AppConfig):
         try:
             from alarm.env_config import get_zwavejs_config
             from alarm.gateways.zwavejs import default_zwavejs_gateway
-            from alarm.integration_helpers import get_integration_enabled
             from alarm.signals import settings_profile_changed
         except Exception:
             return
 
         def _apply_zwavejs_settings() -> None:
-            """Apply Z-Wave JS settings from env vars + enabled from DB to the runtime gateway."""
+            """Apply Z-Wave JS settings from env vars + DB overrides to the runtime gateway."""
             try:
+                from alarm.state_machine.settings import get_setting_json
+                from alarm.use_cases.settings_profile import ensure_active_settings_profile
+
                 cfg = get_zwavejs_config()
-                cfg["enabled"] = get_integration_enabled("zwavejs")
+                profile = ensure_active_settings_profile()
+                db = get_setting_json(profile, "zwavejs") or {}
+                if not isinstance(db, dict):
+                    db = {}
+                cfg["enabled"] = bool(db.get("enabled", False))
+                cfg["connect_timeout_seconds"] = int(db.get("connect_timeout_seconds", cfg["connect_timeout_seconds"]))
+                cfg["reconnect_min_seconds"] = int(db.get("reconnect_min_seconds", cfg["reconnect_min_seconds"]))
+                cfg["reconnect_max_seconds"] = int(db.get("reconnect_max_seconds", cfg["reconnect_max_seconds"]))
                 default_zwavejs_gateway.apply_settings(settings_obj=cfg)
             except Exception:
                 return

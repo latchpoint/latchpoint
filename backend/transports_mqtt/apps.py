@@ -23,16 +23,24 @@ class TransportsMqttConfig(AppConfig):
         try:
             from alarm.env_config import get_mqtt_config
             from alarm.gateways.mqtt import default_mqtt_gateway
-            from alarm.integration_helpers import get_integration_enabled
             from alarm.signals import settings_profile_changed
         except Exception:
             return
 
         def _apply_mqtt_settings() -> None:
-            """Apply MQTT settings from env vars + enabled from DB to the runtime gateway."""
+            """Apply MQTT settings from env vars + DB overrides to the runtime gateway."""
             try:
+                from alarm.state_machine.settings import get_setting_json
+                from alarm.use_cases.settings_profile import ensure_active_settings_profile
+
                 cfg = get_mqtt_config()
-                cfg["enabled"] = get_integration_enabled("mqtt")
+                profile = ensure_active_settings_profile()
+                db = get_setting_json(profile, "mqtt") or {}
+                if not isinstance(db, dict):
+                    db = {}
+                cfg["enabled"] = bool(db.get("enabled", False))
+                cfg["keepalive_seconds"] = int(db.get("keepalive_seconds", cfg["keepalive_seconds"]))
+                cfg["connect_timeout_seconds"] = int(db.get("connect_timeout_seconds", cfg["connect_timeout_seconds"]))
                 default_mqtt_gateway.apply_settings(settings=cfg)
             except Exception:
                 return

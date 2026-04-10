@@ -29,7 +29,10 @@ export function useHomeAssistantSettingsQuery() {
 export function useUpdateHomeAssistantSettingsMutation() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: (data: { enabled: boolean }) => homeAssistantService.updateSettings(data),
+    mutationFn: (data: {
+      enabled?: boolean
+      connectTimeoutSeconds?: number
+    }) => homeAssistantService.updateSettings(data),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: queryKeys.homeAssistant.settings })
       await queryClient.invalidateQueries({ queryKey: queryKeys.homeAssistant.status })

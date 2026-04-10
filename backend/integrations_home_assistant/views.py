@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 
+from django.db import transaction
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -13,12 +14,43 @@ from alarm.gateways.home_assistant import (
     HomeAssistantGateway,
     default_home_assistant_gateway,
 )
-from alarm.integration_helpers import get_integration_enabled, set_integration_enabled
+from alarm.models import AlarmSettingsEntry
+from alarm.settings_registry import ALARM_PROFILE_SETTINGS_BY_KEY
+from alarm.signals import settings_profile_changed
+from alarm.state_machine.settings import get_setting_json
+from alarm.use_cases.settings_profile import ensure_active_settings_profile
 from config.domain_exceptions import ServiceUnavailableError, ValidationError
 from integrations_home_assistant.connection import set_cached_connection
 
 ha_gateway: HomeAssistantGateway = default_home_assistant_gateway
 logger = logging.getLogger(__name__)
+
+
+def _get_ha_settings() -> dict:
+    """Return merged HA settings: env connection config + DB operational overrides."""
+    cfg = get_home_assistant_config()
+    profile = ensure_active_settings_profile()
+    db_settings = get_setting_json(profile, "home_assistant") or {}
+    if not isinstance(db_settings, dict):
+        db_settings = {}
+    return {
+        "enabled": bool(db_settings.get("enabled", False)),
+        "base_url": cfg["base_url"],
+        "token": cfg["token"],
+        "connect_timeout_seconds": int(
+            db_settings.get("connect_timeout_seconds", cfg["connect_timeout_seconds"])
+        ),
+    }
+
+
+def _ha_response(settings: dict) -> dict:
+    """Build the API response dict (masks token)."""
+    return {
+        "enabled": settings["enabled"],
+        "base_url": settings["base_url"],
+        "has_token": bool(settings.get("token")),
+        "connect_timeout_seconds": settings["connect_timeout_seconds"],
+    }
 
 
 class _HomeAssistantBaseView(APIView):
@@ -38,38 +70,46 @@ class HomeAssistantSettingsView(APIView):
     permission_classes = [IsAuthenticated, IsAdminRole]
 
     def get(self, request):
-        """Return the current Home Assistant connection settings (env) + enabled state (DB)."""
-        cfg = get_home_assistant_config()
-        enabled = get_integration_enabled("home_assistant")
-        return Response(
-            {
-                "enabled": enabled,
-                "base_url": cfg["base_url"],
-                "has_token": bool(cfg["token"]),
-                "connect_timeout_seconds": cfg["connect_timeout_seconds"],
-            },
-            status=status.HTTP_200_OK,
-        )
+        """Return the current Home Assistant connection settings (env) + operational settings (DB)."""
+        settings = _get_ha_settings()
+        return Response(_ha_response(settings), status=status.HTTP_200_OK)
 
     def patch(self, request):
-        """Toggle Home Assistant enabled state (admin-only)."""
-        enabled = request.data.get("enabled")
-        if not isinstance(enabled, bool):
-            raise ValidationError("enabled (bool) is required.")
-        set_integration_enabled("home_assistant", enabled)
+        """Update Home Assistant settings (admin-only)."""
+        data = request.data
+        if not isinstance(data, dict) or not data:
+            raise ValidationError("Request body must be a non-empty object.")
+
+        profile = ensure_active_settings_profile()
+        current = get_setting_json(profile, "home_assistant") or {}
+        if not isinstance(current, dict):
+            current = {}
+
+        if "enabled" in data:
+            if not isinstance(data["enabled"], bool):
+                raise ValidationError("enabled must be a boolean.")
+            current["enabled"] = data["enabled"]
+        if "connect_timeout_seconds" in data:
+            val = data["connect_timeout_seconds"]
+            if not isinstance(val, int) or val < 1 or val > 300:
+                raise ValidationError("connect_timeout_seconds must be an integer between 1 and 300.")
+            current["connect_timeout_seconds"] = val
+
+        definition = ALARM_PROFILE_SETTINGS_BY_KEY["home_assistant"]
+        AlarmSettingsEntry.objects.update_or_create(
+            profile=profile,
+            key="home_assistant",
+            defaults={"value": current, "value_type": definition.value_type},
+        )
+
         # Refresh the cached connection synchronously so the status endpoint
         # reflects the new state before the response reaches the frontend.
         set_cached_connection()
-        cfg = get_home_assistant_config()
-        return Response(
-            {
-                "enabled": enabled,
-                "base_url": cfg["base_url"],
-                "has_token": bool(cfg["token"]),
-                "connect_timeout_seconds": cfg["connect_timeout_seconds"],
-            },
-            status=status.HTTP_200_OK,
+        settings = _get_ha_settings()
+        transaction.on_commit(
+            lambda: settings_profile_changed.send(sender=None, profile_id=profile.id, reason="updated")
         )
+        return Response(_ha_response(settings), status=status.HTTP_200_OK)
 
 
 class HomeAssistantEntitiesView(_HomeAssistantBaseView):

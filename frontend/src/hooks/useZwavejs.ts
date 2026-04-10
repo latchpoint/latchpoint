@@ -43,7 +43,12 @@ export function useZwavejsSettingsQuery() {
 export function useUpdateZwavejsSettingsMutation() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: (data: { enabled: boolean }) => zwavejsService.updateSettings(data),
+    mutationFn: (data: {
+      enabled?: boolean
+      connectTimeoutSeconds?: number
+      reconnectMinSeconds?: number
+      reconnectMaxSeconds?: number
+    }) => zwavejsService.updateSettings(data),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: queryKeys.zwavejs.settings })
       await queryClient.invalidateQueries({ queryKey: queryKeys.zwavejs.status })
