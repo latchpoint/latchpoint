@@ -148,7 +148,8 @@ class ZwavejsSettingsView(APIView):
         if unknown_fields:
             raise ValidationError(
                 f"Unsupported field(s): {', '.join(unknown_fields)}. "
-                "Only operational settings (connect_timeout_seconds, reconnect_min_seconds, reconnect_max_seconds) can be patched."
+                "Only operational settings (connect_timeout_seconds, reconnect_min_seconds, "
+                "reconnect_max_seconds) can be patched."
             )
 
         profile = ensure_active_settings_profile()
