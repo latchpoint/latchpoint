@@ -26,12 +26,14 @@ export function useLogStream(
   const pausedRef = useRef(options.paused)
   const levelFilterRef = useRef(options.levelFilter)
   const autoScrollRef = useRef(options.autoScroll)
+  const onNewEntryRef = useRef(options.onNewEntry)
 
   // Keep refs in sync with latest prop values
   /* eslint-disable react-hooks/refs */
   pausedRef.current = options.paused
   levelFilterRef.current = options.levelFilter
   autoScrollRef.current = options.autoScroll
+  onNewEntryRef.current = options.onNewEntry
   /* eslint-enable react-hooks/refs */
 
   // Flush queued entries when unpausing
@@ -70,7 +72,7 @@ export function useLogStream(
 
       if (entry.levelNo >= levelFilterRef.current) {
         terminal.writeln(entry.formatted)
-        options.onNewEntry()
+        onNewEntryRef.current()
         if (autoScrollRef.current) {
           terminal.scrollToBottom()
         }
@@ -78,5 +80,5 @@ export function useLogStream(
     })
 
     return unsubscribe
-  }, [terminal, allEntriesRef, options.onNewEntry])
+  }, [terminal, allEntriesRef])
 }

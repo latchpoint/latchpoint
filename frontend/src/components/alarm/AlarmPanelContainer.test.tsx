@@ -1,15 +1,18 @@
 import React from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { render } from '@testing-library/react'
+import type { UseAlarmStateReturn } from '@/hooks/useAlarmState'
+import type { AlarmEvent } from '@/types'
 import { AlarmPanelContainer } from './AlarmPanelContainer'
+import type { AlarmPanelViewProps } from './AlarmPanelView'
 
-let state: any
+let state: Partial<UseAlarmStateReturn>
 const arm = vi.fn()
 const disarm = vi.fn()
 const cancelArming = vi.fn()
 const openModal = vi.fn()
 const handleError = vi.fn()
-const recentEventsQuery = { data: [] as any[] }
+const recentEventsQuery = { data: [] as AlarmEvent[] }
 
 vi.mock('@/hooks/useAlarmState', () => ({ useAlarmState: () => state }))
 vi.mock('@/hooks/useAlarmActions', () => ({
@@ -28,9 +31,9 @@ vi.mock('@/lib/errorHandler', () => ({
   handleError: (e: unknown) => handleError(e),
 }))
 
-const captured: any[] = []
+const captured: AlarmPanelViewProps[] = []
 vi.mock('./AlarmPanelView', () => ({
-  AlarmPanelView: (props: any) => {
+  AlarmPanelView: (props: AlarmPanelViewProps) => {
     captured.push(props)
     return <div>AlarmPanelView</div>
   },

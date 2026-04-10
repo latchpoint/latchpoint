@@ -3,10 +3,11 @@ import { screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { renderWithProviders } from '@/test/render'
 import { NotificationProvidersCard } from '@/features/notifications/components/NotificationProvidersCard'
+import type { NotificationProvider } from '@/types/notifications'
 
 const mutateTest = vi.fn()
 
-let providersData: any[] = []
+let providersData: NotificationProvider[] = []
 let haConfigured = false
 
 vi.mock('@/hooks/useHomeAssistant', () => {
