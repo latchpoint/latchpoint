@@ -177,6 +177,25 @@ class CodesApiTests(APITestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["data"]["label"], "Updated")
 
+    def test_clearing_one_half_of_time_window_on_temporary_code_rejected(self):
+        code = UserCode.objects.create(
+            user=self.user,
+            code_hash="not-used-here",
+            label="Temp",
+            code_type=UserCode.CodeType.TEMPORARY,
+            pin_length=4,
+            is_active=True,
+            window_start="08:00",
+            window_end="10:00",
+        )
+        url = reverse("code-detail", args=[code.id])
+        response = self.client.patch(
+            url,
+            {"window_start": None, "reauth_password": "pass"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 400)
+
     def test_non_admin_cannot_update_code(self):
         code = UserCode.objects.create(
             user=self.user,

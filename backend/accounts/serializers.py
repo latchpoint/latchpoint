@@ -236,14 +236,16 @@ class UserCodeUpdateSerializer(serializers.Serializer):
         if instance is None:
             return attrs
 
-        updates_time_range = any(
-            attrs.get(key) is not None for key in ["start_at", "end_at", "days_of_week", "window_start", "window_end"]
-        )
-        if not updates_time_range:
+        time_keys = ["start_at", "end_at", "days_of_week", "window_start", "window_end"]
+        touches_time_keys = any(key in attrs for key in time_keys)
+        if not touches_time_keys:
             return attrs
 
+        sets_time_values = any(attrs.get(key) is not None for key in time_keys)
         if instance.code_type != UserCode.CodeType.TEMPORARY:
-            raise serializers.ValidationError({"code_type": "Only temporary codes can set an active time range."})
+            if sets_time_values:
+                raise serializers.ValidationError({"code_type": "Only temporary codes can set an active time range."})
+            return attrs
 
         start_at = attrs.get("start_at", instance.start_at)
         end_at = attrs.get("end_at", instance.end_at)
