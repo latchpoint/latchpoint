@@ -15,48 +15,41 @@ class TransportsMqttConfig(AppConfig):
 
     def ready(self) -> None:
         """Best-effort runtime hooks for MQTT transport."""
-        # Avoid side effects during migrations/collectstatic/tests.
         argv = " ".join(sys.argv).lower()
         if any(token in argv for token in ["makemigrations", "migrate", "collectstatic", "pytest", " test"]):
             return
 
         try:
-            from alarm.env_config import get_frigate_env_overrides, get_mqtt_config, get_zigbee2mqtt_env_overrides
             from alarm.gateways.mqtt import default_mqtt_gateway
             from alarm.signals import settings_profile_changed
         except Exception:
             return
 
         def _apply_mqtt_settings() -> None:
-            """Apply MQTT settings from env vars + DB operational overrides to the runtime gateway."""
+            """Apply MQTT settings from DB to the runtime gateway."""
             try:
-                from alarm.settings_registry import ALARM_PROFILE_SETTINGS_BY_KEY
-                from alarm.state_machine.settings import get_setting_json
-                from alarm.use_cases.settings_profile import ensure_active_settings_profile
+                from transports_mqtt.views import get_mqtt_settings
 
-                cfg = get_mqtt_config()
-                profile = ensure_active_settings_profile()
-                defaults = ALARM_PROFILE_SETTINGS_BY_KEY["mqtt"].default
-                db = get_setting_json(profile, "mqtt") or {}
-                if not isinstance(db, dict):
-                    db = {}
-                cfg["keepalive_seconds"] = int(db.get("keepalive_seconds", defaults["keepalive_seconds"]))
-                cfg["connect_timeout_seconds"] = int(
-                    db.get("connect_timeout_seconds", defaults["connect_timeout_seconds"])
-                )
+                cfg = get_mqtt_settings()
                 default_mqtt_gateway.apply_settings(settings=cfg)
             except Exception:
                 return
 
-        # Startup validation: warn if MQTT is disabled but dependents are enabled.
-        mqtt_cfg = get_mqtt_config()
-        if not mqtt_cfg["enabled"]:
-            z2m = get_zigbee2mqtt_env_overrides()
-            frigate = get_frigate_env_overrides()
-            if z2m["enabled"]:
-                logger.warning("ZIGBEE2MQTT_ENABLED=true but MQTT_ENABLED=false; Zigbee2MQTT will not function")
-            if frigate["enabled"]:
-                logger.warning("FRIGATE_ENABLED=true but MQTT_ENABLED=false; Frigate will not function")
+        # Startup validation: warn if MQTT disabled but dependents enabled.
+        try:
+            from alarm.integration_helpers import mqtt_enabled
+            from alarm.state_machine.settings import get_active_settings_profile, get_setting_json
+
+            if not mqtt_enabled():
+                profile = get_active_settings_profile()
+                z2m_raw = get_setting_json(profile, "zigbee2mqtt") or {}
+                frigate_raw = get_setting_json(profile, "frigate") or {}
+                if isinstance(z2m_raw, dict) and z2m_raw.get("enabled"):
+                    logger.warning("Zigbee2MQTT enabled but MQTT is disabled; Zigbee2MQTT will not function")
+                if isinstance(frigate_raw, dict) and frigate_raw.get("enabled"):
+                    logger.warning("Frigate enabled but MQTT is disabled; Frigate will not function")
+        except Exception:
+            pass
 
         def _on_settings_changed(sender, **_kwargs) -> None:
             _apply_mqtt_settings()

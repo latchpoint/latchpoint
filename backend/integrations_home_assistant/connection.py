@@ -54,31 +54,22 @@ def clear_cached_connection() -> None:
 
 def set_cached_connection() -> None:
     """
-    Cache the Home Assistant connection settings from environment variables + DB overrides.
+    Cache the Home Assistant connection settings from DB (ADR 0079).
 
     This must not raise; callers treat caching as best-effort.
     """
-    from alarm.env_config import get_home_assistant_config
-    from alarm.settings_registry import ALARM_PROFILE_SETTINGS_BY_KEY
-    from alarm.state_machine.settings import get_setting_json
-    from alarm.use_cases.settings_profile import ensure_active_settings_profile
+    from integrations_home_assistant.views import get_ha_settings
 
-    cfg = get_home_assistant_config()
-    defaults = ALARM_PROFILE_SETTINGS_BY_KEY["home_assistant"].default
-    db: dict[str, object] = {}
     try:
-        profile = ensure_active_settings_profile()
-        db_value = get_setting_json(profile, "home_assistant") or {}
-        if isinstance(db_value, dict):
-            db = db_value
+        cfg = get_ha_settings()
     except Exception:
-        pass
+        return
 
     obj = HomeAssistantRuntimeConnection(
         enabled=bool(cfg.get("enabled")),
         base_url=str(cfg.get("base_url") or ""),
         token=str(cfg.get("token") or ""),
-        connect_timeout_seconds=float(db.get("connect_timeout_seconds", defaults["connect_timeout_seconds"])),
+        connect_timeout_seconds=float(cfg.get("connect_timeout_seconds") or 2),
     )
     with _lock:
         global _cached

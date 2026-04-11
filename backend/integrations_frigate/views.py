@@ -79,11 +79,9 @@ class FrigateSettingsView(APIView):
         changes = dict(serializer.validated_data)
 
         if changes.get("enabled") is True:
-            from alarm.env_config import get_mqtt_config
+            from alarm.integration_helpers import mqtt_enabled
 
-            conn = get_mqtt_config()
-            mqtt_ok = bool(conn.get("enabled") and conn.get("host"))
-            if not mqtt_ok:
+            if not mqtt_enabled():
                 raise ValidationError(
                     {"non_field_errors": ["MQTT must be enabled/configured before enabling Frigate."]}
                 )

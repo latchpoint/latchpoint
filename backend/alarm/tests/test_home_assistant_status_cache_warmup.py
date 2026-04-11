@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 from unittest.mock import patch
 
 from django.test import override_settings
@@ -10,7 +9,9 @@ from integrations_home_assistant.connection import clear_cached_connection
 from rest_framework.test import APIClient, APITestCase
 
 from accounts.models import User
-from alarm.models import AlarmSettingsProfile
+from alarm.models import AlarmSettingsEntry, AlarmSettingsProfile
+from alarm.settings_registry import ALARM_PROFILE_SETTINGS_BY_KEY
+from alarm.tests.settings_test_utils import EncryptionTestMixin
 
 
 class _DummyResponse:
@@ -31,23 +32,27 @@ class _DummyResponse:
         return False
 
 
-@patch.dict(
-    os.environ,
-    {
-        "HA_ENABLED": "true",
-        "HA_BASE_URL": "http://homeassistant.local:8123",
-        "HA_TOKEN": "supersecret",
-    },
-)
-class HomeAssistantStatusCacheWarmupTests(APITestCase):
+class HomeAssistantStatusCacheWarmupTests(EncryptionTestMixin, APITestCase):
     def setUp(self):
         self.user = User.objects.create_user(email="ha-status@example.com", password="pass")
         self.client = APIClient()
         self.client.force_authenticate(self.user)
 
-        # Deactivate any existing profiles to ensure test isolation
         AlarmSettingsProfile.objects.update(is_active=False)
         self.profile = AlarmSettingsProfile.objects.create(name="HA Status Test Profile", is_active=True)
+
+        # Store HA config in DB
+        definition = ALARM_PROFILE_SETTINGS_BY_KEY["home_assistant"]
+        entry, _ = AlarmSettingsEntry.objects.get_or_create(
+            profile=self.profile,
+            key="home_assistant",
+            defaults={"value": definition.default, "value_type": definition.value_type},
+        )
+        entry.set_value_with_encryption({
+            "enabled": True,
+            "base_url": "http://homeassistant.local:8123",
+            "token": "supersecret",
+        })
 
     @override_settings(ALLOW_HOME_ASSISTANT_IN_TESTS=True)
     @patch("alarm.gateways.home_assistant.DefaultHomeAssistantGateway._import_client", return_value=None)

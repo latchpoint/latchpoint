@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from unittest.mock import patch
 
 from django.contrib.auth.hashers import make_password
@@ -91,19 +90,33 @@ class MqttApiTests(EncryptionTestMixin, APITestCase):
         self.assertEqual(response.status_code, 200)
         _mock_apply.assert_called_once()
 
-    @patch.dict(os.environ, {"MQTT_ENABLED": "true", "MQTT_HOST": "mqtt.local"})
     @patch("transports_mqtt.manager.MqttConnectionManager.apply_settings")
     def test_publish_discovery_endpoint_calls_publish(self, _mock_apply):
-        # Note: mqtt_alarm_entity module still reads MQTT config from env (Phase 5 migration).
+        # Enable MQTT in DB so _mqtt_enabled() passes
+        definition = ALARM_PROFILE_SETTINGS_BY_KEY["mqtt"]
+        entry, _ = AlarmSettingsEntry.objects.get_or_create(
+            profile=self.profile,
+            key="mqtt",
+            defaults={"value": definition.default, "value_type": definition.value_type},
+        )
+        entry.set_value_with_encryption({"enabled": True, "host": "mqtt.local"})
+
         url = reverse("integrations-ha-mqtt-alarm-entity-publish-discovery")
         with patch("integrations_home_assistant.mqtt_alarm_entity.mqtt_connection_manager.publish") as publish:
             response = self.client.post(url, data={}, format="json")
         self.assertEqual(response.status_code, 200)
         self.assertTrue(publish.called)
 
-    @patch.dict(os.environ, {"MQTT_ENABLED": "true", "MQTT_HOST": "mqtt.local"})
     @patch("transports_mqtt.manager.MqttConnectionManager.apply_settings")
     def test_publish_discovery_persists_status_timestamps(self, _mock_apply):
+        definition = ALARM_PROFILE_SETTINGS_BY_KEY["mqtt"]
+        entry, _ = AlarmSettingsEntry.objects.get_or_create(
+            profile=self.profile,
+            key="mqtt",
+            defaults={"value": definition.default, "value_type": definition.value_type},
+        )
+        entry.set_value_with_encryption({"enabled": True, "host": "mqtt.local"})
+
         url = reverse("integrations-ha-mqtt-alarm-entity-publish-discovery")
         with patch("integrations_home_assistant.mqtt_alarm_entity.mqtt_connection_manager.publish"):
             response = self.client.post(url, data={}, format="json")

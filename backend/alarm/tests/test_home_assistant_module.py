@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import io
 import json
-import os
 from unittest.mock import patch
 from urllib.error import HTTPError, URLError
 
@@ -35,31 +34,22 @@ class HomeAssistantModuleTests(SimpleTestCase):
         clear_cached_connection()
 
     def tearDown(self):
-        for attr in ("_settings_patcher", "_profile_patcher", "_env_patcher"):
-            patcher = getattr(self, attr, None)
-            if patcher is not None:
-                patcher.stop()
+        patcher = getattr(self, "_settings_patcher", None)
+        if patcher is not None:
+            patcher.stop()
         clear_cached_connection()
         super().tearDown()
 
     def _set_configured_connection(self, *, base_url: str = "http://ha:8123", token: str = "token"):
-        self._env_patcher = patch.dict(
-            os.environ,
-            {
-                "HA_ENABLED": "true",
-                "HA_BASE_URL": base_url,
-                "HA_TOKEN": token,
-            },
-        )
-        self._env_patcher.start()
-        # Mock DB calls used by set_cached_connection (SimpleTestCase has no DB access)
-        self._profile_patcher = patch(
-            "alarm.use_cases.settings_profile.ensure_active_settings_profile", return_value=None
-        )
-        self._profile_patcher.start()
+        # Mock get_ha_settings (SimpleTestCase has no DB access)
         self._settings_patcher = patch(
-            "alarm.state_machine.settings.get_setting_json",
-            return_value={"connect_timeout_seconds": 2},
+            "integrations_home_assistant.views.get_ha_settings",
+            return_value={
+                "enabled": True,
+                "base_url": base_url,
+                "token": token,
+                "connect_timeout_seconds": 2,
+            },
         )
         self._settings_patcher.start()
         set_cached_connection()
