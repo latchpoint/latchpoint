@@ -13,7 +13,7 @@ import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
 import type { ConfigSchema, ConfigSchemaProperty } from '@/types/settingsRegistry'
 import { Eye, EyeOff, X } from 'lucide-react'
-import { useState } from 'react'
+import { useCallback, useState } from 'react'
 
 type Props = {
   schema: ConfigSchema
@@ -98,6 +98,68 @@ function SecretField({
         {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
       </button>
     </div>
+  )
+}
+
+function JsonTextareaField({
+  fieldKey,
+  property,
+  value,
+  disabled,
+  onChange,
+}: {
+  fieldKey: string
+  property: ConfigSchemaProperty
+  value: unknown
+  disabled?: boolean
+  onChange: (key: string, value: unknown) => void
+}) {
+  const serialize = useCallback(
+    (v: unknown) =>
+      typeof v === 'object' && v !== null ? JSON.stringify(v, null, 2) : String(v ?? ''),
+    [],
+  )
+
+  const [rawText, setRawText] = useState(() => serialize(value))
+  const [jsonError, setJsonError] = useState<string | null>(null)
+
+  // Sync local text when the canonical value changes externally (e.g. server refetch)
+  const serialized = serialize(value)
+  const [prevSerialized, setPrevSerialized] = useState(serialized)
+  if (serialized !== prevSerialized) {
+    setPrevSerialized(serialized)
+    setRawText(serialized)
+    setJsonError(null)
+  }
+
+  return (
+    <FormField
+      label={property.title || fieldKey}
+      htmlFor={`field-${fieldKey}`}
+      description={property.description}
+      size="compact"
+    >
+      <textarea
+        id={`field-${fieldKey}`}
+        value={rawText}
+        onChange={(e) => {
+          const text = e.target.value
+          setRawText(text)
+          try {
+            const parsed = JSON.parse(text)
+            setJsonError(null)
+            onChange(fieldKey, parsed)
+          } catch {
+            setJsonError('Invalid JSON')
+          }
+        }}
+        disabled={disabled}
+        rows={3}
+        className={`flex w-full rounded-md border bg-transparent px-3 py-2 text-sm shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 font-mono ${jsonError ? 'border-destructive' : 'border-input'}`}
+        placeholder={property.description}
+      />
+      {jsonError && <p className="text-xs text-destructive mt-1">{jsonError}</p>}
+    </FormField>
   )
 }
 
@@ -191,7 +253,11 @@ export function IntegrationSettingsForm({
                   value={values[key] != null ? String(values[key]) : ''}
                   onChange={(e) => {
                     if (e.target.value === '') {
-                      onChange(key, '')
+                      // Reset to schema default or minimum instead of persisting empty string
+                      const fallback = property.default ?? property.minimum
+                      if (fallback != null) {
+                        onChange(key, Number(fallback))
+                      }
                       return
                     }
                     const parsed = Number(e.target.value)
@@ -236,33 +302,14 @@ export function IntegrationSettingsForm({
           // Object / array: JSON textarea
           if (property.type === 'object' || property.type === 'array') {
             return (
-              <FormField
+              <JsonTextareaField
                 key={key}
-                label={property.title || key}
-                htmlFor={`field-${key}`}
-                description={property.description}
-                size="compact"
-              >
-                <textarea
-                  id={`field-${key}`}
-                  value={
-                    typeof values[key] === 'object' && values[key] !== null
-                      ? JSON.stringify(values[key], null, 2)
-                      : String(values[key] ?? '')
-                  }
-                  onChange={(e) => {
-                    try {
-                      onChange(key, JSON.parse(e.target.value))
-                    } catch {
-                      onChange(key, e.target.value)
-                    }
-                  }}
-                  disabled={disabled}
-                  rows={3}
-                  className="flex w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 font-mono"
-                  placeholder={property.description}
-                />
-              </FormField>
+                fieldKey={key}
+                property={property}
+                value={values[key]}
+                disabled={disabled}
+                onChange={onChange}
+              />
             )
           }
 
