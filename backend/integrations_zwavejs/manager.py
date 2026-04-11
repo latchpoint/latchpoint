@@ -49,6 +49,13 @@ class ZwavejsCommandError(ZwavejsGatewayError):
     pass
 
 
+# Z-Wave command classes that identify lock devices.
+CC_DOOR_LOCK = 98  # 0x62
+CC_USER_CODE = 99  # 0x63
+CC_SCHEDULE_ENTRY_LOCK = 76  # 0x4C
+LOCK_COMMAND_CLASSES: frozenset[int] = frozenset({CC_DOOR_LOCK, CC_USER_CODE, CC_SCHEDULE_ENTRY_LOCK})
+
+
 class ZwavejsConnectionSettings(TypedDict, total=False):
     enabled: bool
     ws_url: str
@@ -805,8 +812,10 @@ def normalize_entity_state(*, value: object) -> str | None:
     return str(value)
 
 
-def infer_entity_domain(*, value: object) -> str:
-    """Infer a Home Assistant-like entity domain from a raw value type."""
+def infer_entity_domain(*, value: object, command_class: int | None = None) -> str:
+    """Infer a Home Assistant-like entity domain from a raw value type and optional Z-Wave command class."""
+    if isinstance(command_class, int) and command_class in LOCK_COMMAND_CLASSES:
+        return "lock"
     if isinstance(value, bool):
         return "binary_sensor"
     if isinstance(value, (int, float)):

@@ -6,7 +6,12 @@ from django.utils import timezone
 
 from alarm.gateways.zwavejs import ZwavejsGateway
 from alarm.models import Entity
-from integrations_zwavejs.manager import build_zwavejs_entity_id, infer_entity_domain, normalize_entity_state
+from integrations_zwavejs.manager import (
+    LOCK_COMMAND_CLASSES,
+    build_zwavejs_entity_id,
+    infer_entity_domain,
+    normalize_entity_state,
+)
 
 
 def _extract_nodes(controller_state: dict[str, Any]) -> list[dict[str, Any]]:
@@ -98,6 +103,23 @@ def sync_entities_from_zwavejs(*, zwavejs: ZwavejsGateway, now=None, per_node_li
             nodes_value_ids_empty += 1
         value_ids_total += len(value_ids)
 
+        # Pick a single representative lock value_id for this node so exactly one
+        # Entity gets domain="lock" (avoids flooding the UI with dozens of CC 99 slots).
+        # Priority: CC 98 "currentMode" > any CC 98 > any CC 99 > any CC 76.
+        _lock_cc_priority = {98: 0, 99: 1, 76: 2}
+        _lock_repr_entity_id: str | None = None
+        _best_rank = (999, 1)  # (cc_priority, 0 if currentMode else 1)
+        for vid in value_ids:
+            if not isinstance(vid, dict):
+                continue
+            cc = vid.get("commandClass")
+            if not isinstance(cc, int) or cc not in LOCK_COMMAND_CLASSES:
+                continue
+            rank = (_lock_cc_priority.get(cc, 999), 0 if vid.get("property") == "currentMode" else 1)
+            if rank < _best_rank:
+                _best_rank = rank
+                _lock_repr_entity_id = build_zwavejs_entity_id(home_id=home_id, node_id=node_id, value_id=vid)
+
         count = 0
         for value_id in value_ids:
             if not isinstance(value_id, dict):
@@ -122,9 +144,10 @@ def sync_entities_from_zwavejs(*, zwavejs: ZwavejsGateway, now=None, per_node_li
                 value = None
 
             entity_id = build_zwavejs_entity_id(home_id=home_id, node_id=node_id, value_id=value_id)
-            domain = infer_entity_domain(value=value)
+            is_lock_repr = _lock_repr_entity_id is not None and entity_id == _lock_repr_entity_id
+            domain = "lock" if is_lock_repr else infer_entity_domain(value=value)
             label = metadata.get("label") if isinstance(metadata.get("label"), str) else None
-            name = f"{node_name} • {label}" if label else f"{node_name} • {entity_id}"
+            name = node_name if is_lock_repr else (f"{node_name} • {label}" if label else f"{node_name} • {entity_id}")
 
             defaults = {
                 "domain": domain,
