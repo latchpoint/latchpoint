@@ -237,7 +237,7 @@ class UserCodeUpdateSerializer(serializers.Serializer):
             return attrs
 
         updates_time_range = any(
-            key in attrs for key in ["start_at", "end_at", "days_of_week", "window_start", "window_end"]
+            attrs.get(key) is not None for key in ["start_at", "end_at", "days_of_week", "window_start", "window_end"]
         )
         if not updates_time_range:
             return attrs

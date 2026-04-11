@@ -149,6 +149,34 @@ class CodesApiTests(APITestCase):
         )
         self.assertEqual(response.status_code, 403)
 
+    def test_admin_can_update_permanent_code_with_null_time_fields(self):
+        code = UserCode.objects.create(
+            user=self.user,
+            code_hash="not-used-here",
+            label="Original",
+            code_type=UserCode.CodeType.PERMANENT,
+            pin_length=4,
+            is_active=True,
+        )
+        url = reverse("code-detail", args=[code.id])
+        response = self.client.patch(
+            url,
+            {
+                "label": "Updated",
+                "is_active": True,
+                "start_at": None,
+                "end_at": None,
+                "days_of_week": None,
+                "window_start": None,
+                "window_end": None,
+                "allowed_states": [UserCodeAllowedState.AlarmState.ARMED_AWAY],
+                "reauth_password": "pass",
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["data"]["label"], "Updated")
+
     def test_non_admin_cannot_update_code(self):
         code = UserCode.objects.create(
             user=self.user,
