@@ -153,6 +153,23 @@ class AlarmSettingsEntry(models.Model):
 
         return SettingsEncryption.get().mask_fields(self.value, encrypted_fields)
 
+    def get_masked_value_with_defaults(self) -> dict:
+        """API read path — masked value with registry defaults merged for missing fields.
+
+        Ensures new fields added to the registry appear in the API response even if
+        the DB entry was created before those fields existed.
+        """
+        from alarm.settings_registry import ALARM_PROFILE_SETTINGS_BY_KEY
+
+        value = dict(self.get_masked_value())
+        definition = ALARM_PROFILE_SETTINGS_BY_KEY.get(self.key)
+        if definition and isinstance(definition.default, dict):
+            encrypted = set(definition.encrypted_fields)
+            for k, v in definition.default.items():
+                if k not in encrypted and k not in value:
+                    value[k] = v
+        return value
+
     def set_value_with_encryption(self, data: dict, *, partial: bool = True) -> None:
         """Write path — merges incoming data, encrypts secrets, saves.
 

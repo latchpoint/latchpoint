@@ -36,6 +36,7 @@ class SettingsRegistryView(APIView):
                     "description": definition.description,
                     "config_schema": definition.config_schema,
                     "encrypted_fields": definition.encrypted_fields,
+                    "default": definition.default,
                 }
             )
         return Response(entries)

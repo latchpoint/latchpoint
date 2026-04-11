@@ -61,7 +61,7 @@ class HomeAssistantSettingsView(APIView):
     def get(self, request):
         """Return Home Assistant settings with secrets masked."""
         entry = _get_entry()
-        return Response(entry.get_masked_value(), status=status.HTTP_200_OK)
+        return Response(entry.get_masked_value_with_defaults(), status=status.HTTP_200_OK)
 
     def patch(self, request):
         """Update Home Assistant settings (connection + operational)."""
@@ -83,7 +83,7 @@ class HomeAssistantSettingsView(APIView):
         transaction.on_commit(
             lambda: settings_profile_changed.send(sender=None, profile_id=profile.id, reason="updated")
         )
-        return Response(entry.get_masked_value(), status=status.HTTP_200_OK)
+        return Response(entry.get_masked_value_with_defaults(), status=status.HTTP_200_OK)
 
 
 class HomeAssistantEntitiesView(_HomeAssistantBaseView):

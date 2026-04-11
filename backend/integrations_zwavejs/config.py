@@ -9,6 +9,7 @@ DEFAULT_ZWAVEJS_CONNECTION: dict[str, object] = {
     "connect_timeout_seconds": 5,
     "reconnect_min_seconds": 1,
     "reconnect_max_seconds": 30,
+    "request_timeout_seconds": 10,
 }
 
 
