@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from alarm.models import AlarmState, SystemConfigValueType
 
@@ -14,6 +14,8 @@ class SettingDefinition:
     description: str = ""
     deprecated: bool = False
     deprecation_message: str = ""
+    encrypted_fields: list[str] = field(default_factory=list)
+    config_schema: dict | None = None
 
 
 ALARM_PROFILE_SETTINGS: list[SettingDefinition] = [
@@ -121,6 +123,29 @@ ALARM_PROFILE_SETTINGS: list[SettingDefinition] = [
             "denylist": [],
         },
         description="Zigbee2MQTT integration settings (inventory sync and ingest).",
+        config_schema={
+            "type": "object",
+            "properties": {
+                "enabled": {"type": "boolean", "title": "Enabled"},
+                "base_topic": {
+                    "type": "string",
+                    "title": "Base Topic",
+                    "description": "MQTT base topic for Zigbee2MQTT",
+                },
+                "allowlist": {
+                    "type": "array",
+                    "title": "Allowlist",
+                    "items": {"type": "string"},
+                    "description": "Only sync these friendly names (empty = sync all)",
+                },
+                "denylist": {
+                    "type": "array",
+                    "title": "Denylist",
+                    "items": {"type": "string"},
+                    "description": "Exclude these friendly names from sync",
+                },
+            },
+        },
     ),
     SettingDefinition(
         key="frigate",
@@ -134,36 +159,148 @@ ALARM_PROFILE_SETTINGS: list[SettingDefinition] = [
             "known_zones_by_camera": {},
         },
         description="Frigate integration settings (MQTT events ingest for rules conditions).",
+        config_schema={
+            "type": "object",
+            "properties": {
+                "enabled": {"type": "boolean", "title": "Enabled"},
+                "events_topic": {
+                    "type": "string",
+                    "title": "Events Topic",
+                    "description": "MQTT topic for Frigate detection events",
+                },
+                "retention_seconds": {
+                    "type": "integer",
+                    "title": "Retention (seconds)",
+                    "minimum": 0,
+                    "description": "How long to keep Frigate events before pruning",
+                },
+                "known_cameras": {
+                    "type": "array",
+                    "title": "Known Cameras",
+                    "items": {"type": "string"},
+                    "description": "Camera names discovered from Frigate events",
+                },
+                "known_zones_by_camera": {
+                    "type": "object",
+                    "title": "Known Zones by Camera",
+                    "additionalProperties": {"type": "array", "items": {"type": "string"}},
+                    "description": "Zone names per camera discovered from Frigate events",
+                },
+            },
+        },
     ),
     SettingDefinition(
         key="home_assistant",
         name="Home Assistant",
         value_type=SystemConfigValueType.JSON,
         default={
+            "enabled": False,
+            "base_url": "http://localhost:8123",
+            "token": "",
             "connect_timeout_seconds": 2,
         },
-        description="Home Assistant integration operational settings.",
+        description="Home Assistant connection and operational settings.",
+        encrypted_fields=["token"],
+        config_schema={
+            "type": "object",
+            "properties": {
+                "enabled": {"type": "boolean", "title": "Enabled"},
+                "base_url": {
+                    "type": "string",
+                    "title": "Base URL",
+                    "format": "url",
+                    "description": "Home Assistant instance URL",
+                },
+                "token": {
+                    "type": "string",
+                    "title": "Long-Lived Access Token",
+                    "secret": True,
+                    "description": "Generate at Profile > Security > Long-lived access tokens",
+                },
+                "connect_timeout_seconds": {
+                    "type": "number",
+                    "title": "Connect Timeout (seconds)",
+                    "minimum": 1,
+                    "maximum": 30,
+                },
+            },
+        },
     ),
     SettingDefinition(
         key="mqtt",
         name="MQTT",
         value_type=SystemConfigValueType.JSON,
         default={
+            "enabled": False,
+            "host": "localhost",
+            "port": 1883,
+            "username": "",
+            "password": "",
+            "use_tls": False,
+            "tls_insecure": False,
+            "client_id": "latchpoint-alarm",
             "keepalive_seconds": 30,
             "connect_timeout_seconds": 5,
         },
-        description="MQTT transport operational settings.",
+        description="MQTT broker connection and operational settings.",
+        encrypted_fields=["password"],
+        config_schema={
+            "type": "object",
+            "properties": {
+                "enabled": {"type": "boolean", "title": "Enabled"},
+                "host": {"type": "string", "title": "Host"},
+                "port": {"type": "integer", "title": "Port", "minimum": 1, "maximum": 65535},
+                "username": {"type": "string", "title": "Username"},
+                "password": {"type": "string", "title": "Password", "secret": True},
+                "use_tls": {"type": "boolean", "title": "Use TLS"},
+                "tls_insecure": {"type": "boolean", "title": "TLS Insecure (skip verify)"},
+                "client_id": {"type": "string", "title": "Client ID"},
+                "keepalive_seconds": {"type": "integer", "title": "Keepalive (seconds)", "minimum": 5},
+                "connect_timeout_seconds": {
+                    "type": "integer",
+                    "title": "Connect Timeout (seconds)",
+                    "minimum": 1,
+                },
+            },
+        },
     ),
     SettingDefinition(
         key="zwavejs",
         name="Z-Wave JS",
         value_type=SystemConfigValueType.JSON,
         default={
+            "enabled": False,
+            "ws_url": "ws://localhost:3000",
+            "api_token": "",
             "connect_timeout_seconds": 5,
             "reconnect_min_seconds": 1,
             "reconnect_max_seconds": 30,
         },
-        description="Z-Wave JS integration operational settings.",
+        description="Z-Wave JS WebSocket connection and operational settings.",
+        encrypted_fields=["api_token"],
+        config_schema={
+            "type": "object",
+            "properties": {
+                "enabled": {"type": "boolean", "title": "Enabled"},
+                "ws_url": {"type": "string", "title": "WebSocket URL", "format": "uri"},
+                "api_token": {"type": "string", "title": "API Token", "secret": True},
+                "connect_timeout_seconds": {
+                    "type": "integer",
+                    "title": "Connect Timeout (seconds)",
+                    "minimum": 1,
+                },
+                "reconnect_min_seconds": {
+                    "type": "integer",
+                    "title": "Reconnect Min (seconds)",
+                    "minimum": 1,
+                },
+                "reconnect_max_seconds": {
+                    "type": "integer",
+                    "title": "Reconnect Max (seconds)",
+                    "minimum": 1,
+                },
+            },
+        },
     ),
 ]
 

@@ -30,3 +30,40 @@ class AlarmConfig(AppConfig):
             capture_level=getattr(logging, settings.LOG_VIEWER_CAPTURE_LEVEL, logging.DEBUG),
             broadcast_level=getattr(logging, settings.LOG_VIEWER_BROADCAST_LEVEL, logging.WARNING),
         )
+
+        # Verify the encryption key can decrypt existing values (ADR 0079).
+        # Deferred to post-migrate to avoid running during migrations.
+        from django.db.models.signals import post_migrate
+
+        post_migrate.connect(_validate_encryption_key, sender=self)
+
+
+def _validate_encryption_key(sender, **kwargs) -> None:  # noqa: ARG001
+    """Spot-check one encrypted value to verify the key is correct.
+
+    Prevents silent data loss from key rotation or misconfiguration.
+    Only runs if there are already encrypted values in the database.
+    """
+    import logging
+
+    from alarm.crypto import ENCRYPTED_PREFIX, SettingsEncryption
+    from alarm.models import AlarmSettingsEntry
+
+    logger = logging.getLogger("alarm.crypto")
+
+    for entry in AlarmSettingsEntry.objects.all().iterator():
+        if not isinstance(entry.value, dict):
+            continue
+        for v in entry.value.values():
+            if isinstance(v, str) and v.startswith(ENCRYPTED_PREFIX):
+                try:
+                    crypto = SettingsEncryption.get()
+                    crypto.decrypt(v)
+                    logger.debug("Encryption key validated successfully.")
+                    return  # Key works — one successful decrypt is enough
+                except Exception:
+                    raise RuntimeError(
+                        "SETTINGS_ENCRYPTION_KEY cannot decrypt existing values. "
+                        "The key may have been rotated or lost. "
+                        "Restore the original key or re-configure credentials."
+                    ) from None
