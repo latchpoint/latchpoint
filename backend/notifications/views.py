@@ -258,9 +258,7 @@ class PushbulletDevicesView(APIView):
         provider_id = request.query_params.get("provider_id")
         if provider_id:
             try:
-                provider = NotificationProvider.objects.get(
-                    id=provider_id, profile=profile, provider_type="pushbullet"
-                )
+                provider = NotificationProvider.objects.get(id=provider_id, profile=profile, provider_type="pushbullet")
             except NotificationProvider.DoesNotExist:
                 raise NotFoundError("Pushbullet provider not found.") from None
         else:
@@ -296,9 +294,7 @@ class PushbulletValidateTokenView(APIView):
         provider_id = request.data.get("provider_id") if isinstance(request.data, dict) else None
         if provider_id:
             try:
-                provider = NotificationProvider.objects.get(
-                    id=provider_id, profile=profile, provider_type="pushbullet"
-                )
+                provider = NotificationProvider.objects.get(id=provider_id, profile=profile, provider_type="pushbullet")
             except NotificationProvider.DoesNotExist:
                 raise NotFoundError("Pushbullet provider not found.") from None
         else:
