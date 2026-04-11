@@ -17,6 +17,7 @@ import {
 } from '../hooks/useNotificationProviders'
 import { AddEditProviderModal } from './AddEditProviderModal'
 import type { NotificationProvider } from '@/types/notifications'
+import { getErrorMessage } from '@/types/errors'
 import { HA_SYSTEM_PROVIDER_ID } from '@/lib/constants'
 
 const PROVIDER_TYPE_LABELS: Record<string, string> = {
@@ -69,7 +70,7 @@ export function NotificationProvidersCard() {
       const result = await testMutation.mutateAsync(provider.id)
       setTestResult({ success: result.success, message: result.message })
     } catch (e) {
-      setTestResult({ success: false, message: String(e) })
+      setTestResult({ success: false, message: getErrorMessage(e) })
     } finally {
       setTestingId(null)
     }
@@ -80,7 +81,7 @@ export function NotificationProvidersCard() {
     try {
       await deleteMutation.mutateAsync(provider.id)
     } catch (e) {
-      setTestResult({ success: false, message: `Delete failed: ${String(e)}` })
+      setTestResult({ success: false, message: `Delete failed: ${getErrorMessage(e)}` })
     }
   }
 

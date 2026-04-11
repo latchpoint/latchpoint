@@ -3,6 +3,8 @@
  * Providers are DB-backed with full CRUD via the UI (ADR-0079).
  */
 
+import type { ConfigSchema } from './settingsRegistry'
+
 export type NotificationProviderType =
   | 'pushbullet'
   | 'discord'
@@ -27,7 +29,7 @@ export interface NotificationProvider {
 export interface NotificationProviderTypeInfo {
   providerType: NotificationProviderType
   displayName: string
-  configSchema: Record<string, unknown>
+  configSchema: ConfigSchema
   encryptedFields: string[]
 }
 

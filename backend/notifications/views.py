@@ -255,9 +255,18 @@ class PushbulletDevicesView(APIView):
         if not profile:
             raise ConfigurationError("No active profile.")
 
-        provider = NotificationProvider.objects.filter(
-            profile=profile, provider_type="pushbullet", is_enabled=True
-        ).first()
+        provider_id = request.query_params.get("provider_id")
+        if provider_id:
+            try:
+                provider = NotificationProvider.objects.get(
+                    id=provider_id, profile=profile, provider_type="pushbullet"
+                )
+            except NotificationProvider.DoesNotExist:
+                raise NotFoundError("Pushbullet provider not found.") from None
+        else:
+            provider = NotificationProvider.objects.filter(
+                profile=profile, provider_type="pushbullet", is_enabled=True
+            ).first()
         if not provider:
             raise ConfigurationError("No enabled Pushbullet provider configured.")
 
@@ -279,14 +288,23 @@ class PushbulletValidateTokenView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
-        """Validate the Pushbullet access token for the first enabled provider."""
+        """Validate the Pushbullet access token for a provider."""
         profile = get_active_profile()
         if not profile:
             raise ConfigurationError("No active profile.")
 
-        provider = NotificationProvider.objects.filter(
-            profile=profile, provider_type="pushbullet", is_enabled=True
-        ).first()
+        provider_id = request.data.get("provider_id") if isinstance(request.data, dict) else None
+        if provider_id:
+            try:
+                provider = NotificationProvider.objects.get(
+                    id=provider_id, profile=profile, provider_type="pushbullet"
+                )
+            except NotificationProvider.DoesNotExist:
+                raise NotFoundError("Pushbullet provider not found.") from None
+        else:
+            provider = NotificationProvider.objects.filter(
+                profile=profile, provider_type="pushbullet", is_enabled=True
+            ).first()
         if not provider:
             raise ConfigurationError("No enabled Pushbullet provider configured.")
 
