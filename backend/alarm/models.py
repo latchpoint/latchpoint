@@ -122,6 +122,61 @@ class AlarmSettingsEntry(models.Model):
         """Return a compact representation for logs/admin lists."""
         return f"{self.profile_id}:{self.key}"
 
+    # ------------------------------------------------------------------
+    # Encryption helpers (ADR 0079)
+    # ------------------------------------------------------------------
+
+    def _get_encrypted_fields(self) -> list[str]:
+        """Return the encrypted field names for this entry's setting key."""
+        from alarm.settings_registry import ALARM_PROFILE_SETTINGS_BY_KEY
+
+        definition = ALARM_PROFILE_SETTINGS_BY_KEY.get(self.key)
+        if definition and definition.encrypted_fields:
+            return definition.encrypted_fields
+        return []
+
+    def get_decrypted_value(self) -> dict:
+        """Internal read path — returns plaintext config for runtime consumers."""
+        encrypted_fields = self._get_encrypted_fields()
+        if not encrypted_fields:
+            return self.value
+        from alarm.crypto import SettingsEncryption
+
+        return SettingsEncryption.get().decrypt_fields(self.value, encrypted_fields)
+
+    def get_masked_value(self) -> dict:
+        """API read path — replaces secrets with ``has_<field>`` booleans."""
+        encrypted_fields = self._get_encrypted_fields()
+        if not encrypted_fields:
+            return self.value
+        from alarm.crypto import SettingsEncryption
+
+        return SettingsEncryption.get().mask_fields(self.value, encrypted_fields)
+
+    def set_value_with_encryption(self, data: dict, *, partial: bool = True) -> None:
+        """Write path — merges incoming data, encrypts secrets, saves.
+
+        Handles "keep existing secret" semantics: if a secret field is
+        absent or empty in *data*, the existing encrypted value is preserved.
+        """
+        encrypted_fields = self._get_encrypted_fields()
+        current = self.value or {}
+        updated = {**current, **data} if partial else data.copy()
+
+        if encrypted_fields:
+            from alarm.crypto import SettingsEncryption
+
+            crypto = SettingsEncryption.get()
+            for field_name in encrypted_fields:
+                if field_name not in data or data[field_name] == "":
+                    # Keep existing encrypted value
+                    updated[field_name] = current.get(field_name, "")
+                else:
+                    updated[field_name] = crypto.encrypt(data[field_name])
+
+        self.value = updated
+        self.save(update_fields=["value", "updated_at"])
+
 
 class Sensor(models.Model):
     name = models.CharField(max_length=150)

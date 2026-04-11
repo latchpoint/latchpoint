@@ -18,6 +18,7 @@ class DiscordHandler(NotificationHandler):
 
     provider_type = "discord"
     display_name = "Discord"
+    encrypted_fields = ["webhook_url"]
 
     @classmethod
     def from_env(cls) -> dict:

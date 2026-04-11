@@ -66,6 +66,7 @@ class NotificationHandler(ABC):
     provider_type: str = ""
     display_name: str = ""
     config_schema: dict = {}
+    encrypted_fields: list[str] = []
 
     @abstractmethod
     def validate_config(self, config: dict) -> list[str]:

@@ -51,6 +51,62 @@ class NotificationProvider(models.Model):
     def __str__(self):
         return f"{self.name} ({self.get_provider_type_display()})"
 
+    # ------------------------------------------------------------------
+    # Encryption helpers (ADR 0079)
+    # ------------------------------------------------------------------
+
+    def _get_encrypted_fields(self) -> list[str]:
+        """Return the encrypted field names for this provider's handler."""
+        from notifications.handlers import get_handler
+
+        try:
+            handler = get_handler(self.provider_type)
+        except ValueError:
+            return []
+        return getattr(handler, "encrypted_fields", [])
+
+    def get_decrypted_config(self) -> dict:
+        """Runtime dispatch path — returns plaintext config."""
+        encrypted_fields = self._get_encrypted_fields()
+        if not encrypted_fields:
+            return self.config
+        from alarm.crypto import SettingsEncryption
+
+        return SettingsEncryption.get().decrypt_fields(self.config, encrypted_fields)
+
+    def get_masked_config(self) -> dict:
+        """API response path — replaces secrets with ``has_<field>`` booleans."""
+        encrypted_fields = self._get_encrypted_fields()
+        if not encrypted_fields:
+            return self.config
+        from alarm.crypto import SettingsEncryption
+
+        return SettingsEncryption.get().mask_fields(self.config, encrypted_fields)
+
+    def set_config_with_encryption(self, data: dict, *, partial: bool = True) -> None:
+        """Write path — encrypts secrets before saving.
+
+        Handles "keep existing secret" semantics: if a secret field is
+        absent or empty in *data*, the existing encrypted value is preserved.
+        """
+        encrypted_fields = self._get_encrypted_fields()
+        current = self.config or {}
+        updated = {**current, **data} if partial else data.copy()
+
+        if encrypted_fields:
+            from alarm.crypto import SettingsEncryption
+
+            crypto = SettingsEncryption.get()
+            for field_name in encrypted_fields:
+                if field_name not in data or data[field_name] == "":
+                    # Keep existing encrypted value
+                    updated[field_name] = current.get(field_name, "")
+                else:
+                    updated[field_name] = crypto.encrypt(data[field_name])
+
+        self.config = updated
+        self.save(update_fields=["config", "updated_at"])
+
 
 class NotificationLog(models.Model):
     """Audit log for sent notifications."""

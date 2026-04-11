@@ -22,6 +22,7 @@ class PushbulletHandler(NotificationHandler):
 
     provider_type = "pushbullet"
     display_name = "Pushbullet"
+    encrypted_fields = ["access_token"]
 
     @classmethod
     def from_env(cls) -> dict:

@@ -19,6 +19,7 @@ class WebhookHandler(NotificationHandler):
 
     provider_type = "webhook"
     display_name = "Webhook"
+    encrypted_fields = ["auth_value"]
 
     @classmethod
     def from_env(cls) -> dict:

@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 class SlackHandler(NotificationHandler):
     provider_type = "slack"
     display_name = "Slack"
+    encrypted_fields = ["bot_token"]
 
     @classmethod
     def from_env(cls) -> dict:
