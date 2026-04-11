@@ -10,7 +10,7 @@ from django.db import migrations
 
 def remove_ha_env_providers(apps, schema_editor):
     NotificationProvider = apps.get_model("notifications", "NotificationProvider")
-    NotificationProvider.objects.filter(name="Home Assistant (env)").delete()
+    NotificationProvider.objects.filter(provider_type="home_assistant", name="Home Assistant (env)").delete()
 
 
 class Migration(migrations.Migration):

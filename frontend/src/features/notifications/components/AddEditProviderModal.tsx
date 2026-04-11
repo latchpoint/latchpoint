@@ -170,7 +170,7 @@ export function AddEditProviderModal({ open, onOpenChange, provider }: Props) {
             </div>
             <IntegrationSettingsForm
               schema={selectedType.configSchema as import('@/types/settingsRegistry').ConfigSchema}
-              encryptedFields={[]}
+              encryptedFields={selectedType.encryptedFields ?? []}
               values={config}
               maskedFlags={maskedFlags}
               disabled={isBusy}

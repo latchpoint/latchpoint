@@ -18,7 +18,7 @@ def mqtt_enabled() -> bool:
         entry = AlarmSettingsEntry.objects.get(profile=profile, key="mqtt")
     except AlarmSettingsEntry.DoesNotExist:
         return False
-    cfg = entry.get_decrypted_value()
+    cfg = entry.value
     return bool(cfg.get("enabled") and cfg.get("host"))
 
 
@@ -32,5 +32,5 @@ def zwavejs_enabled() -> bool:
         entry = AlarmSettingsEntry.objects.get(profile=profile, key="zwavejs")
     except AlarmSettingsEntry.DoesNotExist:
         return False
-    cfg = entry.get_decrypted_value()
+    cfg = entry.value
     return bool(cfg.get("enabled") and cfg.get("ws_url"))

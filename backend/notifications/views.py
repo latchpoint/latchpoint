@@ -8,6 +8,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from accounts.permissions import IsAdminRole
 from alarm.models import AlarmSettingsProfile
 from config.domain_exceptions import ConfigurationError, NotFoundError, ServiceUnavailableError, ValidationError
 
@@ -37,7 +38,10 @@ def get_active_profile():
 class ProviderListCreateView(APIView):
     """List all providers or create a new one."""
 
-    permission_classes = [IsAuthenticated]
+    def get_permissions(self):
+        if self.request.method == "POST":
+            return [IsAuthenticated(), IsAdminRole()]
+        return [IsAuthenticated()]
 
     def get(self, request):
         """List all notification providers for the active profile."""
@@ -87,7 +91,10 @@ class ProviderListCreateView(APIView):
 class ProviderDetailView(APIView):
     """Retrieve, update, or delete a notification provider."""
 
-    permission_classes = [IsAuthenticated]
+    def get_permissions(self):
+        if self.request.method in ("PATCH", "DELETE"):
+            return [IsAuthenticated(), IsAdminRole()]
+        return [IsAuthenticated()]
 
     def get_object(self, pk):
         """Get provider by ID."""
@@ -247,9 +254,9 @@ class PushbulletDevicesView(APIView):
         if not profile:
             raise ConfigurationError("No active profile.")
 
-        provider = (
-            NotificationProvider.objects.filter(profile=profile, provider_type="pushbullet", is_enabled=True).first()
-        )
+        provider = NotificationProvider.objects.filter(
+            profile=profile, provider_type="pushbullet", is_enabled=True
+        ).first()
         if not provider:
             raise ConfigurationError("No enabled Pushbullet provider configured.")
 
@@ -276,9 +283,9 @@ class PushbulletValidateTokenView(APIView):
         if not profile:
             raise ConfigurationError("No active profile.")
 
-        provider = (
-            NotificationProvider.objects.filter(profile=profile, provider_type="pushbullet", is_enabled=True).first()
-        )
+        provider = NotificationProvider.objects.filter(
+            profile=profile, provider_type="pushbullet", is_enabled=True
+        ).first()
         if not provider:
             raise ConfigurationError("No enabled Pushbullet provider configured.")
 

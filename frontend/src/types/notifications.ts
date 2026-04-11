@@ -1,6 +1,6 @@
 /**
- * Notification provider types and interfaces (read-only)
- * Providers are now configured via environment variables (ADR-0075)
+ * Notification provider types and interfaces.
+ * Providers are DB-backed with full CRUD via the UI (ADR-0079).
  */
 
 export type NotificationProviderType =
@@ -27,8 +27,8 @@ export interface NotificationProvider {
 export interface NotificationProviderTypeInfo {
   type: NotificationProviderType
   displayName: string
-  description: string
   configSchema: Record<string, unknown>
+  encryptedFields: string[]
 }
 
 export interface NotificationTestResult {

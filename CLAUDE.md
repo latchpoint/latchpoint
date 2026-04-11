@@ -110,14 +110,14 @@ npx vitest run
 
 ## Architecture
 
-- **Env vars** = connection config only (URLs, creds, ports) via `backend/alarm/env_config.py`
-- **Operational settings** = DB-backed, UI-editable via `AlarmSettingsEntry` per profile
-- **Settings registry** (`backend/alarm/settings_registry.py`) = centralized setting definitions with defaults and types
-- **Provider registry** (`backend/notifications/provider_registry.py`) = auto-provisions notification providers from env vars; `is_enabled` managed by UI only
+- **All config is DB-backed** (ADR 0079) — connection config, credentials, and operational settings all live in `AlarmSettingsEntry` JSON blobs per profile
+- **Encryption at rest** — secret fields encrypted with Fernet (`enc:v1:` prefix) via `backend/alarm/crypto.py`; single env var `SETTINGS_ENCRYPTION_KEY` (auto-generated on first boot)
+- **Settings registry** (`backend/alarm/settings_registry.py`) = centralized setting definitions with defaults, types, `config_schema`, and `encrypted_fields`
+- **Schema-driven UI** — `config_schema` on `SettingDefinition` drives generic frontend forms via `IntegrationSettingsForm`
+- **Notification providers** — full CRUD in UI; handlers define `config_schema` and `encrypted_fields`
 - **Action handler registry** (`backend/alarm/rules/action_handlers/`) = self-registering, protocol-based rule action handlers
 - **Signal handlers** in MQTT/ZWaveJS/HA `apps.py` react to operational settings profile changes at runtime
-- Integration connection fields are **read-only** in the UI (configured via env vars)
-- PATCH endpoints accept operational settings updates for HA, MQTT, and Z-Wave JS; Frigate/Zigbee2MQTT also accept operational settings
+- PATCH endpoints accept settings updates for HA, MQTT, and Z-Wave JS; Frigate/Zigbee2MQTT also accept settings
 
 ### Import Boundary (enforced by test)
 `alarm/rules/` and `alarm/use_cases/` must **NOT** import from `integrations_*` or `transports_*`.

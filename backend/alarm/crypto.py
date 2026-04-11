@@ -46,6 +46,7 @@ def ensure_encryption_key() -> str:
         )
     key = Fernet.generate_key().decode()
     _KEY_FILE.write_text(key)
+    _KEY_FILE.chmod(0o600)
     return key
 
 
@@ -96,8 +97,7 @@ class SettingsEncryption:
             return ""
         if not value.startswith(ENCRYPTED_PREFIX):
             raise ValueError(
-                f"Expected encrypted value with '{ENCRYPTED_PREFIX}' prefix, "
-                f"got plaintext. Run the data migration."
+                f"Expected encrypted value with '{ENCRYPTED_PREFIX}' prefix, got plaintext. Run the data migration."
             )
         return self._fernet.decrypt(value[len(ENCRYPTED_PREFIX) :].encode()).decode()
 

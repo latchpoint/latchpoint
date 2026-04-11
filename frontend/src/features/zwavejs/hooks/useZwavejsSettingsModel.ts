@@ -3,6 +3,7 @@ import { UserRole } from '@/lib/constants'
 import { useCurrentUserQuery } from '@/hooks/useAuthQueries'
 import { getErrorMessage } from '@/types/errors'
 import { useDraftFromQuery } from '@/features/settings/hooks/useDraftFromQuery'
+import { shallowEqual, splitMaskedFlags } from '@/features/settings/hooks/settingsUtils'
 import {
   useSyncZwavejsEntitiesMutation,
   useUpdateZwavejsSettingsMutation,
@@ -19,29 +20,10 @@ export function useZwavejsSettingsModel() {
   const updateSettings = useUpdateZwavejsSettingsMutation()
   const syncEntities = useSyncZwavejsEntitiesMutation()
 
-  const maskedFlags = useMemo<Record<string, boolean>>(() => {
-    const s = settingsQuery.data
-    if (!s) return {}
-    const flags: Record<string, boolean> = {}
-    for (const [key, value] of Object.entries(s)) {
-      if (key.startsWith('has') && typeof value === 'boolean') {
-        flags[key] = value
-      }
-    }
-    return flags
-  }, [settingsQuery.data])
-
-  const initialDraft = useMemo<Record<string, unknown> | null>(() => {
-    const s = settingsQuery.data
-    if (!s) return null
-    const values: Record<string, unknown> = {}
-    for (const [key, value] of Object.entries(s)) {
-      if (!key.startsWith('has')) {
-        values[key] = value
-      }
-    }
-    return values
-  }, [settingsQuery.data])
+  const { values: initialDraft, maskedFlags } = useMemo(
+    () => splitMaskedFlags(settingsQuery.data),
+    [settingsQuery.data]
+  )
 
   const { draft, setDraft } = useDraftFromQuery<Record<string, unknown>>(initialDraft)
   const [error, setError] = useState<string | null>(null)
@@ -70,9 +52,7 @@ export function useZwavejsSettingsModel() {
     }
   }
 
-  const saveDisabled = !draft || !initialDraft || (
-    JSON.stringify(draft) === JSON.stringify(initialDraft)
-  )
+  const saveDisabled = !draft || !initialDraft || shallowEqual(draft, initialDraft)
 
   const sync = async () => {
     setError(null)

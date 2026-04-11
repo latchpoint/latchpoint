@@ -189,7 +189,16 @@ export function IntegrationSettingsForm({
                   min={property.minimum}
                   max={property.maximum}
                   value={values[key] != null ? String(values[key]) : ''}
-                  onChange={(e) => onChange(key, e.target.value === '' ? '' : Number(e.target.value))}
+                  onChange={(e) => {
+                    if (e.target.value === '') {
+                      onChange(key, '')
+                      return
+                    }
+                    let num = Number(e.target.value)
+                    if (property.minimum != null) num = Math.max(property.minimum, num)
+                    if (property.maximum != null) num = Math.min(property.maximum, num)
+                    onChange(key, num)
+                  }}
                   disabled={disabled}
                 />
               </FormField>

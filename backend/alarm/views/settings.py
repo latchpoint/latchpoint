@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -9,6 +10,8 @@ from alarm.use_cases.settings_profile import ensure_active_settings_profile
 
 
 class AlarmSettingsView(APIView):
+    permission_classes = [IsAuthenticated]
+
     def get(self, request):
         """Return the current active settings profile with entries."""
         profile = ensure_active_settings_profile()
@@ -17,6 +20,8 @@ class AlarmSettingsView(APIView):
 
 class SettingsRegistryView(APIView):
     """Expose settings registry metadata for schema-driven frontend forms."""
+
+    permission_classes = [IsAuthenticated]
 
     def get(self, request):
         """Return config_schema and encrypted_fields for all integration settings."""

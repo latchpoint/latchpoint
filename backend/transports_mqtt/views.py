@@ -59,6 +59,12 @@ class MqttSettingsView(APIView):
         if not isinstance(data, dict) or not data:
             raise ValidationError("Request body must be a non-empty object.")
 
+        definition = ALARM_PROFILE_SETTINGS_BY_KEY["mqtt"]
+        allowed = set(definition.config_schema["properties"])
+        invalid = set(data) - allowed
+        if invalid:
+            raise ValidationError(f"Unknown fields: {', '.join(sorted(invalid))}")
+
         profile = ensure_active_settings_profile()
         entry = _get_entry(profile)
         entry.set_value_with_encryption(data)

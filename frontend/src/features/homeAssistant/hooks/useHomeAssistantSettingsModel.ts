@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react'
 import { UserRole } from '@/lib/constants'
 import { useCurrentUserQuery } from '@/hooks/useAuthQueries'
 import { useDraftFromQuery } from '@/features/settings/hooks/useDraftFromQuery'
+import { shallowEqual, splitMaskedFlags } from '@/features/settings/hooks/settingsUtils'
 import { useMqttSettingsQuery, useMqttStatusQuery } from '@/hooks/useMqtt'
 import { useHomeAssistantSettingsQuery, useHomeAssistantStatus, useUpdateHomeAssistantSettingsMutation } from '@/hooks/useHomeAssistant'
 import {
@@ -40,31 +41,10 @@ export function useHomeAssistantSettingsModel() {
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
 
-  // Extract masked flags (has_token → hasToken) from the API response
-  const maskedFlags = useMemo<Record<string, boolean>>(() => {
-    const s = haSettingsQuery.data
-    if (!s) return {}
-    const flags: Record<string, boolean> = {}
-    for (const [key, value] of Object.entries(s)) {
-      if (key.startsWith('has') && typeof value === 'boolean') {
-        flags[key] = value
-      }
-    }
-    return flags
-  }, [haSettingsQuery.data])
-
-  // Build a generic values draft from the API response (excluding has_* flags)
-  const initialDraft = useMemo<Record<string, unknown> | null>(() => {
-    const s = haSettingsQuery.data
-    if (!s) return null
-    const values: Record<string, unknown> = {}
-    for (const [key, value] of Object.entries(s)) {
-      if (!key.startsWith('has')) {
-        values[key] = value
-      }
-    }
-    return values
-  }, [haSettingsQuery.data])
+  const { values: initialDraft, maskedFlags } = useMemo(
+    () => splitMaskedFlags(haSettingsQuery.data),
+    [haSettingsQuery.data]
+  )
 
   const initialHaMqttEntityDraft = useMemo<HaMqttEntityDraft | null>(() => {
     const s = haMqttAlarmEntityQuery.data
@@ -96,9 +76,7 @@ export function useHomeAssistantSettingsModel() {
     }
   }
 
-  const connectionSaveDisabled = !connectionDraft || !initialDraft || (
-    JSON.stringify(connectionDraft) === JSON.stringify(initialDraft)
-  )
+  const connectionSaveDisabled = !connectionDraft || !initialDraft || shallowEqual(connectionDraft, initialDraft)
 
   const refreshConnection = () => {
     void haStatusQuery.refetch()
