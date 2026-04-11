@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 from django.conf import settings
 from django.db import models
 from django.db.models import Q
@@ -135,7 +137,7 @@ class AlarmSettingsEntry(models.Model):
             return definition.encrypted_fields
         return []
 
-    def get_decrypted_value(self) -> dict:
+    def get_decrypted_value(self) -> Any:
         """Internal read path — returns plaintext config for runtime consumers."""
         encrypted_fields = self._get_encrypted_fields()
         if not encrypted_fields:
@@ -144,7 +146,7 @@ class AlarmSettingsEntry(models.Model):
 
         return SettingsEncryption.get().decrypt_fields(self.value, encrypted_fields)
 
-    def get_masked_value(self) -> dict:
+    def get_masked_value(self) -> Any:
         """API read path — replaces secrets with ``has_<field>`` booleans."""
         encrypted_fields = self._get_encrypted_fields()
         if not encrypted_fields:
@@ -180,6 +182,8 @@ class AlarmSettingsEntry(models.Model):
         """
         encrypted_fields = self._get_encrypted_fields()
         current = self.value or {}
+        if partial and not isinstance(current, dict):
+            raise TypeError(f"Cannot partially update non-dict setting '{self.key}'")
         updated = {**current, **data} if partial else data.copy()
 
         if encrypted_fields:

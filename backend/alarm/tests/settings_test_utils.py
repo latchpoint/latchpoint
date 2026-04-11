@@ -8,7 +8,7 @@ from alarm.crypto import SettingsEncryption
 from alarm.models import AlarmSettingsEntry, AlarmSettingsProfile
 from alarm.settings_registry import ALARM_PROFILE_SETTINGS_BY_KEY
 
-# Deterministic test key — never used in production
+# Per-process test key (random each import) — never used in production
 TEST_ENCRYPTION_KEY = Fernet.generate_key().decode()
 
 
