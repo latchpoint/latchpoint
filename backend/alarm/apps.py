@@ -48,10 +48,15 @@ def _validate_encryption_key(sender, **kwargs) -> None:  # noqa: ARG001
 
     from alarm.crypto import ENCRYPTED_PREFIX, SettingsEncryption
     from alarm.models import AlarmSettingsEntry
+    from alarm.settings_registry import ALARM_PROFILE_SETTINGS
 
     logger = logging.getLogger("alarm.crypto")
 
-    for entry in AlarmSettingsEntry.objects.all().iterator():
+    keys_with_secrets = [s.key for s in ALARM_PROFILE_SETTINGS if s.encrypted_fields]
+    if not keys_with_secrets:
+        return
+
+    for entry in AlarmSettingsEntry.objects.filter(key__in=keys_with_secrets).iterator():
         if not isinstance(entry.value, dict):
             continue
         for v in entry.value.values():

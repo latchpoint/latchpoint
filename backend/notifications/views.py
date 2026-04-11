@@ -131,10 +131,7 @@ class ProviderDetailView(APIView):
             provider.is_enabled = data["is_enabled"]
         if "config" in data:
             provider.set_config_with_encryption(data["config"])
-            # set_config_with_encryption already saves, so only save remaining fields
-            provider.save(update_fields=["name", "is_enabled", "updated_at"])
-        else:
-            provider.save(update_fields=["name", "is_enabled", "updated_at"])
+        provider.save(update_fields=["name", "is_enabled", "updated_at"])
 
         serializer = NotificationProviderSerializer(provider)
         return Response(serializer.data)

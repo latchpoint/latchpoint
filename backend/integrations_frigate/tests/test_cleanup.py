@@ -31,8 +31,8 @@ class FrigateCleanupTaskTests(TestCase):
         )
 
     def test_cleanup_deletes_old_detections(self):
-        self._enable_frigate(retention_seconds=3600)
         """Detections older than retention_seconds should be deleted."""
+        self._enable_frigate(retention_seconds=3600)
 
         now = timezone.now()
 
