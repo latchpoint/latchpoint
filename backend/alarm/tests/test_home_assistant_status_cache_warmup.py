@@ -48,11 +48,13 @@ class HomeAssistantStatusCacheWarmupTests(EncryptionTestMixin, APITestCase):
             key="home_assistant",
             defaults={"value": definition.default, "value_type": definition.value_type},
         )
-        entry.set_value_with_encryption({
-            "enabled": True,
-            "base_url": "http://homeassistant.local:8123",
-            "token": "supersecret",
-        })
+        entry.set_value_with_encryption(
+            {
+                "enabled": True,
+                "base_url": "http://homeassistant.local:8123",
+                "token": "supersecret",
+            }
+        )
 
     @override_settings(ALLOW_HOME_ASSISTANT_IN_TESTS=True)
     @patch("alarm.gateways.home_assistant.DefaultHomeAssistantGateway._import_client", return_value=None)

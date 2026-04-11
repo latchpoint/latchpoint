@@ -65,16 +65,18 @@ class MqttApiTests(EncryptionTestMixin, APITestCase):
             key="mqtt",
             defaults={"value": definition.default, "value_type": definition.value_type},
         )
-        entry.set_value_with_encryption({
-            "enabled": True,
-            "host": "mqtt.local",
-            "port": 1883,
-            "username": "u",
-            "password": "supersecret",
-            "use_tls": False,
-            "tls_insecure": False,
-            "client_id": "latchpoint-alarm",
-        })
+        entry.set_value_with_encryption(
+            {
+                "enabled": True,
+                "host": "mqtt.local",
+                "port": 1883,
+                "username": "u",
+                "password": "supersecret",
+                "use_tls": False,
+                "tls_insecure": False,
+                "client_id": "latchpoint-alarm",
+            }
+        )
 
         url = reverse("mqtt-settings")
         response = self.client.get(url)

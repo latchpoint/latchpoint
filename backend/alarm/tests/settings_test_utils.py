@@ -32,6 +32,7 @@ class EncryptionTestMixin:
         SettingsEncryption.reset()
         super().tearDownClass()
 
+
 # Deprecated settings not in registry but still supported in tests
 DEPRECATED_SETTINGS = {
     "home_assistant_notify": "json",

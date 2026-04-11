@@ -1,33 +1,23 @@
 from __future__ import annotations
 
-import os
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from django.core.management import call_command
 from django.test import TestCase
 
-from alarm.models import AlarmSettingsEntry
+from alarm.tests.settings_test_utils import EncryptionTestMixin, set_profile_settings
 from alarm.use_cases.settings_profile import ensure_active_settings_profile
 
 
-class ApplyIntegrationSettingsCommandTests(TestCase):
-    @patch.dict(
-        os.environ,
-        {
-            "MQTT_ENABLED": "true",
-            "MQTT_HOST": "mqtt.local",
-            "MQTT_PORT": "1883",
-            "ZWAVEJS_ENABLED": "true",
-            "ZWAVEJS_WS_URL": "ws://zwavejs.local:3000",
-        },
-    )
+class ApplyIntegrationSettingsCommandTests(EncryptionTestMixin, TestCase):
     def test_applies_mqtt_and_zwavejs_and_publishes_ha_discovery_when_enabled(self):
         profile = ensure_active_settings_profile()
-        AlarmSettingsEntry.objects.update_or_create(
-            profile=profile,
-            key="home_assistant_alarm_entity",
-            defaults={"value_type": "json", "value": {"enabled": True}},
+        set_profile_settings(
+            profile,
+            mqtt={"enabled": True, "host": "mqtt.local", "port": 1883},
+            zwavejs={"enabled": True, "ws_url": "ws://zwavejs.local:3000"},
+            home_assistant_alarm_entity={"enabled": True},
         )
 
         mqtt_gateway = SimpleNamespace(apply_settings=Mock())

@@ -114,10 +114,12 @@ class NotificationProviderEncryptionTests(EncryptionTestMixin, TestCase):
             provider_type="pushbullet",
             config={},
         )
-        provider.set_config_with_encryption({
-            "access_token": "new-pb-token",
-            "target_type": "all",
-        })
+        provider.set_config_with_encryption(
+            {
+                "access_token": "new-pb-token",
+                "target_type": "all",
+            }
+        )
         provider.refresh_from_db()
 
         self.assertTrue(provider.config["access_token"].startswith(ENCRYPTED_PREFIX))

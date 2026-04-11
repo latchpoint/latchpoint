@@ -109,11 +109,13 @@ class AlarmSettingsEntryEncryptionTests(EncryptionTestMixin, TestCase):
             value_type="json",
             value={"enabled": False, "base_url": "", "token": "", "connect_timeout_seconds": 2},
         )
-        entry.set_value_with_encryption({
-            "enabled": True,
-            "base_url": "http://ha.local:8123",
-            "token": "my-new-token",
-        })
+        entry.set_value_with_encryption(
+            {
+                "enabled": True,
+                "base_url": "http://ha.local:8123",
+                "token": "my-new-token",
+            }
+        )
         entry.refresh_from_db()
 
         # Token should be encrypted in the DB

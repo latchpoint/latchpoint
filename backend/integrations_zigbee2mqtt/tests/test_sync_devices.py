@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import json
-import os
 import threading
 from unittest.mock import patch
 
 from django.test import TestCase
 
-from alarm.models import AlarmSettingsEntry, Entity
+from alarm.models import Entity
+from alarm.tests.settings_test_utils import set_profile_setting
 from alarm.use_cases.settings_profile import ensure_active_settings_profile
 
 
@@ -59,23 +59,11 @@ class _FakeMqttManager:
                 ).start()
 
 
-@patch.dict(
-    os.environ,
-    {
-        "ZIGBEE2MQTT_ENABLED": "true",
-        "ZIGBEE2MQTT_BASE_TOPIC": "zigbee2mqtt",
-        "MQTT_ENABLED": "true",
-        "MQTT_HOST": "mqtt.local",
-    },
-)
 class Zigbee2mqttSyncDevicesTests(TestCase):
     def test_sync_devices_upserts_entities(self):
         profile = ensure_active_settings_profile()
-        AlarmSettingsEntry.objects.update_or_create(
-            profile=profile,
-            key="zigbee2mqtt",
-            defaults={"value_type": "json", "value": {"enabled": True, "base_topic": "zigbee2mqtt"}},
-        )
+        set_profile_setting(profile, "mqtt", {"enabled": True, "host": "mqtt.local", "port": 1883})
+        set_profile_setting(profile, "zigbee2mqtt", {"enabled": True, "base_topic": "zigbee2mqtt"})
 
         fake = _FakeMqttManager()
         with patch("integrations_zigbee2mqtt.runtime.mqtt_connection_manager", fake):

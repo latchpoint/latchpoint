@@ -6,7 +6,7 @@ from unittest.mock import Mock, patch
 from django.urls import NoReverseMatch, reverse
 from rest_framework.test import APIClient, APITestCase
 
-from accounts.models import User
+from accounts.models import Role, User, UserRoleAssignment
 from alarm.models import AlarmSettingsProfile
 from alarm.tests.settings_test_utils import EncryptionTestMixin
 from notifications.handlers.base import NotificationResult
@@ -16,8 +16,11 @@ from notifications.models import NotificationLog, NotificationProvider
 class NotificationsApiTests(EncryptionTestMixin, APITestCase):
     def setUp(self):
         self.user = User.objects.create_user(email="notifications@example.com", password="pass")
+        self.admin = User.objects.create_user(email="notifications-admin@example.com", password="pass")
+        role, _ = Role.objects.get_or_create(slug="admin", defaults={"name": "Admin"})
+        UserRoleAssignment.objects.create(user=self.admin, role=role)
         self.client = APIClient()
-        self.client.force_authenticate(self.user)
+        self.client.force_authenticate(self.admin)
         self.profile = AlarmSettingsProfile.objects.filter(name="Default").first()
         if self.profile is None:
             self.profile = AlarmSettingsProfile.objects.create(name="Default", is_active=True)
