@@ -388,10 +388,8 @@ class MqttConnectionManager:
 
         reconnect_min = int(settings.get("reconnect_min_seconds") or 1)
         reconnect_max = int(settings.get("reconnect_max_seconds") or 120)
-        try:
+        with contextlib.suppress(AttributeError):
             client.reconnect_delay_set(min_delay=reconnect_min, max_delay=reconnect_max)
-        except AttributeError:
-            pass  # older paho-mqtt versions may lack this method
 
         return client
 
