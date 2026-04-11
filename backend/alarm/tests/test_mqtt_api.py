@@ -9,11 +9,12 @@ from integrations_home_assistant.models import HomeAssistantMqttAlarmEntityStatu
 from rest_framework.test import APIClient, APITestCase
 
 from accounts.models import Role, User, UserCode, UserRoleAssignment
-from alarm.models import AlarmSettingsProfile
-from alarm.tests.settings_test_utils import set_profile_settings
+from alarm.models import AlarmSettingsEntry, AlarmSettingsProfile
+from alarm.settings_registry import ALARM_PROFILE_SETTINGS_BY_KEY
+from alarm.tests.settings_test_utils import EncryptionTestMixin, set_profile_settings
 
 
-class MqttApiTests(APITestCase):
+class MqttApiTests(EncryptionTestMixin, APITestCase):
     def setUp(self):
         self.user = User.objects.create_user(email="mqtt@example.com", password="pass")
         role, _ = Role.objects.get_or_create(slug="admin", defaults={"name": "Admin"})
@@ -57,20 +58,25 @@ class MqttApiTests(APITestCase):
             },
         )
 
-    @patch.dict(
-        os.environ,
-        {
-            "MQTT_ENABLED": "true",
-            "MQTT_HOST": "mqtt.local",
-            "MQTT_PORT": "1883",
-            "MQTT_USERNAME": "u",
-            "MQTT_PASSWORD": "supersecret",
-            "MQTT_USE_TLS": "false",
-            "MQTT_TLS_INSECURE": "false",
-            "MQTT_CLIENT_ID": "latchpoint-alarm",
-        },
-    )
     def test_mqtt_password_is_masked_in_mqtt_settings_endpoint(self):
+        # Store MQTT config with encrypted password via model method
+        definition = ALARM_PROFILE_SETTINGS_BY_KEY["mqtt"]
+        entry, _ = AlarmSettingsEntry.objects.get_or_create(
+            profile=self.profile,
+            key="mqtt",
+            defaults={"value": definition.default, "value_type": definition.value_type},
+        )
+        entry.set_value_with_encryption({
+            "enabled": True,
+            "host": "mqtt.local",
+            "port": 1883,
+            "username": "u",
+            "password": "supersecret",
+            "use_tls": False,
+            "tls_insecure": False,
+            "client_id": "latchpoint-alarm",
+        })
+
         url = reverse("mqtt-settings")
         response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
@@ -88,6 +94,7 @@ class MqttApiTests(APITestCase):
     @patch.dict(os.environ, {"MQTT_ENABLED": "true", "MQTT_HOST": "mqtt.local"})
     @patch("transports_mqtt.manager.MqttConnectionManager.apply_settings")
     def test_publish_discovery_endpoint_calls_publish(self, _mock_apply):
+        # Note: mqtt_alarm_entity module still reads MQTT config from env (Phase 5 migration).
         url = reverse("integrations-ha-mqtt-alarm-entity-publish-discovery")
         with patch("integrations_home_assistant.mqtt_alarm_entity.mqtt_connection_manager.publish") as publish:
             response = self.client.post(url, data={}, format="json")

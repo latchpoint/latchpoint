@@ -4,7 +4,6 @@ API views for notification providers.
 
 import logging
 
-from rest_framework.exceptions import MethodNotAllowed
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -13,7 +12,7 @@ from alarm.models import AlarmSettingsProfile
 from config.domain_exceptions import ConfigurationError, NotFoundError, ServiceUnavailableError, ValidationError
 
 from .dispatcher import get_dispatcher
-from .handlers import get_all_handlers_metadata
+from .handlers import get_all_handlers_metadata, get_handler
 from .handlers.home_assistant import HomeAssistantHandler
 from .handlers.pushbullet import PushbulletHandler
 from .models import NotificationLog, NotificationProvider
@@ -51,10 +50,38 @@ class ProviderListCreateView(APIView):
         return Response(serializer.data)
 
     def post(self, request):
-        """Notification providers are now configured via environment variables."""
-        raise MethodNotAllowed(
-            request.method, detail="Notification providers are configured via environment variables."
+        """Create a new notification provider."""
+        profile = get_active_profile()
+        if not profile:
+            raise ValidationError("No active profile.")
+
+        data = request.data
+        if not isinstance(data, dict):
+            raise ValidationError("Request body must be an object.")
+
+        provider_type = data.get("provider_type", "")
+        name = data.get("name", "")
+        config = data.get("config", {})
+        is_enabled = data.get("is_enabled", True)
+
+        if not provider_type or not name:
+            raise ValidationError("provider_type and name are required.")
+
+        # Validate provider type exists
+        try:
+            get_handler(provider_type)
+        except ValueError as exc:
+            raise ValidationError(str(exc)) from exc
+
+        provider = NotificationProvider(
+            profile=profile,
+            name=name,
+            provider_type=provider_type,
+            is_enabled=is_enabled,
         )
+        provider.set_config_with_encryption(config, partial=False)
+        serializer = NotificationProviderSerializer(provider)
+        return Response(serializer.data, status=201)
 
 
 class ProviderDetailView(APIView):
@@ -81,19 +108,38 @@ class ProviderDetailView(APIView):
         serializer = NotificationProviderSerializer(provider)
         return Response(serializer.data)
 
-    def put(self, request, pk):
-        """Notification providers are now configured via environment variables."""
-        raise MethodNotAllowed(
-            request.method, detail="Notification providers are configured via environment variables."
-        )
+    def patch(self, request, pk):
+        """Update a notification provider."""
+        provider = self.get_object(pk)
+        if not provider:
+            raise NotFoundError("Provider not found.")
 
-    patch = put
+        data = request.data
+        if not isinstance(data, dict):
+            raise ValidationError("Request body must be an object.")
+
+        if "name" in data:
+            provider.name = data["name"]
+        if "is_enabled" in data:
+            provider.is_enabled = data["is_enabled"]
+        if "config" in data:
+            provider.set_config_with_encryption(data["config"])
+            # set_config_with_encryption already saves, so only save remaining fields
+            provider.save(update_fields=["name", "is_enabled", "updated_at"])
+        else:
+            provider.save(update_fields=["name", "is_enabled", "updated_at"])
+
+        serializer = NotificationProviderSerializer(provider)
+        return Response(serializer.data)
 
     def delete(self, request, pk):
-        """Notification providers are now configured via environment variables."""
-        raise MethodNotAllowed(
-            request.method, detail="Notification providers are configured via environment variables."
-        )
+        """Delete a notification provider."""
+        provider = self.get_object(pk)
+        if not provider:
+            raise NotFoundError("Provider not found.")
+
+        provider.delete()
+        return Response(status=204)
 
 
 class TestProviderView(APIView):
@@ -191,22 +237,26 @@ class NotificationLogListView(APIView):
 
 
 class PushbulletDevicesView(APIView):
-    """List Pushbullet devices for a token."""
+    """List Pushbullet devices for the configured provider."""
 
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        """
-        List devices for the Pushbullet account configured via env vars.
+        """List devices for a Pushbullet provider from DB config."""
+        profile = get_active_profile()
+        if not profile:
+            raise ConfigurationError("No active profile.")
 
-        The access token is always read from the PUSHBULLET_ACCESS_TOKEN
-        environment variable.
-        """
-        env_config = PushbulletHandler.from_env()
-        access_token = env_config.get("access_token")
+        provider = (
+            NotificationProvider.objects.filter(profile=profile, provider_type="pushbullet", is_enabled=True).first()
+        )
+        if not provider:
+            raise ConfigurationError("No enabled Pushbullet provider configured.")
 
+        config = provider.get_decrypted_config()
+        access_token = config.get("access_token")
         if not access_token:
-            raise ConfigurationError("Pushbullet access token not configured in environment.")
+            raise ConfigurationError("Pushbullet access token not configured.")
 
         handler = PushbulletHandler()
         devices = handler.list_devices(access_token)
@@ -216,16 +266,26 @@ class PushbulletDevicesView(APIView):
 
 
 class PushbulletValidateTokenView(APIView):
-    """Validate the env-configured Pushbullet access token."""
+    """Validate a Pushbullet access token from the configured provider."""
 
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
-        """Validate the env-configured Pushbullet access token."""
-        env_config = PushbulletHandler.from_env()
-        access_token = env_config.get("access_token")
+        """Validate the Pushbullet access token for the first enabled provider."""
+        profile = get_active_profile()
+        if not profile:
+            raise ConfigurationError("No active profile.")
+
+        provider = (
+            NotificationProvider.objects.filter(profile=profile, provider_type="pushbullet", is_enabled=True).first()
+        )
+        if not provider:
+            raise ConfigurationError("No enabled Pushbullet provider configured.")
+
+        config = provider.get_decrypted_config()
+        access_token = config.get("access_token")
         if not access_token:
-            raise ConfigurationError("Pushbullet access token not configured in environment.")
+            raise ConfigurationError("Pushbullet access token not configured.")
 
         handler = PushbulletHandler()
         user_info = handler.get_user_info(access_token)

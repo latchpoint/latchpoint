@@ -16,13 +16,6 @@ from .models import NotificationDelivery, NotificationLog, NotificationProvider
 logger = logging.getLogger(__name__)
 
 
-def _get_provider_config(provider, handler) -> dict:
-    """Return provider config from env vars, falling back to DB config for unknown types."""
-    if hasattr(handler, "from_env"):
-        return handler.from_env()
-    return provider.config or {}
-
-
 # Special ID for the Home Assistant system provider
 # This provider is auto-created when HA is configured and uses the HA integration directly
 HA_SYSTEM_PROVIDER_ID = "ha-system-provider"
@@ -32,8 +25,8 @@ class NotificationDispatcher:
     """
     Central dispatcher for sending notifications.
 
-    Resolves provider by ID, reads config from env, and routes to appropriate handler.
-    Also handles logging of notification attempts.
+    Resolves provider by ID, reads decrypted config from the model,
+    and routes to appropriate handler.
     """
 
     def _send_now(
@@ -172,15 +165,7 @@ class NotificationDispatcher:
         """
         Send notification using a provider instance.
 
-        Args:
-            provider: NotificationProvider instance
-            message: Notification message body
-            title: Optional notification title
-            data: Optional provider-specific data
-            rule_name: Optional name of rule that triggered this (for logging)
-
-        Returns:
-            NotificationResult indicating success or failure
+        Reads decrypted config from the provider model (ADR 0079).
         """
         if not provider.is_enabled:
             logger.info(f"Provider is disabled: {provider.name}")
@@ -195,8 +180,7 @@ class NotificationDispatcher:
             logger.error(f"Unknown provider type: {provider.provider_type}")
             return NotificationResult.error(str(e), code="UNKNOWN_PROVIDER_TYPE")
 
-        # Read config from env vars (secrets live in env, not DB)
-        config = _get_provider_config(provider, handler)
+        config = provider.get_decrypted_config()
 
         # Send notification
         result = handler.send(config, message, title, data)
@@ -271,18 +255,14 @@ class NotificationDispatcher:
         """
         Send a test notification to a provider.
 
-        Args:
-            provider: NotificationProvider instance to test
-
-        Returns:
-            NotificationResult indicating success or failure
+        Reads decrypted config from the provider model (ADR 0079).
         """
         try:
             handler = get_handler(provider.provider_type)
         except ValueError as e:
             return NotificationResult.error(str(e), code="UNKNOWN_PROVIDER_TYPE")
 
-        config = _get_provider_config(provider, handler)
+        config = provider.get_decrypted_config()
         result = handler.test(config)
 
         # Log test attempt

@@ -9,6 +9,7 @@ urlpatterns = [
     path("entities/", views.EntitiesView.as_view(), name="alarm-entities"),
     path("entities/sync/", views.EntitySyncView.as_view(), name="alarm-entities-sync"),
     path("settings/", views.AlarmSettingsView.as_view(), name="alarm-settings"),
+    path("settings/registry/", views.SettingsRegistryView.as_view(), name="alarm-settings-registry"),
     path("settings/profiles/", views.AlarmSettingsProfilesView.as_view(), name="alarm-settings-profiles"),
     path(
         "settings/profiles/<int:profile_id>/",

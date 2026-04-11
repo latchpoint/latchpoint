@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from unittest.mock import patch
 
 from django.contrib.auth.hashers import make_password
@@ -8,10 +7,12 @@ from django.urls import reverse
 from rest_framework.test import APIClient, APITestCase
 
 from accounts.models import Role, User, UserCode, UserRoleAssignment
-from alarm.models import AlarmSettingsProfile
+from alarm.models import AlarmSettingsEntry, AlarmSettingsProfile
+from alarm.settings_registry import ALARM_PROFILE_SETTINGS_BY_KEY
+from alarm.tests.settings_test_utils import EncryptionTestMixin
 
 
-class ZwavejsApiTests(APITestCase):
+class ZwavejsApiTests(EncryptionTestMixin, APITestCase):
     def setUp(self):
         self.user = User.objects.create_user(email="zwavejs@example.com", password="pass")
         role, _ = Role.objects.get_or_create(slug="admin", defaults={"name": "Admin"})
@@ -29,15 +30,23 @@ class ZwavejsApiTests(APITestCase):
 
         self.profile = AlarmSettingsProfile.objects.create(name="Default", is_active=True)
 
-    @patch.dict(
-        os.environ,
-        {
-            "ZWAVEJS_ENABLED": "true",
-            "ZWAVEJS_WS_URL": "ws://zwavejs.local:3000",
-            "ZWAVEJS_API_TOKEN": "supersecret",
-        },
-    )
+    def _set_zwavejs_settings(self, **overrides):
+        definition = ALARM_PROFILE_SETTINGS_BY_KEY["zwavejs"]
+        entry, _ = AlarmSettingsEntry.objects.get_or_create(
+            profile=self.profile,
+            key="zwavejs",
+            defaults={"value": definition.default, "value_type": definition.value_type},
+        )
+        entry.set_value_with_encryption(overrides)
+        return entry
+
     def test_zwavejs_token_is_masked_in_zwavejs_settings_endpoint(self):
+        self._set_zwavejs_settings(
+            enabled=True,
+            ws_url="ws://zwavejs.local:3000",
+            api_token="supersecret",
+        )
+
         url = reverse("zwavejs-settings")
         response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
@@ -52,29 +61,19 @@ class ZwavejsApiTests(APITestCase):
         self.assertEqual(response.status_code, 200)
         _mock_apply.assert_called_once()
 
-    @patch.dict(
-        os.environ,
-        {
-            "ZWAVEJS_ENABLED": "true",
-            "ZWAVEJS_WS_URL": "ws://zwavejs.local:3000",
-        },
-    )
-    def test_zwavejs_status_endpoint_does_not_connect_during_tests(self):
+    def test_zwavejs_status_endpoint_returns_disconnected_by_default(self):
         url = reverse("zwavejs-status")
         response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
-        # External integration is disabled during tests by default.
         body = response.json()
         self.assertEqual(body["data"]["connected"], False)
-        self.assertIn("disabled during tests", (body["data"].get("last_error") or "").lower())
 
-    @patch.dict(os.environ, {"ZWAVEJS_ENABLED": "false"})
     def test_zwavejs_entities_sync_requires_enabled(self):
+        # Default entry has enabled=False
         url = reverse("zwavejs-entities-sync")
         response = self.client.post(url, data={}, format="json")
         self.assertEqual(response.status_code, 400)
 
-    @patch.dict(os.environ, {"ZWAVEJS_ENABLED": "false"})
     def test_zwavejs_set_value_requires_enabled(self):
         url = reverse("zwavejs-set-value")
         response = self.client.post(
@@ -121,7 +120,7 @@ class ZwavejsApiPermissionsTests(APITestCase):
         self.assertEqual(response.status_code, 403)
 
 
-class ZwavejsNodesApiTests(APITestCase):
+class ZwavejsNodesApiTests(EncryptionTestMixin, APITestCase):
     def setUp(self):
         self.user = User.objects.create_user(email="zwavejs-nodes@example.com", password="pass")
         role, _ = Role.objects.get_or_create(slug="admin", defaults={"name": "Admin"})
@@ -130,7 +129,6 @@ class ZwavejsNodesApiTests(APITestCase):
         self.client.force_authenticate(self.user)
         self.profile = AlarmSettingsProfile.objects.create(name="Default", is_active=True)
 
-    @patch.dict(os.environ, {"ZWAVEJS_ENABLED": "false"})
     def test_nodes_returns_400_when_disabled(self):
         url = reverse("zwavejs-nodes")
         response = self.client.get(url)

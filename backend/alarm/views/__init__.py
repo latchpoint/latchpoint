@@ -7,7 +7,7 @@ from .entities import EntitiesView, EntitySyncView
 from .events import AlarmEventsView
 from .rules import RuleDetailView, RuleRunView, RuleSimulateView, RulesView, SupportedActionsView
 from .sensors import SensorDetailView, SensorsView
-from .settings import AlarmSettingsView
+from .settings import AlarmSettingsView, SettingsRegistryView
 from .settings_profiles import (
     AlarmSettingsProfileActivateView,
     AlarmSettingsProfileDetailView,
@@ -42,5 +42,6 @@ __all__ = [
     "SystemConfigListView",
     "DispatcherConfigView",
     "DispatcherStatusView",
+    "SettingsRegistryView",
     "SuspendedRulesView",
 ]

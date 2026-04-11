@@ -9,13 +9,11 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from accounts.permissions import IsAdminRole
-from alarm.env_config import get_zwavejs_config
 from alarm.gateways.zwavejs import default_zwavejs_gateway
 from alarm.models import AlarmSettingsEntry
 from alarm.serializers import ZwavejsSetValueSerializer, ZwavejsTestConnectionSerializer
 from alarm.settings_registry import ALARM_PROFILE_SETTINGS_BY_KEY
 from alarm.signals import settings_profile_changed
-from alarm.state_machine.settings import get_setting_json
 from alarm.use_cases.settings_profile import ensure_active_settings_profile
 from config.domain_exceptions import ServiceUnavailableError, ValidationError
 from integrations_zwavejs.entity_sync import sync_entities_from_zwavejs
@@ -24,34 +22,22 @@ zwavejs_gateway = default_zwavejs_gateway
 logger = logging.getLogger(__name__)
 
 
+def _get_entry(profile=None) -> AlarmSettingsEntry:
+    """Return (or create) the zwavejs AlarmSettingsEntry for the active profile."""
+    if profile is None:
+        profile = ensure_active_settings_profile()
+    definition = ALARM_PROFILE_SETTINGS_BY_KEY["zwavejs"]
+    entry, _ = AlarmSettingsEntry.objects.get_or_create(
+        profile=profile,
+        key="zwavejs",
+        defaults={"value": definition.default, "value_type": definition.value_type},
+    )
+    return entry
+
+
 def get_zwavejs_settings() -> dict:
-    """Return merged ZWaveJS settings: env connection config + DB operational settings."""
-    cfg = get_zwavejs_config()
-    profile = ensure_active_settings_profile()
-    defaults = ALARM_PROFILE_SETTINGS_BY_KEY["zwavejs"].default
-    db_settings = get_setting_json(profile, "zwavejs") or {}
-    if not isinstance(db_settings, dict):
-        db_settings = {}
-    return {
-        "enabled": cfg["enabled"],
-        "ws_url": cfg["ws_url"],
-        "api_token": cfg["api_token"],
-        "connect_timeout_seconds": int(db_settings.get("connect_timeout_seconds", defaults["connect_timeout_seconds"])),
-        "reconnect_min_seconds": int(db_settings.get("reconnect_min_seconds", defaults["reconnect_min_seconds"])),
-        "reconnect_max_seconds": int(db_settings.get("reconnect_max_seconds", defaults["reconnect_max_seconds"])),
-    }
-
-
-def _response(settings: dict) -> dict:
-    """Build the API response dict (masks api_token)."""
-    return {
-        "enabled": settings["enabled"],
-        "ws_url": settings["ws_url"],
-        "has_api_token": bool(settings.get("api_token")),
-        "connect_timeout_seconds": settings["connect_timeout_seconds"],
-        "reconnect_min_seconds": settings["reconnect_min_seconds"],
-        "reconnect_max_seconds": settings["reconnect_max_seconds"],
-    }
+    """Return decrypted Z-Wave JS settings for runtime consumers (gateways, commands)."""
+    return _get_entry().get_decrypted_value()
 
 
 def _extract_nodes(controller_state: dict) -> list[dict]:
@@ -109,9 +95,9 @@ def _node_summary(node: dict) -> dict:
 
 
 def _ensure_zwavejs_ready() -> None:
-    """Apply merged env + DB settings and ensure gateway is connected."""
+    """Read decrypted settings and ensure gateway is connected."""
     settings = get_zwavejs_settings()
-    if not settings["enabled"]:
+    if not settings.get("enabled"):
         raise ValidationError("Z-Wave JS is disabled.")
     if not settings.get("ws_url"):
         raise ValidationError("Z-Wave JS ws_url is required.")
@@ -133,59 +119,26 @@ class ZwavejsSettingsView(APIView):
     permission_classes = [IsAuthenticated, IsAdminRole]
 
     def get(self, request):
-        """Return the current Z-Wave JS connection settings (env) + operational settings (DB)."""
-        settings = get_zwavejs_settings()
-        return Response(_response(settings), status=status.HTTP_200_OK)
+        """Return Z-Wave JS settings with secrets masked."""
+        entry = _get_entry()
+        return Response(entry.get_masked_value(), status=status.HTTP_200_OK)
 
     def patch(self, request):
-        """Update Z-Wave JS operational settings (admin-only)."""
+        """Update Z-Wave JS settings (connection + operational)."""
         data = request.data
         if not isinstance(data, dict) or not data:
             raise ValidationError("Request body must be a non-empty object.")
 
-        allowed_fields = {"connect_timeout_seconds", "reconnect_min_seconds", "reconnect_max_seconds"}
-        unknown_fields = sorted(set(data) - allowed_fields)
-        if unknown_fields:
-            raise ValidationError(
-                f"Unsupported field(s): {', '.join(unknown_fields)}. "
-                "Only operational settings (connect_timeout_seconds, reconnect_min_seconds, "
-                "reconnect_max_seconds) can be patched."
-            )
-
         profile = ensure_active_settings_profile()
-        current = get_setting_json(profile, "zwavejs") or {}
-        if not isinstance(current, dict):
-            current = {}
+        entry = _get_entry(profile)
+        entry.set_value_with_encryption(data)
 
-        if "connect_timeout_seconds" in data:
-            val = data["connect_timeout_seconds"]
-            if type(val) is not int or val < 1 or val > 300:
-                raise ValidationError("connect_timeout_seconds must be an integer between 1 and 300.")
-            current["connect_timeout_seconds"] = val
-        if "reconnect_min_seconds" in data:
-            val = data["reconnect_min_seconds"]
-            if type(val) is not int or val < 1 or val > 300:
-                raise ValidationError("reconnect_min_seconds must be an integer between 1 and 300.")
-            current["reconnect_min_seconds"] = val
-        if "reconnect_max_seconds" in data:
-            val = data["reconnect_max_seconds"]
-            if type(val) is not int or val < 1 or val > 3600:
-                raise ValidationError("reconnect_max_seconds must be an integer between 1 and 3600.")
-            current["reconnect_max_seconds"] = val
-
-        definition = ALARM_PROFILE_SETTINGS_BY_KEY["zwavejs"]
-        AlarmSettingsEntry.objects.update_or_create(
-            profile=profile,
-            key="zwavejs",
-            defaults={"value": current, "value_type": definition.value_type},
-        )
-
-        settings = get_zwavejs_settings()
+        settings = entry.get_decrypted_value()
         zwavejs_gateway.apply_settings(settings_obj=settings)
         transaction.on_commit(
             lambda: settings_profile_changed.send(sender=None, profile_id=profile.id, reason="updated")
         )
-        return Response(_response(settings), status=status.HTTP_200_OK)
+        return Response(entry.get_masked_value(), status=status.HTTP_200_OK)
 
 
 class ZwavejsTestConnectionView(APIView):

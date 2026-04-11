@@ -20,19 +20,6 @@ class DiscordHandler(NotificationHandler):
     display_name = "Discord"
     encrypted_fields = ["webhook_url"]
 
-    @classmethod
-    def from_env(cls) -> dict:
-        from alarm.env_config import get_discord_config
-
-        config = get_discord_config()
-        return {k: v for k, v in config.items() if k != "enabled"}
-
-    @classmethod
-    def is_enabled_from_env(cls) -> bool:
-        from alarm.env_config import get_discord_config
-
-        return get_discord_config()["enabled"]
-
     config_schema = {
         "type": "object",
         "required": ["webhook_url"],
