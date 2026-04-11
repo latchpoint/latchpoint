@@ -173,6 +173,12 @@ export function IntegrationSettingsForm({
 }: Props) {
   if (!schema.properties) return null
 
+  // Normalize encryptedFields from snake_case to camelCase so they match the
+  // camelCased schema property keys produced by the API client's key transform.
+  const normalizedEncryptedFields = encryptedFields.map((f) =>
+    f.replace(/_([a-z0-9])/g, (_, c: string) => c.toUpperCase())
+  )
+
   const properties = Object.entries(schema.properties)
 
   // Separate `enabled` from other fields — it's rendered as a top-level toggle
@@ -194,7 +200,7 @@ export function IntegrationSettingsForm({
 
       <div className="space-y-3">
         {fieldProperties.map(([key, property]) => {
-          const isSecret = encryptedFields.includes(key) || property.secret === true
+          const isSecret = normalizedEncryptedFields.includes(key) || property.secret === true
           const maskedKey = `has${key.charAt(0).toUpperCase()}${key.slice(1)}`
           const hasSavedValue = Boolean(maskedFlags[maskedKey])
 

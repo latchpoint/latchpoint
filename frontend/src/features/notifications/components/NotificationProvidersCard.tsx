@@ -34,7 +34,7 @@ const PROVIDER_TYPE_LABELS: Record<string, string> = {
   home_assistant: 'Home Assistant',
 }
 
-export function NotificationProvidersCard() {
+export function NotificationProvidersCard({ isAdmin = false }: { isAdmin?: boolean }) {
   const [testingId, setTestingId] = useState<string | null>(null)
   const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null)
   const [modalOpen, setModalOpen] = useState(false)
@@ -119,10 +119,12 @@ export function NotificationProvidersCard() {
                 Configure notification providers for alarm alerts and rule actions.
               </CardDescription>
             </div>
-            <Button size="sm" onClick={handleAdd}>
-              <Plus className="mr-1 h-4 w-4" />
-              Add
-            </Button>
+            {isAdmin && (
+              <Button size="sm" onClick={handleAdd}>
+                <Plus className="mr-1 h-4 w-4" />
+                Add
+              </Button>
+            )}
           </div>
         </CardHeader>
         <CardContent className="space-y-4">
@@ -172,7 +174,7 @@ export function NotificationProvidersCard() {
                     </div>
 
                     <div className="flex items-center gap-1">
-                      {!isSystemProvider && (
+                      {!isSystemProvider && isAdmin && (
                         <>
                           <Button
                             variant="ghost"

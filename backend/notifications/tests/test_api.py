@@ -279,3 +279,29 @@ class NotificationsApiTests(EncryptionTestMixin, APITestCase):
         body = response.json()
         self.assertIn("error", body)
         self.assertEqual(body["error"]["status"], "service_unavailable")
+
+    def test_non_admin_cannot_create_provider(self):
+        self.client.force_authenticate(self.user)
+        url = self._reverse("provider-list")
+        payload = {
+            "name": "Pushbullet",
+            "provider_type": "pushbullet",
+            "config": {"access_token": "o.token"},
+            "is_enabled": True,
+        }
+        response = self.client.post(url, data=payload, format="json")
+        self.assertEqual(response.status_code, 403)
+
+    def test_non_admin_cannot_update_provider(self):
+        provider = self._create_pushbullet_provider()
+        self.client.force_authenticate(self.user)
+        url = self._reverse("provider-detail", pk=provider.id)
+        response = self.client.patch(url, data={"name": "Renamed"}, format="json")
+        self.assertEqual(response.status_code, 403)
+
+    def test_non_admin_cannot_delete_provider(self):
+        provider = self._create_pushbullet_provider()
+        self.client.force_authenticate(self.user)
+        url = self._reverse("provider-detail", pk=provider.id)
+        response = self.client.delete(url)
+        self.assertEqual(response.status_code, 403)
