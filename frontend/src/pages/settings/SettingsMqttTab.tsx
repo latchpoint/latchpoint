@@ -10,8 +10,8 @@ export function SettingsMqttTab() {
       <MqttSettingsCard
         isAdmin={model.isAdmin}
         isBusy={model.isBusy}
-        draft={model.draft}
-        settings={model.settingsQuery.data}
+        values={model.draft}
+        maskedFlags={model.maskedFlags}
         isLoading={model.settingsQuery.isLoading}
         connected={model.statusQuery.data?.connected}
         enabled={model.statusQuery.data?.enabled}
@@ -21,7 +21,7 @@ export function SettingsMqttTab() {
         saveDisabled={model.saveDisabled}
         onRefresh={model.refresh}
         onSave={() => void model.save()}
-        onSetDraft={model.setDraft}
+        onChange={model.handleFieldChange}
       />
     </SettingsTabShell>
   )

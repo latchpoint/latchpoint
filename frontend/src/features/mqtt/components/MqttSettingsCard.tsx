@@ -2,15 +2,13 @@ import { Wifi } from 'lucide-react'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { IntegrationConnectionCard } from '@/features/integrations/components/IntegrationConnectionCard'
 import { IntegrationOverviewCard } from '@/features/integrations/components/IntegrationOverviewCard'
-import type { MqttDraft } from '@/features/mqtt/hooks/useMqttSettingsModel'
-import type { MqttSettings } from '@/types'
 import { MqttSettingsForm } from '@/features/mqtt/components/MqttSettingsForm'
 
 type Props = {
   isAdmin: boolean
   isBusy: boolean
-  draft: MqttDraft | null
-  settings: MqttSettings | undefined
+  values: Record<string, unknown> | null
+  maskedFlags: Record<string, boolean>
   isLoading: boolean
   connected: boolean | undefined
   enabled: boolean | undefined
@@ -20,14 +18,14 @@ type Props = {
   saveDisabled: boolean
   onRefresh: () => void
   onSave: () => void
-  onSetDraft: (updater: (prev: MqttDraft | null) => MqttDraft | null) => void
+  onChange: (key: string, value: unknown) => void
 }
 
 export function MqttSettingsCard({
   isAdmin,
   isBusy,
-  draft,
-  settings,
+  values,
+  maskedFlags,
   isLoading,
   connected,
   enabled,
@@ -37,8 +35,10 @@ export function MqttSettingsCard({
   saveDisabled,
   onRefresh,
   onSave,
-  onSetDraft,
+  onChange,
 }: Props) {
+  const draftEnabled = Boolean(values?.enabled)
+
   return (
     <div className="space-y-3 sm:space-y-4">
       <IntegrationOverviewCard
@@ -48,25 +48,21 @@ export function MqttSettingsCard({
             <span>MQTT</span>
           </div>
         }
-        description="MQTT broker connection is configured via environment variables."
+        description="Configure the MQTT broker connection and operational settings."
         isAdmin={isAdmin}
         isBusy={isBusy}
         status={{ connected, enabled, lastError }}
         enableLabel="Enable MQTT"
-        enableHelp="MQTT is enabled/disabled via environment variables."
-        enabled={draft?.enabled ?? false}
-        onEnabledChange={(checked) => onSetDraft((prev) => (prev ? { ...prev, enabled: checked } : prev))}
-        enableDisabled={true}
+        enabled={draftEnabled}
+        onEnabledChange={(checked) => onChange('enabled', checked)}
         onRefresh={onRefresh}
         onSave={onSave}
         saveDisabled={saveDisabled}
       >
-        {!isLoading && draft && !draft.enabled ? (
+        {!isLoading && values && !draftEnabled ? (
           <Alert variant="warning">
             <AlertDescription>
-              {settings?.enabled
-                ? 'MQTT is being disabled. Zigbee2MQTT and Frigate require MQTT.'
-                : 'MQTT is disabled. Zigbee2MQTT and Frigate cannot be enabled without MQTT.'}
+              MQTT is disabled. Zigbee2MQTT and Frigate require MQTT.
               {zigbee2mqttEnabled || frigateEnabled ? (
                 <>
                   {' '}
@@ -78,15 +74,14 @@ export function MqttSettingsCard({
         ) : null}
       </IntegrationOverviewCard>
 
-      <IntegrationConnectionCard description="Connection settings are configured via environment variables.">
-        <div className="space-y-3 sm:space-y-4">
-          <MqttSettingsForm
-            draft={draft}
-            isLoading={isLoading}
-            isAdmin={isAdmin}
-            onUpdateDraft={(patch) => onSetDraft((prev) => (prev ? { ...prev, ...patch } : prev))}
-          />
-        </div>
+      <IntegrationConnectionCard description="Configure MQTT broker connection settings.">
+        <MqttSettingsForm
+          values={values}
+          maskedFlags={maskedFlags}
+          isLoading={isLoading}
+          isAdmin={isAdmin}
+          onChange={onChange}
+        />
       </IntegrationConnectionCard>
     </div>
   )

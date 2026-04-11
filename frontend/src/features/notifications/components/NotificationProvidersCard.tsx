@@ -1,6 +1,6 @@
 /**
- * Card component for displaying notification providers (read-only)
- * Providers are now configured via environment variables (ADR-0075)
+ * Card component for displaying and managing notification providers (ADR 0079).
+ * Supports full CRUD: Create, Edit, Delete, Test.
  */
 import { useState } from 'react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -8,12 +8,14 @@ import { Button } from '@/components/ui/button'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { LoadingInline } from '@/components/ui/loading-inline'
 import { Badge } from '@/components/ui/badge'
-import { Send, Home } from 'lucide-react'
+import { Send, Home, Plus, Pencil, Trash2 } from 'lucide-react'
 import { useHomeAssistantStatus } from '@/hooks/useHomeAssistant'
 import {
   useNotificationProviders,
   useTestNotificationProvider,
+  useDeleteNotificationProvider,
 } from '../hooks/useNotificationProviders'
+import { AddEditProviderModal } from './AddEditProviderModal'
 import type { NotificationProvider } from '@/types/notifications'
 import { HA_SYSTEM_PROVIDER_ID } from '@/lib/constants'
 
@@ -34,9 +36,12 @@ const PROVIDER_TYPE_LABELS: Record<string, string> = {
 export function NotificationProvidersCard() {
   const [testingId, setTestingId] = useState<string | null>(null)
   const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null)
+  const [modalOpen, setModalOpen] = useState(false)
+  const [editingProvider, setEditingProvider] = useState<NotificationProvider | null>(null)
 
   const providersQuery = useNotificationProviders()
   const testMutation = useTestNotificationProvider()
+  const deleteMutation = useDeleteNotificationProvider()
   const haStatus = useHomeAssistantStatus()
 
   const isHaConfigured = haStatus.data?.configured ?? false
@@ -55,7 +60,6 @@ export function NotificationProvidersCard() {
       }
     : null
 
-  // Combine HA system provider with user-configured providers
   const allProviders = haSystemProvider ? [haSystemProvider, ...providers] : providers
 
   const handleTest = async (provider: NotificationProvider) => {
@@ -69,6 +73,25 @@ export function NotificationProvidersCard() {
     } finally {
       setTestingId(null)
     }
+  }
+
+  const handleDelete = async (provider: NotificationProvider) => {
+    if (!confirm(`Delete "${provider.name}"?`)) return
+    try {
+      await deleteMutation.mutateAsync(provider.id)
+    } catch (e) {
+      setTestResult({ success: false, message: `Delete failed: ${String(e)}` })
+    }
+  }
+
+  const handleEdit = (provider: NotificationProvider) => {
+    setEditingProvider(provider)
+    setModalOpen(true)
+  }
+
+  const handleAdd = () => {
+    setEditingProvider(null)
+    setModalOpen(true)
   }
 
   if (providersQuery.isLoading) {
@@ -85,82 +108,117 @@ export function NotificationProvidersCard() {
   }
 
   return (
-    <Card>
-      <CardHeader>
-        <div>
-          <CardTitle>Notification Providers</CardTitle>
-          <CardDescription>
-            Notification providers are configured via environment variables.
-          </CardDescription>
-        </div>
-      </CardHeader>
-      <CardContent className="space-y-4">
-        {testResult && (
-          <Alert variant={testResult.success ? 'success' : 'error'}>
-            <AlertDescription>{testResult.message}</AlertDescription>
-          </Alert>
-        )}
-
-        {allProviders.length === 0 ? (
-          <div className="rounded-md border border-dashed p-6 text-center text-sm text-muted-foreground">
-            No notification providers configured. Set provider environment variables to add providers.
+    <>
+      <Card>
+        <CardHeader>
+          <div className="flex items-center justify-between">
+            <div>
+              <CardTitle>Notification Providers</CardTitle>
+              <CardDescription>
+                Configure notification providers for alarm alerts and rule actions.
+              </CardDescription>
+            </div>
+            <Button size="sm" onClick={handleAdd}>
+              <Plus className="mr-1 h-4 w-4" />
+              Add
+            </Button>
           </div>
-        ) : (
-          <div className="space-y-2">
-            {allProviders.map((provider) => {
-              const isSystemProvider = provider.id === HA_SYSTEM_PROVIDER_ID
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {testResult && (
+            <Alert variant={testResult.success ? 'success' : 'error'}>
+              <AlertDescription>{testResult.message}</AlertDescription>
+            </Alert>
+          )}
 
-              return (
-                <div
-                  key={provider.id}
-                  className="flex items-center justify-between rounded-md border p-3"
-                >
-                  <div className="flex items-center gap-3">
-                    {isSystemProvider ? (
-                      <div className="flex h-5 w-9 items-center justify-center">
-                        <Home className="h-4 w-4 text-muted-foreground" />
-                      </div>
-                    ) : (
-                      <Badge variant={provider.isEnabled ? 'default' : 'secondary'} className="text-xs">
-                        {provider.isEnabled ? 'Enabled' : 'Disabled'}
-                      </Badge>
-                    )}
-                    <div>
-                      <div className="flex items-center gap-2">
-                        <span className="font-medium">{provider.name}</span>
-                        <Badge variant="secondary">
-                          {PROVIDER_TYPE_LABELS[provider.providerType] || provider.providerType}
+          {allProviders.length === 0 ? (
+            <div className="rounded-md border border-dashed p-6 text-center text-sm text-muted-foreground">
+              No notification providers configured. Click "Add" to create one.
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {allProviders.map((provider) => {
+                const isSystemProvider = provider.id === HA_SYSTEM_PROVIDER_ID
+
+                return (
+                  <div
+                    key={provider.id}
+                    className="flex items-center justify-between rounded-md border p-3"
+                  >
+                    <div className="flex items-center gap-3">
+                      {isSystemProvider ? (
+                        <div className="flex h-5 w-9 items-center justify-center">
+                          <Home className="h-4 w-4 text-muted-foreground" />
+                        </div>
+                      ) : (
+                        <Badge variant={provider.isEnabled ? 'default' : 'secondary'} className="text-xs">
+                          {provider.isEnabled ? 'Enabled' : 'Disabled'}
                         </Badge>
-                        {isSystemProvider && (
-                          <Badge variant="outline" className="text-xs">
-                            System
+                      )}
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <span className="font-medium">{provider.name}</span>
+                          <Badge variant="secondary">
+                            {PROVIDER_TYPE_LABELS[provider.providerType] || provider.providerType}
                           </Badge>
-                        )}
+                          {isSystemProvider && (
+                            <Badge variant="outline" className="text-xs">
+                              System
+                            </Badge>
+                          )}
+                        </div>
                       </div>
                     </div>
-                  </div>
 
-                  <div className="flex items-center gap-2">
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => handleTest(provider)}
-                      disabled={!provider.isEnabled || testingId === provider.id}
-                    >
-                      {testingId === provider.id ? (
-                        <LoadingInline className="mr-2" />
-                      ) : (
-                        <Send className="mr-2 h-4 w-4" />
+                    <div className="flex items-center gap-1">
+                      {!isSystemProvider && (
+                        <>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => handleEdit(provider)}
+                            title="Edit"
+                          >
+                            <Pencil className="h-4 w-4" />
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => void handleDelete(provider)}
+                            disabled={deleteMutation.isPending}
+                            title="Delete"
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
+                        </>
                       )}
-                      Test
-                    </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => void handleTest(provider)}
+                        disabled={!provider.isEnabled || testingId === provider.id}
+                      >
+                        {testingId === provider.id ? (
+                          <LoadingInline className="mr-2" />
+                        ) : (
+                          <Send className="mr-2 h-4 w-4" />
+                        )}
+                        Test
+                      </Button>
+                    </div>
                   </div>
-                </div>
-              )
-            })}
-          </div>
-        )}
-      </CardContent>
-    </Card>
+                )
+              })}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      <AddEditProviderModal
+        open={modalOpen}
+        onOpenChange={setModalOpen}
+        provider={editingProvider}
+      />
+    </>
   )
 }

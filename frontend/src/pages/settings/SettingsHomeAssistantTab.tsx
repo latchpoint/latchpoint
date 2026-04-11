@@ -13,23 +13,24 @@ export function SettingsHomeAssistantTab() {
         <HomeAssistantOverviewCard
           isAdmin={model.isAdmin}
           isBusy={model.haSettingsQuery.isLoading || model.haSettingsQuery.isFetching || model.isConnectionSaving}
-          draft={model.haConnectionDraft}
+          enabled={Boolean(model.connectionDraft?.enabled)}
           reachable={model.haStatusQuery.data?.reachable}
           configured={model.haStatusQuery.data?.configured}
           lastError={model.haStatusQuery.data?.error}
           saveDisabled={model.connectionSaveDisabled}
           onRefresh={model.refreshConnection}
           onSave={() => void model.saveConnection()}
-          onSetDraft={model.setHaConnectionDraft}
+          onEnabledChange={(checked) => model.handleFieldChange('enabled', checked)}
         />
 
         <HomeAssistantConnectionCard
           isAdmin={model.isAdmin}
-          draft={model.haConnectionDraft}
+          values={model.connectionDraft}
+          maskedFlags={model.maskedFlags}
           isLoading={model.haSettingsQuery.isLoading}
           isError={model.haSettingsQuery.isError}
           loadError={model.haSettingsQuery.error}
-          onUpdateDraft={(patch) => model.setHaConnectionDraft((prev) => (prev ? { ...prev, ...patch } : prev))}
+          onChange={model.handleFieldChange}
         />
 
         <HomeAssistantMqttAlarmEntityCard

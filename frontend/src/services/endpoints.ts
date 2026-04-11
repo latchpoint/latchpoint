@@ -23,6 +23,7 @@ export const apiEndpoints = {
     cancelArming: '/api/alarm/cancel-arming/',
     trigger: '/api/alarm/trigger/',
     settings: '/api/alarm/settings/',
+    settingsRegistry: '/api/alarm/settings/registry/',
     settingsProfiles: '/api/alarm/settings/profiles/',
     settingsProfile: (id: number) => `/api/alarm/settings/profiles/${id}/`,
     activateSettingsProfile: (id: number) => `/api/alarm/settings/profiles/${id}/activate/`,

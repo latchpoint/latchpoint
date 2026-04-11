@@ -11,14 +11,6 @@ import {
   useUpdateHomeAssistantMqttAlarmEntitySettingsMutation,
 } from '@/hooks/useHomeAssistantMqttAlarmEntity'
 import { getErrorMessage } from '@/types/errors'
-import { parseIntInRange } from '@/lib/numberParsers'
-
-export type HaConnectionDraft = {
-  enabled: boolean
-  baseUrl: string
-  connectTimeoutSeconds: string
-  hasToken: boolean
-}
 
 export type HaMqttEntityDraft = {
   enabled: boolean
@@ -48,15 +40,30 @@ export function useHomeAssistantSettingsModel() {
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
 
-  const initialHaConnectionDraft = useMemo<HaConnectionDraft | null>(() => {
+  // Extract masked flags (has_token → hasToken) from the API response
+  const maskedFlags = useMemo<Record<string, boolean>>(() => {
+    const s = haSettingsQuery.data
+    if (!s) return {}
+    const flags: Record<string, boolean> = {}
+    for (const [key, value] of Object.entries(s)) {
+      if (key.startsWith('has') && typeof value === 'boolean') {
+        flags[key] = value
+      }
+    }
+    return flags
+  }, [haSettingsQuery.data])
+
+  // Build a generic values draft from the API response (excluding has_* flags)
+  const initialDraft = useMemo<Record<string, unknown> | null>(() => {
     const s = haSettingsQuery.data
     if (!s) return null
-    return {
-      enabled: Boolean(s.enabled),
-      baseUrl: s.baseUrl ?? '',
-      connectTimeoutSeconds: String(s.connectTimeoutSeconds ?? 2),
-      hasToken: Boolean(s.hasToken),
+    const values: Record<string, unknown> = {}
+    for (const [key, value] of Object.entries(s)) {
+      if (!key.startsWith('has')) {
+        values[key] = value
+      }
     }
+    return values
   }, [haSettingsQuery.data])
 
   const initialHaMqttEntityDraft = useMemo<HaMqttEntityDraft | null>(() => {
@@ -70,24 +77,27 @@ export function useHomeAssistantSettingsModel() {
     }
   }, [haMqttAlarmEntityQuery.data])
 
-  const { draft: haConnectionDraft, setDraft: setHaConnectionDraft } = useDraftFromQuery<HaConnectionDraft>(initialHaConnectionDraft)
+  const { draft: connectionDraft, setDraft: setConnectionDraft } = useDraftFromQuery<Record<string, unknown>>(initialDraft)
   const { draft: haMqttEntityDraft, setDraft: setHaMqttEntityDraft } = useDraftFromQuery<HaMqttEntityDraft>(initialHaMqttEntityDraft)
 
+  const handleFieldChange = (key: string, value: unknown) => {
+    setConnectionDraft((prev) => (prev ? { ...prev, [key]: value } : prev))
+  }
+
   const saveConnection = async () => {
-    if (!haConnectionDraft) return
+    if (!connectionDraft) return
     setError(null)
     setNotice(null)
     try {
-      const connectTimeoutSeconds = parseIntInRange('Connect timeout', haConnectionDraft.connectTimeoutSeconds, 1, 300)
-      await updateHaSettings.mutateAsync({ connectTimeoutSeconds })
+      await updateHaSettings.mutateAsync(connectionDraft)
       setNotice('Saved Home Assistant settings.')
     } catch (err) {
       setError(getErrorMessage(err) || 'Failed to save Home Assistant settings.')
     }
   }
 
-  const connectionSaveDisabled = !haConnectionDraft || !initialHaConnectionDraft || (
-    haConnectionDraft.connectTimeoutSeconds === initialHaConnectionDraft.connectTimeoutSeconds
+  const connectionSaveDisabled = !connectionDraft || !initialDraft || (
+    JSON.stringify(connectionDraft) === JSON.stringify(initialDraft)
   )
 
   const refreshConnection = () => {
@@ -136,8 +146,9 @@ export function useHomeAssistantSettingsModel() {
     haMqttEntityStatus,
     haStatusQuery,
     haSettingsQuery,
-    haConnectionDraft,
-    setHaConnectionDraft,
+    connectionDraft,
+    maskedFlags,
+    handleFieldChange,
     haMqttEntityDraft,
     setHaMqttEntityDraft,
     updateHaMqttAlarmEntityMutation,

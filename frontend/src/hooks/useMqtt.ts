@@ -17,10 +17,7 @@ export function useMqttStatusQuery() {
 export function useUpdateMqttSettingsMutation() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: (data: {
-      keepaliveSeconds?: number
-      connectTimeoutSeconds?: number
-    }) => mqttService.updateSettings(data),
+    mutationFn: (data: Record<string, unknown>) => mqttService.updateSettings(data),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: queryKeys.mqtt.settings })
       await queryClient.invalidateQueries({ queryKey: queryKeys.mqtt.status })

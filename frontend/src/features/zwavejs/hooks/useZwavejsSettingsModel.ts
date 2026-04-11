@@ -2,7 +2,6 @@ import { useMemo, useState } from 'react'
 import { UserRole } from '@/lib/constants'
 import { useCurrentUserQuery } from '@/hooks/useAuthQueries'
 import { getErrorMessage } from '@/types/errors'
-import { parseIntInRange } from '@/lib/numberParsers'
 import { useDraftFromQuery } from '@/features/settings/hooks/useDraftFromQuery'
 import {
   useSyncZwavejsEntitiesMutation,
@@ -10,15 +9,6 @@ import {
   useZwavejsSettingsQuery,
   useZwavejsStatusQuery,
 } from '@/hooks/useZwavejs'
-
-export type ZwavejsDraft = {
-  enabled: boolean
-  wsUrl: string
-  hasApiToken: boolean
-  connectTimeoutSeconds: string
-  reconnectMinSeconds: string
-  reconnectMaxSeconds: string
-}
 
 export function useZwavejsSettingsModel() {
   const currentUserQuery = useCurrentUserQuery()
@@ -29,23 +19,39 @@ export function useZwavejsSettingsModel() {
   const updateSettings = useUpdateZwavejsSettingsMutation()
   const syncEntities = useSyncZwavejsEntitiesMutation()
 
-  const initialDraft = useMemo<ZwavejsDraft | null>(() => {
-    if (!settingsQuery.data) return null
-    return {
-      enabled: settingsQuery.data.enabled,
-      wsUrl: settingsQuery.data.wsUrl || '',
-      hasApiToken: Boolean(settingsQuery.data.hasApiToken),
-      connectTimeoutSeconds: String(settingsQuery.data.connectTimeoutSeconds ?? 5),
-      reconnectMinSeconds: String(settingsQuery.data.reconnectMinSeconds ?? 1),
-      reconnectMaxSeconds: String(settingsQuery.data.reconnectMaxSeconds ?? 30),
+  const maskedFlags = useMemo<Record<string, boolean>>(() => {
+    const s = settingsQuery.data
+    if (!s) return {}
+    const flags: Record<string, boolean> = {}
+    for (const [key, value] of Object.entries(s)) {
+      if (key.startsWith('has') && typeof value === 'boolean') {
+        flags[key] = value
+      }
     }
+    return flags
   }, [settingsQuery.data])
 
-  const { draft, setDraft } = useDraftFromQuery<ZwavejsDraft>(initialDraft)
+  const initialDraft = useMemo<Record<string, unknown> | null>(() => {
+    const s = settingsQuery.data
+    if (!s) return null
+    const values: Record<string, unknown> = {}
+    for (const [key, value] of Object.entries(s)) {
+      if (!key.startsWith('has')) {
+        values[key] = value
+      }
+    }
+    return values
+  }, [settingsQuery.data])
+
+  const { draft, setDraft } = useDraftFromQuery<Record<string, unknown>>(initialDraft)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
 
   const isBusy = settingsQuery.isLoading || syncEntities.isPending || updateSettings.isPending
+
+  const handleFieldChange = (key: string, value: unknown) => {
+    setDraft((prev) => (prev ? { ...prev, [key]: value } : prev))
+  }
 
   const refresh = () => {
     void statusQuery.refetch()
@@ -57,10 +63,7 @@ export function useZwavejsSettingsModel() {
     setError(null)
     setNotice(null)
     try {
-      const connectTimeoutSeconds = parseIntInRange('Connect timeout', draft.connectTimeoutSeconds, 1, 300)
-      const reconnectMinSeconds = parseIntInRange('Reconnect min', draft.reconnectMinSeconds, 1, 300)
-      const reconnectMaxSeconds = parseIntInRange('Reconnect max', draft.reconnectMaxSeconds, 1, 3600)
-      await updateSettings.mutateAsync({ connectTimeoutSeconds, reconnectMinSeconds, reconnectMaxSeconds })
+      await updateSettings.mutateAsync(draft)
       setNotice('Saved Z-Wave JS settings.')
     } catch (err) {
       setError(getErrorMessage(err) || 'Failed to save Z-Wave JS settings.')
@@ -68,9 +71,7 @@ export function useZwavejsSettingsModel() {
   }
 
   const saveDisabled = !draft || !initialDraft || (
-    draft.connectTimeoutSeconds === initialDraft.connectTimeoutSeconds &&
-    draft.reconnectMinSeconds === initialDraft.reconnectMinSeconds &&
-    draft.reconnectMaxSeconds === initialDraft.reconnectMaxSeconds
+    JSON.stringify(draft) === JSON.stringify(initialDraft)
   )
 
   const sync = async () => {
@@ -91,7 +92,8 @@ export function useZwavejsSettingsModel() {
   return {
     isAdmin,
     draft,
-    setDraft,
+    maskedFlags,
+    handleFieldChange,
     isBusy,
     error,
     notice,

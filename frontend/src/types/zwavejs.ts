@@ -15,4 +15,5 @@ export interface ZwavejsSettings {
   reconnectMinSeconds: number
   reconnectMaxSeconds: number
   hasApiToken?: boolean
+  [key: string]: unknown
 }

@@ -6,6 +6,7 @@ import { NotificationProvidersCard } from '@/features/notifications/components/N
 import type { NotificationProvider } from '@/types/notifications'
 
 const mutateTest = vi.fn()
+const mutateDelete = vi.fn()
 
 let providersData: NotificationProvider[] = []
 let haConfigured = false
@@ -23,6 +24,10 @@ vi.mock('@/features/notifications/hooks/useNotificationProviders', () => {
       isLoading: false,
     }),
     useTestNotificationProvider: () => ({ mutateAsync: mutateTest, isPending: false }),
+    useDeleteNotificationProvider: () => ({ mutateAsync: mutateDelete, isPending: false }),
+    useNotificationProviderTypes: () => ({ data: [], isLoading: false }),
+    useCreateNotificationProvider: () => ({ mutateAsync: vi.fn(), isPending: false }),
+    useUpdateNotificationProvider: () => ({ mutateAsync: vi.fn(), isPending: false }),
   }
 })
 
@@ -33,6 +38,7 @@ describe('NotificationProvidersCard', () => {
     ]
     haConfigured = false
     mutateTest.mockReset().mockResolvedValue({ success: true, message: 'OK' })
+    mutateDelete.mockReset().mockResolvedValue(undefined)
   })
 
   it('renders virtual Home Assistant system provider when HA configured', () => {
@@ -51,8 +57,8 @@ describe('NotificationProvidersCard', () => {
     expect(await screen.findByText('OK')).toBeInTheDocument()
   })
 
-  it('does not render Add Provider button', () => {
+  it('renders Add button for creating providers', () => {
     renderWithProviders(<NotificationProvidersCard />)
-    expect(screen.queryByRole('button', { name: /add provider/i })).toBeNull()
+    expect(screen.getByRole('button', { name: /add/i })).toBeInTheDocument()
   })
 })

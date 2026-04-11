@@ -30,9 +30,9 @@ describe('useZwavejsSettingsModel', () => {
     expect(result.current.draft).toMatchObject({
       enabled: false,
       wsUrl: '',
-      connectTimeoutSeconds: '5',
-      reconnectMinSeconds: '1',
-      reconnectMaxSeconds: '30',
+      connectTimeoutSeconds: 5,
+      reconnectMinSeconds: 1,
+      reconnectMaxSeconds: 30,
     })
     expect(result.current.isAdmin).toBe(true)
   })

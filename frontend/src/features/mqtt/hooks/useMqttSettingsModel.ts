@@ -2,7 +2,6 @@ import { useMemo, useState } from 'react'
 import { UserRole } from '@/lib/constants'
 import { useCurrentUserQuery } from '@/hooks/useAuthQueries'
 import { getErrorMessage } from '@/types/errors'
-import { parseIntInRange } from '@/lib/numberParsers'
 import { useDraftFromQuery } from '@/features/settings/hooks/useDraftFromQuery'
 import { useFrigateSettingsQuery } from '@/hooks/useFrigate'
 import {
@@ -15,19 +14,6 @@ import {
   useHomeAssistantMqttAlarmEntitySettingsQuery,
 } from '@/hooks/useHomeAssistantMqttAlarmEntity'
 
-export type MqttDraft = {
-  enabled: boolean
-  host: string
-  port: string
-  username: string
-  useTls: boolean
-  tlsInsecure: boolean
-  clientId: string
-  keepaliveSeconds: string
-  connectTimeoutSeconds: string
-  hasPassword: boolean
-}
-
 export function useMqttSettingsModel() {
   const currentUserQuery = useCurrentUserQuery()
   const isAdmin = currentUserQuery.data?.role === UserRole.ADMIN
@@ -39,27 +25,40 @@ export function useMqttSettingsModel() {
   const frigateSettingsQuery = useFrigateSettingsQuery()
   useHomeAssistantMqttAlarmEntitySettingsQuery()
 
-  const initialDraft = useMemo<MqttDraft | null>(() => {
-    if (!settingsQuery.data) return null
-    return {
-      enabled: settingsQuery.data.enabled,
-      host: settingsQuery.data.host || '',
-      port: String(settingsQuery.data.port ?? 1883),
-      username: settingsQuery.data.username || '',
-      useTls: settingsQuery.data.useTls,
-      tlsInsecure: settingsQuery.data.tlsInsecure,
-      clientId: settingsQuery.data.clientId || 'latchpoint-alarm',
-      keepaliveSeconds: String(settingsQuery.data.keepaliveSeconds ?? 30),
-      connectTimeoutSeconds: String(settingsQuery.data.connectTimeoutSeconds ?? 5),
-      hasPassword: Boolean(settingsQuery.data.hasPassword),
+  // Extract masked flags (hasPassword) from the API response
+  const maskedFlags = useMemo<Record<string, boolean>>(() => {
+    const s = settingsQuery.data
+    if (!s) return {}
+    const flags: Record<string, boolean> = {}
+    for (const [key, value] of Object.entries(s)) {
+      if (key.startsWith('has') && typeof value === 'boolean') {
+        flags[key] = value
+      }
     }
+    return flags
   }, [settingsQuery.data])
 
-  const { draft, setDraft } = useDraftFromQuery<MqttDraft>(initialDraft)
+  const initialDraft = useMemo<Record<string, unknown> | null>(() => {
+    const s = settingsQuery.data
+    if (!s) return null
+    const values: Record<string, unknown> = {}
+    for (const [key, value] of Object.entries(s)) {
+      if (!key.startsWith('has')) {
+        values[key] = value
+      }
+    }
+    return values
+  }, [settingsQuery.data])
+
+  const { draft, setDraft } = useDraftFromQuery<Record<string, unknown>>(initialDraft)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
 
   const isBusy = settingsQuery.isLoading || updateSettings.isPending
+
+  const handleFieldChange = (key: string, value: unknown) => {
+    setDraft((prev) => (prev ? { ...prev, [key]: value } : prev))
+  }
 
   const refresh = () => {
     void statusQuery.refetch()
@@ -71,9 +70,7 @@ export function useMqttSettingsModel() {
     setError(null)
     setNotice(null)
     try {
-      const keepaliveSeconds = parseIntInRange('Keepalive', draft.keepaliveSeconds, 1, 3600)
-      const connectTimeoutSeconds = parseIntInRange('Connect timeout', draft.connectTimeoutSeconds, 1, 300)
-      await updateSettings.mutateAsync({ keepaliveSeconds, connectTimeoutSeconds })
+      await updateSettings.mutateAsync(draft)
       setNotice('Saved MQTT settings.')
     } catch (err) {
       setError(getErrorMessage(err) || 'Failed to save MQTT settings.')
@@ -81,15 +78,14 @@ export function useMqttSettingsModel() {
   }
 
   const saveDisabled = !draft || !initialDraft || (
-    draft.keepaliveSeconds === initialDraft.keepaliveSeconds &&
-    draft.connectTimeoutSeconds === initialDraft.connectTimeoutSeconds
+    JSON.stringify(draft) === JSON.stringify(initialDraft)
   )
 
   return {
     isAdmin,
     draft,
-    setDraft,
-    initialDraft,
+    maskedFlags,
+    handleFieldChange,
     isBusy,
     error,
     notice,

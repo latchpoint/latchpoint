@@ -27,11 +27,7 @@ export const zwavejsService = {
     return api.get<ZwavejsSettings>(apiEndpoints.integrations.zwavejs.settings)
   },
 
-  async updateSettings(data: {
-    connectTimeoutSeconds?: number
-    reconnectMinSeconds?: number
-    reconnectMaxSeconds?: number
-  }): Promise<ZwavejsSettings> {
+  async updateSettings(data: Record<string, unknown>): Promise<ZwavejsSettings> {
     return api.patch<ZwavejsSettings>(apiEndpoints.integrations.zwavejs.settings, data)
   },
 

@@ -18,4 +18,5 @@ export interface MqttSettings {
   keepaliveSeconds: number
   connectTimeoutSeconds: number
   hasPassword: boolean
+  [key: string]: unknown
 }
