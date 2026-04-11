@@ -1,7 +1,7 @@
 # ADR 0079: Move All Integration Config to UI with Encrypted Credentials
 
 ## Status
-**Proposed**
+**Implemented**
 
 ## Context
 
