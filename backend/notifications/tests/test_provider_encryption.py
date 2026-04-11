@@ -141,7 +141,8 @@ class NotificationProviderEncryptionTests(EncryptionTestMixin, TestCase):
         self.assertEqual(provider.config["webhook_url"], original)
         self.assertEqual(provider.config["username"], "New")
 
-    def test_set_config_empty_secret_preserves_existing(self):
+    def test_set_config_empty_secret_clears_existing(self):
+        """An explicit empty string for a secret field clears the stored value."""
         crypto = SettingsEncryption.get()
         original = crypto.encrypt("xoxb-original")
         provider = NotificationProvider.objects.create(
@@ -153,7 +154,7 @@ class NotificationProviderEncryptionTests(EncryptionTestMixin, TestCase):
         provider.set_config_with_encryption({"bot_token": ""})
         provider.refresh_from_db()
 
-        self.assertEqual(provider.config["bot_token"], original)
+        self.assertEqual(provider.config["bot_token"], "")
 
     def test_set_config_full_replace(self):
         provider = NotificationProvider.objects.create(

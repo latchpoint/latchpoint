@@ -38,16 +38,21 @@ def ensure_encryption_key() -> str:
     if _KEY_FILE.exists():
         return _KEY_FILE.read_text().strip()
 
-    # 3. First boot — generate and persist
+    # 3. First boot — generate and persist atomically
     if not _KEY_FILE.parent.exists():
         raise RuntimeError(
             f"Data directory {_KEY_FILE.parent} does not exist. "
             "Mount a persistent volume or set SETTINGS_ENCRYPTION_KEY."
         )
     key = Fernet.generate_key().decode()
-    _KEY_FILE.write_text(key)
-    _KEY_FILE.chmod(0o600)
-    return key
+    try:
+        fd = os.open(_KEY_FILE, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        with os.fdopen(fd, "w") as key_file:
+            key_file.write(key)
+        return key
+    except FileExistsError:
+        # Another process won the race — use their key
+        return _KEY_FILE.read_text().strip()
 
 
 class SettingsEncryption:

@@ -66,6 +66,8 @@ class ProviderListCreateView(APIView):
         provider_type = data.get("provider_type", "")
         name = data.get("name", "")
         config = data.get("config", {})
+        if not isinstance(config, dict):
+            raise ValidationError("config must be an object.")
         is_enabled = data.get("is_enabled", True)
 
         if not provider_type or not name:
@@ -130,6 +132,8 @@ class ProviderDetailView(APIView):
         if "is_enabled" in data:
             provider.is_enabled = data["is_enabled"]
         if "config" in data:
+            if not isinstance(data["config"], dict):
+                raise ValidationError("config must be an object.")
             provider.set_config_with_encryption(data["config"])
         provider.save(update_fields=["name", "is_enabled", "updated_at"])
 

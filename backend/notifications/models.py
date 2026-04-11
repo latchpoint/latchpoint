@@ -86,8 +86,10 @@ class NotificationProvider(models.Model):
     def set_config_with_encryption(self, data: dict, *, partial: bool = True) -> None:
         """Write path — encrypts secrets before saving.
 
-        Handles "keep existing secret" semantics: if a secret field is
-        absent or empty in *data*, the existing encrypted value is preserved.
+        Secret field semantics:
+        - Field **absent** from *data* → preserve existing encrypted value.
+        - Field present with **empty string** → clear the stored secret.
+        - Field present with a non-empty value → encrypt and store.
         """
         encrypted_fields = self._get_encrypted_fields()
         current = self.config or {}
@@ -98,9 +100,12 @@ class NotificationProvider(models.Model):
 
             crypto = SettingsEncryption.get()
             for field_name in encrypted_fields:
-                if field_name not in data or data[field_name] == "":
-                    # Keep existing encrypted value
+                if field_name not in data:
+                    # Field absent — preserve existing encrypted value
                     updated[field_name] = current.get(field_name, "")
+                elif data[field_name] == "":
+                    # Explicit empty string — clear the secret
+                    updated[field_name] = ""
                 else:
                     updated[field_name] = crypto.encrypt(data[field_name])
 

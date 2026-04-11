@@ -143,8 +143,8 @@ class AlarmSettingsEntryEncryptionTests(EncryptionTestMixin, TestCase):
         self.assertEqual(entry.value["base_url"], "http://new.local")
         self.assertEqual(entry.value["token"], original_encrypted)
 
-    def test_set_value_empty_secret_preserves_existing(self):
-        """An empty string for a secret field preserves the existing value."""
+    def test_set_value_empty_secret_clears_existing(self):
+        """An explicit empty string for a secret field clears the stored value."""
         crypto = SettingsEncryption.get()
         original_encrypted = crypto.encrypt("keep-me")
         entry = AlarmSettingsEntry.objects.create(
@@ -156,7 +156,7 @@ class AlarmSettingsEntryEncryptionTests(EncryptionTestMixin, TestCase):
         entry.set_value_with_encryption({"api_token": ""})
         entry.refresh_from_db()
 
-        self.assertEqual(entry.value["api_token"], original_encrypted)
+        self.assertEqual(entry.value["api_token"], "")
 
     def test_set_value_full_replace(self):
         """partial=False replaces the entire value dict."""

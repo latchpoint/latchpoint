@@ -64,7 +64,7 @@ export function AddEditProviderModal({ open, onOpenChange, provider }: Props) {
   }, [open, provider])
 
   const providerTypes = providerTypesQuery.data ?? []
-  const selectedType = providerTypes.find((t) => t.type === providerType)
+  const selectedType = providerTypes.find((t) => t.providerType === providerType)
 
   // Extract masked flags from existing provider config
   const maskedFlags: Record<string, boolean> = {}
@@ -151,7 +151,7 @@ export function AddEditProviderModal({ open, onOpenChange, provider }: Props) {
             >
               <option value="">Select a provider type...</option>
               {providerTypes.map((t) => (
-                <option key={t.type} value={t.type}>
+                <option key={t.providerType} value={t.providerType}>
                   {t.displayName}
                 </option>
               ))}

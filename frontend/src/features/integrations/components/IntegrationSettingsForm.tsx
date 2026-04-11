@@ -194,7 +194,9 @@ export function IntegrationSettingsForm({
                       onChange(key, '')
                       return
                     }
-                    let num = Number(e.target.value)
+                    const parsed = Number(e.target.value)
+                    if (!Number.isFinite(parsed)) return
+                    let num = property.type === 'integer' ? Math.trunc(parsed) : parsed
                     if (property.minimum != null) num = Math.max(property.minimum, num)
                     if (property.maximum != null) num = Math.min(property.maximum, num)
                     onChange(key, num)

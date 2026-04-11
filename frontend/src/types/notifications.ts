@@ -25,7 +25,7 @@ export interface NotificationProvider {
 }
 
 export interface NotificationProviderTypeInfo {
-  type: NotificationProviderType
+  providerType: NotificationProviderType
   displayName: string
   configSchema: Record<string, unknown>
   encryptedFields: string[]
