@@ -30,7 +30,7 @@ def ensure_encryption_key() -> str:
     explicit key is provided via the environment.
     """
     # 1. Explicit env var takes priority
-    key = os.environ.get("SETTINGS_ENCRYPTION_KEY", "")
+    key = os.environ.get("SETTINGS_ENCRYPTION_KEY", "").strip()
     if key:
         return key
 

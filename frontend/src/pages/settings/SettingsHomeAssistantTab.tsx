@@ -25,6 +25,7 @@ export function SettingsHomeAssistantTab() {
 
         <HomeAssistantConnectionCard
           isAdmin={model.isAdmin}
+          isBusy={model.haSettingsQuery.isLoading || model.haSettingsQuery.isFetching || model.isConnectionSaving}
           values={model.connectionDraft}
           maskedFlags={model.maskedFlags}
           isLoading={model.haSettingsQuery.isLoading}

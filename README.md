@@ -152,35 +152,7 @@ docker compose exec app python backend/manage.py shell
 | DATABASE_URL | PostgreSQL connection URL | SQLite fallback |
 | CSRF_TRUSTED_ORIGINS | Trusted origins for CSRF | Auto-configured in debug |
 | CORS_ALLOWED_ORIGINS | Allowed CORS origins | - |
-| **Home Assistant** | | |
-| HA_ENABLED | Enable Home Assistant integration | false |
-| HA_BASE_URL | Home Assistant base URL | http://localhost:8123 |
-| HA_TOKEN | Long-lived access token | - |
-| **MQTT** | | |
-| MQTT_ENABLED | Enable MQTT transport | false |
-| MQTT_HOST | MQTT broker hostname | localhost |
-| MQTT_PORT | MQTT broker port | 1883 |
-| MQTT_USERNAME | MQTT username | - |
-| MQTT_PASSWORD | MQTT password | - |
-| MQTT_USE_TLS | Use TLS for MQTT | false |
-| MQTT_TLS_INSECURE | Skip TLS certificate verification | false |
-| MQTT_CLIENT_ID | MQTT client ID | latchpoint-alarm |
-| **Z-Wave JS** | | |
-| ZWAVEJS_ENABLED | Enable Z-Wave JS integration | false |
-| ZWAVEJS_WS_URL | Z-Wave JS WebSocket URL | ws://localhost:3000 |
-| ZWAVEJS_API_TOKEN | Z-Wave JS API token | - |
-| **Zigbee2MQTT** | | |
-| ZIGBEE2MQTT_ENABLED | Enable Zigbee2MQTT integration | false |
-| **Frigate** | | |
-| FRIGATE_ENABLED | Enable Frigate integration | false |
-| **Notifications** | | |
-| PUSHBULLET_ENABLED | Enable Pushbullet notifications | false |
-| PUSHBULLET_ACCESS_TOKEN | Pushbullet access token | - |
-| DISCORD_ENABLED | Enable Discord notifications | false |
-| DISCORD_WEBHOOK_URL | Discord webhook URL | - |
-| SLACK_ENABLED | Enable Slack notifications | false |
-| SLACK_BOT_TOKEN | Slack bot token | - |
-| WEBHOOK_ENABLED | Enable generic webhook | false |
-| WEBHOOK_URL | Webhook URL | - |
+| SETTINGS_ENCRYPTION_KEY | Fernet key for encrypting secrets at rest | Auto-generated on first boot |
+| DATA_DIR | Persistent data directory for auto-generated encryption key | /data |
 
-Operational settings (timeouts, keepalive, reconnect intervals) are managed via the Settings UI and stored in the database.
+Integration settings (Home Assistant, MQTT, Z-Wave JS, Zigbee2MQTT, Frigate) and notification providers are configured entirely via the Settings UI and stored in the database with encryption at rest (ADR 0079). See `.env.example` for the minimal set of required environment variables.

@@ -45,10 +45,7 @@ export const notificationsService = {
   },
 
   async getProviderTypes(): Promise<NotificationProviderTypeInfo[]> {
-    const response = await api.get<{ providerTypes: NotificationProviderTypeInfo[] }>(
-      apiEndpoints.notifications.providerTypes
-    )
-    return response.providerTypes
+    return api.get<NotificationProviderTypeInfo[]>(apiEndpoints.notifications.providerTypes)
   },
 
   async getPushbulletDevices(accessToken: string): Promise<PushbulletDevice[]> {

@@ -17,11 +17,11 @@ class Command(BaseCommand):
 
         mqtt_settings = get_mqtt_settings()
         default_mqtt_gateway.apply_settings(settings=mqtt_settings)
-        self.stdout.write("Applied MQTT settings (env connection + DB operational).")
+        self.stdout.write("Applied MQTT settings from DB-backed settings.")
 
         zwavejs_settings = get_zwavejs_settings()
         default_zwavejs_gateway.apply_settings(settings_obj=zwavejs_settings)
-        self.stdout.write("Applied Z-Wave JS settings (env connection + DB operational).")
+        self.stdout.write("Applied Z-Wave JS settings from DB-backed settings.")
 
         # Best-effort: if HA MQTT alarm entity is enabled, republish discovery/state.
         profile = get_active_settings_profile()

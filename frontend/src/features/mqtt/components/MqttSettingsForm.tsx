@@ -7,6 +7,7 @@ type Props = {
   maskedFlags: Record<string, boolean>
   isLoading: boolean
   isAdmin: boolean
+  isBusy?: boolean
   onChange: (key: string, value: unknown) => void
 }
 
@@ -15,6 +16,7 @@ export function MqttSettingsForm({
   maskedFlags,
   isLoading,
   isAdmin,
+  isBusy,
   onChange,
 }: Props) {
   const registryEntry = useSettingsRegistryEntry('mqtt')
@@ -28,7 +30,7 @@ export function MqttSettingsForm({
       encryptedFields={registryEntry.data.encryptedFields}
       values={values}
       maskedFlags={maskedFlags}
-      disabled={!isAdmin}
+      disabled={!isAdmin || isBusy}
       onChange={onChange}
     />
   )

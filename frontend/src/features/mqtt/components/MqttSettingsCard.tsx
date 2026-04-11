@@ -80,6 +80,7 @@ export function MqttSettingsCard({
           maskedFlags={maskedFlags}
           isLoading={isLoading}
           isAdmin={isAdmin}
+          isBusy={isBusy}
           onChange={onChange}
         />
       </IntegrationConnectionCard>

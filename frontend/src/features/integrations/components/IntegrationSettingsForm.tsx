@@ -93,7 +93,7 @@ function SecretField({
         type="button"
         className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
         onClick={() => setShowPassword(!showPassword)}
-        tabIndex={-1}
+        aria-label={showPassword ? 'Hide password' : 'Show password'}
       >
         {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
       </button>
@@ -227,6 +227,39 @@ export function IntegrationSettingsForm({
                     </option>
                   ))}
                 </select>
+              </FormField>
+            )
+          }
+
+          // Object / array: JSON textarea
+          if (property.type === 'object' || property.type === 'array') {
+            return (
+              <FormField
+                key={key}
+                label={property.title || key}
+                htmlFor={`field-${key}`}
+                description={property.description}
+                size="compact"
+              >
+                <textarea
+                  id={`field-${key}`}
+                  value={
+                    typeof values[key] === 'object' && values[key] !== null
+                      ? JSON.stringify(values[key], null, 2)
+                      : String(values[key] ?? '')
+                  }
+                  onChange={(e) => {
+                    try {
+                      onChange(key, JSON.parse(e.target.value))
+                    } catch {
+                      onChange(key, e.target.value)
+                    }
+                  }}
+                  disabled={disabled}
+                  rows={3}
+                  className="flex w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 font-mono"
+                  placeholder={property.description}
+                />
               </FormField>
             )
           }

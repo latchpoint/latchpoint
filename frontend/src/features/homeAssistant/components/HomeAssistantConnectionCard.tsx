@@ -7,6 +7,7 @@ import { getErrorMessage } from '@/types/errors'
 
 type Props = {
   isAdmin: boolean
+  isBusy?: boolean
   values: Record<string, unknown> | null
   maskedFlags: Record<string, boolean>
   isLoading: boolean
@@ -17,6 +18,7 @@ type Props = {
 
 export function HomeAssistantConnectionCard({
   isAdmin,
+  isBusy,
   values,
   maskedFlags,
   isLoading,
@@ -38,7 +40,7 @@ export function HomeAssistantConnectionCard({
             encryptedFields={registryEntry.data.encryptedFields}
             values={values}
             maskedFlags={maskedFlags}
-            disabled={!isAdmin}
+            disabled={!isAdmin || isBusy}
             onChange={onChange}
           />
         ) : !isAdmin ? (

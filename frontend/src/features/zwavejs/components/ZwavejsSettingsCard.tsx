@@ -78,7 +78,7 @@ export function ZwavejsSettingsCard({
             encryptedFields={registryEntry.data.encryptedFields}
             values={values}
             maskedFlags={maskedFlags}
-            disabled={!isAdmin}
+            disabled={!isAdmin || isBusy}
             onChange={onChange}
           />
         )}

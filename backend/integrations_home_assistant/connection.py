@@ -65,12 +65,17 @@ def set_cached_connection() -> None:
     except Exception:
         return
 
-    obj = HomeAssistantRuntimeConnection(
-        enabled=bool(cfg.get("enabled")),
-        base_url=str(cfg.get("base_url") or ""),
-        token=str(cfg.get("token") or ""),
-        connect_timeout_seconds=float(cfg.get("connect_timeout_seconds") or 2),
-    )
+    defaults = {"enabled": False, "base_url": "", "token": "", "connect_timeout_seconds": 2}
+    try:
+        obj = HomeAssistantRuntimeConnection(
+            enabled=bool(cfg.get("enabled", defaults["enabled"])),
+            base_url=str(cfg.get("base_url") or defaults["base_url"]),
+            token=str(cfg.get("token") or defaults["token"]),
+            connect_timeout_seconds=float(cfg.get("connect_timeout_seconds") or defaults["connect_timeout_seconds"]),
+        )
+    except (TypeError, ValueError):
+        obj = HomeAssistantRuntimeConnection(**defaults)
+
     with _lock:
         global _cached
         _cached = obj

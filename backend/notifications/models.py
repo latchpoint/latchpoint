@@ -105,7 +105,10 @@ class NotificationProvider(models.Model):
                     updated[field_name] = crypto.encrypt(data[field_name])
 
         self.config = updated
-        self.save(update_fields=["config", "updated_at"])
+        if self._state.adding:
+            self.save()
+        else:
+            self.save(update_fields=["config", "updated_at"])
 
 
 class NotificationLog(models.Model):
