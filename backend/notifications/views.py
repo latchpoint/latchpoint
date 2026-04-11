@@ -75,9 +75,14 @@ class ProviderListCreateView(APIView):
 
         # Validate provider type exists
         try:
-            get_handler(provider_type)
+            handler = get_handler(provider_type)
         except ValueError as exc:
             raise ValidationError(str(exc)) from exc
+
+        # Validate config against handler
+        config_errors = handler.validate_config(config)
+        if config_errors:
+            raise ValidationError({"config": config_errors})
 
         provider = NotificationProvider(
             profile=profile,
@@ -127,15 +132,26 @@ class ProviderDetailView(APIView):
         if not isinstance(data, dict):
             raise ValidationError("Request body must be an object.")
 
+        update_fields = ["updated_at"]
         if "name" in data:
             provider.name = data["name"]
+            update_fields.append("name")
         if "is_enabled" in data:
             provider.is_enabled = data["is_enabled"]
+            update_fields.append("is_enabled")
         if "config" in data:
             if not isinstance(data["config"], dict):
                 raise ValidationError("config must be an object.")
-            provider.set_config_with_encryption(data["config"])
-        provider.save(update_fields=["name", "is_enabled", "updated_at"])
+            # Validate config against handler
+            handler = get_handler(provider.provider_type)
+            # Build the merged config for validation (mirrors set_config_with_encryption partial merge)
+            merged = {**(provider.config or {}), **data["config"]}
+            config_errors = handler.validate_config(merged)
+            if config_errors:
+                raise ValidationError({"config": config_errors})
+            provider.set_config_with_encryption(data["config"], save=False)
+            update_fields.append("config")
+        provider.save(update_fields=update_fields)
 
         serializer = NotificationProviderSerializer(provider)
         return Response(serializer.data)
