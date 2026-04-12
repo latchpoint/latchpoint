@@ -108,17 +108,19 @@ def sync_entities_from_zwavejs(*, zwavejs: ZwavejsGateway, now=None, per_node_li
         # Priority: CC 98 "currentMode" > any CC 98 > any CC 99 > any CC 76.
         _lock_cc_priority = {98: 0, 99: 1, 76: 2}
         _lock_repr_entity_id: str | None = None
-        _best_rank = (999, 1)  # (cc_priority, 0 if currentMode else 1)
+        _best_rank = (999, 1, "")  # (cc_priority, 0 if currentMode else 1, entity_id)
         for vid in value_ids:
             if not isinstance(vid, dict):
                 continue
             cc = vid.get("commandClass")
-            if not isinstance(cc, int) or cc not in LOCK_COMMAND_CLASSES:
+            prop = vid.get("property")
+            if not isinstance(cc, int) or cc not in LOCK_COMMAND_CLASSES or prop is None:
                 continue
-            rank = (_lock_cc_priority.get(cc, 999), 0 if vid.get("property") == "currentMode" else 1)
+            candidate_entity_id = build_zwavejs_entity_id(home_id=home_id, node_id=node_id, value_id=vid)
+            rank = (_lock_cc_priority.get(cc, 999), 0 if prop == "currentMode" else 1, candidate_entity_id)
             if rank < _best_rank:
                 _best_rank = rank
-                _lock_repr_entity_id = build_zwavejs_entity_id(home_id=home_id, node_id=node_id, value_id=vid)
+                _lock_repr_entity_id = candidate_entity_id
 
         count = 0
         for value_id in value_ids:

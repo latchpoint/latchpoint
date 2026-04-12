@@ -132,7 +132,7 @@ class ZwavejsEntitySyncTests(TestCase):
         self.assertEqual(entity.attributes["zwavejs"]["node_id"], 2)
 
     def test_lock_entity_uses_node_name(self):
-        """The representative lock entity should use just the node name, not 'node_name - label'."""
+        """The representative lock entity should use just the node name, not 'node_name • label'."""
 
         class _LockNode(_FakeZwavejs):
             def node_get_defined_value_ids(self, *, node_id, timeout_seconds=5.0):
