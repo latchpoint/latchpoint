@@ -104,7 +104,8 @@ This document tracks all Architecture Decision Records (ADRs) and their implemen
 |--------|-------|
 | **Implemented** | 59 |
 | **Partially Implemented** | 1 |
-| **Proposed** | 5 |
+| **Accepted** | 1 |
+| **Proposed** | 4 |
 | **Superseded** | 13 |
 | **Total** | 78 |
 

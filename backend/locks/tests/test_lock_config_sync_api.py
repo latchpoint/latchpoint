@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from unittest import TestCase
 from unittest.mock import patch
 
@@ -21,7 +22,7 @@ class FakeZwavejsGateway:
         *,
         value_ids: list[dict],
         values: dict[tuple[int, str], object],
-        cc_api_responses: dict[tuple[str, str], object] | None = None,
+        cc_api_responses: dict[tuple[int, int, str, str], object] | None = None,
     ):
         self._value_ids = value_ids
         self._values = values
@@ -40,16 +41,16 @@ class FakeZwavejsGateway:
         key = (int(node_id), _value_id_key(value_id))
         return self._values.get(key)
 
-    def invoke_cc_api(  # noqa: ARG002
+    def invoke_cc_api(
         self,
         *,
         node_id: int,
         command_class: int,
         method_name: str,
         args: list | None = None,
-        timeout_seconds: float = 10.0,
+        timeout_seconds: float = 10.0,  # noqa: ARG002
     ) -> object:
-        key = (method_name, str(args or []))
+        key = (node_id, command_class, method_name, json.dumps(args or [], sort_keys=True))
         return self._cc_api_responses.get(key)
 
 
@@ -537,29 +538,29 @@ class LockConfigSyncApiTests(EncryptionTestMixin, APITestCase):
         }
         cc_api_responses = {
             # getNumSlots response
-            ("getNumSlots", "[]"): {"numWeekDaySlots": 0, "numYearDaySlots": 0, "numDailyRepeatingSlots": 7},
+            (5, 78, "getNumSlots", "[]"): {"numWeekDaySlots": 0, "numYearDaySlots": 0, "numDailyRepeatingSlots": 7},
             # User 1, slot 1: empty schedule
-            ("getDailyRepeatingSchedule", "[{'userId': 1, 'slotId': 1}]"): {},
-            ("getDailyRepeatingSchedule", "[{'userId': 1, 'slotId': 2}]"): {},
-            ("getDailyRepeatingSchedule", "[{'userId': 1, 'slotId': 3}]"): {},
-            ("getDailyRepeatingSchedule", "[{'userId': 1, 'slotId': 4}]"): {},
-            ("getDailyRepeatingSchedule", "[{'userId': 1, 'slotId': 5}]"): {},
-            ("getDailyRepeatingSchedule", "[{'userId': 1, 'slotId': 6}]"): {},
-            ("getDailyRepeatingSchedule", "[{'userId': 1, 'slotId': 7}]"): {},
+            (5, 78, "getDailyRepeatingSchedule", '[{"slotId": 1, "userId": 1}]'): {},
+            (5, 78, "getDailyRepeatingSchedule", '[{"slotId": 2, "userId": 1}]'): {},
+            (5, 78, "getDailyRepeatingSchedule", '[{"slotId": 3, "userId": 1}]'): {},
+            (5, 78, "getDailyRepeatingSchedule", '[{"slotId": 4, "userId": 1}]'): {},
+            (5, 78, "getDailyRepeatingSchedule", '[{"slotId": 5, "userId": 1}]'): {},
+            (5, 78, "getDailyRepeatingSchedule", '[{"slotId": 6, "userId": 1}]'): {},
+            (5, 78, "getDailyRepeatingSchedule", '[{"slotId": 7, "userId": 1}]'): {},
             # User 2, slot 1: Mon+Thu 07:00 for 8h
-            ("getDailyRepeatingSchedule", "[{'userId': 2, 'slotId': 1}]"): {
+            (5, 78, "getDailyRepeatingSchedule", '[{"slotId": 1, "userId": 2}]'): {
                 "weekdays": [1, 4],
                 "startHour": 7,
                 "startMinute": 0,
                 "durationHour": 8,
                 "durationMinute": 0,
             },
-            ("getDailyRepeatingSchedule", "[{'userId': 2, 'slotId': 2}]"): {},
-            ("getDailyRepeatingSchedule", "[{'userId': 2, 'slotId': 3}]"): {},
-            ("getDailyRepeatingSchedule", "[{'userId': 2, 'slotId': 4}]"): {},
-            ("getDailyRepeatingSchedule", "[{'userId': 2, 'slotId': 5}]"): {},
-            ("getDailyRepeatingSchedule", "[{'userId': 2, 'slotId': 6}]"): {},
-            ("getDailyRepeatingSchedule", "[{'userId': 2, 'slotId': 7}]"): {},
+            (5, 78, "getDailyRepeatingSchedule", '[{"slotId": 2, "userId": 2}]'): {},
+            (5, 78, "getDailyRepeatingSchedule", '[{"slotId": 3, "userId": 2}]'): {},
+            (5, 78, "getDailyRepeatingSchedule", '[{"slotId": 4, "userId": 2}]'): {},
+            (5, 78, "getDailyRepeatingSchedule", '[{"slotId": 5, "userId": 2}]'): {},
+            (5, 78, "getDailyRepeatingSchedule", '[{"slotId": 6, "userId": 2}]'): {},
+            (5, 78, "getDailyRepeatingSchedule", '[{"slotId": 7, "userId": 2}]'): {},
         }
         fake = FakeZwavejsGateway(value_ids=value_ids, values=values, cc_api_responses=cc_api_responses)
         resp = self._sync(fake)
@@ -596,7 +597,7 @@ class LockConfigSyncApiTests(EncryptionTestMixin, APITestCase):
             (5, _value_id_key({"commandClass": 99, "property": "userCode", "propertyKey": 1})): "1234",
         }
         cc_api_responses = {
-            ("getNumSlots", "[]"): {"numWeekDaySlots": 0, "numYearDaySlots": 0, "numDailyRepeatingSlots": 0},
+            (5, 78, "getNumSlots", "[]"): {"numWeekDaySlots": 0, "numYearDaySlots": 0, "numDailyRepeatingSlots": 0},
         }
         fake = FakeZwavejsGateway(value_ids=value_ids, values=values, cc_api_responses=cc_api_responses)
         resp = self._sync(fake)
