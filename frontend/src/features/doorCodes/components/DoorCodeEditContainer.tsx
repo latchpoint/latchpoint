@@ -163,7 +163,11 @@ export function DoorCodeEditContainer({ code, locks, locksIsLoading, locksError,
       setEditError('Password is required for re-authentication.')
       return
     }
-    const ok = window.confirm('Delete this door code? This cannot be undone.')
+    const confirmMsg =
+      code.source === 'synced'
+        ? 'Delete this door code? This will also clear the code from the physical lock. This cannot be undone.'
+        : 'Delete this door code? This cannot be undone.'
+    const ok = window.confirm(confirmMsg)
     if (!ok) return
     try {
       await onDelete(code.id, editReauthPassword)
