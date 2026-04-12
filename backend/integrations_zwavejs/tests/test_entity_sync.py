@@ -195,8 +195,8 @@ class InferEntityDomainTests(SimpleTestCase):
     def test_returns_lock_for_cc_99(self):
         self.assertEqual(infer_entity_domain(value="1234", command_class=99), "lock")
 
-    def test_returns_lock_for_cc_76(self):
-        self.assertEqual(infer_entity_domain(value={}, command_class=76), "lock")
+    def test_returns_lock_for_cc_78(self):
+        self.assertEqual(infer_entity_domain(value={}, command_class=78), "lock")
 
     def test_returns_sensor_for_non_lock_cc(self):
         self.assertEqual(infer_entity_domain(value=42, command_class=113), "sensor")

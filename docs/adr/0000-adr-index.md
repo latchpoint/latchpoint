@@ -92,6 +92,9 @@ This document tracks all Architecture Decision Records (ADRs) and their implemen
 | [0073](0073-backend-endpoint-test-baseline-expansion.md) | Backend Endpoint Test Baseline Expansion (Useful Gaps) | **Implemented** |
 | [0074](0074-test-suite-expansion-beyond-endpoint-baseline.md) | Test Suite Expansion Beyond Endpoint Baseline | **Implemented** |
 | [0075](0075-env-var-credentials-remove-encryption.md) | Move Integration Credentials to Env Vars, Remove Encryption | **Implemented** |
+| [0079](0079-ui-config-with-encrypted-credentials.md) | DB-Backed Settings with Encryption, Schema-Driven UI, and Notification Provider CRUD | **Implemented** |
+| [0080](0080-pushbullet-multi-provider-endpoint-ambiguity.md) | Pushbullet Multi-Provider Endpoint Ambiguity | **Proposed** |
+| [0081](0081-schedule-entry-lock-cc-api-sync.md) | Schedule Entry Lock — CC API Sync for Daily Repeating Schedules | **Proposed** |
 
 ---
 
@@ -99,14 +102,14 @@ This document tracks all Architecture Decision Records (ADRs) and their implemen
 
 | Status | Count |
 |--------|-------|
-| **Implemented** | 58 |
+| **Implemented** | 59 |
 | **Partially Implemented** | 1 |
-| **Proposed** | 3 |
+| **Proposed** | 5 |
 | **Superseded** | 13 |
-| **Total** | 75 |
+| **Total** | 78 |
 
 Note: **Superseded** includes entries marked as "Superseded by …" in the table above.
 
 ---
 
-*Last updated: 2026-03-03* (ADR 0075 implemented; ADRs 0017, 0038 superseded)
+*Last updated: 2026-04-12* (ADRs 0079–0081 added)
