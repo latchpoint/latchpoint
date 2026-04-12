@@ -1,7 +1,7 @@
 # ADR 0080: Pushbullet Multi-Provider Endpoint Ambiguity
 
 ## Status
-**Proposed**
+**Accepted**
 
 ## Context
 
@@ -21,13 +21,6 @@ With ADR 0079's multi-instance provider support, a user can configure multiple P
 - **Token validation**: Validating a token always checks against the first provider, not the one being configured.
 - **Scope**: Currently limited to Pushbullet; other provider types with similar "test/validate" endpoints should be audited if this pattern is adopted.
 
-## Investigation Needed
-
-1. **Usage audit**: How are these endpoints called from the frontend? Does `PushbulletNotificationOptions.tsx` already have access to a `provider_id` it could pass?
-2. **URL design**: Should the provider ID be a URL path param (`/api/notifications/providers/{id}/pushbullet/devices/`) or a query param (`?provider_id=123`)? Path param is more RESTful but requires URL restructuring.
-3. **Backwards compatibility**: Is this a breaking change for any external consumers, or is the API internal-only?
-4. **Other providers**: Do any other notification handlers have similar test/validate endpoints that would need the same fix?
-
-## Proposed Direction
+## Decision
 
 Accept a `provider_id` query parameter on both endpoints. Validate that the provider belongs to the active profile and is of type `pushbullet`. Fall back to `.first()` if no ID is provided for backwards compatibility during transition.

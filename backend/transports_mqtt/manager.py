@@ -388,6 +388,8 @@ class MqttConnectionManager:
 
         reconnect_min = int(settings.get("reconnect_min_seconds") or 1)
         reconnect_max = int(settings.get("reconnect_max_seconds") or 120)
+        if reconnect_max < reconnect_min:
+            reconnect_max = reconnect_min
         with contextlib.suppress(AttributeError):
             client.reconnect_delay_set(min_delay=reconnect_min, max_delay=reconnect_max)
 
