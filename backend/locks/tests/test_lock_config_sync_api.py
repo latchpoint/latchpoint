@@ -41,8 +41,13 @@ class FakeZwavejsGateway:
         return self._values.get(key)
 
     def invoke_cc_api(  # noqa: ARG002
-        self, *, node_id: int, command_class: int, method_name: str,
-        args: list | None = None, timeout_seconds: float = 10.0,
+        self,
+        *,
+        node_id: int,
+        command_class: int,
+        method_name: str,
+        args: list | None = None,
+        timeout_seconds: float = 10.0,
     ) -> object:
         key = (method_name, str(args or []))
         return self._cc_api_responses.get(key)
@@ -510,7 +515,6 @@ class LockConfigSyncApiTests(EncryptionTestMixin, APITestCase):
 
         assignment.refresh_from_db()
         self.assertFalse(assignment.sync_dismissed)
-
 
     # --- CC API fallback for daily repeating schedules (ADR 0081) ---
 

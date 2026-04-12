@@ -552,7 +552,10 @@ def _extract_daily_repeating_schedule_windows_via_cc_api(
             except Exception as exc:
                 logger.debug(
                     "Failed to read daily schedule user=%d slot=%d node=%d: %s",
-                    user_id, slot_id, node_id, exc,
+                    user_id,
+                    slot_id,
+                    node_id,
+                    exc,
                 )
                 user_error = f"Schedule read failed: {exc.__class__.__name__}"
                 break

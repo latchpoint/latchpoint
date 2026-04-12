@@ -554,7 +554,10 @@ class ZwavejsConnectionManager:
         )
         return self._run_coro(
             self._async_invoke_cc_api(
-                node_id=node_id, command_class=command_class, method_name=method_name, args=args or [],
+                node_id=node_id,
+                command_class=command_class,
+                method_name=method_name,
+                args=args or [],
             ),
             timeout_seconds=timeout_seconds,
         )
@@ -823,16 +826,12 @@ class ZwavejsConnectionManager:
         value_id_str = _get_value_id_str_from_dict(node, value_id)
         await node.async_set_value(value_id_str, value, wait_for_result=True)
 
-    async def _async_invoke_cc_api(
-        self, *, node_id: int, command_class: int, method_name: str, args: list[Any]
-    ) -> Any:
+    async def _async_invoke_cc_api(self, *, node_id: int, command_class: int, method_name: str, args: list[Any]) -> Any:
         """Invoke a CC API method and wait for the result (ADR 0081)."""
         from zwave_js_server.const import CommandClass as ZwCommandClass
 
         node = await self._async_get_node(node_id=int(node_id))
-        result = await node.async_invoke_cc_api(
-            ZwCommandClass(command_class), method_name, *args, wait_for_result=True
-        )
+        result = await node.async_invoke_cc_api(ZwCommandClass(command_class), method_name, *args, wait_for_result=True)
         return result
 
 
