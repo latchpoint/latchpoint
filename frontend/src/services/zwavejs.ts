@@ -27,6 +27,10 @@ export const zwavejsService = {
     return api.get<ZwavejsSettings>(apiEndpoints.integrations.zwavejs.settings)
   },
 
+  async updateSettings(data: Record<string, unknown>): Promise<ZwavejsSettings> {
+    return api.patch<ZwavejsSettings>(apiEndpoints.integrations.zwavejs.settings, data)
+  },
+
   async syncEntities(): Promise<{ imported: number; updated: number; timestamp: string }> {
     return api.post<{ imported: number; updated: number; timestamp: string }>(
       apiEndpoints.integrations.zwavejs.syncEntities,

@@ -20,7 +20,8 @@ class IntegrationsHomeAssistantConfig(AppConfig):
             return
 
         try:
-            from alarm.env_config import get_mqtt_config
+            from transports_mqtt.views import get_mqtt_settings
+
             from alarm.gateways.mqtt import default_mqtt_gateway
             from alarm.signals import alarm_state_change_committed, settings_profile_changed
             from alarm.state_machine.settings import get_active_settings_profile, get_setting_json
@@ -55,7 +56,7 @@ class IntegrationsHomeAssistantConfig(AppConfig):
                 entity_cfg = get_setting_json(profile, "home_assistant_alarm_entity") or {}
                 if not isinstance(entity_cfg, dict) or not entity_cfg.get("enabled"):
                     return
-                mqtt_cfg = get_mqtt_config()
+                mqtt_cfg = get_mqtt_settings()
                 default_mqtt_gateway.apply_settings(settings=mqtt_cfg)
                 mqtt_alarm_entity.publish_discovery(force=True)
             except Exception:

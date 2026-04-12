@@ -8,9 +8,7 @@ import type {
 } from '@/types/notifications'
 
 export const notificationsService = {
-  // Provider read-only operations
   async listProviders(): Promise<NotificationProvider[]> {
-    // Backend returns a plain array, not paginated response
     return api.get<NotificationProvider[]>(apiEndpoints.notifications.providers)
   },
 
@@ -18,19 +16,38 @@ export const notificationsService = {
     return api.get<NotificationProvider>(apiEndpoints.notifications.provider(id))
   },
 
+  async createProvider(data: {
+    name: string
+    providerType: string
+    config: Record<string, unknown>
+    isEnabled?: boolean
+  }): Promise<NotificationProvider> {
+    return api.post<NotificationProvider>(apiEndpoints.notifications.providers, data)
+  },
+
+  async updateProvider(
+    id: string,
+    data: {
+      name?: string
+      isEnabled?: boolean
+      config?: Record<string, unknown>
+    }
+  ): Promise<NotificationProvider> {
+    return api.patch<NotificationProvider>(apiEndpoints.notifications.provider(id), data)
+  },
+
+  async deleteProvider(id: string): Promise<void> {
+    await api.delete(apiEndpoints.notifications.provider(id))
+  },
+
   async testProvider(id: string): Promise<NotificationTestResult> {
     return api.post<NotificationTestResult>(apiEndpoints.notifications.testProvider(id))
   },
 
-  // Provider types metadata
   async getProviderTypes(): Promise<NotificationProviderTypeInfo[]> {
-    const response = await api.get<{ providerTypes: NotificationProviderTypeInfo[] }>(
-      apiEndpoints.notifications.providerTypes
-    )
-    return response.providerTypes
+    return api.get<NotificationProviderTypeInfo[]>(apiEndpoints.notifications.providerTypes)
   },
 
-  // Pushbullet-specific endpoints
   async getPushbulletDevices(accessToken: string): Promise<PushbulletDevice[]> {
     const response = await api.get<{ devices: PushbulletDevice[] }>(
       apiEndpoints.notifications.pushbulletDevices,

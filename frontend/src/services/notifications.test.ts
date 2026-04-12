@@ -26,11 +26,11 @@ describe('notifications', () => {
     expect(apiMock.get).toHaveBeenCalledWith(apiEndpoints.notifications.providers)
   })
 
-  it('returns provider types from response wrapper', async () => {
-    apiMock.get.mockResolvedValue({ providerTypes: [{ type: 'pushbullet' }] })
+  it('returns provider types from bare array response', async () => {
+    apiMock.get.mockResolvedValue([{ providerType: 'pushbullet' }])
     const types = await notificationsService.getProviderTypes()
     expect(apiMock.get).toHaveBeenCalledWith(apiEndpoints.notifications.providerTypes)
-    expect(types).toEqual([{ type: 'pushbullet' }])
+    expect(types).toEqual([{ providerType: 'pushbullet' }])
   })
 
   it('fetches pushbullet devices by provider id', async () => {

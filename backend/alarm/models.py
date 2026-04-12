@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 from django.conf import settings
 from django.db import models
 from django.db.models import Q
@@ -121,6 +123,92 @@ class AlarmSettingsEntry(models.Model):
     def __str__(self) -> str:  # pragma: no cover - simple representation
         """Return a compact representation for logs/admin lists."""
         return f"{self.profile_id}:{self.key}"
+
+    # ------------------------------------------------------------------
+    # Encryption helpers (ADR 0079)
+    # ------------------------------------------------------------------
+
+    def _get_encrypted_fields(self) -> list[str]:
+        """Return the encrypted field names for this entry's setting key."""
+        from alarm.settings_registry import ALARM_PROFILE_SETTINGS_BY_KEY
+
+        definition = ALARM_PROFILE_SETTINGS_BY_KEY.get(self.key)
+        if definition and definition.encrypted_fields:
+            return definition.encrypted_fields
+        return []
+
+    def get_decrypted_value(self) -> Any:
+        """Internal read path — returns plaintext config for runtime consumers."""
+        encrypted_fields = self._get_encrypted_fields()
+        if not encrypted_fields:
+            return self.value
+        from alarm.crypto import SettingsEncryption
+
+        return SettingsEncryption.get().decrypt_fields(self.value, encrypted_fields)
+
+    def get_masked_value(self) -> Any:
+        """API read path — replaces secrets with ``has_<field>`` booleans."""
+        encrypted_fields = self._get_encrypted_fields()
+        if not encrypted_fields:
+            return self.value
+        from alarm.crypto import SettingsEncryption
+
+        return SettingsEncryption.get().mask_fields(self.value, encrypted_fields)
+
+    def get_masked_value_with_defaults(self) -> dict:
+        """API read path — masked value with registry defaults merged for missing fields.
+
+        Ensures new fields added to the registry appear in the API response even if
+        the DB entry was created before those fields existed.
+        """
+        from alarm.settings_registry import ALARM_PROFILE_SETTINGS_BY_KEY
+
+        value = dict(self.get_masked_value())
+        definition = ALARM_PROFILE_SETTINGS_BY_KEY.get(self.key)
+        if definition and isinstance(definition.default, dict):
+            encrypted = set(definition.encrypted_fields)
+            for k, v in definition.default.items():
+                if k not in encrypted and k not in value:
+                    value[k] = v
+        return value
+
+    def set_value_with_encryption(self, data: dict, *, partial: bool = True) -> None:
+        """Write path — merges incoming data, encrypts secrets, saves.
+
+        Args:
+            data: Dict with plaintext values.
+            partial: If True, merge with existing value; if False, replace
+                non-secret fields entirely.  **Encrypted fields** always use
+                presence-based semantics regardless of this flag (the UI only
+                ever sees masked values and cannot send back the real secret).
+
+        Secret field semantics (always applied):
+        - Field **absent** from *data* → preserve existing encrypted value.
+        - Field present with **empty string** → clear the stored secret.
+        - Field present with a non-empty value → encrypt and store.
+        """
+        encrypted_fields = self._get_encrypted_fields()
+        current = self.value or {}
+        if partial and not isinstance(current, dict):
+            raise TypeError(f"Cannot partially update non-dict setting '{self.key}'")
+        updated = {**current, **data} if partial else data.copy()
+
+        if encrypted_fields:
+            from alarm.crypto import SettingsEncryption
+
+            crypto = SettingsEncryption.get()
+            for field_name in encrypted_fields:
+                if field_name not in data:
+                    # Field absent — preserve existing encrypted value
+                    updated[field_name] = current.get(field_name, "")
+                elif data[field_name] == "":
+                    # Explicit empty string — clear the secret
+                    updated[field_name] = ""
+                else:
+                    updated[field_name] = crypto.encrypt(data[field_name])
+
+        self.value = updated
+        self.save(update_fields=["value", "updated_at"])
 
 
 class Sensor(models.Model):

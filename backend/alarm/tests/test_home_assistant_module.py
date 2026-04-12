@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import io
 import json
-import os
 from unittest.mock import patch
 from urllib.error import HTTPError, URLError
 
@@ -35,22 +34,24 @@ class HomeAssistantModuleTests(SimpleTestCase):
         clear_cached_connection()
 
     def tearDown(self):
-        if hasattr(self, "_env_patcher"):
-            self._env_patcher.stop()
+        patcher = getattr(self, "_settings_patcher", None)
+        if patcher is not None:
+            patcher.stop()
         clear_cached_connection()
         super().tearDown()
 
     def _set_configured_connection(self, *, base_url: str = "http://ha:8123", token: str = "token"):
-        self._env_patcher = patch.dict(
-            os.environ,
-            {
-                "HA_ENABLED": "true",
-                "HA_BASE_URL": base_url,
-                "HA_TOKEN": token,
-                "HA_CONNECT_TIMEOUT": "2",
+        # Mock get_ha_settings (SimpleTestCase has no DB access)
+        self._settings_patcher = patch(
+            "integrations_home_assistant.views.get_ha_settings",
+            return_value={
+                "enabled": True,
+                "base_url": base_url,
+                "token": token,
+                "connect_timeout_seconds": 2,
             },
         )
-        self._env_patcher.start()
+        self._settings_patcher.start()
         set_cached_connection()
 
     def test_get_status_returns_not_configured_when_missing_settings(self):

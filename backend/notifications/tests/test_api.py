@@ -6,17 +6,21 @@ from unittest.mock import Mock, patch
 from django.urls import NoReverseMatch, reverse
 from rest_framework.test import APIClient, APITestCase
 
-from accounts.models import User
+from accounts.models import Role, User, UserRoleAssignment
 from alarm.models import AlarmSettingsProfile
+from alarm.tests.settings_test_utils import EncryptionTestMixin
 from notifications.handlers.base import NotificationResult
 from notifications.models import NotificationLog, NotificationProvider
 
 
-class NotificationsApiTests(APITestCase):
+class NotificationsApiTests(EncryptionTestMixin, APITestCase):
     def setUp(self):
         self.user = User.objects.create_user(email="notifications@example.com", password="pass")
+        self.admin = User.objects.create_user(email="notifications-admin@example.com", password="pass")
+        role, _ = Role.objects.get_or_create(slug="admin", defaults={"name": "Admin"})
+        UserRoleAssignment.objects.create(user=self.admin, role=role)
         self.client = APIClient()
-        self.client.force_authenticate(self.user)
+        self.client.force_authenticate(self.admin)
         self.profile = AlarmSettingsProfile.objects.filter(name="Default").first()
         if self.profile is None:
             self.profile = AlarmSettingsProfile.objects.create(name="Default", is_active=True)
@@ -32,13 +36,14 @@ class NotificationsApiTests(APITestCase):
             return reverse(f"notifications:{name}", args=args, kwargs=kwargs or None)
 
     def _create_pushbullet_provider(self, *, name: str = "Pushbullet Main") -> NotificationProvider:
-        return NotificationProvider.objects.create(
+        provider = NotificationProvider(
             profile=self.profile,
             name=name,
             provider_type="pushbullet",
-            config={"access_token": "o.fake-token"},
             is_enabled=True,
         )
+        provider.set_config_with_encryption({"access_token": "o.fake-token"}, partial=False)
+        return provider
 
     def test_endpoints_require_authentication(self):
         provider = self._create_pushbullet_provider()
@@ -75,7 +80,7 @@ class NotificationsApiTests(APITestCase):
         self.assertEqual(len(body["data"]), 1)
         self.assertEqual(body["data"][0]["id"], str(provider.id))
 
-    def test_provider_create_returns_405(self):
+    def test_provider_create_succeeds(self):
         url = self._reverse("provider-list")
         payload = {
             "name": "Pushbullet Created",
@@ -84,25 +89,28 @@ class NotificationsApiTests(APITestCase):
             "is_enabled": True,
         }
         response = self.client.post(url, data=payload, format="json")
-        self.assertEqual(response.status_code, 405)
+        self.assertEqual(response.status_code, 201)
+        body = response.json()
+        self.assertIn("data", body)
+        self.assertEqual(body["data"]["name"], "Pushbullet Created")
+        self.assertEqual(body["data"]["provider_type"], "pushbullet")
+        # Config should be masked — access_token replaced with has_access_token
+        self.assertTrue(body["data"]["config"]["has_access_token"])
 
-    def test_provider_update_returns_405(self):
+    def test_provider_patch_updates_name(self):
         provider = self._create_pushbullet_provider()
         url = self._reverse("provider-detail", pk=provider.id)
-        response = self.client.put(url, data={"name": "Updated"}, format="json")
-        self.assertEqual(response.status_code, 405)
+        response = self.client.patch(url, data={"name": "Renamed"}, format="json")
+        self.assertEqual(response.status_code, 200)
+        provider.refresh_from_db()
+        self.assertEqual(provider.name, "Renamed")
 
-    def test_provider_patch_returns_405(self):
-        provider = self._create_pushbullet_provider()
-        url = self._reverse("provider-detail", pk=provider.id)
-        response = self.client.patch(url, data={"name": "Patched"}, format="json")
-        self.assertEqual(response.status_code, 405)
-
-    def test_provider_delete_returns_405(self):
+    def test_provider_delete_removes_provider(self):
         provider = self._create_pushbullet_provider()
         url = self._reverse("provider-detail", pk=provider.id)
         response = self.client.delete(url)
-        self.assertEqual(response.status_code, 405)
+        self.assertEqual(response.status_code, 204)
+        self.assertFalse(NotificationProvider.objects.filter(id=provider.id).exists())
 
     def test_provider_detail_returns_provider(self):
         provider = self._create_pushbullet_provider()
@@ -178,8 +186,8 @@ class NotificationsApiTests(APITestCase):
         self.assertEqual(len(body["data"]), 1)
         self.assertEqual(body["data"][0]["provider_name"], provider.name)
 
-    @patch("notifications.views.PushbulletHandler.from_env", return_value={})
-    def test_pushbullet_devices_returns_config_error_without_token(self, _mock_env):
+    def test_pushbullet_devices_returns_config_error_without_provider(self):
+        """No enabled Pushbullet provider → ConfigurationError."""
         response = self.client.get(self._reverse("pushbullet-devices"))
         self.assertEqual(response.status_code, 503)
         body = response.json()
@@ -187,8 +195,8 @@ class NotificationsApiTests(APITestCase):
         self.assertEqual(body["error"]["status"], "configuration_error")
 
     @patch("notifications.views.PushbulletHandler.list_devices")
-    @patch("notifications.views.PushbulletHandler.from_env", return_value={"access_token": "o.fake"})
-    def test_pushbullet_devices_returns_device_list(self, _mock_env, mock_list_devices):
+    def test_pushbullet_devices_returns_device_list(self, mock_list_devices):
+        self._create_pushbullet_provider()
         mock_list_devices.return_value = [
             {
                 "iden": "dev-1",
@@ -207,8 +215,8 @@ class NotificationsApiTests(APITestCase):
         self.assertEqual(body["data"]["devices"][0]["iden"], "dev-1")
 
     @patch("notifications.views.PushbulletHandler.get_user_info")
-    @patch("notifications.views.PushbulletHandler.from_env", return_value={"access_token": "o.env-token"})
-    def test_pushbullet_validate_token_returns_user(self, _mock_from_env, mock_get_user_info):
+    def test_pushbullet_validate_token_returns_user(self, mock_get_user_info):
+        self._create_pushbullet_provider()
         mock_get_user_info.return_value = {
             "name": "Test User",
             "email_normalized": "test@example.com",
@@ -224,10 +232,10 @@ class NotificationsApiTests(APITestCase):
         self.assertIn("data", body)
         self.assertEqual(body["data"]["valid"], True)
         self.assertEqual(body["data"]["user"]["email"], "test@example.com")
-        mock_get_user_info.assert_called_once_with("o.env-token")
+        mock_get_user_info.assert_called_once_with("o.fake-token")
 
-    @patch("notifications.views.PushbulletHandler.from_env", return_value={"access_token": ""})
-    def test_pushbullet_validate_token_returns_config_error_without_token(self, _mock_from_env):
+    def test_pushbullet_validate_token_returns_config_error_without_provider(self):
+        """No enabled Pushbullet provider → ConfigurationError."""
         response = self.client.post(
             self._reverse("pushbullet-validate-token"),
             data={},
@@ -271,3 +279,29 @@ class NotificationsApiTests(APITestCase):
         body = response.json()
         self.assertIn("error", body)
         self.assertEqual(body["error"]["status"], "service_unavailable")
+
+    def test_non_admin_cannot_create_provider(self):
+        self.client.force_authenticate(self.user)
+        url = self._reverse("provider-list")
+        payload = {
+            "name": "Pushbullet",
+            "provider_type": "pushbullet",
+            "config": {"access_token": "o.token"},
+            "is_enabled": True,
+        }
+        response = self.client.post(url, data=payload, format="json")
+        self.assertEqual(response.status_code, 403)
+
+    def test_non_admin_cannot_update_provider(self):
+        provider = self._create_pushbullet_provider()
+        self.client.force_authenticate(self.user)
+        url = self._reverse("provider-detail", pk=provider.id)
+        response = self.client.patch(url, data={"name": "Renamed"}, format="json")
+        self.assertEqual(response.status_code, 403)
+
+    def test_non_admin_cannot_delete_provider(self):
+        provider = self._create_pushbullet_provider()
+        self.client.force_authenticate(self.user)
+        url = self._reverse("provider-detail", pk=provider.id)
+        response = self.client.delete(url)
+        self.assertEqual(response.status_code, 403)

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from django.core.management.base import BaseCommand
 
-from alarm.env_config import get_mqtt_config, get_zwavejs_config
 from alarm.gateways.mqtt import default_mqtt_gateway
 from alarm.gateways.zwavejs import default_zwavejs_gateway
 from alarm.state_machine.settings import get_active_settings_profile, get_setting_json
@@ -13,13 +12,16 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         """Apply integration settings to runtime gateways (best-effort)."""
-        mqtt_config = get_mqtt_config()
-        default_mqtt_gateway.apply_settings(settings=mqtt_config)
-        self.stdout.write("Applied MQTT connection settings from env.")
+        from integrations_zwavejs.views import get_zwavejs_settings
+        from transports_mqtt.views import get_mqtt_settings
 
-        zwavejs_config = get_zwavejs_config()
-        default_zwavejs_gateway.apply_settings(settings_obj=zwavejs_config)
-        self.stdout.write("Applied Z-Wave JS connection settings from env.")
+        mqtt_settings = get_mqtt_settings()
+        default_mqtt_gateway.apply_settings(settings=mqtt_settings)
+        self.stdout.write("Applied MQTT settings from DB-backed settings.")
+
+        zwavejs_settings = get_zwavejs_settings()
+        default_zwavejs_gateway.apply_settings(settings_obj=zwavejs_settings)
+        self.stdout.write("Applied Z-Wave JS settings from DB-backed settings.")
 
         # Best-effort: if HA MQTT alarm entity is enabled, republish discovery/state.
         profile = get_active_settings_profile()

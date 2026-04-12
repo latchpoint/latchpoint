@@ -28,25 +28,18 @@ _subscribed_topics: set[str] = set()
 
 
 def _mqtt_enabled() -> bool:
-    """Return True if MQTT is enabled and minimally configured via env vars."""
-    from alarm.env_config import get_mqtt_config
+    """Return True if MQTT is enabled and minimally configured."""
+    from alarm.integration_helpers import mqtt_enabled
 
-    cfg = get_mqtt_config()
-    return bool(cfg.get("enabled") and cfg.get("host"))
+    return mqtt_enabled()
 
 
 def get_settings() -> FrigateSettings:
-    """Read Frigate settings from DB (cameras stay) with env overrides."""
-    from alarm.env_config import get_frigate_env_overrides
-
+    """Read Frigate settings from DB."""
     profile = get_active_settings_profile()
     raw = get_setting_json(profile, "frigate") or {}
     if not isinstance(raw, dict):
         raw = {}
-    overrides = get_frigate_env_overrides()
-    raw["enabled"] = overrides["enabled"]
-    raw["events_topic"] = overrides["events_topic"]
-    raw["retention_seconds"] = overrides["retention_seconds"]
     return normalize_frigate_settings(raw)
 
 

@@ -3,10 +3,12 @@ import { screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { renderWithProviders } from '@/test/render'
 import { NotificationProvidersCard } from '@/features/notifications/components/NotificationProvidersCard'
+import type { NotificationProvider } from '@/types/notifications'
 
 const mutateTest = vi.fn()
+const mutateDelete = vi.fn()
 
-let providersData: any[] = []
+let providersData: NotificationProvider[] = []
 let haConfigured = false
 
 vi.mock('@/hooks/useHomeAssistant', () => {
@@ -22,6 +24,10 @@ vi.mock('@/features/notifications/hooks/useNotificationProviders', () => {
       isLoading: false,
     }),
     useTestNotificationProvider: () => ({ mutateAsync: mutateTest, isPending: false }),
+    useDeleteNotificationProvider: () => ({ mutateAsync: mutateDelete, isPending: false }),
+    useNotificationProviderTypes: () => ({ data: [], isLoading: false }),
+    useCreateNotificationProvider: () => ({ mutateAsync: vi.fn(), isPending: false }),
+    useUpdateNotificationProvider: () => ({ mutateAsync: vi.fn(), isPending: false }),
   }
 })
 
@@ -32,26 +38,27 @@ describe('NotificationProvidersCard', () => {
     ]
     haConfigured = false
     mutateTest.mockReset().mockResolvedValue({ success: true, message: 'OK' })
+    mutateDelete.mockReset().mockResolvedValue(undefined)
   })
 
   it('renders virtual Home Assistant system provider when HA configured', () => {
     haConfigured = true
-    renderWithProviders(<NotificationProvidersCard />)
+    renderWithProviders(<NotificationProvidersCard isAdmin />)
     expect(screen.getAllByText('Home Assistant').length).toBeGreaterThanOrEqual(1)
     expect(screen.getByText(/system/i)).toBeInTheDocument()
   })
 
   it('tests provider and displays result banner', async () => {
     const user = userEvent.setup()
-    renderWithProviders(<NotificationProvidersCard />)
+    renderWithProviders(<NotificationProvidersCard isAdmin />)
 
     await user.click(screen.getByRole('button', { name: /test/i }))
     expect(mutateTest).toHaveBeenCalledWith('p1')
     expect(await screen.findByText('OK')).toBeInTheDocument()
   })
 
-  it('does not render Add Provider button', () => {
-    renderWithProviders(<NotificationProvidersCard />)
-    expect(screen.queryByRole('button', { name: /add provider/i })).toBeNull()
+  it('renders Add button for creating providers', () => {
+    renderWithProviders(<NotificationProvidersCard isAdmin />)
+    expect(screen.getByRole('button', { name: /add/i })).toBeInTheDocument()
   })
 })

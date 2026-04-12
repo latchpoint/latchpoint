@@ -21,7 +21,6 @@ from integrations_zigbee2mqtt.status_store import get_last_sync as z2m_last_sync
 from integrations_zwavejs.manager import zwavejs_connection_manager
 from transports_mqtt.manager import mqtt_connection_manager
 
-from alarm.env_config import get_home_assistant_config
 from alarm.signals import (
     integration_status_changed,
     integration_status_observed,
@@ -91,8 +90,8 @@ def _refresh_settings_snapshot_from_db() -> None:
     frigate_settings = normalize_frigate_settings(get_setting_json(profile, "frigate") or {})
     z2m_settings = normalize_zigbee2mqtt_settings(get_setting_json(profile, "zigbee2mqtt") or {})
 
-    ha_cfg = get_home_assistant_config()
-    ha_enabled = bool(ha_cfg.get("enabled"))
+    ha_raw = get_setting_json(profile, "home_assistant") or {}
+    ha_enabled = bool(ha_raw.get("enabled")) if isinstance(ha_raw, dict) else False
 
     snapshot = _IntegrationSettingsSnapshot(
         frigate_enabled=bool(frigate_settings.enabled),

@@ -64,7 +64,7 @@ describe('notification provider hooks', () => {
   it('fetches provider types', async () => {
     server.use(
       http.get('/api/notifications/provider-types/', () => {
-        return HttpResponse.json({ data: { provider_types: [{ id: 'pushbullet', name: 'Pushbullet' }] } })
+        return HttpResponse.json({ data: [{ id: 'pushbullet', name: 'Pushbullet' }] })
       })
     )
 

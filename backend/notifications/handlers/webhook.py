@@ -19,19 +19,7 @@ class WebhookHandler(NotificationHandler):
 
     provider_type = "webhook"
     display_name = "Webhook"
-
-    @classmethod
-    def from_env(cls) -> dict:
-        from alarm.env_config import get_webhook_config
-
-        config = get_webhook_config()
-        return {k: v for k, v in config.items() if k != "enabled"}
-
-    @classmethod
-    def is_enabled_from_env(cls) -> bool:
-        from alarm.env_config import get_webhook_config
-
-        return get_webhook_config()["enabled"]
+    encrypted_fields = ["auth_value"]
 
     config_schema = {
         "type": "object",

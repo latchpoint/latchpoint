@@ -1,17 +1,16 @@
 from __future__ import annotations
 
-import os
-from unittest.mock import patch
-
 from django.contrib.auth.hashers import make_password
 from django.urls import reverse
 from rest_framework.test import APIClient, APITestCase
 
 from accounts.models import Role, User, UserCode, UserRoleAssignment
-from alarm.models import AlarmSettingsProfile
+from alarm.models import AlarmSettingsEntry, AlarmSettingsProfile
+from alarm.settings_registry import ALARM_PROFILE_SETTINGS_BY_KEY
+from alarm.tests.settings_test_utils import EncryptionTestMixin
 
 
-class HomeAssistantSettingsApiTests(APITestCase):
+class HomeAssistantSettingsApiTests(EncryptionTestMixin, APITestCase):
     def setUp(self):
         self.user = User.objects.create_user(email="ha-settings@example.com", password="pass")
         role, _ = Role.objects.get_or_create(slug="admin", defaults={"name": "Admin"})
@@ -29,16 +28,22 @@ class HomeAssistantSettingsApiTests(APITestCase):
 
         self.profile = AlarmSettingsProfile.objects.create(name="Default", is_active=True)
 
-    @patch.dict(
-        os.environ,
-        {
-            "HA_ENABLED": "true",
-            "HA_BASE_URL": "http://homeassistant.local:8123",
-            "HA_TOKEN": "supersecret",
-            "HA_CONNECT_TIMEOUT": "2",
-        },
-    )
     def test_home_assistant_token_is_masked_in_home_assistant_settings_endpoint(self):
+        # Store a token via the model encryption method
+        definition = ALARM_PROFILE_SETTINGS_BY_KEY["home_assistant"]
+        entry, _ = AlarmSettingsEntry.objects.get_or_create(
+            profile=self.profile,
+            key="home_assistant",
+            defaults={"value": definition.default, "value_type": definition.value_type},
+        )
+        entry.set_value_with_encryption(
+            {
+                "enabled": True,
+                "base_url": "http://homeassistant.local:8123",
+                "token": "supersecret",
+            }
+        )
+
         url = reverse("ha-settings")
         response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
@@ -46,10 +51,10 @@ class HomeAssistantSettingsApiTests(APITestCase):
         self.assertNotIn("token", body["data"])
         self.assertEqual(body["data"]["has_token"], True)
 
-    def test_patch_home_assistant_settings_returns_405(self):
+    def test_patch_home_assistant_settings_accepts_operational_settings(self):
         url = reverse("ha-settings")
-        response = self.client.patch(url, data={"base_url": "http://ha2.local:8123"}, format="json")
-        self.assertEqual(response.status_code, 405)
+        response = self.client.patch(url, data={"connect_timeout_seconds": 5}, format="json")
+        self.assertEqual(response.status_code, 200)
 
 
 class HomeAssistantSettingsApiPermissionsTests(APITestCase):

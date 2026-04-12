@@ -13,6 +13,7 @@ vi.mock('@/hooks/useHomeAssistant', () => {
       data: { enabled: true, baseUrl: 'http://ha', connectTimeoutSeconds: 2, hasToken: true },
       refetch: vi.fn(),
     }),
+    useUpdateHomeAssistantSettingsMutation: () => ({ isPending: false, mutateAsync: vi.fn() }),
   }
 })
 
@@ -40,12 +41,12 @@ describe('useHomeAssistantSettingsModel', () => {
       await Promise.resolve()
     })
 
-    expect(result.current.haConnectionDraft).toMatchObject({
+    expect(result.current.connectionDraft).toMatchObject({
       enabled: true,
       baseUrl: 'http://ha',
-      hasToken: true,
-      connectTimeoutSeconds: '2',
+      connectTimeoutSeconds: 2,
     })
+    expect(result.current.maskedFlags).toMatchObject({ hasToken: true })
     expect(result.current.isAdmin).toBe(true)
     expect(result.current.mqttReady).toBe(true)
   })

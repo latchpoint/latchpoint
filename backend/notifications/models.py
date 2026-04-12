@@ -51,6 +51,81 @@ class NotificationProvider(models.Model):
     def __str__(self):
         return f"{self.name} ({self.get_provider_type_display()})"
 
+    # ------------------------------------------------------------------
+    # Encryption helpers (ADR 0079)
+    # ------------------------------------------------------------------
+
+    def _get_encrypted_fields(self) -> list[str]:
+        """Return the encrypted field names for this provider's handler."""
+        from notifications.handlers import get_handler
+
+        try:
+            handler = get_handler(self.provider_type)
+        except ValueError:
+            return []
+        return getattr(handler, "encrypted_fields", [])
+
+    def get_decrypted_config(self) -> dict:
+        """Runtime dispatch path — returns plaintext config."""
+        encrypted_fields = self._get_encrypted_fields()
+        if not encrypted_fields:
+            return self.config
+        from alarm.crypto import SettingsEncryption
+
+        return SettingsEncryption.get().decrypt_fields(self.config, encrypted_fields)
+
+    def get_masked_config(self) -> dict:
+        """API response path — replaces secrets with ``has_<field>`` booleans."""
+        encrypted_fields = self._get_encrypted_fields()
+        if not encrypted_fields:
+            return self.config
+        from alarm.crypto import SettingsEncryption
+
+        return SettingsEncryption.get().mask_fields(self.config, encrypted_fields)
+
+    def set_config_with_encryption(self, data: dict, *, partial: bool = True, save: bool = True) -> None:
+        """Write path — encrypts secrets before saving.
+
+        Args:
+            data: Config dict with plaintext values.
+            partial: If True, merge with existing config; if False, replace
+                non-secret fields entirely.  **Encrypted fields** always use
+                presence-based semantics regardless of this flag (the UI only
+                ever sees masked values and cannot send back the real secret).
+            save: If True (default), persist to the DB immediately. Pass False when
+                  the caller will issue its own ``save()`` (e.g. to batch multiple
+                  field updates into a single write).
+
+        Secret field semantics (always applied):
+        - Field **absent** from *data* → preserve existing encrypted value.
+        - Field present with **empty string** → clear the stored secret.
+        - Field present with a non-empty value → encrypt and store.
+        """
+        encrypted_fields = self._get_encrypted_fields()
+        current = self.config or {}
+        updated = {**current, **data} if partial else data.copy()
+
+        if encrypted_fields:
+            from alarm.crypto import SettingsEncryption
+
+            crypto = SettingsEncryption.get()
+            for field_name in encrypted_fields:
+                if field_name not in data:
+                    # Field absent — preserve existing encrypted value
+                    updated[field_name] = current.get(field_name, "")
+                elif data[field_name] == "":
+                    # Explicit empty string — clear the secret
+                    updated[field_name] = ""
+                else:
+                    updated[field_name] = crypto.encrypt(data[field_name])
+
+        self.config = updated
+        if save:
+            if self._state.adding:
+                self.save()
+            else:
+                self.save(update_fields=["config", "updated_at"])
+
 
 class NotificationLog(models.Model):
     """Audit log for sent notifications."""

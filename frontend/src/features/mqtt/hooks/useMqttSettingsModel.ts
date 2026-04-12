@@ -1,29 +1,19 @@
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import { UserRole } from '@/lib/constants'
 import { useCurrentUserQuery } from '@/hooks/useAuthQueries'
+import { getErrorMessage } from '@/types/errors'
 import { useDraftFromQuery } from '@/features/settings/hooks/useDraftFromQuery'
+import { shallowEqual, splitMaskedFlags } from '@/features/settings/hooks/settingsUtils'
 import { useFrigateSettingsQuery } from '@/hooks/useFrigate'
 import {
   useMqttSettingsQuery,
   useMqttStatusQuery,
+  useUpdateMqttSettingsMutation,
 } from '@/hooks/useMqtt'
 import { useZigbee2mqttSettingsQuery } from '@/hooks/useZigbee2mqtt'
 import {
   useHomeAssistantMqttAlarmEntitySettingsQuery,
 } from '@/hooks/useHomeAssistantMqttAlarmEntity'
-
-export type MqttDraft = {
-  enabled: boolean
-  host: string
-  port: string
-  username: string
-  useTls: boolean
-  tlsInsecure: boolean
-  clientId: string
-  keepaliveSeconds: string
-  connectTimeoutSeconds: string
-  hasPassword: boolean
-}
 
 export function useMqttSettingsModel() {
   const currentUserQuery = useCurrentUserQuery()
@@ -31,47 +21,59 @@ export function useMqttSettingsModel() {
 
   const statusQuery = useMqttStatusQuery()
   const settingsQuery = useMqttSettingsQuery()
+  const updateSettings = useUpdateMqttSettingsMutation()
   const zigbee2mqttSettingsQuery = useZigbee2mqttSettingsQuery()
   const frigateSettingsQuery = useFrigateSettingsQuery()
   useHomeAssistantMqttAlarmEntitySettingsQuery()
 
-  const initialDraft = useMemo<MqttDraft | null>(() => {
-    if (!settingsQuery.data) return null
-    return {
-      enabled: settingsQuery.data.enabled,
-      host: settingsQuery.data.host || '',
-      port: String(settingsQuery.data.port ?? 1883),
-      username: settingsQuery.data.username || '',
-      useTls: settingsQuery.data.useTls,
-      tlsInsecure: settingsQuery.data.tlsInsecure,
-      clientId: settingsQuery.data.clientId || 'latchpoint-alarm',
-      keepaliveSeconds: String(settingsQuery.data.keepaliveSeconds ?? 30),
-      connectTimeoutSeconds: String(settingsQuery.data.connectTimeoutSeconds ?? 5),
-      hasPassword: Boolean(settingsQuery.data.hasPassword),
-    }
-  }, [settingsQuery.data])
+  const { values: initialDraft, maskedFlags } = useMemo(
+    () => splitMaskedFlags(settingsQuery.data),
+    [settingsQuery.data]
+  )
 
-  const { draft, setDraft } = useDraftFromQuery<MqttDraft>(initialDraft)
+  const { draft, setDraft } = useDraftFromQuery<Record<string, unknown>>(initialDraft)
+  const [error, setError] = useState<string | null>(null)
+  const [notice, setNotice] = useState<string | null>(null)
 
-  const isBusy = settingsQuery.isLoading
+  const isBusy = settingsQuery.isLoading || updateSettings.isPending
+
+  const handleFieldChange = (key: string, value: unknown) => {
+    setDraft((prev) => (prev ? { ...prev, [key]: value } : prev))
+  }
 
   const refresh = () => {
     void statusQuery.refetch()
     void settingsQuery.refetch()
   }
 
+  const save = async () => {
+    if (!draft) return
+    setError(null)
+    setNotice(null)
+    try {
+      await updateSettings.mutateAsync(draft)
+      setNotice('Saved MQTT settings.')
+    } catch (err) {
+      setError(getErrorMessage(err) || 'Failed to save MQTT settings.')
+    }
+  }
+
+  const saveDisabled = !draft || !initialDraft || shallowEqual(draft, initialDraft)
+
   return {
     isAdmin,
     draft,
-    setDraft,
-    initialDraft,
+    maskedFlags,
+    handleFieldChange,
     isBusy,
-    error: null as string | null,
-    notice: null as string | null,
+    error,
+    notice,
     statusQuery,
     settingsQuery,
     zigbee2mqttSettingsQuery,
     frigateSettingsQuery,
     refresh,
+    save,
+    saveDisabled,
   }
 }

@@ -101,6 +101,8 @@ class MqttConnectionSettings(TypedDict, total=False):
     client_id: str
     keepalive_seconds: int
     connect_timeout_seconds: float
+    reconnect_min_seconds: int
+    reconnect_max_seconds: int
 
 
 @dataclass(frozen=True)
@@ -383,6 +385,13 @@ class MqttConnectionManager:
             client.tls_set()
             if settings.get("tls_insecure"):
                 client.tls_insecure_set(True)
+
+        reconnect_min = int(settings.get("reconnect_min_seconds") or 1)
+        reconnect_max = int(settings.get("reconnect_max_seconds") or 120)
+        if reconnect_max < reconnect_min:
+            reconnect_max = reconnect_min
+        with contextlib.suppress(AttributeError):
+            client.reconnect_delay_set(min_delay=reconnect_min, max_delay=reconnect_max)
 
         return client
 

@@ -5,7 +5,7 @@ import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import ProtectedRoute from './ProtectedRoute'
 import { UserRole } from '@/lib/constants'
 
-let authState: any
+let authState: { isAuthenticated: boolean; user: { role: string } | null; isLoading: boolean }
 
 vi.mock('@/hooks/useAuth', () => {
   return {

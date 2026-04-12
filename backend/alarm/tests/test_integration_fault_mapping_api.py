@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from unittest.mock import patch
 
 from django.urls import reverse
@@ -8,10 +7,12 @@ from rest_framework.test import APIClient, APITestCase
 
 from accounts.models import Role, User, UserRoleAssignment
 from alarm.gateways.home_assistant import HomeAssistantNotReachable
-from alarm.models import AlarmSettingsProfile
+from alarm.models import AlarmSettingsEntry, AlarmSettingsProfile
+from alarm.settings_registry import ALARM_PROFILE_SETTINGS_BY_KEY
+from alarm.tests.settings_test_utils import EncryptionTestMixin
 
 
-class IntegrationFaultMappingApiTests(APITestCase):
+class IntegrationFaultMappingApiTests(EncryptionTestMixin, APITestCase):
     def setUp(self):
         self.user = User.objects.create_user(email="faults-user@example.com", password="pass")
         self.admin = User.objects.create_user(email="faults-admin@example.com", password="pass")
@@ -26,7 +27,7 @@ class IntegrationFaultMappingApiTests(APITestCase):
         self.admin_client.force_authenticate(self.admin)
 
         AlarmSettingsProfile.objects.update(is_active=False)
-        AlarmSettingsProfile.objects.create(name="Default", is_active=True)
+        self.profile = AlarmSettingsProfile.objects.create(name="Default", is_active=True)
 
     def test_mqtt_test_connection_invalid_config_maps_to_validation_error_envelope(self):
         response = self.admin_client.post(
@@ -50,13 +51,21 @@ class IntegrationFaultMappingApiTests(APITestCase):
         self.assertEqual(body["error"]["status"], "service_unavailable")
         self.assertEqual(body["error"]["gateway"], "Home Assistant")
 
-    @patch.dict(os.environ, {"ZWAVEJS_ENABLED": "true", "ZWAVEJS_WS_URL": "ws://zwavejs.local:3000"})
     @patch("integrations_zwavejs.views.sync_entities_from_zwavejs")
     @patch("integrations_zwavejs.views.zwavejs_gateway")
     def test_zwavejs_runtime_error_maps_to_service_unavailable(self, mock_gateway, mock_sync):
         mock_gateway.apply_settings.return_value = None
         mock_gateway.ensure_connected.return_value = None
         mock_sync.side_effect = RuntimeError("unexpected runtime failure")
+
+        # Enable ZWaveJS in DB
+        definition = ALARM_PROFILE_SETTINGS_BY_KEY["zwavejs"]
+        entry, _ = AlarmSettingsEntry.objects.get_or_create(
+            profile=self.profile,
+            key="zwavejs",
+            defaults={"value": definition.default, "value_type": definition.value_type},
+        )
+        entry.set_value_with_encryption({"enabled": True, "ws_url": "ws://zwavejs.local:3000"})
 
         response = self.admin_client.post(reverse("zwavejs-entities-sync"), data={}, format="json")
         self.assertEqual(response.status_code, 503)

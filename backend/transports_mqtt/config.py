@@ -13,6 +13,8 @@ DEFAULT_MQTT_CONNECTION: dict[str, object] = {
     "client_id": "latchpoint-alarm",
     "keepalive_seconds": 30,
     "connect_timeout_seconds": 5,
+    "reconnect_min_seconds": 1,
+    "reconnect_max_seconds": 120,
 }
 
 

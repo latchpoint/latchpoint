@@ -1,37 +1,44 @@
 import { Radio } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { FormField } from '@/components/ui/form-field'
-import { Input } from '@/components/ui/input'
 import { LoadingInline } from '@/components/ui/loading-inline'
 import { IntegrationConnectionCard } from '@/features/integrations/components/IntegrationConnectionCard'
 import { IntegrationOverviewCard } from '@/features/integrations/components/IntegrationOverviewCard'
-import type { ZwavejsDraft } from '@/features/zwavejs/hooks/useZwavejsSettingsModel'
+import { IntegrationSettingsForm } from '@/features/integrations/components/IntegrationSettingsForm'
+import { useSettingsRegistryEntry } from '@/hooks/useSettingsRegistry'
 
 type Props = {
   isAdmin: boolean
   isBusy: boolean
-  draft: ZwavejsDraft | null
+  values: Record<string, unknown> | null
+  maskedFlags: Record<string, boolean>
   isLoading: boolean
   connected: boolean | undefined
   enabled: boolean | undefined
   lastError: string | null | undefined
+  saveDisabled: boolean
   onRefresh: () => void
+  onSave: () => void
   onSync: () => void
-  onSetDraft: (updater: (prev: ZwavejsDraft | null) => ZwavejsDraft | null) => void
+  onChange: (key: string, value: unknown) => void
 }
 
 export function ZwavejsSettingsCard({
   isAdmin,
   isBusy,
-  draft,
+  values,
+  maskedFlags,
   isLoading,
   connected,
   enabled,
   lastError,
+  saveDisabled,
   onRefresh,
+  onSave,
   onSync,
-  onSetDraft,
+  onChange,
 }: Props) {
+  const registryEntry = useSettingsRegistryEntry('zwavejs')
+
   return (
     <div className="space-y-3 sm:space-y-4">
       <IntegrationOverviewCard
@@ -46,75 +53,34 @@ export function ZwavejsSettingsCard({
         isBusy={isBusy}
         status={{ connected, enabled, lastError }}
         enableLabel="Enable Z-Wave JS"
-        enableHelp="Enables the Z-Wave JS integration used for entity sync and set-value operations."
-        enabled={draft?.enabled ?? false}
-        onEnabledChange={(checked) => onSetDraft((prev) => (prev ? { ...prev, enabled: checked } : prev))}
-        enableDisabled={!draft}
+        enabled={Boolean(values?.enabled)}
+        onEnabledChange={(checked) => onChange('enabled', checked)}
         onRefresh={onRefresh}
+        onSave={onSave}
+        saveDisabled={saveDisabled}
         opsActions={
-          <Button type="button" variant="outline" onClick={onSync} disabled={!isAdmin || isBusy || !draft}>
+          <Button type="button" variant="outline" onClick={onSync} disabled={!isAdmin || isBusy || !values}>
             Sync Entities
           </Button>
         }
       >
-        {isLoading && !draft ? <LoadingInline /> : !draft ? <div className="text-sm text-muted-foreground">Z-Wave JS settings unavailable.</div> : null}
+        {isLoading && !values ? <LoadingInline /> : !values ? <div className="text-sm text-muted-foreground">Z-Wave JS settings unavailable.</div> : null}
       </IntegrationOverviewCard>
 
-      <IntegrationConnectionCard description="Connection settings are read by the backend container.">
-        {isLoading && !draft ? (
+      <IntegrationConnectionCard description="Configure Z-Wave JS WebSocket connection and operational settings.">
+        {isLoading && !values ? (
           <LoadingInline />
-        ) : !draft ? (
+        ) : !values || !registryEntry.data ? (
           <div className="text-sm text-muted-foreground">Z-Wave JS settings unavailable.</div>
         ) : (
-          <div className="space-y-3 sm:space-y-4">
-            <FormField
-              label="WebSocket URL"
-              htmlFor="zwaveWsUrl"
-              help="WebSocket endpoint for Z-Wave JS UI / zwave-js-server (reachable from the backend container)."
-              required={draft.enabled}
-            >
-              <Input
-                id="zwaveWsUrl"
-                placeholder="ws://localhost:3000"
-                value={draft.wsUrl}
-                onChange={(e) => onSetDraft((prev) => (prev ? { ...prev, wsUrl: e.target.value } : prev))}
-                disabled={!isAdmin || isBusy}
-              />
-              <div className="mt-1 text-xs text-muted-foreground">Z-Wave JS UI / zwave-js-server commonly uses WS port 3000.</div>
-            </FormField>
-
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3 sm:gap-4">
-              <FormField label="Connect timeout (s)" htmlFor="zwaveConnectTimeout" help="How long to wait when establishing the WebSocket connection." required>
-                <Input
-                  id="zwaveConnectTimeout"
-                  inputMode="decimal"
-                  value={draft.connectTimeoutSeconds}
-                  onChange={(e) => onSetDraft((prev) => (prev ? { ...prev, connectTimeoutSeconds: e.target.value } : prev))}
-                  disabled={!isAdmin || isBusy}
-                />
-              </FormField>
-
-              <FormField label="Reconnect min (s)" htmlFor="zwaveReconnectMin" help="Minimum delay before attempting to reconnect after a disconnect." required>
-                <Input
-                  id="zwaveReconnectMin"
-                  inputMode="numeric"
-                  value={draft.reconnectMinSeconds}
-                  onChange={(e) => onSetDraft((prev) => (prev ? { ...prev, reconnectMinSeconds: e.target.value } : prev))}
-                  disabled={!isAdmin || isBusy}
-                />
-              </FormField>
-
-              <FormField label="Reconnect max (s)" htmlFor="zwaveReconnectMax" help="Maximum delay between reconnect attempts (must be ≥ reconnect min)." required>
-                <Input
-                  id="zwaveReconnectMax"
-                  inputMode="numeric"
-                  value={draft.reconnectMaxSeconds}
-                  onChange={(e) => onSetDraft((prev) => (prev ? { ...prev, reconnectMaxSeconds: e.target.value } : prev))}
-                  disabled={!isAdmin || isBusy}
-                />
-              </FormField>
-            </div>
-          </div>
+          <IntegrationSettingsForm
+            schema={registryEntry.data.configSchema}
+            encryptedFields={registryEntry.data.encryptedFields}
+            values={values}
+            maskedFlags={maskedFlags}
+            disabled={!isAdmin || isBusy}
+            onChange={onChange}
+          />
         )}
       </IntegrationConnectionCard>
     </div>

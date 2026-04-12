@@ -152,3 +152,17 @@ docker compose exec app python backend/manage.py shell
 | DATABASE_URL | PostgreSQL connection URL | SQLite fallback |
 | CSRF_TRUSTED_ORIGINS | Trusted origins for CSRF | Auto-configured in debug |
 | CORS_ALLOWED_ORIGINS | Allowed CORS origins | - |
+| SETTINGS_ENCRYPTION_KEY | Fernet key for encrypting secrets at rest ([how to generate](#generating-a-fernet-key)) | Auto-generated on first boot |
+| DATA_DIR | Persistent data directory for auto-generated encryption key | /data |
+
+### Generating a Fernet Key
+
+If omitted, a key is auto-generated on first boot and saved to `DATA_DIR`. To set one explicitly:
+
+```bash
+python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+```
+
+Copy the output into your `.env` as `SETTINGS_ENCRYPTION_KEY`.
+
+Integration settings (Home Assistant, MQTT, Z-Wave JS, Zigbee2MQTT, Frigate) and notification providers are configured entirely via the Settings UI and stored in the database with encryption at rest (ADR 0079). See `.env.example` for the minimal set of required environment variables.

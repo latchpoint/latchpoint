@@ -1,46 +1,48 @@
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { LoadingInline } from '@/components/ui/loading-inline'
 import { IntegrationConnectionCard } from '@/features/integrations/components/IntegrationConnectionCard'
+import { IntegrationSettingsForm } from '@/features/integrations/components/IntegrationSettingsForm'
+import { useSettingsRegistryEntry } from '@/hooks/useSettingsRegistry'
 import { getErrorMessage } from '@/types/errors'
-import type { HaConnectionDraft } from '@/features/homeAssistant/hooks/useHomeAssistantSettingsModel'
 
 type Props = {
   isAdmin: boolean
-  draft: HaConnectionDraft | null
+  isBusy?: boolean
+  values: Record<string, unknown> | null
+  maskedFlags: Record<string, boolean>
   isLoading: boolean
   isError: boolean
   loadError: unknown
+  onChange: (key: string, value: unknown) => void
 }
 
 export function HomeAssistantConnectionCard({
   isAdmin,
-  draft,
+  isBusy,
+  values,
+  maskedFlags,
   isLoading,
   isError,
   loadError,
+  onChange,
 }: Props) {
+  const registryEntry = useSettingsRegistryEntry('home_assistant')
+
   return (
     <IntegrationConnectionCard
       title="Connection / setup"
-      description="Home Assistant connection is configured via environment variables."
+      description="Configure the Home Assistant connection URL, access token, and operational settings."
     >
       <div className="space-y-3">
-        {draft ? (
-          <>
-            <div className="grid grid-cols-2 gap-2 text-sm">
-              <span className="text-muted-foreground">Enabled</span>
-              <span>{draft.enabled ? 'Yes' : 'No'}</span>
-
-              <span className="text-muted-foreground">Base URL</span>
-              <span className="break-all">{draft.baseUrl || '(not set)'}</span>
-
-              <span className="text-muted-foreground">Token</span>
-              <span>{draft.hasToken ? 'Configured' : 'Not set'}</span>
-
-              <span className="text-muted-foreground">Connect timeout</span>
-              <span>{draft.connectTimeoutSeconds}s</span>
-            </div>
-          </>
+        {values && registryEntry.data ? (
+          <IntegrationSettingsForm
+            schema={registryEntry.data.configSchema}
+            encryptedFields={registryEntry.data.encryptedFields}
+            values={values}
+            maskedFlags={maskedFlags}
+            disabled={!isAdmin || isBusy}
+            onChange={onChange}
+          />
         ) : !isAdmin ? (
           <div className="text-sm text-muted-foreground">Only admins can view Home Assistant settings.</div>
         ) : isError ? (

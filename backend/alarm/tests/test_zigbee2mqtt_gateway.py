@@ -1,24 +1,31 @@
 from __future__ import annotations
 
 import json
-import os
 from unittest.mock import patch
 
 from django.test import TestCase
 
 from alarm.gateways.zigbee2mqtt import DefaultZigbee2mqttGateway
-from alarm.models import AlarmSettingsProfile, Entity
-from alarm.tests.settings_test_utils import set_profile_settings
+from alarm.models import AlarmSettingsEntry, AlarmSettingsProfile, Entity
+from alarm.settings_registry import ALARM_PROFILE_SETTINGS_BY_KEY
+from alarm.tests.settings_test_utils import EncryptionTestMixin, set_profile_settings
 
 
-@patch.dict(os.environ, {"MQTT_ENABLED": "true", "MQTT_HOST": "mqtt.local"})
-class Zigbee2mqttGatewayTests(TestCase):
+class Zigbee2mqttGatewayTests(EncryptionTestMixin, TestCase):
     def setUp(self):
         self.profile = AlarmSettingsProfile.objects.create(name="Default", is_active=True)
         set_profile_settings(
             self.profile,
             zigbee2mqtt={"enabled": True, "base_topic": "zigbee2mqtt"},
         )
+        # Enable MQTT in DB
+        definition = ALARM_PROFILE_SETTINGS_BY_KEY["mqtt"]
+        entry, _ = AlarmSettingsEntry.objects.get_or_create(
+            profile=self.profile,
+            key="mqtt",
+            defaults={"value": definition.default, "value_type": definition.value_type},
+        )
+        entry.set_value_with_encryption({"enabled": True, "host": "mqtt.local"})
         self.gateway = DefaultZigbee2mqttGateway()
 
         self.definition = {

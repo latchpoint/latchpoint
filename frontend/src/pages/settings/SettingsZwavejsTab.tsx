@@ -10,18 +10,20 @@ export function SettingsZwavejsTab() {
       <ZwavejsSettingsCard
         isAdmin={model.isAdmin}
         isBusy={model.isBusy}
-        draft={model.draft}
+        values={model.draft}
+        maskedFlags={model.maskedFlags}
         isLoading={model.settingsQuery.isLoading}
         connected={model.statusQuery.data?.connected}
         enabled={model.statusQuery.data?.enabled}
         lastError={model.statusQuery.data?.lastError ?? undefined}
+        saveDisabled={model.saveDisabled}
         onRefresh={model.refresh}
+        onSave={() => void model.save()}
         onSync={() => void model.sync()}
-        onSetDraft={model.setDraft}
+        onChange={model.handleFieldChange}
       />
     </SettingsTabShell>
   )
 }
 
 export default SettingsZwavejsTab
-

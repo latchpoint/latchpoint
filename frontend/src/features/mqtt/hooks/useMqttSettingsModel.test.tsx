@@ -9,6 +9,7 @@ vi.mock('@/hooks/useAuthQueries', () => {
 vi.mock('@/hooks/useMqtt', () => {
   return {
     useMqttStatusQuery: () => ({ data: { enabled: true }, refetch: vi.fn() }),
+    useUpdateMqttSettingsMutation: () => ({ isPending: false, mutateAsync: vi.fn() }),
     useMqttSettingsQuery: () => ({
       data: {
         enabled: false,
@@ -53,11 +54,11 @@ describe('useMqttSettingsModel', () => {
     expect(result.current.draft).toMatchObject({
       enabled: false,
       host: '',
-      port: '1883',
+      port: 1883,
       username: '',
       clientId: 'latchpoint-alarm',
-      hasPassword: false,
     })
+    expect(result.current.maskedFlags).toMatchObject({ hasPassword: false })
     expect(result.current.isAdmin).toBe(true)
     expect(result.current.error).toBeNull()
     expect(result.current.notice).toBeNull()

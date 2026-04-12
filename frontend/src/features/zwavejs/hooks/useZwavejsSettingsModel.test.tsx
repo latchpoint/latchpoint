@@ -14,6 +14,7 @@ vi.mock('@/hooks/useZwavejs', () => {
       isLoading: false,
       refetch: vi.fn(),
     }),
+    useUpdateZwavejsSettingsMutation: () => ({ isPending: false, mutateAsync: vi.fn() }),
     useSyncZwavejsEntitiesMutation: () => ({ isPending: false, mutateAsync: vi.fn().mockResolvedValue({ notice: 'ok' }) }),
   }
 })
@@ -29,9 +30,9 @@ describe('useZwavejsSettingsModel', () => {
     expect(result.current.draft).toMatchObject({
       enabled: false,
       wsUrl: '',
-      connectTimeoutSeconds: '5',
-      reconnectMinSeconds: '1',
-      reconnectMaxSeconds: '30',
+      connectTimeoutSeconds: 5,
+      reconnectMinSeconds: 1,
+      reconnectMaxSeconds: 30,
     })
     expect(result.current.isAdmin).toBe(true)
   })

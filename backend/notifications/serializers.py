@@ -28,9 +28,8 @@ class NotificationProviderSerializer(serializers.ModelSerializer):
 
     def to_representation(self, instance):
         data = super().to_representation(instance)
-        # Always return empty config — all provider secrets live in env vars,
-        # and this prevents leaking any stale DB values from pre-migration rows.
-        data["config"] = {}
+        # Return masked config — secret fields become has_<field> booleans (ADR 0079).
+        data["config"] = instance.get_masked_config()
         return data
 
 
@@ -62,6 +61,7 @@ class ProviderTypeMetadataSerializer(serializers.Serializer):
     provider_type = serializers.CharField()
     display_name = serializers.CharField()
     config_schema = serializers.JSONField()
+    encrypted_fields = serializers.ListField(child=serializers.CharField(), default=list)
 
 
 class TestNotificationResultSerializer(serializers.Serializer):

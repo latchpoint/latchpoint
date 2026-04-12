@@ -2,13 +2,14 @@ import React from 'react'
 import { describe, expect, it, vi } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import type { AlarmStateType } from '@/lib/constants'
 import { AlarmPanelView } from './AlarmPanelView'
 
 const armButtons = vi.fn()
 const quickActions = vi.fn()
 
 vi.mock('./ArmButtons', () => ({
-  ArmButtons: (props: any) => {
+  ArmButtons: (props: { onArm: (state: AlarmStateType) => void }) => {
     armButtons(props)
     return (
       <button type="button" onClick={() => props.onArm('armed_home')}>
@@ -19,7 +20,7 @@ vi.mock('./ArmButtons', () => ({
 }))
 
 vi.mock('./QuickActions', () => ({
-  QuickActions: (props: any) => {
+  QuickActions: (props: { onDisarm: () => void }) => {
     quickActions(props)
     return (
       <button type="button" onClick={props.onDisarm}>

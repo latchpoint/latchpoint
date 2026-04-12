@@ -2,22 +2,44 @@ from __future__ import annotations
 
 import logging
 
+from django.db import transaction
 from rest_framework import status
-from rest_framework.exceptions import MethodNotAllowed
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from accounts.permissions import IsAdminRole
-from alarm.env_config import get_home_assistant_config
 from alarm.gateways.home_assistant import (
     HomeAssistantGateway,
     default_home_assistant_gateway,
 )
-from config.domain_exceptions import ServiceUnavailableError
+from alarm.models import AlarmSettingsEntry
+from alarm.settings_registry import ALARM_PROFILE_SETTINGS_BY_KEY, coerce_settings_values
+from alarm.signals import settings_profile_changed
+from alarm.use_cases.settings_profile import ensure_active_settings_profile
+from config.domain_exceptions import ServiceUnavailableError, ValidationError
+from integrations_home_assistant.connection import set_cached_connection
 
 ha_gateway: HomeAssistantGateway = default_home_assistant_gateway
 logger = logging.getLogger(__name__)
+
+
+def _get_entry(profile=None) -> AlarmSettingsEntry:
+    """Return (or create) the home_assistant AlarmSettingsEntry for the active profile."""
+    if profile is None:
+        profile = ensure_active_settings_profile()
+    definition = ALARM_PROFILE_SETTINGS_BY_KEY["home_assistant"]
+    entry, _ = AlarmSettingsEntry.objects.get_or_create(
+        profile=profile,
+        key="home_assistant",
+        defaults={"value": definition.default, "value_type": definition.value_type},
+    )
+    return entry
+
+
+def get_ha_settings() -> dict:
+    """Return decrypted HA settings for runtime consumers (gateways, commands)."""
+    return _get_entry().get_decrypted_value()
 
 
 class _HomeAssistantBaseView(APIView):
@@ -37,23 +59,36 @@ class HomeAssistantSettingsView(APIView):
     permission_classes = [IsAuthenticated, IsAdminRole]
 
     def get(self, request):
-        """Return the current Home Assistant connection settings from env vars."""
-        cfg = get_home_assistant_config()
-        return Response(
-            {
-                "enabled": cfg["enabled"],
-                "base_url": cfg["base_url"],
-                "has_token": bool(cfg["token"]),
-                "connect_timeout_seconds": cfg["connect_timeout_seconds"],
-            },
-            status=status.HTTP_200_OK,
-        )
+        """Return Home Assistant settings with secrets masked."""
+        entry = _get_entry()
+        return Response(entry.get_masked_value_with_defaults(), status=status.HTTP_200_OK)
 
     def patch(self, request):
-        """Home Assistant settings are now configured via environment variables."""
-        raise MethodNotAllowed(
-            request.method, detail="Home Assistant settings are configured via environment variables."
+        """Update Home Assistant settings (connection + operational)."""
+        data = request.data
+        if not isinstance(data, dict) or not data:
+            raise ValidationError("Request body must be a non-empty object.")
+
+        definition = ALARM_PROFILE_SETTINGS_BY_KEY["home_assistant"]
+        allowed = set(definition.config_schema["properties"])
+        invalid = set(data) - allowed
+        if invalid:
+            raise ValidationError(f"Unknown fields: {', '.join(sorted(invalid))}")
+
+        try:
+            data = coerce_settings_values(data, definition.config_schema)
+        except ValueError as exc:
+            raise ValidationError(str(exc)) from exc
+
+        profile = ensure_active_settings_profile()
+        entry = _get_entry(profile)
+        entry.set_value_with_encryption(data)
+
+        set_cached_connection()
+        transaction.on_commit(
+            lambda: settings_profile_changed.send(sender=None, profile_id=profile.id, reason="updated")
         )
+        return Response(entry.get_masked_value_with_defaults(), status=status.HTTP_200_OK)
 
 
 class HomeAssistantEntitiesView(_HomeAssistantBaseView):

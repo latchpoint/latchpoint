@@ -7,6 +7,7 @@ from rest_framework.test import APIClient, APITestCase
 
 from accounts.models import Role, User, UserRoleAssignment
 from alarm.models import AlarmSettingsProfile
+from alarm.tests.settings_test_utils import EncryptionTestMixin
 
 
 class HomeAssistantEntitiesApiTests(APITestCase):
@@ -81,7 +82,7 @@ class HomeAssistantNotifyServicesApiTests(APITestCase):
         self.assertEqual(len(body["data"]), 2)
 
 
-class HomeAssistantSettingsApiPermissionTests(APITestCase):
+class HomeAssistantSettingsApiPermissionTests(EncryptionTestMixin, APITestCase):
     def setUp(self):
         self.user = User.objects.create_user(email="ha-settings-user@example.com", password="pass")
         self.admin = User.objects.create_user(email="ha-settings-admin@example.com", password="pass")
@@ -111,9 +112,9 @@ class HomeAssistantSettingsApiPermissionTests(APITestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn("data", response.json())
 
-    def test_patch_settings_returns_method_not_allowed(self):
+    def test_patch_settings_accepts_operational_settings(self):
         client = APIClient()
         client.force_authenticate(self.admin)
         url = reverse("ha-settings")
-        response = client.patch(url, data={"enabled": True}, format="json")
-        self.assertEqual(response.status_code, 405)
+        response = client.patch(url, data={"connect_timeout_seconds": 5}, format="json")
+        self.assertEqual(response.status_code, 200)

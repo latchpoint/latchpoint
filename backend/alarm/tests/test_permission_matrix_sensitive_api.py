@@ -1,17 +1,17 @@
 from __future__ import annotations
 
-import os
 from unittest.mock import patch
 
 from django.urls import reverse
 from rest_framework.test import APIClient, APITestCase
 
 from accounts.models import Role, User, UserRoleAssignment
-from alarm.models import AlarmSettingsProfile
-from alarm.tests.settings_test_utils import set_profile_settings
+from alarm.models import AlarmSettingsEntry, AlarmSettingsProfile
+from alarm.settings_registry import ALARM_PROFILE_SETTINGS_BY_KEY
+from alarm.tests.settings_test_utils import EncryptionTestMixin, set_profile_settings
 
 
-class SensitiveApiPermissionMatrixTests(APITestCase):
+class SensitiveApiPermissionMatrixTests(EncryptionTestMixin, APITestCase):
     def setUp(self):
         self.user = User.objects.create_user(email="matrix-user@example.com", password="pass")
         self.admin = User.objects.create_user(email="matrix-admin@example.com", password="pass", is_staff=True)
@@ -63,13 +63,21 @@ class SensitiveApiPermissionMatrixTests(APITestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["data"]["ok"], True)
 
-    @patch.dict(os.environ, {"ZWAVEJS_ENABLED": "true", "ZWAVEJS_WS_URL": "ws://zwavejs.local:3000"})
     @patch("integrations_zwavejs.views.sync_entities_from_zwavejs")
     @patch("integrations_zwavejs.views.zwavejs_gateway")
     def test_zwavejs_sync_has_explicit_401_403_200_matrix(self, mock_gateway, mock_sync_entities):
         mock_gateway.apply_settings.return_value = None
         mock_gateway.ensure_connected.return_value = None
         mock_sync_entities.return_value = {"imported": 1, "updated": 0}
+
+        # Enable ZWaveJS in DB so _ensure_zwavejs_ready() passes
+        definition = ALARM_PROFILE_SETTINGS_BY_KEY["zwavejs"]
+        entry, _ = AlarmSettingsEntry.objects.get_or_create(
+            profile=self.profile,
+            key="zwavejs",
+            defaults={"value": definition.default, "value_type": definition.value_type},
+        )
+        entry.set_value_with_encryption({"enabled": True, "ws_url": "ws://zwavejs.local:3000"})
 
         url = reverse("zwavejs-entities-sync")
         self.assertEqual(APIClient().post(url, data={}, format="json").status_code, 401)

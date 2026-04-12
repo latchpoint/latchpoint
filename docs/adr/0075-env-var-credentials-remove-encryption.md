@@ -1,7 +1,7 @@
 # ADR 0075: Move Integration Credentials to Environment Variables and Remove Encryption
 
 ## Status
-**Implemented**
+**Superseded by [ADR 0079](0079-ui-config-with-encrypted-credentials.md)**
 
 ## Context
 

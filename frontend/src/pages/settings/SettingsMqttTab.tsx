@@ -10,16 +10,18 @@ export function SettingsMqttTab() {
       <MqttSettingsCard
         isAdmin={model.isAdmin}
         isBusy={model.isBusy}
-        draft={model.draft}
-        settings={model.settingsQuery.data}
+        values={model.draft}
+        maskedFlags={model.maskedFlags}
         isLoading={model.settingsQuery.isLoading}
         connected={model.statusQuery.data?.connected}
         enabled={model.statusQuery.data?.enabled}
         lastError={model.statusQuery.data?.lastError ?? undefined}
         zigbee2mqttEnabled={Boolean(model.zigbee2mqttSettingsQuery.data?.enabled)}
         frigateEnabled={Boolean(model.frigateSettingsQuery.data?.enabled)}
+        saveDisabled={model.saveDisabled}
         onRefresh={model.refresh}
-        onSetDraft={model.setDraft}
+        onSave={() => void model.save()}
+        onChange={model.handleFieldChange}
       />
     </SettingsTabShell>
   )

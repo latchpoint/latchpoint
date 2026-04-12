@@ -25,11 +25,10 @@ logger = logging.getLogger(__name__)
 
 
 def _assert_zwavejs_enabled() -> None:
-    """Raise if Z-Wave JS is not enabled/configured via environment variables."""
-    from alarm.env_config import get_zwavejs_config
+    """Raise if Z-Wave JS is not enabled/configured."""
+    from alarm.integration_helpers import zwavejs_enabled
 
-    cfg = get_zwavejs_config()
-    if not cfg.get("enabled") or not cfg.get("ws_url"):
+    if not zwavejs_enabled():
         raise ValueError("Z-Wave JS must be enabled and configured before adding a Z-Wave control panel.")
 
 

@@ -94,11 +94,9 @@ class Zigbee2mqttSettingsView(APIView):
         changes = dict(serializer.validated_data)
 
         if changes.get("enabled") is True:
-            from alarm.env_config import get_mqtt_config
+            from alarm.integration_helpers import mqtt_enabled
 
-            conn = get_mqtt_config()
-            mqtt_ok = bool(conn.get("enabled") and conn.get("host"))
-            if not mqtt_ok:
+            if not mqtt_enabled():
                 raise ValidationError("MQTT must be enabled/configured before enabling Zigbee2MQTT.")
 
         merged = dict(current.__dict__)

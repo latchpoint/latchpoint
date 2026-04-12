@@ -7,6 +7,7 @@ DEFAULT_HOME_ASSISTANT_CONNECTION: dict[str, object] = {
     "base_url": "http://localhost:8123",
     "token": "",
     "connect_timeout_seconds": 2,
+    "request_timeout_seconds": 5,
 }
 
 

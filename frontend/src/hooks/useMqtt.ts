@@ -1,4 +1,4 @@
-import { useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { mqttService } from '@/services'
 import { queryKeys } from '@/types'
 import { useAuthSessionQuery, useCurrentUserQuery } from '@/hooks/useAuthQueries'
@@ -11,6 +11,17 @@ export function useMqttStatusQuery() {
     queryKey: queryKeys.mqtt.status,
     queryFn: mqttService.getStatus,
     enabled: isAuthenticated,
+  })
+}
+
+export function useUpdateMqttSettingsMutation() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (data: Record<string, unknown>) => mqttService.updateSettings(data),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.mqtt.settings })
+      await queryClient.invalidateQueries({ queryKey: queryKeys.mqtt.status })
+    },
   })
 }
 

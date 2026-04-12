@@ -84,6 +84,7 @@ def get_handler_metadata(provider_type: str) -> dict:
         "provider_type": handler.provider_type,
         "display_name": handler.display_name,
         "config_schema": handler.config_schema,
+        "encrypted_fields": handler.encrypted_fields,
     }
 
 

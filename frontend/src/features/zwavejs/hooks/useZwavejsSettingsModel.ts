@@ -3,19 +3,13 @@ import { UserRole } from '@/lib/constants'
 import { useCurrentUserQuery } from '@/hooks/useAuthQueries'
 import { getErrorMessage } from '@/types/errors'
 import { useDraftFromQuery } from '@/features/settings/hooks/useDraftFromQuery'
+import { shallowEqual, splitMaskedFlags } from '@/features/settings/hooks/settingsUtils'
 import {
   useSyncZwavejsEntitiesMutation,
+  useUpdateZwavejsSettingsMutation,
   useZwavejsSettingsQuery,
   useZwavejsStatusQuery,
 } from '@/hooks/useZwavejs'
-
-export type ZwavejsDraft = {
-  enabled: boolean
-  wsUrl: string
-  connectTimeoutSeconds: string
-  reconnectMinSeconds: string
-  reconnectMaxSeconds: string
-}
 
 export function useZwavejsSettingsModel() {
   const currentUserQuery = useCurrentUserQuery()
@@ -23,29 +17,42 @@ export function useZwavejsSettingsModel() {
 
   const statusQuery = useZwavejsStatusQuery()
   const settingsQuery = useZwavejsSettingsQuery()
+  const updateSettings = useUpdateZwavejsSettingsMutation()
   const syncEntities = useSyncZwavejsEntitiesMutation()
 
-  const initialDraft = useMemo<ZwavejsDraft | null>(() => {
-    if (!settingsQuery.data) return null
-    return {
-      enabled: settingsQuery.data.enabled,
-      wsUrl: settingsQuery.data.wsUrl || '',
-      connectTimeoutSeconds: String(settingsQuery.data.connectTimeoutSeconds ?? 5),
-      reconnectMinSeconds: String(settingsQuery.data.reconnectMinSeconds ?? 1),
-      reconnectMaxSeconds: String(settingsQuery.data.reconnectMaxSeconds ?? 30),
-    }
-  }, [settingsQuery.data])
+  const { values: initialDraft, maskedFlags } = useMemo(
+    () => splitMaskedFlags(settingsQuery.data),
+    [settingsQuery.data]
+  )
 
-  const { draft, setDraft } = useDraftFromQuery<ZwavejsDraft>(initialDraft)
+  const { draft, setDraft } = useDraftFromQuery<Record<string, unknown>>(initialDraft)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
 
-  const isBusy = settingsQuery.isLoading || syncEntities.isPending
+  const isBusy = settingsQuery.isLoading || syncEntities.isPending || updateSettings.isPending
+
+  const handleFieldChange = (key: string, value: unknown) => {
+    setDraft((prev) => (prev ? { ...prev, [key]: value } : prev))
+  }
 
   const refresh = () => {
     void statusQuery.refetch()
     void settingsQuery.refetch()
   }
+
+  const save = async () => {
+    if (!draft) return
+    setError(null)
+    setNotice(null)
+    try {
+      await updateSettings.mutateAsync(draft)
+      setNotice('Saved Z-Wave JS settings.')
+    } catch (err) {
+      setError(getErrorMessage(err) || 'Failed to save Z-Wave JS settings.')
+    }
+  }
+
+  const saveDisabled = !draft || !initialDraft || shallowEqual(draft, initialDraft)
 
   const sync = async () => {
     setError(null)
@@ -65,13 +72,16 @@ export function useZwavejsSettingsModel() {
   return {
     isAdmin,
     draft,
-    setDraft,
+    maskedFlags,
+    handleFieldChange,
     isBusy,
     error,
     notice,
     statusQuery,
     settingsQuery,
     refresh,
+    save,
+    saveDisabled,
     sync,
   }
 }

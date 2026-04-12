@@ -1,7 +1,9 @@
 /**
- * Notification provider types and interfaces (read-only)
- * Providers are now configured via environment variables (ADR-0075)
+ * Notification provider types and interfaces.
+ * Providers are DB-backed with full CRUD via the UI (ADR-0079).
  */
+
+import type { ConfigSchema } from './settingsRegistry'
 
 export type NotificationProviderType =
   | 'pushbullet'
@@ -25,10 +27,10 @@ export interface NotificationProvider {
 }
 
 export interface NotificationProviderTypeInfo {
-  type: NotificationProviderType
+  providerType: NotificationProviderType
   displayName: string
-  description: string
-  configSchema: Record<string, unknown>
+  configSchema: ConfigSchema
+  encryptedFields: string[]
 }
 
 export interface NotificationTestResult {

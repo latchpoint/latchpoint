@@ -1,32 +1,31 @@
 import { Home } from 'lucide-react'
 import { BooleanStatusPill } from '@/features/integrations/components/BooleanStatusPill'
 import { IntegrationOverviewCard } from '@/features/integrations/components/IntegrationOverviewCard'
-import type { HaConnectionDraft } from '@/features/homeAssistant/hooks/useHomeAssistantSettingsModel'
 
 type Props = {
   isAdmin: boolean
   isBusy: boolean
-  draft: HaConnectionDraft | null
+  enabled: boolean
   reachable: boolean | undefined
   configured: boolean | undefined
   lastError: string | null | undefined
+  saveDisabled: boolean
   onRefresh: () => void
-  onReset: () => void
   onSave: () => void
-  onSetDraft: (updater: (prev: HaConnectionDraft | null) => HaConnectionDraft | null) => void
+  onEnabledChange: (checked: boolean) => void
 }
 
 export function HomeAssistantOverviewCard({
   isAdmin,
   isBusy,
-  draft,
+  enabled,
   reachable,
   configured,
   lastError,
+  saveDisabled,
   onRefresh,
-  onReset,
   onSave,
-  onSetDraft,
+  onEnabledChange,
 }: Props) {
   return (
     <IntegrationOverviewCard
@@ -36,12 +35,12 @@ export function HomeAssistantOverviewCard({
           <span>Home Assistant</span>
         </div>
       }
-      description="Home Assistant connection is configured via environment variables."
+      description="Configure the Home Assistant integration connection and settings."
       isAdmin={isAdmin}
       isBusy={isBusy}
       status={{
         connected: reachable,
-        enabled: draft?.enabled,
+        enabled,
         lastError,
         labels: { connected: 'Reachable', disconnected: 'Not reachable', disabled: 'Disabled' },
       }}
@@ -59,15 +58,11 @@ export function HomeAssistantOverviewCard({
         </div>
       }
       enableLabel="Enable Home Assistant"
-      enableHelp="Home Assistant is enabled/disabled via environment variables."
-      enabled={draft?.enabled ?? false}
-      onEnabledChange={(checked) => onSetDraft((prev) => (prev ? { ...prev, enabled: checked } : prev))}
-      enableDisabled={true}
+      enabled={enabled}
+      onEnabledChange={onEnabledChange}
       onRefresh={onRefresh}
-      onReset={onReset}
       onSave={onSave}
-      resetDisabled={true}
-      saveDisabled={true}
+      saveDisabled={saveDisabled}
     />
   )
 }

@@ -7,8 +7,8 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from accounts.permissions import IsAdminRole
-from alarm.env_config import get_mqtt_config
 from alarm.gateways.mqtt import default_mqtt_gateway
+from alarm.integration_helpers import mqtt_enabled
 from alarm.models import AlarmSettingsEntry
 from alarm.serializers import (
     HomeAssistantAlarmEntitySettingsSerializer,
@@ -42,9 +42,8 @@ def _get_ha_alarm_entity_value(profile):
 
 
 def _mqtt_enabled() -> bool:
-    """Return True if MQTT is enabled and minimally configured (from env vars)."""
-    conn = get_mqtt_config()
-    return bool(conn.get("enabled") and conn.get("host"))
+    """Return True if MQTT is enabled and minimally configured."""
+    return mqtt_enabled()
 
 
 class HomeAssistantMqttAlarmEntityStatusView(APIView):
@@ -118,6 +117,8 @@ class HomeAssistantMqttAlarmEntityPublishDiscoveryView(APIView):
             raise ValidationError(
                 {"non_field_errors": ["MQTT must be enabled and configured before publishing discovery."]}
             )
-        mqtt_gateway.apply_settings(settings=get_mqtt_config())
+        from transports_mqtt.views import get_mqtt_settings
+
+        mqtt_gateway.apply_settings(settings=get_mqtt_settings())
         publish_discovery(force=True)
         return Response({"ok": True}, status=status.HTTP_200_OK)

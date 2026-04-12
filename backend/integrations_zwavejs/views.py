@@ -2,21 +2,42 @@ from __future__ import annotations
 
 import logging
 
+from django.db import transaction
 from rest_framework import status
-from rest_framework.exceptions import MethodNotAllowed
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from accounts.permissions import IsAdminRole
-from alarm.env_config import get_zwavejs_config
 from alarm.gateways.zwavejs import default_zwavejs_gateway
+from alarm.models import AlarmSettingsEntry
 from alarm.serializers import ZwavejsSetValueSerializer, ZwavejsTestConnectionSerializer
+from alarm.settings_registry import ALARM_PROFILE_SETTINGS_BY_KEY, coerce_settings_values
+from alarm.signals import settings_profile_changed
+from alarm.use_cases.settings_profile import ensure_active_settings_profile
 from config.domain_exceptions import ServiceUnavailableError, ValidationError
 from integrations_zwavejs.entity_sync import sync_entities_from_zwavejs
 
 zwavejs_gateway = default_zwavejs_gateway
 logger = logging.getLogger(__name__)
+
+
+def _get_entry(profile=None) -> AlarmSettingsEntry:
+    """Return (or create) the zwavejs AlarmSettingsEntry for the active profile."""
+    if profile is None:
+        profile = ensure_active_settings_profile()
+    definition = ALARM_PROFILE_SETTINGS_BY_KEY["zwavejs"]
+    entry, _ = AlarmSettingsEntry.objects.get_or_create(
+        profile=profile,
+        key="zwavejs",
+        defaults={"value": definition.default, "value_type": definition.value_type},
+    )
+    return entry
+
+
+def get_zwavejs_settings() -> dict:
+    """Return decrypted Z-Wave JS settings for runtime consumers (gateways, commands)."""
+    return _get_entry().get_decrypted_value()
 
 
 def _extract_nodes(controller_state: dict) -> list[dict]:
@@ -73,14 +94,15 @@ def _node_summary(node: dict) -> dict:
     }
 
 
-def _ensure_zwavejs_ready(cfg: dict) -> None:
-    """Apply env config and ensure gateway is connected."""
-    if not cfg.get("enabled"):
+def _ensure_zwavejs_ready() -> None:
+    """Read decrypted settings and ensure gateway is connected."""
+    settings = get_zwavejs_settings()
+    if not settings.get("enabled"):
         raise ValidationError("Z-Wave JS is disabled.")
-    if not cfg.get("ws_url"):
+    if not settings.get("ws_url"):
         raise ValidationError("Z-Wave JS ws_url is required.")
-    zwavejs_gateway.apply_settings(settings_obj=cfg)
-    zwavejs_gateway.ensure_connected(timeout_seconds=float(cfg.get("connect_timeout_seconds") or 5))
+    zwavejs_gateway.apply_settings(settings_obj=settings)
+    zwavejs_gateway.ensure_connected(timeout_seconds=float(settings.get("connect_timeout_seconds") or 5))
 
 
 class ZwavejsStatusView(APIView):
@@ -88,8 +110,8 @@ class ZwavejsStatusView(APIView):
 
     def get(self, request):
         """Return current Z-Wave JS connection status."""
-        cfg = get_zwavejs_config()
-        zwavejs_gateway.apply_settings(settings_obj=cfg)
+        settings = get_zwavejs_settings()
+        zwavejs_gateway.apply_settings(settings_obj=settings)
         return Response(zwavejs_gateway.get_status().as_dict(), status=status.HTTP_200_OK)
 
 
@@ -97,23 +119,37 @@ class ZwavejsSettingsView(APIView):
     permission_classes = [IsAuthenticated, IsAdminRole]
 
     def get(self, request):
-        """Return the current Z-Wave JS connection settings from env vars."""
-        cfg = get_zwavejs_config()
-        return Response(
-            {
-                "enabled": cfg["enabled"],
-                "ws_url": cfg["ws_url"],
-                "has_api_token": bool(cfg["api_token"]),
-                "connect_timeout_seconds": cfg["connect_timeout_seconds"],
-                "reconnect_min_seconds": cfg["reconnect_min_seconds"],
-                "reconnect_max_seconds": cfg["reconnect_max_seconds"],
-            },
-            status=status.HTTP_200_OK,
-        )
+        """Return Z-Wave JS settings with secrets masked."""
+        entry = _get_entry()
+        return Response(entry.get_masked_value_with_defaults(), status=status.HTTP_200_OK)
 
     def patch(self, request):
-        """Z-Wave JS settings are now configured via environment variables."""
-        raise MethodNotAllowed(request.method, detail="Z-Wave JS settings are configured via environment variables.")
+        """Update Z-Wave JS settings (connection + operational)."""
+        data = request.data
+        if not isinstance(data, dict) or not data:
+            raise ValidationError("Request body must be a non-empty object.")
+
+        definition = ALARM_PROFILE_SETTINGS_BY_KEY["zwavejs"]
+        allowed = set(definition.config_schema["properties"])
+        invalid = set(data) - allowed
+        if invalid:
+            raise ValidationError(f"Unknown fields: {', '.join(sorted(invalid))}")
+
+        try:
+            data = coerce_settings_values(data, definition.config_schema)
+        except ValueError as exc:
+            raise ValidationError(str(exc)) from exc
+
+        profile = ensure_active_settings_profile()
+        entry = _get_entry(profile)
+        entry.set_value_with_encryption(data)
+
+        settings = entry.get_decrypted_value()
+        zwavejs_gateway.apply_settings(settings_obj=settings)
+        transaction.on_commit(
+            lambda: settings_profile_changed.send(sender=None, profile_id=profile.id, reason="updated")
+        )
+        return Response(entry.get_masked_value_with_defaults(), status=status.HTTP_200_OK)
 
 
 class ZwavejsTestConnectionView(APIView):
@@ -138,8 +174,7 @@ class ZwavejsEntitySyncView(APIView):
 
     def post(self, request):
         """Sync entities from Z-Wave JS into the local entity registry (admin-only)."""
-        cfg = get_zwavejs_config()
-        _ensure_zwavejs_ready(cfg)
+        _ensure_zwavejs_ready()
 
         try:
             result = sync_entities_from_zwavejs(zwavejs=zwavejs_gateway)
@@ -158,8 +193,7 @@ class ZwavejsSetValueView(APIView):
         serializer.is_valid(raise_exception=True)
         payload = serializer.validated_data
 
-        cfg = get_zwavejs_config()
-        _ensure_zwavejs_ready(cfg)
+        _ensure_zwavejs_ready()
 
         zwavejs_gateway.set_value(
             node_id=int(payload["node_id"]),
@@ -180,8 +214,7 @@ class ZwavejsNodesView(APIView):
 
     def get(self, request):
         """Return a best-effort list of controller nodes for UI discovery (admin-only)."""
-        cfg = get_zwavejs_config()
-        _ensure_zwavejs_ready(cfg)
+        _ensure_zwavejs_ready()
 
         try:
             controller_state = zwavejs_gateway.controller_get_state(timeout_seconds=10)

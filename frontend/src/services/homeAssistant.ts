@@ -13,6 +13,7 @@ export interface HomeAssistantConnectionSettings {
   baseUrl: string
   connectTimeoutSeconds: number
   hasToken: boolean
+  [key: string]: unknown
 }
 
 export interface HomeAssistantEntity {
@@ -32,6 +33,10 @@ export const homeAssistantService = {
 
   async getSettings(): Promise<HomeAssistantConnectionSettings> {
     return api.get<HomeAssistantConnectionSettings>(apiEndpoints.homeAssistant.settings)
+  },
+
+  async updateSettings(data: Record<string, unknown>): Promise<HomeAssistantConnectionSettings> {
+    return api.patch<HomeAssistantConnectionSettings>(apiEndpoints.homeAssistant.settings, data)
   },
 
   async listEntities(): Promise<HomeAssistantEntity[]> {
