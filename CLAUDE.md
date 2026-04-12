@@ -68,6 +68,8 @@ A self-hosted home alarm system with integrations for Home Assistant, MQTT, Z-Wa
 
 ## Lint & Format
 
+**Always run lint and format checks before committing/pushing.** Fix any issues before pushing.
+
 ### Backend (Python)
 ```bash
 uvx ruff check backend/           # lint
