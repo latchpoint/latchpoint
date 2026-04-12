@@ -145,7 +145,7 @@ class ProviderDetailView(APIView):
             # Validate config against handler
             handler = get_handler(provider.provider_type)
             # Build the merged config for validation (mirrors set_config_with_encryption partial merge)
-            merged = {**(provider.config or {}), **data["config"]}
+            merged = {**(provider.get_decrypted_config() or {}), **data["config"]}
             config_errors = handler.validate_config(merged)
             if config_errors:
                 raise ValidationError({"config": config_errors})
