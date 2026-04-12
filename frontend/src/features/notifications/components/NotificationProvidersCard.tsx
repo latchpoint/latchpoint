@@ -136,7 +136,9 @@ export function NotificationProvidersCard({ isAdmin = false }: { isAdmin?: boole
 
           {allProviders.length === 0 ? (
             <div className="rounded-md border border-dashed p-6 text-center text-sm text-muted-foreground">
-              No notification providers configured. Click "Add" to create one.
+              {isAdmin
+                ? 'No notification providers configured. Click "Add" to create one.'
+                : 'No notification providers configured. Ask an administrator to add one.'}
             </div>
           ) : (
             <div className="space-y-2">
