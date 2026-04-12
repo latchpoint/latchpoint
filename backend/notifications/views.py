@@ -3,6 +3,7 @@ API views for notification providers.
 """
 
 import logging
+import uuid
 
 from django.db import IntegrityError
 from rest_framework.permissions import IsAuthenticated
@@ -281,6 +282,10 @@ class PushbulletDevicesView(APIView):
         provider_id = request.query_params.get("provider_id")
         if provider_id:
             try:
+                uuid.UUID(provider_id)
+            except (ValueError, AttributeError):
+                raise ValidationError("Invalid provider_id format.") from None
+            try:
                 provider = NotificationProvider.objects.get(id=provider_id, profile=profile, provider_type="pushbullet")
             except NotificationProvider.DoesNotExist:
                 raise NotFoundError("Pushbullet provider not found.") from None
@@ -316,6 +321,10 @@ class PushbulletValidateTokenView(APIView):
 
         provider_id = request.data.get("provider_id") if isinstance(request.data, dict) else None
         if provider_id:
+            try:
+                uuid.UUID(provider_id)
+            except (ValueError, AttributeError):
+                raise ValidationError("Invalid provider_id format.") from None
             try:
                 provider = NotificationProvider.objects.get(id=provider_id, profile=profile, provider_type="pushbullet")
             except NotificationProvider.DoesNotExist:

@@ -35,7 +35,11 @@ class AlarmConfig(AppConfig):
         # Deferred to post-migrate to avoid running during migrations.
         from django.db.models.signals import post_migrate
 
-        post_migrate.connect(_validate_encryption_key, sender=self)
+        post_migrate.connect(
+            _validate_encryption_key,
+            sender=self,
+            dispatch_uid="alarm.validate_encryption_key",
+        )
 
 
 def _validate_encryption_key(sender, **kwargs) -> None:  # noqa: ARG001
