@@ -7,6 +7,9 @@ from django.utils import timezone
 from alarm.gateways.zwavejs import ZwavejsGateway
 from alarm.models import Entity
 from integrations_zwavejs.manager import (
+    CC_DOOR_LOCK,
+    CC_SCHEDULE_ENTRY_LOCK,
+    CC_USER_CODE,
     LOCK_COMMAND_CLASSES,
     build_zwavejs_entity_id,
     infer_entity_domain,
@@ -106,7 +109,7 @@ def sync_entities_from_zwavejs(*, zwavejs: ZwavejsGateway, now=None, per_node_li
         # Pick a single representative lock value_id for this node so exactly one
         # Entity gets domain="lock" (avoids flooding the UI with dozens of CC 99 slots).
         # Priority: CC 98 "currentMode" > any CC 98 > any CC 99 > any CC 76.
-        _lock_cc_priority = {98: 0, 99: 1, 76: 2}
+        _lock_cc_priority = {CC_DOOR_LOCK: 0, CC_USER_CODE: 1, CC_SCHEDULE_ENTRY_LOCK: 2}
         _lock_repr_entity_id: str | None = None
         _best_rank = (999, 1, "")  # (cc_priority, 0 if currentMode else 1, entity_id)
         for vid in value_ids:
