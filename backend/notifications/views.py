@@ -4,6 +4,7 @@ API views for notification providers.
 
 import logging
 
+from django.db import IntegrityError
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -90,7 +91,10 @@ class ProviderListCreateView(APIView):
             provider_type=provider_type,
             is_enabled=is_enabled,
         )
-        provider.set_config_with_encryption(config, partial=False)
+        try:
+            provider.set_config_with_encryption(config, partial=False)
+        except IntegrityError as exc:
+            raise ValidationError(f"A notification provider named '{name}' already exists.") from exc
         serializer = NotificationProviderSerializer(provider)
         return Response(serializer.data, status=201)
 
@@ -151,7 +155,10 @@ class ProviderDetailView(APIView):
                 raise ValidationError({"config": config_errors})
             provider.set_config_with_encryption(data["config"], save=False)
             update_fields.append("config")
-        provider.save(update_fields=update_fields)
+        try:
+            provider.save(update_fields=update_fields)
+        except IntegrityError as exc:
+            raise ValidationError(f"A notification provider named '{provider.name}' already exists.") from exc
 
         serializer = NotificationProviderSerializer(provider)
         return Response(serializer.data)

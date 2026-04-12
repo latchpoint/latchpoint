@@ -181,6 +181,7 @@ export function NotificationProvidersCard({ isAdmin = false }: { isAdmin?: boole
                             size="sm"
                             onClick={() => handleEdit(provider)}
                             title="Edit"
+                            aria-label={`Edit ${provider.name}`}
                           >
                             <Pencil className="h-4 w-4" />
                           </Button>
@@ -190,6 +191,7 @@ export function NotificationProvidersCard({ isAdmin = false }: { isAdmin?: boole
                             onClick={() => void handleDelete(provider)}
                             disabled={deleteMutation.isPending}
                             title="Delete"
+                            aria-label={`Delete ${provider.name}`}
                           >
                             <Trash2 className="h-4 w-4" />
                           </Button>

@@ -5,6 +5,60 @@ from dataclasses import dataclass, field
 from alarm.models import AlarmState, SystemConfigValueType
 
 
+def coerce_settings_values(data: dict, config_schema: dict) -> dict:
+    """Coerce incoming setting values to the types declared in the config_schema.
+
+    Raises ``ValueError`` for values that cannot be converted (e.g. ``"abc"``
+    for an integer field).  Only keys present in *data* are touched; unknown
+    keys pass through so the caller can reject them separately.
+    """
+    properties = config_schema.get("properties", {})
+    coerced: dict = {}
+    errors: list[str] = []
+
+    for key, value in data.items():
+        prop = properties.get(key)
+        if prop is None:
+            coerced[key] = value
+            continue
+
+        declared_type = prop.get("type")
+        try:
+            if declared_type == "integer" and not isinstance(value, int):
+                coerced[key] = int(value)
+            elif declared_type == "number" and not isinstance(value, (int, float)):
+                coerced[key] = float(value)
+            elif declared_type == "boolean" and not isinstance(value, bool):
+                if isinstance(value, str):
+                    coerced[key] = value.lower() in ("true", "1", "yes")
+                else:
+                    coerced[key] = bool(value)
+            else:
+                coerced[key] = value
+        except (ValueError, TypeError):
+            errors.append(f"{key}: expected {declared_type}")
+
+    if errors:
+        raise ValueError("; ".join(errors))
+
+    # Enforce minimum / maximum from schema
+    for key, value in coerced.items():
+        prop = properties.get(key, {})
+        if not isinstance(value, (int, float)):
+            continue
+        minimum = prop.get("minimum")
+        maximum = prop.get("maximum")
+        if minimum is not None and value < minimum:
+            errors.append(f"{key}: must be >= {minimum}")
+        if maximum is not None and value > maximum:
+            errors.append(f"{key}: must be <= {maximum}")
+
+    if errors:
+        raise ValueError("; ".join(errors))
+
+    return coerced
+
+
 @dataclass(frozen=True)
 class SettingDefinition:
     key: str
