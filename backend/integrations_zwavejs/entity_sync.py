@@ -108,7 +108,7 @@ def sync_entities_from_zwavejs(*, zwavejs: ZwavejsGateway, now=None, per_node_li
 
         # Pick a single representative lock value_id for this node so exactly one
         # Entity gets domain="lock" (avoids flooding the UI with dozens of CC 99 slots).
-        # Priority: CC 98 "currentMode" > any CC 98 > any CC 99 > any CC 76.
+        # Priority: CC 98 "currentMode" > any CC 98 > any CC 99 > any CC 78.
         _lock_cc_priority = {CC_DOOR_LOCK: 0, CC_USER_CODE: 1, CC_SCHEDULE_ENTRY_LOCK: 2}
         _lock_repr_entity_id: str | None = None
         _best_rank = (999, 1, "")  # (cc_priority, 0 if currentMode else 1, entity_id)
@@ -126,6 +126,7 @@ def sync_entities_from_zwavejs(*, zwavejs: ZwavejsGateway, now=None, per_node_li
                 _lock_repr_entity_id = candidate_entity_id
 
         count = 0
+        _lock_repr_found = _lock_repr_entity_id is None
         for value_id in value_ids:
             if not isinstance(value_id, dict):
                 continue
@@ -134,9 +135,17 @@ def sync_entities_from_zwavejs(*, zwavejs: ZwavejsGateway, now=None, per_node_li
             if not isinstance(command_class, int) or prop is None:
                 continue
 
-            count += 1
-            if per_node_limit and count > per_node_limit:
-                break
+            entity_id = build_zwavejs_entity_id(home_id=home_id, node_id=node_id, value_id=value_id)
+            is_lock_repr = _lock_repr_entity_id is not None and entity_id == _lock_repr_entity_id
+
+            if is_lock_repr:
+                _lock_repr_found = True
+            else:
+                count += 1
+                if per_node_limit and count > per_node_limit:
+                    if _lock_repr_found:
+                        break
+                    continue
 
             try:
                 metadata = zwavejs.node_get_value_metadata(node_id=node_id, value_id=value_id, timeout_seconds=10)
@@ -148,8 +157,6 @@ def sync_entities_from_zwavejs(*, zwavejs: ZwavejsGateway, now=None, per_node_li
             except Exception:
                 value = None
 
-            entity_id = build_zwavejs_entity_id(home_id=home_id, node_id=node_id, value_id=value_id)
-            is_lock_repr = _lock_repr_entity_id is not None and entity_id == _lock_repr_entity_id
             domain = "lock" if is_lock_repr else infer_entity_domain(value=value)
             label = metadata.get("label") if isinstance(metadata.get("label"), str) else None
             name = node_name if is_lock_repr else (f"{node_name} • {label}" if label else f"{node_name} • {entity_id}")

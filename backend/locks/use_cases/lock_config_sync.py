@@ -595,7 +595,7 @@ def _extract_daily_repeating_schedule_windows_via_cc_api(
         if user_error:
             unsupported_by_slot[user_id] = user_error
             schedule_by_slot[user_id] = None
-        elif not has_any_schedule:
+        elif not has_any_schedule or days_mask == 0:
             schedule_by_slot[user_id] = None
         else:
             assert window is not None

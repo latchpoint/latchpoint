@@ -93,7 +93,7 @@ This document tracks all Architecture Decision Records (ADRs) and their implemen
 | [0074](0074-test-suite-expansion-beyond-endpoint-baseline.md) | Test Suite Expansion Beyond Endpoint Baseline | **Implemented** |
 | [0075](0075-env-var-credentials-remove-encryption.md) | Move Integration Credentials to Env Vars, Remove Encryption | **Implemented** |
 | [0079](0079-ui-config-with-encrypted-credentials.md) | DB-Backed Settings with Encryption, Schema-Driven UI, and Notification Provider CRUD | **Implemented** |
-| [0080](0080-pushbullet-multi-provider-endpoint-ambiguity.md) | Pushbullet Multi-Provider Endpoint Ambiguity | **Proposed** |
+| [0080](0080-pushbullet-multi-provider-endpoint-ambiguity.md) | Pushbullet Multi-Provider Endpoint Ambiguity | **Accepted** |
 | [0081](0081-schedule-entry-lock-cc-api-sync.md) | Schedule Entry Lock — CC API Sync for Daily Repeating Schedules | **Proposed** |
 
 ---
