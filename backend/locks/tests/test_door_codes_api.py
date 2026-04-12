@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+from unittest.mock import MagicMock, patch
+
 from django.urls import reverse
 from rest_framework.test import APITestCase
 
 from accounts.models import User
-from locks.models import DoorCode, DoorCodeLockAssignment
+from alarm.models import Entity
+from locks.models import DoorCode, DoorCodeEvent, DoorCodeLockAssignment
 
 
 class DoorCodesApiTests(APITestCase):
@@ -259,7 +262,14 @@ class DoorCodesApiTests(APITestCase):
         self.assertEqual(response.status_code, 204)
         self.assertFalse(DoorCode.objects.filter(id=code.id).exists())
 
-    def test_deleting_synced_door_code_dismisses_slot_instead_of_hard_delete(self):
+    def test_deleting_synced_door_code_clears_lock_and_dismisses(self):
+        Entity.objects.create(
+            entity_id="lock.front_door",
+            domain="lock",
+            name="Front Door",
+            attributes={"zwavejs": {"node_id": 5}},
+            source="zwavejs",
+        )
         code = DoorCode.objects.create(
             user=self.user,
             source=DoorCode.Source.SYNCED,
@@ -275,19 +285,76 @@ class DoorCodesApiTests(APITestCase):
             slot_index=1,
         )
 
+        fake_gw = MagicMock()
         url = reverse("door-code-detail", args=[code.id])
-        response = self.client.delete(url, {"reauth_password": "pass"}, format="json")
+        with patch("locks.views.door_codes.default_zwavejs_gateway", fake_gw):
+            response = self.client.delete(url, {"reauth_password": "pass"}, format="json")
         self.assertEqual(response.status_code, 204)
+
+        # Verify CC 99 clear was called with correct args.
+        fake_gw.invoke_cc_api.assert_called_once_with(
+            node_id=5,
+            command_class=99,
+            method_name="set",
+            args=[1, 0],
+            timeout_seconds=10.0,
+        )
 
         code.refresh_from_db()
         self.assertFalse(code.is_active)
         assignment = DoorCodeLockAssignment.objects.get(door_code=code, lock_entity_id="lock.front_door")
         self.assertTrue(assignment.sync_dismissed)
 
+        # Verify audit event records cleared_from_lock=True.
+        event = DoorCodeEvent.objects.filter(event_type=DoorCodeEvent.EventType.CODE_DELETED).first()
+        self.assertIsNotNone(event)
+        self.assertTrue(event.metadata.get("cleared_from_lock"))
+
         list_url = reverse("door-codes")
         list_resp = self.client.get(list_url, {"user_id": str(self.user.id)})
         self.assertEqual(list_resp.status_code, 200)
         self.assertEqual(list_resp.json()["data"], [])
+
+    def test_deleting_synced_door_code_fails_when_lock_unreachable(self):
+        from integrations_zwavejs.manager import ZwavejsCommandError
+
+        Entity.objects.create(
+            entity_id="lock.front_door",
+            domain="lock",
+            name="Front Door",
+            attributes={"zwavejs": {"node_id": 5}},
+            source="zwavejs",
+        )
+        code = DoorCode.objects.create(
+            user=self.user,
+            source=DoorCode.Source.SYNCED,
+            code_hash=None,
+            label="Slot 1",
+            code_type=DoorCode.CodeType.PERMANENT,
+            pin_length=None,
+            is_active=True,
+        )
+        DoorCodeLockAssignment.objects.create(
+            door_code=code,
+            lock_entity_id="lock.front_door",
+            slot_index=1,
+        )
+
+        fake_gw = MagicMock()
+        fake_gw.invoke_cc_api.side_effect = ZwavejsCommandError("Z-Wave error 202: timeout")
+
+        url = reverse("door-code-detail", args=[code.id])
+        with patch("locks.views.door_codes.default_zwavejs_gateway", fake_gw):
+            response = self.client.delete(url, {"reauth_password": "pass"}, format="json")
+
+        # Should fail with 502 (gateway error).
+        self.assertEqual(response.status_code, 502)
+
+        # DB state should be unchanged (code still active, not dismissed).
+        code.refresh_from_db()
+        self.assertTrue(code.is_active)
+        assignment = DoorCodeLockAssignment.objects.get(door_code=code, lock_entity_id="lock.front_door")
+        self.assertFalse(assignment.sync_dismissed)
 
     def test_non_admin_cannot_delete_door_code(self):
         code = DoorCode.objects.create(

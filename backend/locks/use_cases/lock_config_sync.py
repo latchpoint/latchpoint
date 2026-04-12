@@ -374,16 +374,12 @@ def _extract_weekday_schedule_windows(
     # If no CC 78 schedule value IDs exist in the cache, fall back to direct CC API
     # invocation for daily repeating schedules (ADR 0081).
     if not weekday_value_ids and not unsupported_value_ids:
-        if hasattr(zwavejs, "invoke_cc_api"):
-            return _extract_daily_repeating_schedule_windows_via_cc_api(
-                zwavejs=zwavejs,
-                node_id=node_id,
-                slot_indices=slot_indices,
-                timeout_seconds=timeout_seconds,
-            )
-        return {si: None for si in slot_indices}, {
-            si: "Lock does not expose CC 78 schedule value IDs." for si in slot_indices
-        }
+        return _extract_daily_repeating_schedule_windows_via_cc_api(
+            zwavejs=zwavejs,
+            node_id=node_id,
+            slot_indices=slot_indices,
+            timeout_seconds=timeout_seconds,
+        )
 
     # Weekday windows aggregated by slot -> weekday -> list[(start,end)]
     windows: dict[int, dict[int, list[tuple[time, time]]]] = {}
@@ -540,7 +536,7 @@ def _extract_daily_repeating_schedule_windows_via_cc_api(
         has_any_schedule = False
         user_error: str | None = None
 
-        for slot_id in range(1, int(num_daily_slots) + 1):
+        for slot_id in range(1, num_daily_slots + 1):
             try:
                 response = zwavejs.invoke_cc_api(
                     node_id=node_id,
@@ -606,6 +602,25 @@ def _extract_daily_repeating_schedule_windows_via_cc_api(
             }
 
     return schedule_by_slot, unsupported_by_slot
+
+
+def clear_lock_user_code_slot(
+    *,
+    lock_entity_id: str,
+    slot_index: int,
+    zwavejs: ZwavejsGateway,
+    timeout_seconds: float = 10.0,
+) -> None:
+    """Clear a user code slot on a physical Z-Wave JS lock (CC 99 set → Available)."""
+    node_id = _resolve_lock_node_id(lock_entity_id=lock_entity_id)
+    logger.info("Clearing user code slot %d on %s (node %d)", slot_index, lock_entity_id, node_id)
+    zwavejs.invoke_cc_api(
+        node_id=node_id,
+        command_class=CC_USER_CODE,
+        method_name="set",
+        args=[slot_index, 0],  # userIdStatus=0 → Available
+        timeout_seconds=timeout_seconds,
+    )
 
 
 def _resolve_lock_node_id(*, lock_entity_id: str) -> int:

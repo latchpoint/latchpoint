@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from django.contrib.auth.hashers import make_password
 from django.db.models import Exists, OuterRef, Q, QuerySet
 
@@ -7,6 +9,9 @@ from accounts.models import User
 from accounts.policies import is_admin
 from config.domain_exceptions import ForbiddenError, NotFoundError, ValidationError
 from locks.models import DoorCode, DoorCodeEvent, DoorCodeLockAssignment
+
+if TYPE_CHECKING:
+    from alarm.gateways.zwavejs import ZwavejsGateway
 
 
 class Forbidden(ForbiddenError):
@@ -252,8 +257,14 @@ def delete_door_code(
     *,
     code: DoorCode,
     actor_user: User | None = None,
+    zwavejs: ZwavejsGateway | None = None,
 ) -> None:
-    """Delete a door code and emit a `DoorCodeEvent` capturing who deleted it."""
+    """Delete a door code and emit a `DoorCodeEvent` capturing who deleted it.
+
+    For synced codes, clears the physical lock slot via Z-Wave JS CC 99 before
+    dismissing the record.  If the lock is unreachable the delete is aborted
+    (Option A — fail-fast).
+    """
     code_id = code.id
     label = code.label
     user = code.user
@@ -268,6 +279,20 @@ def delete_door_code(
             for a in assignments
             if a.slot_index is not None
         ]
+
+        # Clear slots on physical locks before dismissing (ADR 0082).
+        cleared_from_lock = False
+        if zwavejs is not None and dismissed_slots:
+            from locks.use_cases.lock_config_sync import clear_lock_user_code_slot
+
+            for slot_info in dismissed_slots:
+                clear_lock_user_code_slot(
+                    lock_entity_id=slot_info["lock_entity_id"],
+                    slot_index=slot_info["slot_index"],
+                    zwavejs=zwavejs,
+                )
+            cleared_from_lock = True
+
         DoorCodeLockAssignment.objects.filter(door_code=code).update(sync_dismissed=True, updated_at=now)
         if code.is_active:
             code.is_active = False
@@ -283,6 +308,7 @@ def delete_door_code(
                 "user_id": str(user.id),
                 "dismissed": True,
                 "dismissed_slots": dismissed_slots,
+                "cleared_from_lock": cleared_from_lock,
             },
         )
         return

@@ -189,20 +189,17 @@ class ZwavejsEntitySyncTests(TestCase):
 
 
 class InferEntityDomainTests(SimpleTestCase):
-    def test_returns_lock_for_cc_98(self):
-        self.assertEqual(infer_entity_domain(value=1, command_class=98), "lock")
+    def test_returns_binary_sensor_for_bool(self):
+        self.assertEqual(infer_entity_domain(value=True), "binary_sensor")
 
-    def test_returns_lock_for_cc_99(self):
-        self.assertEqual(infer_entity_domain(value="1234", command_class=99), "lock")
-
-    def test_returns_lock_for_cc_78(self):
-        self.assertEqual(infer_entity_domain(value={}, command_class=78), "lock")
-
-    def test_returns_sensor_for_non_lock_cc(self):
-        self.assertEqual(infer_entity_domain(value=42, command_class=113), "sensor")
-
-    def test_returns_binary_sensor_for_bool_without_lock_cc(self):
-        self.assertEqual(infer_entity_domain(value=True, command_class=113), "binary_sensor")
-
-    def test_returns_sensor_when_no_command_class(self):
+    def test_returns_sensor_for_int(self):
         self.assertEqual(infer_entity_domain(value=42), "sensor")
+
+    def test_returns_sensor_for_float(self):
+        self.assertEqual(infer_entity_domain(value=3.14), "sensor")
+
+    def test_returns_sensor_for_string(self):
+        self.assertEqual(infer_entity_domain(value="open"), "sensor")
+
+    def test_returns_sensor_for_none(self):
+        self.assertEqual(infer_entity_domain(value=None), "sensor")

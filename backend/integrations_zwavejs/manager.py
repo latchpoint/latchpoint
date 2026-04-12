@@ -853,10 +853,8 @@ def normalize_entity_state(*, value: object) -> str | None:
     return str(value)
 
 
-def infer_entity_domain(*, value: object, command_class: int | None = None) -> str:
-    """Infer a Home Assistant-like entity domain from a raw value type and optional Z-Wave command class."""
-    if isinstance(command_class, int) and command_class in LOCK_COMMAND_CLASSES:
-        return "lock"
+def infer_entity_domain(*, value: object) -> str:
+    """Infer a Home Assistant-like entity domain from a raw value type."""
     if isinstance(value, bool):
         return "binary_sensor"
     if isinstance(value, (int, float)):
