@@ -379,3 +379,100 @@ class DoorCodesApiTests(APITestCase):
             format="json",
         )
         self.assertEqual(response.status_code, 403)
+
+    # ------------------------------------------------------------------
+    # Synced code update restrictions
+    # ------------------------------------------------------------------
+
+    def _create_synced_code(self):
+        code = DoorCode.objects.create(
+            user=self.user,
+            source=DoorCode.Source.SYNCED,
+            code_hash=None,
+            label="Slot 1",
+            code_type=DoorCode.CodeType.PERMANENT,
+            pin_length=None,
+            is_active=True,
+        )
+        DoorCodeLockAssignment.objects.create(
+            door_code=code,
+            lock_entity_id="lock.front_door",
+            slot_index=1,
+        )
+        return code
+
+    def test_synced_code_rejects_restricted_field_updates(self):
+        code = self._create_synced_code()
+        url = reverse("door-code-detail", args=[code.id])
+
+        response = self.client.patch(
+            url,
+            {
+                "max_uses": 5,
+                "is_active": False,
+                "lock_entity_ids": ["lock.back_door"],
+                "days_of_week": 1,
+                "reauth_password": "pass",
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 400)
+        details = response.json()["error"]["details"]
+        for field in ("max_uses", "is_active", "lock_entity_ids", "days_of_week"):
+            self.assertIn(field, details, f"Expected validation error for {field}")
+
+    def test_synced_code_allows_label_update(self):
+        code = self._create_synced_code()
+        url = reverse("door-code-detail", args=[code.id])
+
+        response = self.client.patch(
+            url,
+            {"label": "Front door slot", "reauth_password": "pass"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["data"]["label"], "Front door slot")
+
+    def test_synced_code_rejects_code_change(self):
+        code = self._create_synced_code()
+        url = reverse("door-code-detail", args=[code.id])
+
+        response = self.client.patch(
+            url,
+            {"code": "9999", "reauth_password": "pass"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 400)
+        details = response.json()["error"]["details"]
+        self.assertIn("code", details)
+
+    def test_manual_code_still_allows_all_fields(self):
+        code = DoorCode.objects.create(
+            user=self.user,
+            code_hash="not-used-here",
+            label="Manual code",
+            code_type=DoorCode.CodeType.PERMANENT,
+            pin_length=4,
+            is_active=True,
+        )
+        DoorCodeLockAssignment.objects.create(
+            door_code=code,
+            lock_entity_id="lock.front_door",
+        )
+        url = reverse("door-code-detail", args=[code.id])
+
+        response = self.client.patch(
+            url,
+            {
+                "label": "Updated",
+                "max_uses": 10,
+                "lock_entity_ids": ["lock.back_door"],
+                "reauth_password": "pass",
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200)
+        body = response.json()["data"]
+        self.assertEqual(body["label"], "Updated")
+        self.assertEqual(body["max_uses"], 10)
+        self.assertEqual(body["lock_entity_ids"], ["lock.back_door"])

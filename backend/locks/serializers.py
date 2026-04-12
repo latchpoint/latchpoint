@@ -181,12 +181,25 @@ class DoorCodeUpdateSerializer(serializers.Serializer):
             raise serializers.ValidationError("Code must be 4 to 8 digits.")
         return code
 
+    _SYNCED_READONLY_FIELDS = frozenset({
+        "code", "is_active", "start_at", "end_at",
+        "days_of_week", "window_start", "window_end",
+        "max_uses", "lock_entity_ids",
+    })
+
     def validate(self, attrs):
         """Validate updates, including time-range edits for eligible code types only."""
         attrs = super().validate(attrs)
         instance: DoorCode | None = getattr(self, "instance", None)
         if instance is None:
             return attrs
+
+        if instance.source == DoorCode.Source.SYNCED:
+            disallowed = self._SYNCED_READONLY_FIELDS & attrs.keys()
+            if disallowed:
+                raise serializers.ValidationError(
+                    {field: "This field cannot be modified on synced codes." for field in sorted(disallowed)}
+                )
 
         updates_time_range = any(
             key in attrs for key in ["start_at", "end_at", "days_of_week", "window_start", "window_end"]

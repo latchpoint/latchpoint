@@ -13,8 +13,8 @@ function SyncedFieldsWarning() {
   return (
     <Alert variant="warning" layout="inline">
       <AlertDescription>
-        This code is synced from the lock. The PIN, active status, and schedule are controlled by the lock and will be
-        overwritten on the next sync. Only the label, max uses, and lock assignments can be edited here.
+        This code is synced from the lock. The PIN, active status, schedule, max uses, and lock assignments are controlled
+        by the lock and will be overwritten on the next sync. Only the label can be edited here.
       </AlertDescription>
     </Alert>
   )
@@ -121,7 +121,7 @@ export function DoorCodeEditPanel({
 
       {isTemporary && (
         <DoorCodeTemporaryRestrictionsFields
-          disabled={isBusy}
+          disabled={isBusy || isSynced}
           activeWindow={{ start: editStartAtLocal, end: editEndAtLocal }}
           onActiveWindowChange={onActiveWindowChange}
           days={editDays}
@@ -149,7 +149,7 @@ export function DoorCodeEditPanel({
         manualValue={lockPicker.manualValue}
         onManualValueChange={lockPicker.onManualValueChange}
         selectedCount={lockPicker.selectedCount}
-        disabled={isBusy}
+        disabled={isBusy || isSynced}
       />
 
       <DoorCodeActiveToggle id={`door-code-active-label-${code.id}`} checked={editIsActive} onCheckedChange={isSynced ? undefined : onEditIsActiveChange} disabled={isBusy || isSynced} hint={isSynced ? 'Controlled by lock sync' : undefined} />

@@ -86,6 +86,22 @@ export function DoorCodeEditContainer({ code, locks, locksIsLoading, locksError,
       setEditError('Password is required for re-authentication.')
       return
     }
+
+    const isSynced = code.source === 'synced'
+    if (isSynced) {
+      const req: UpdateDoorCodeRequest = {
+        label: editLabel.trim(),
+        reauthPassword: editReauthPassword,
+      }
+      try {
+        await onUpdate(code.id, req)
+        onClose()
+      } catch (err) {
+        setEditError(getErrorMessage(err) || 'Failed to update door code')
+      }
+      return
+    }
+
     if (!resolvedLockEntityIds.length) {
       setEditError('Select at least one lock.')
       return
