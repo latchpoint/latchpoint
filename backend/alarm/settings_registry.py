@@ -24,10 +24,24 @@ def coerce_settings_values(data: dict, config_schema: dict) -> dict:
 
         declared_type = prop.get("type")
         try:
-            if declared_type == "integer" and not isinstance(value, int):
-                coerced[key] = int(value)
-            elif declared_type == "number" and not isinstance(value, (int, float)):
-                coerced[key] = float(value)
+            if declared_type == "integer":
+                if isinstance(value, bool):
+                    raise ValueError("boolean is not a valid integer")
+                if isinstance(value, float):
+                    if not value.is_integer():
+                        raise ValueError("non-integral float")
+                    coerced[key] = int(value)
+                elif not isinstance(value, int):
+                    coerced[key] = int(value)
+                else:
+                    coerced[key] = value
+            elif declared_type == "number":
+                if isinstance(value, bool):
+                    raise ValueError("boolean is not a valid number")
+                if not isinstance(value, (int, float)):
+                    coerced[key] = float(value)
+                else:
+                    coerced[key] = value
             elif declared_type == "boolean" and not isinstance(value, bool):
                 if isinstance(value, str):
                     coerced[key] = value.lower() in ("true", "1", "yes")
