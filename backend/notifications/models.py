@@ -86,17 +86,20 @@ class NotificationProvider(models.Model):
     def set_config_with_encryption(self, data: dict, *, partial: bool = True, save: bool = True) -> None:
         """Write path — encrypts secrets before saving.
 
-        Secret field semantics:
-        - Field **absent** from *data* → preserve existing encrypted value.
-        - Field present with **empty string** → clear the stored secret.
-        - Field present with a non-empty value → encrypt and store.
-
         Args:
             data: Config dict with plaintext values.
-            partial: If True, merge with existing config; if False, replace entirely.
+            partial: If True, merge with existing config; if False, replace
+                non-secret fields entirely.  **Encrypted fields** always use
+                presence-based semantics regardless of this flag (the UI only
+                ever sees masked values and cannot send back the real secret).
             save: If True (default), persist to the DB immediately. Pass False when
                   the caller will issue its own ``save()`` (e.g. to batch multiple
                   field updates into a single write).
+
+        Secret field semantics (always applied):
+        - Field **absent** from *data* → preserve existing encrypted value.
+        - Field present with **empty string** → clear the stored secret.
+        - Field present with a non-empty value → encrypt and store.
         """
         encrypted_fields = self._get_encrypted_fields()
         current = self.config or {}

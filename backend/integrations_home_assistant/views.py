@@ -14,7 +14,7 @@ from alarm.gateways.home_assistant import (
     default_home_assistant_gateway,
 )
 from alarm.models import AlarmSettingsEntry
-from alarm.settings_registry import ALARM_PROFILE_SETTINGS_BY_KEY
+from alarm.settings_registry import ALARM_PROFILE_SETTINGS_BY_KEY, coerce_settings_values
 from alarm.signals import settings_profile_changed
 from alarm.use_cases.settings_profile import ensure_active_settings_profile
 from config.domain_exceptions import ServiceUnavailableError, ValidationError
@@ -74,6 +74,11 @@ class HomeAssistantSettingsView(APIView):
         invalid = set(data) - allowed
         if invalid:
             raise ValidationError(f"Unknown fields: {', '.join(sorted(invalid))}")
+
+        try:
+            data = coerce_settings_values(data, definition.config_schema)
+        except ValueError as exc:
+            raise ValidationError(str(exc)) from exc
 
         profile = ensure_active_settings_profile()
         entry = _get_entry(profile)

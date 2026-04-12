@@ -72,8 +72,12 @@ class ProviderListCreateView(APIView):
             raise ValidationError("config must be an object.")
         is_enabled = data.get("is_enabled", True)
 
+        if not isinstance(provider_type, str) or not isinstance(name, str):
+            raise ValidationError("provider_type and name must be strings.")
         if not provider_type or not name:
             raise ValidationError("provider_type and name are required.")
+        if not isinstance(is_enabled, bool):
+            raise ValidationError("is_enabled must be a boolean.")
 
         # Validate provider type exists
         try:
@@ -139,9 +143,13 @@ class ProviderDetailView(APIView):
 
         update_fields = ["updated_at"]
         if "name" in data:
+            if not isinstance(data["name"], str):
+                raise ValidationError("name must be a string.")
             provider.name = data["name"]
             update_fields.append("name")
         if "is_enabled" in data:
+            if not isinstance(data["is_enabled"], bool):
+                raise ValidationError("is_enabled must be a boolean.")
             provider.is_enabled = data["is_enabled"]
             update_fields.append("is_enabled")
         if "config" in data:

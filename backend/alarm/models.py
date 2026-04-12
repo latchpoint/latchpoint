@@ -175,7 +175,14 @@ class AlarmSettingsEntry(models.Model):
     def set_value_with_encryption(self, data: dict, *, partial: bool = True) -> None:
         """Write path — merges incoming data, encrypts secrets, saves.
 
-        Secret field semantics:
+        Args:
+            data: Dict with plaintext values.
+            partial: If True, merge with existing value; if False, replace
+                non-secret fields entirely.  **Encrypted fields** always use
+                presence-based semantics regardless of this flag (the UI only
+                ever sees masked values and cannot send back the real secret).
+
+        Secret field semantics (always applied):
         - Field **absent** from *data* → preserve existing encrypted value.
         - Field present with **empty string** → clear the stored secret.
         - Field present with a non-empty value → encrypt and store.
