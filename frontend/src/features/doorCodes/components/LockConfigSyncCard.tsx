@@ -11,22 +11,13 @@ import { Modal } from '@/components/ui/modal'
 import { Select } from '@/components/ui/select'
 import { formatDaysMask } from '@/features/codes/utils/daysOfWeek'
 import { DismissedSlotsSection } from '@/features/doorCodes/components/DismissedSlotsSection'
+import { getZwavejsNodeId } from '@/features/doorCodes/utils/lockFilters'
 
 type Props = {
   userId: string
   locks: Entity[]
   locksIsLoading: boolean
   locksError: unknown
-}
-
-function getZwavejsNodeId(entity: Entity): number | null {
-  const attrs = entity.attributes || {}
-  const zw = (attrs as Record<string, unknown>).zwavejs
-  if (!zw || typeof zw !== 'object') return null
-  const nodeId = (zw as Record<string, unknown>).nodeId ?? (zw as Record<string, unknown>).node_id
-  if (typeof nodeId === 'number' && Number.isFinite(nodeId)) return nodeId
-  if (typeof nodeId === 'string' && /^\d+$/.test(nodeId)) return Number(nodeId)
-  return null
 }
 
 function getLastSyncedAt(entity: Entity): string | null {

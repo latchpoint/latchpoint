@@ -12,6 +12,7 @@ import {
 import { UserRole } from '@/lib/constants'
 import { getErrorMessage } from '@/types/errors'
 import type { Entity, User } from '@/types'
+import { isCodeCapableLock } from '@/features/doorCodes/utils/lockFilters'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { EmptyState } from '@/components/ui/empty-state'
 import { LoadingInline } from '@/components/ui/loading-inline'
@@ -65,7 +66,7 @@ export function DoorCodesPage() {
   }, [entitiesQuery.data])
 
   const lockEntities: Entity[] = useMemo(() => {
-    return (entitiesQuery.data || []).filter((entity) => entity.domain === 'lock')
+    return (entitiesQuery.data || []).filter(isCodeCapableLock)
   }, [entitiesQuery.data])
 
   return (

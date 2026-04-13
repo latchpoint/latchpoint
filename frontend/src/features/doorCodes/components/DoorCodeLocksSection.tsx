@@ -28,7 +28,7 @@ export function DoorCodeLocksSection({
     <div className="space-y-2">
       <div className="flex items-center gap-2">
         <div className="text-sm font-medium">{title ?? 'Locks'}</div>
-        <HelpTip content="Select which Home Assistant locks this code applies to." />
+        <HelpTip content="Select which locks this code applies to. Only Z-Wave locks with user code support are shown." />
       </div>
       <DoorCodeLocksPicker {...picker} disabled={disabled} />
     </div>

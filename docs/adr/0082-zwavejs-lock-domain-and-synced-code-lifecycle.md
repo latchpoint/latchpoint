@@ -1,7 +1,7 @@
 # ADR 0082: Z-Wave JS Lock Domain Assignment, Synced Code Read-Only Enforcement, and Physical Code Deletion
 
 ## Status
-**Proposed**
+**Implemented**
 
 ## Context
 
@@ -99,6 +99,34 @@ Clearing an already-empty slot via `clear(slot_index)` is safe — the lock acce
 
 A `clear_lock_user_code_slot()` function is added to `locks/use_cases/lock_config_sync.py`, co-located with `_resolve_lock_node_id()` and the existing CC 99 sync logic. It resolves the lock entity ID to a Z-Wave node ID and invokes `CC 99 clear(slot_index)`.
 
+### 4. Door code lock picker filters to code-capable locks only
+
+The door code create/edit UI previously displayed all entities with `domain="lock"` from all integrations — including Home Assistant car locks, Zigbee locks, and other non-Z-Wave locks that have no user code management capability. Only Z-Wave JS locks with CC 99 support can have codes managed programmatically. The lock picker now filters to only show code-capable locks.
+
+#### Filtering logic
+
+A shared utility (`features/doorCodes/utils/lockFilters.ts`) provides two functions:
+
+- **`getZwavejsNodeId(entity)`** — extracts the Z-Wave JS node ID from `entity.attributes.zwavejs.nodeId` (or `node_id`), handling numeric and string coercion. Returns `null` for non-Z-Wave entities.
+- **`isCodeCapableLock(entity)`** — returns `true` when `domain === "lock"` AND `getZwavejsNodeId()` returns a valid node ID. This is the single predicate used by `DoorCodesPage` to filter the lock list.
+
+This is a frontend-only filter. All necessary metadata (`attributes.zwavejs.node_id`) is already present on `Entity` objects from the general entities endpoint — no new backend endpoint or query parameter needed.
+
+#### Scope
+
+| Context | Before | After |
+|---------|--------|-------|
+| Lock config sync card | Already Z-Wave-filtered (unchanged) | Unchanged — self-filters as belt-and-suspenders |
+| Door code create form | All `domain="lock"` entities | `isCodeCapableLock` only |
+| Door code edit form | All `domain="lock"` entities | `isCodeCapableLock` only |
+| Lock name display on existing codes | All `domain="lock"` entities | Unchanged — `lockNameByEntityId` map remains unfiltered for backwards-compatible display |
+
+The `lockNameByEntityId` lookup map (used to display names on existing door code cards) is intentionally *not* filtered. This ensures that codes historically assigned to non-Z-Wave locks still display their lock names correctly.
+
+#### Extensibility
+
+If a future integration (e.g., Matter, Z-Wave Long Range) adds user code management support, `isCodeCapableLock()` is the single extension point — add the new integration's capability check alongside the Z-Wave check.
+
 ## Consequences
 
 ### Positive
@@ -107,6 +135,7 @@ A `clear_lock_user_code_slot()` function is added to `locks/use_cases/lock_confi
 - Deleting a synced code is a real operation — the physical lock slot is cleared, not just hidden
 - `clear_lock_user_code_slot()` is reusable for future features (e.g., bulk slot management, code rotation)
 - Existing dismiss/undismiss mechanism is preserved as a fallback audit trail
+- Door code lock picker only shows locks that actually support user codes — no car locks, Zigbee locks, or other non-code-capable devices cluttering the selection
 
 ### Negative
 - Deleting a synced code now requires the lock to be online and reachable via Z-Wave JS
