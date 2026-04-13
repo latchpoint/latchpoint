@@ -262,62 +262,40 @@ def delete_door_code(
     """Delete a door code and emit a `DoorCodeEvent` capturing who deleted it.
 
     For synced codes, clears the physical lock slot via Z-Wave JS CC 99 before
-    dismissing the record.  If the lock is unreachable the delete is aborted
+    deleting the record.  If the lock is unreachable the delete is aborted
     (Option A — fail-fast).
     """
     code_id = code.id
     label = code.label
     user = code.user
+    extra_metadata: dict[str, object] = {}
 
     if code.source == DoorCode.Source.SYNCED:
-        from django.utils import timezone as django_timezone
-
-        now = django_timezone.now()
         assignments = list(DoorCodeLockAssignment.objects.filter(door_code=code))
-        dismissed_slots = [
+        slots_to_clear = [
             {"lock_entity_id": a.lock_entity_id, "slot_index": int(a.slot_index)}
             for a in assignments
             if a.slot_index is not None
         ]
 
-        # Clear slots on physical locks before dismissing (ADR 0082).
-        cleared_from_lock = False
-        if zwavejs is not None and dismissed_slots:
+        # Clear slots on physical locks before deleting (ADR 0082).
+        if zwavejs is not None and slots_to_clear:
             from locks.use_cases.lock_config_sync import clear_lock_user_code_slot
 
-            for slot_info in dismissed_slots:
+            for slot_info in slots_to_clear:
                 clear_lock_user_code_slot(
                     lock_entity_id=slot_info["lock_entity_id"],
                     slot_index=slot_info["slot_index"],
                     zwavejs=zwavejs,
                 )
-            cleared_from_lock = True
-
-        DoorCodeLockAssignment.objects.filter(door_code=code).update(sync_dismissed=True, updated_at=now)
-        if code.is_active:
-            code.is_active = False
-            code.save(update_fields=["is_active", "updated_at"])
-
-        DoorCodeEvent.objects.create(
-            door_code=None,
-            user=actor_user,
-            event_type=DoorCodeEvent.EventType.CODE_DELETED,
-            metadata={
-                "code_id": code_id,
-                "label": label,
-                "user_id": str(user.id),
-                "dismissed": True,
-                "dismissed_slots": dismissed_slots,
-                "cleared_from_lock": cleared_from_lock,
-            },
-        )
-        return
+            extra_metadata["cleared_from_lock"] = True
+            extra_metadata["cleared_slots"] = slots_to_clear
 
     DoorCodeEvent.objects.create(
         door_code=None,
         user=actor_user,
         event_type=DoorCodeEvent.EventType.CODE_DELETED,
-        metadata={"code_id": code_id, "label": label, "user_id": str(user.id)},
+        metadata={"code_id": code_id, "label": label, "user_id": str(user.id), **extra_metadata},
     )
 
     code.delete()

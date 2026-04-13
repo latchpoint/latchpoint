@@ -262,7 +262,7 @@ class DoorCodesApiTests(APITestCase):
         self.assertEqual(response.status_code, 204)
         self.assertFalse(DoorCode.objects.filter(id=code.id).exists())
 
-    def test_deleting_synced_door_code_clears_lock_and_dismisses(self):
+    def test_deleting_synced_door_code_clears_lock_and_deletes(self):
         Entity.objects.create(
             entity_id="lock.front_door",
             domain="lock",
@@ -279,6 +279,7 @@ class DoorCodesApiTests(APITestCase):
             pin_length=None,
             is_active=True,
         )
+        code_id = code.id
         DoorCodeLockAssignment.objects.create(
             door_code=code,
             lock_entity_id="lock.front_door",
@@ -300,15 +301,15 @@ class DoorCodesApiTests(APITestCase):
             timeout_seconds=10.0,
         )
 
-        code.refresh_from_db()
-        self.assertFalse(code.is_active)
-        assignment = DoorCodeLockAssignment.objects.get(door_code=code, lock_entity_id="lock.front_door")
-        self.assertTrue(assignment.sync_dismissed)
+        # Code and assignment should be fully deleted from DB.
+        self.assertFalse(DoorCode.objects.filter(id=code_id).exists())
+        self.assertFalse(DoorCodeLockAssignment.objects.filter(lock_entity_id="lock.front_door", slot_index=1).exists())
 
-        # Verify audit event records cleared_from_lock=True.
+        # Verify audit event records cleared_from_lock=True and no dismissed metadata.
         event = DoorCodeEvent.objects.filter(event_type=DoorCodeEvent.EventType.CODE_DELETED).first()
         self.assertIsNotNone(event)
         self.assertTrue(event.metadata.get("cleared_from_lock"))
+        self.assertNotIn("dismissed", event.metadata)
 
         list_url = reverse("door-codes")
         list_resp = self.client.get(list_url, {"user_id": str(self.user.id)})
