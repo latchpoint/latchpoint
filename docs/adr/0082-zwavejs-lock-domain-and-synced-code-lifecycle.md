@@ -65,8 +65,8 @@ DELETE /api/door-codes/{id}  (admin + reauth)
   │
   ├─ code.source == SYNCED?
   │   ├─ For each assignment with a slot_index:
-  │   │   └─ invoke_cc_api(node_id, CC_USER_CODE=99, "set", [slot_index, 0])
-  │   │       ↳ userIdStatus 0 = Available (clears the slot)
+  │   │   └─ invoke_cc_api(node_id, CC_USER_CODE=99, "clear", [slot_index])
+  │   │       ↳ Clears the slot (Z-Wave JS UserCodeCC.clear)
   │   │       ↳ Raises GatewayError if lock unreachable → HTTP 502, delete aborted
   │   │
   │   ├─ All clears succeeded:
@@ -93,11 +93,11 @@ If the Z-Wave JS server is unreachable or the lock doesn't respond, the `invoke_
 
 #### Idempotency
 
-Clearing an already-empty slot (userIdStatus=0) is safe — the lock accepts the command without error. This means retrying a failed-then-recovered delete operation is harmless even if some slots were cleared before the failure.
+Clearing an already-empty slot via `clear(slot_index)` is safe — the lock accepts the command without error. This means retrying a failed-then-recovered delete operation is harmless even if some slots were cleared before the failure.
 
 #### Gateway helper
 
-A `clear_lock_user_code_slot()` function is added to `locks/use_cases/lock_config_sync.py`, co-located with `_resolve_lock_node_id()` and the existing CC 99 sync logic. It resolves the lock entity ID to a Z-Wave node ID and invokes `CC 99 set(slot_index, 0)`.
+A `clear_lock_user_code_slot()` function is added to `locks/use_cases/lock_config_sync.py`, co-located with `_resolve_lock_node_id()` and the existing CC 99 sync logic. It resolves the lock entity ID to a Z-Wave node ID and invokes `CC 99 clear(slot_index)`.
 
 ## Consequences
 

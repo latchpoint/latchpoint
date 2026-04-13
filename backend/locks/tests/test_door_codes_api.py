@@ -295,8 +295,8 @@ class DoorCodesApiTests(APITestCase):
         fake_gw.invoke_cc_api.assert_called_once_with(
             node_id=5,
             command_class=99,
-            method_name="set",
-            args=[1, 0],
+            method_name="clear",
+            args=[1],
             timeout_seconds=10.0,
         )
 

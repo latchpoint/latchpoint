@@ -611,14 +611,14 @@ def clear_lock_user_code_slot(
     zwavejs: ZwavejsGateway,
     timeout_seconds: float = 10.0,
 ) -> None:
-    """Clear a user code slot on a physical Z-Wave JS lock (CC 99 set → Available)."""
+    """Clear a user code slot on a physical Z-Wave JS lock (CC 99 clear)."""
     node_id = _resolve_lock_node_id(lock_entity_id=lock_entity_id)
     logger.info("Clearing user code slot %d on %s (node %d)", slot_index, lock_entity_id, node_id)
     zwavejs.invoke_cc_api(
         node_id=node_id,
         command_class=CC_USER_CODE,
-        method_name="set",
-        args=[slot_index, 0],  # userIdStatus=0 → Available
+        method_name="clear",
+        args=[slot_index],
         timeout_seconds=timeout_seconds,
     )
 
