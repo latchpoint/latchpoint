@@ -59,16 +59,6 @@ export interface UpdateDoorCodeRequest {
   reauthPassword: string
 }
 
-export interface DismissedAssignment {
-  id: number
-  lockEntityId: string
-  slotIndex: number | null
-  syncDismissed: boolean
-  doorCodeLabel: string
-  doorCodeSource: DoorCodeSource
-  doorCodeIsActive: boolean
-}
-
 export interface LockConfigSyncRequest {
   userId: string
   reauthPassword: string
@@ -100,7 +90,6 @@ export interface LockConfigSyncResult {
   updated: number
   unchanged: number
   skipped: number
-  dismissed: number
   deactivated: number
   errors: number
   timestamp: string

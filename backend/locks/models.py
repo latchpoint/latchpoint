@@ -86,7 +86,6 @@ class DoorCodeLockAssignment(models.Model):
     door_code = models.ForeignKey(DoorCode, on_delete=models.CASCADE, related_name="lock_assignments")
     lock_entity_id = models.CharField(max_length=255)
     slot_index = models.PositiveSmallIntegerField(null=True, blank=True)
-    sync_dismissed = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

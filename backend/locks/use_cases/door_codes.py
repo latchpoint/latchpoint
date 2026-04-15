@@ -67,7 +67,7 @@ def resolve_create_target_user(*, actor_user: User, requested_user_id: str | Non
 def list_door_codes_for_user(*, user: User) -> QuerySet[DoorCode]:
     """Return a queryset of `DoorCode` rows for `user`, with common relations prefetched."""
     has_active_assignment = Exists(
-        DoorCodeLockAssignment.objects.filter(door_code=OuterRef("pk"), sync_dismissed=False)
+        DoorCodeLockAssignment.objects.filter(door_code=OuterRef("pk"))
     )
     return (
         DoorCode.objects.select_related("user")
@@ -224,33 +224,6 @@ def update_door_code(
 
     return code
 
-
-def list_dismissed_assignments(*, lock_entity_id: str) -> list[DoorCodeLockAssignment]:
-    """Return all sync-dismissed assignments for a given lock, with their door codes."""
-    return list(
-        DoorCodeLockAssignment.objects.select_related("door_code", "door_code__user")
-        .filter(lock_entity_id=lock_entity_id, sync_dismissed=True)
-        .order_by("slot_index")
-    )
-
-
-def undismiss_assignment(*, assignment_id: int) -> DoorCodeLockAssignment:
-    """Clear sync_dismissed on an assignment, re-enabling sync for that slot."""
-    assignment = (
-        DoorCodeLockAssignment.objects.select_related("door_code").filter(id=assignment_id, sync_dismissed=True).first()
-    )
-    if not assignment:
-        raise NotFound("Dismissed assignment not found.")
-
-    assignment.sync_dismissed = False
-    assignment.save(update_fields=["sync_dismissed", "updated_at"])
-
-    code = assignment.door_code
-    if code and not code.is_active:
-        code.is_active = True
-        code.save(update_fields=["is_active", "updated_at"])
-
-    return assignment
 
 
 def delete_door_code(

@@ -151,48 +151,6 @@ class LockConfigSyncApiTests(EncryptionTestMixin, APITestCase):
         self.assertIsNone(slot2.door_code.code_hash)
         self.assertIsNone(slot2.door_code.pin_length)
 
-    def test_sync_skips_dismissed_slot(self):
-        dismissed = DoorCode.objects.create(
-            user=self.user,
-            source=DoorCode.Source.SYNCED,
-            code_hash=None,
-            label="Slot 1",
-            code_type=DoorCode.CodeType.PERMANENT,
-            pin_length=None,
-            is_active=False,
-        )
-        DoorCodeLockAssignment.objects.create(
-            door_code=dismissed,
-            lock_entity_id="lock.front_door",
-            slot_index=1,
-            sync_dismissed=True,
-        )
-
-        value_ids = [
-            {"commandClass": 99, "property": "usersNumber"},
-            {"commandClass": 99, "property": "userIdStatus", "propertyKey": 1},
-            {"commandClass": 99, "property": "userCode", "propertyKey": 1},
-        ]
-        values = {
-            (5, _value_id_key({"commandClass": 99, "property": "usersNumber"})): 1,
-            (5, _value_id_key({"commandClass": 99, "property": "userIdStatus", "propertyKey": 1})): 1,
-            (5, _value_id_key({"commandClass": 99, "property": "userCode", "propertyKey": 1})): "1234",
-        }
-        fake = FakeZwavejsGateway(value_ids=value_ids, values=values)
-
-        url = reverse("locks-sync-config", kwargs={"lock_entity_id": "lock.front_door"})
-        with patch("locks.views.lock_config_sync.zwavejs_gateway", fake):
-            response = self.client.post(
-                url,
-                {"user_id": str(self.user.id), "reauth_password": "pass"},
-                format="json",
-            )
-
-        self.assertEqual(response.status_code, 200)
-        body = response.json()["data"]
-        self.assertEqual(body["dismissed"], 1)
-        self.assertEqual(body["created"], 0)
-
     def test_sync_returns_conflict_when_already_in_progress(self):
         url = reverse("locks-sync-config", kwargs={"lock_entity_id": "lock.front_door"})
         fake = FakeZwavejsGateway(value_ids=[], values={})
@@ -455,67 +413,6 @@ class LockConfigSyncApiTests(EncryptionTestMixin, APITestCase):
 
         self.assertEqual(response.status_code, 200)
         mock_notify.assert_not_called()
-
-    # --- Dismissed assignments endpoints ---
-
-    def test_list_dismissed_assignments(self):
-        """GET dismissed-assignments returns serialized dismissed assignment."""
-        dismissed_code = DoorCode.objects.create(
-            user=self.user,
-            source=DoorCode.Source.SYNCED,
-            code_hash=None,
-            label="Slot 3",
-            code_type=DoorCode.CodeType.PERMANENT,
-            pin_length=None,
-            is_active=False,
-        )
-        DoorCodeLockAssignment.objects.create(
-            door_code=dismissed_code,
-            lock_entity_id="lock.front_door",
-            slot_index=3,
-            sync_dismissed=True,
-        )
-
-        url = reverse("locks-dismissed-assignments", kwargs={"lock_entity_id": "lock.front_door"})
-        response = self.client.get(url)
-
-        self.assertEqual(response.status_code, 200)
-        data = response.json()["data"]
-        self.assertEqual(len(data), 1)
-        item = data[0]
-        self.assertEqual(item["slot_index"], 3)
-        self.assertTrue(item["sync_dismissed"])
-        self.assertEqual(item["door_code_label"], "Slot 3")
-        self.assertEqual(item["door_code_source"], "synced")
-        self.assertFalse(item["door_code_is_active"])
-
-    def test_undismiss_assignment(self):
-        """POST undismiss clears sync_dismissed and returns updated assignment."""
-        dismissed_code = DoorCode.objects.create(
-            user=self.user,
-            source=DoorCode.Source.SYNCED,
-            code_hash=None,
-            label="Slot 2",
-            code_type=DoorCode.CodeType.PERMANENT,
-            pin_length=None,
-            is_active=False,
-        )
-        assignment = DoorCodeLockAssignment.objects.create(
-            door_code=dismissed_code,
-            lock_entity_id="lock.front_door",
-            slot_index=2,
-            sync_dismissed=True,
-        )
-
-        url = reverse("door-code-assignment-undismiss", kwargs={"assignment_id": assignment.id})
-        response = self.client.post(url, {"reauth_password": "pass"}, format="json")
-
-        self.assertEqual(response.status_code, 200)
-        data = response.json()["data"]
-        self.assertFalse(data["sync_dismissed"])
-
-        assignment.refresh_from_db()
-        self.assertFalse(assignment.sync_dismissed)
 
     # --- CC API fallback for daily repeating schedules (ADR 0081) ---
 

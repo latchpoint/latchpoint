@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { doorCodesService, locksService } from '@/services'
 import { queryKeys } from '@/types'
-import type { CreateDoorCodeRequest, DismissedAssignment, DoorCode, LockConfigSyncRequest, LockConfigSyncResult, UpdateDoorCodeRequest } from '@/types'
+import type { CreateDoorCodeRequest, DoorCode, LockConfigSyncRequest, LockConfigSyncResult, UpdateDoorCodeRequest } from '@/types'
 
 export function useDoorCodesQuery(params: { userId: string; isAdmin: boolean }) {
   const { userId, isAdmin } = params
@@ -54,27 +54,6 @@ export function useSyncLockConfigMutation() {
       if (!data.dryRun) {
         await queryClient.invalidateQueries({ queryKey: queryKeys.doorCodes.byUser(variables.req.userId) })
       }
-    },
-  })
-}
-
-export function useDismissedAssignmentsQuery(lockEntityId: string) {
-  return useQuery<DismissedAssignment[]>({
-    queryKey: queryKeys.doorCodes.dismissedAssignments(lockEntityId),
-    queryFn: () => locksService.getDismissedAssignments(lockEntityId),
-    enabled: !!lockEntityId,
-  })
-}
-
-export function useUndismissAssignmentMutation(lockEntityId: string) {
-  const queryClient = useQueryClient()
-  return useMutation({
-    mutationFn: ({ assignmentId, reauthPassword }: { assignmentId: number; reauthPassword: string }) =>
-      locksService.undismissAssignment(assignmentId, { reauthPassword }),
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: queryKeys.doorCodes.dismissedAssignments(lockEntityId) })
-      // Also refresh door codes list since undismissing reactivates the code
-      await queryClient.invalidateQueries({ queryKey: queryKeys.doorCodes.all })
     },
   })
 }

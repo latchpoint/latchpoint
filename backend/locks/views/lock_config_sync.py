@@ -9,7 +9,7 @@ from rest_framework.views import APIView
 from alarm.gateways.zwavejs import default_zwavejs_gateway
 from config.domain_exceptions import ValidationError
 from locks.permissions import IsAdminRole
-from locks.serializers import DismissedAssignmentSerializer, LockConfigSyncRequestSerializer
+from locks.serializers import LockConfigSyncRequestSerializer
 from locks.use_cases import door_codes as door_codes_uc
 from locks.use_cases import lock_config_sync as lock_config_sync_uc
 
@@ -75,22 +75,3 @@ class LockConfigSyncView(APIView):
 
         return Response(result.as_dict(), status=status.HTTP_200_OK)
 
-
-class DismissedAssignmentsView(APIView):
-    permission_classes = [IsAuthenticated, IsAdminRole]
-
-    def get(self, request, lock_entity_id: str):
-        """List sync-dismissed assignments for a lock."""
-        assignments = door_codes_uc.list_dismissed_assignments(lock_entity_id=lock_entity_id)
-        return Response(DismissedAssignmentSerializer(assignments, many=True).data, status=status.HTTP_200_OK)
-
-
-class UndismissAssignmentView(APIView):
-    permission_classes = [IsAuthenticated, IsAdminRole]
-
-    def post(self, request, assignment_id: int):
-        """Clear sync_dismissed on an assignment, re-enabling sync for that slot."""
-        reauth_password = request.data.get("reauth_password")
-        door_codes_uc.assert_admin_reauth(user=request.user, reauth_password=reauth_password)
-        assignment = door_codes_uc.undismiss_assignment(assignment_id=assignment_id)
-        return Response(DismissedAssignmentSerializer(assignment).data, status=status.HTTP_200_OK)

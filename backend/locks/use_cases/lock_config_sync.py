@@ -61,7 +61,6 @@ class SyncResult:
     updated: int = 0
     unchanged: int = 0
     skipped: int = 0
-    dismissed: int = 0
     deactivated: int = 0
     errors: int = 0
     timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
@@ -74,7 +73,6 @@ class SyncResult:
             "updated": self.updated,
             "unchanged": self.unchanged,
             "skipped": self.skipped,
-            "dismissed": self.dismissed,
             "deactivated": self.deactivated,
             "errors": self.errors,
             "timestamp": self.timestamp.isoformat(),
@@ -790,12 +788,6 @@ def sync_lock_config(
                 .filter(lock_entity_id=lock_entity_id, slot_index=slot_index)
                 .first()
             )
-            if existing and existing.sync_dismissed:
-                logger.debug("Slot %d on %s is dismissed, skipping", slot_index, lock_entity_id)
-                result.dismissed += 1
-                result.slots.append(SlotSyncResult(slot_index=slot_index, action="dismissed"))
-                continue
-
             pin_known = bool(pin_known_by_slot.get(slot_index))
             is_active = slot_active.get(slot_index)
             raw_pin = pin_by_slot.get(slot_index)
@@ -949,7 +941,6 @@ def sync_lock_config(
                     door_code=code,
                     lock_entity_id=lock_entity_id,
                     slot_index=slot_index,
-                    sync_dismissed=False,
                 )
             except IntegrityError:
                 # Race: another sync created the assignment first. Update the winner's code
@@ -1023,7 +1014,7 @@ def sync_lock_config(
 
         # Deactivate previously-synced slots that are now empty.
         previously_synced = DoorCodeLockAssignment.objects.select_related("door_code").filter(
-            lock_entity_id=lock_entity_id, slot_index__isnull=False, sync_dismissed=False
+            lock_entity_id=lock_entity_id, slot_index__isnull=False
         )
         for assignment in previously_synced:
             if assignment.slot_index is None:
@@ -1072,14 +1063,13 @@ def sync_lock_config(
 
         logger.info(
             "Lock config sync complete for %s (node %d): created=%d updated=%d unchanged=%d "
-            "deactivated=%d dismissed=%d skipped=%d errors=%d",
+            "deactivated=%d skipped=%d errors=%d",
             lock_entity_id,
             node_id,
             result.created,
             result.updated,
             result.unchanged,
             result.deactivated,
-            result.dismissed,
             result.skipped,
             result.errors,
         )

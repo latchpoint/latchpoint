@@ -10,7 +10,6 @@ import { LoadingInline } from '@/components/ui/loading-inline'
 import { Modal } from '@/components/ui/modal'
 import { Select } from '@/components/ui/select'
 import { formatDaysMask } from '@/features/codes/utils/daysOfWeek'
-import { DismissedSlotsSection } from '@/features/doorCodes/components/DismissedSlotsSection'
 import { getZwavejsNodeId } from '@/features/doorCodes/utils/lockFilters'
 
 type Props = {
@@ -50,7 +49,6 @@ function ResultSummary({ result }: { result: LockConfigSyncResult }) {
       <div>Updated: {result.updated}</div>
       <div>Unchanged: {result.unchanged}</div>
       <div>Deactivated: {result.deactivated}</div>
-      <div>Dismissed: {result.dismissed}</div>
       <div>Skipped: {result.skipped}</div>
       <div>Errors: {result.errors}</div>
       <div>Node: {result.nodeId}</div>
@@ -180,7 +178,6 @@ export function LockConfigSyncCard({ userId, locks, locksIsLoading, locksError }
         </label>
       </div>
 
-      {selectedLockEntityId ? <DismissedSlotsSection lockEntityId={selectedLockEntityId} /> : null}
 
       <Modal
         open={resultOpen}

@@ -305,11 +305,10 @@ class DoorCodesApiTests(APITestCase):
         self.assertFalse(DoorCode.objects.filter(id=code_id).exists())
         self.assertFalse(DoorCodeLockAssignment.objects.filter(lock_entity_id="lock.front_door", slot_index=1).exists())
 
-        # Verify audit event records cleared_from_lock=True and no dismissed metadata.
+        # Verify audit event records cleared_from_lock=True.
         event = DoorCodeEvent.objects.filter(event_type=DoorCodeEvent.EventType.CODE_DELETED).first()
         self.assertIsNotNone(event)
         self.assertTrue(event.metadata.get("cleared_from_lock"))
-        self.assertNotIn("dismissed", event.metadata)
 
         list_url = reverse("door-codes")
         list_resp = self.client.get(list_url, {"user_id": str(self.user.id)})
@@ -351,11 +350,12 @@ class DoorCodesApiTests(APITestCase):
         # Should fail with 502 (gateway error).
         self.assertEqual(response.status_code, 502)
 
-        # DB state should be unchanged (code still active, not dismissed).
+        # DB state should be unchanged (code still active, delete failed).
         code.refresh_from_db()
         self.assertTrue(code.is_active)
-        assignment = DoorCodeLockAssignment.objects.get(door_code=code, lock_entity_id="lock.front_door")
-        self.assertFalse(assignment.sync_dismissed)
+        self.assertTrue(
+            DoorCodeLockAssignment.objects.filter(door_code=code, lock_entity_id="lock.front_door").exists()
+        )
 
     def test_non_admin_cannot_delete_door_code(self):
         code = DoorCode.objects.create(
