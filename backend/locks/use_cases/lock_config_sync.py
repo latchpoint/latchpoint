@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import logging
@@ -9,11 +10,11 @@ from dataclasses import dataclass, field
 from datetime import datetime, time, timedelta, timezone
 from typing import Any
 
-from django.contrib.auth.hashers import check_password, make_password
 from django.db import IntegrityError, connection, transaction
 from django.utils import timezone as django_timezone
 
 from accounts.models import User
+from alarm.crypto import InvalidToken, SettingsEncryption
 from alarm.gateways.zwavejs import ZwavejsGateway
 from alarm.models import Entity
 from config.domain_exceptions import ConflictError, NotFoundError, ValidationError
@@ -813,13 +814,18 @@ def sync_lock_config(
                     code.source = DoorCode.Source.SYNCED
                     updated_fields.append("source")
 
+                enc = SettingsEncryption.get()
                 if raw_pin is not None:
-                    if not code.code_hash or not check_password(raw_pin, code.code_hash):
-                        code.code_hash = make_password(raw_pin)
-                        updated_fields.append("code_hash")
-                elif code.code_hash is not None:
-                    code.code_hash = None
-                    updated_fields.append("code_hash")
+                    stored_pin = None
+                    if code.encrypted_pin:
+                        with contextlib.suppress(ValueError, InvalidToken):
+                            stored_pin = enc.decrypt(code.encrypted_pin)
+                    if stored_pin != raw_pin:
+                        code.encrypted_pin = enc.encrypt(raw_pin)
+                        updated_fields.append("encrypted_pin")
+                elif code.encrypted_pin is not None:
+                    code.encrypted_pin = None
+                    updated_fields.append("encrypted_pin")
                 if code.pin_length != pin_length:
                     code.pin_length = pin_length
                     updated_fields.append("pin_length")
@@ -921,11 +927,12 @@ def sync_lock_config(
                 window_end = time.fromisoformat(str(schedule_obj["window_end"]))
                 code_type = DoorCode.CodeType.TEMPORARY
 
-            code_hash = make_password(raw_pin) if raw_pin is not None else None
+            enc = SettingsEncryption.get()
+            encrypted_pin = enc.encrypt(raw_pin) if raw_pin is not None else None
             code = DoorCode(
                 user=target_user,
                 source=DoorCode.Source.SYNCED,
-                code_hash=code_hash,
+                encrypted_pin=encrypted_pin,
                 label=f"Slot {slot_index}",
                 code_type=code_type,
                 pin_length=pin_length,
@@ -958,11 +965,13 @@ def sync_lock_config(
                 if existing:
                     code.delete()
                     existing_code = existing.door_code
-                    existing_code.code_hash = make_password(raw_pin) if raw_pin is not None else None
+                    existing_code.encrypted_pin = (
+                        SettingsEncryption.get().encrypt(raw_pin) if raw_pin is not None else None
+                    )
                     existing_code.pin_length = pin_length
                     if is_active is not None:
                         existing_code.is_active = bool(is_active)
-                    existing_code.save(update_fields=["code_hash", "pin_length", "is_active", "updated_at"])
+                    existing_code.save(update_fields=["encrypted_pin", "pin_length", "is_active", "updated_at"])
                     result.updated += 1
                     result.slots.append(
                         SlotSyncResult(

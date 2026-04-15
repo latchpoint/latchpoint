@@ -23,7 +23,7 @@ class DoorCode(models.Model):
     id = models.BigAutoField(primary_key=True)
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="door_codes")
     source = models.CharField(max_length=16, choices=Source.choices, default=Source.MANUAL)
-    code_hash = models.TextField(null=True, blank=True)  # noqa: DJ001
+    encrypted_pin = models.TextField(null=True, blank=True)  # noqa: DJ001
     label = models.CharField(max_length=150, blank=True)
     code_type = models.CharField(max_length=16, choices=CodeType.choices)
     pin_length = models.PositiveSmallIntegerField(

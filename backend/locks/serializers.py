@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from cryptography.fernet import InvalidToken
 from rest_framework import serializers
+
+from alarm.crypto import SettingsEncryption
 
 from .models import DoorCode, DoorCodeLockAssignment
 
@@ -17,6 +20,7 @@ class DoorCodeLockAssignmentSerializer(serializers.ModelSerializer):
 class DoorCodeSerializer(serializers.ModelSerializer):
     user_id = serializers.UUIDField(read_only=True)
     user_display_name = serializers.SerializerMethodField()
+    pin = serializers.SerializerMethodField()
     lock_assignments = serializers.SerializerMethodField()
     lock_entity_ids = serializers.SerializerMethodField()
 
@@ -29,6 +33,7 @@ class DoorCodeSerializer(serializers.ModelSerializer):
             "source",
             "label",
             "code_type",
+            "pin",
             "pin_length",
             "is_active",
             "max_uses",
@@ -55,6 +60,15 @@ class DoorCodeSerializer(serializers.ModelSerializer):
         if full_name.strip():
             return full_name.strip()
         return user.email
+
+    def get_pin(self, obj: DoorCode) -> str | None:
+        """Decrypt and return the PIN, or None if unavailable."""
+        if not obj.encrypted_pin:
+            return None
+        try:
+            return SettingsEncryption.get().decrypt(obj.encrypted_pin)
+        except (ValueError, InvalidToken):
+            return None
 
     def get_lock_assignments(self, obj: DoorCode) -> list[dict]:
         """Serialize lock assignments, requiring `lock_assignments` to be prefetched."""

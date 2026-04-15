@@ -13,6 +13,7 @@ export interface DoorCode {
   source: DoorCodeSource
   label: string
   codeType: DoorCodeType
+  pin: string | null
   pinLength: number | null
   isActive: boolean
   maxUses: number | null

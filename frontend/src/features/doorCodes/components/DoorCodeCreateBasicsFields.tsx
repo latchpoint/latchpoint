@@ -47,8 +47,7 @@ export function DoorCodeCreateBasicsFields({
       <FormField
         label="Code (4–8 digits)"
         htmlFor="door-code-create-code"
-        help="Codes are stored hashed on the server. Enter a 4–8 digit PIN; you cannot view it later."
-        description="Codes are never shown again after creation."
+        help="Enter a 4–8 digit PIN."
         required
       >
         <Input

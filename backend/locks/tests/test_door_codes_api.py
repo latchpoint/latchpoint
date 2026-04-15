@@ -19,7 +19,7 @@ class DoorCodesApiTests(APITestCase):
     def test_list_door_codes_for_self(self):
         DoorCode.objects.create(
             user=self.admin,
-            code_hash="not-used-here",
+            encrypted_pin="not-used-here",
             label="Admin code",
             code_type=DoorCode.CodeType.PERMANENT,
             pin_length=4,
@@ -126,7 +126,7 @@ class DoorCodesApiTests(APITestCase):
     def test_admin_can_list_door_codes_for_other_user(self):
         code = DoorCode.objects.create(
             user=self.user,
-            code_hash="not-used-here",
+            encrypted_pin="not-used-here",
             label="User code",
             code_type=DoorCode.CodeType.PERMANENT,
             pin_length=4,
@@ -148,7 +148,7 @@ class DoorCodesApiTests(APITestCase):
     def test_non_admin_can_read_own_door_code_detail(self):
         code = DoorCode.objects.create(
             user=self.user,
-            code_hash="not-used-here",
+            encrypted_pin="not-used-here",
             label="User code",
             code_type=DoorCode.CodeType.PERMANENT,
             pin_length=4,
@@ -163,7 +163,7 @@ class DoorCodesApiTests(APITestCase):
     def test_non_admin_cannot_read_other_user_door_code_detail(self):
         other_code = DoorCode.objects.create(
             user=self.admin,
-            code_hash="not-used-here",
+            encrypted_pin="not-used-here",
             label="Admin code",
             code_type=DoorCode.CodeType.PERMANENT,
             pin_length=4,
@@ -193,7 +193,7 @@ class DoorCodesApiTests(APITestCase):
     def test_non_admin_cannot_update_door_code(self):
         code = DoorCode.objects.create(
             user=self.user,
-            code_hash="not-used-here",
+            encrypted_pin="not-used-here",
             label="User code",
             code_type=DoorCode.CodeType.PERMANENT,
             pin_length=4,
@@ -211,7 +211,7 @@ class DoorCodesApiTests(APITestCase):
     def test_admin_can_update_door_code(self):
         code = DoorCode.objects.create(
             user=self.user,
-            code_hash="not-used-here",
+            encrypted_pin="not-used-here",
             label="User code",
             code_type=DoorCode.CodeType.PERMANENT,
             pin_length=4,
@@ -229,7 +229,7 @@ class DoorCodesApiTests(APITestCase):
     def test_admin_can_update_door_code_lock_assignments(self):
         code = DoorCode.objects.create(
             user=self.user,
-            code_hash="not-used-here",
+            encrypted_pin="not-used-here",
             label="User code",
             code_type=DoorCode.CodeType.PERMANENT,
             pin_length=4,
@@ -247,7 +247,7 @@ class DoorCodesApiTests(APITestCase):
     def test_admin_can_delete_door_code(self):
         code = DoorCode.objects.create(
             user=self.user,
-            code_hash="not-used-here",
+            encrypted_pin="not-used-here",
             label="User code",
             code_type=DoorCode.CodeType.PERMANENT,
             pin_length=4,
@@ -273,7 +273,7 @@ class DoorCodesApiTests(APITestCase):
         code = DoorCode.objects.create(
             user=self.user,
             source=DoorCode.Source.SYNCED,
-            code_hash=None,
+            encrypted_pin=None,
             label="Slot 1",
             code_type=DoorCode.CodeType.PERMANENT,
             pin_length=None,
@@ -328,7 +328,7 @@ class DoorCodesApiTests(APITestCase):
         code = DoorCode.objects.create(
             user=self.user,
             source=DoorCode.Source.SYNCED,
-            code_hash=None,
+            encrypted_pin=None,
             label="Slot 1",
             code_type=DoorCode.CodeType.PERMANENT,
             pin_length=None,
@@ -360,7 +360,7 @@ class DoorCodesApiTests(APITestCase):
     def test_non_admin_cannot_delete_door_code(self):
         code = DoorCode.objects.create(
             user=self.user,
-            code_hash="not-used-here",
+            encrypted_pin="not-used-here",
             label="User code",
             code_type=DoorCode.CodeType.PERMANENT,
             pin_length=4,
@@ -456,7 +456,7 @@ class DoorCodesApiTests(APITestCase):
         code = DoorCode.objects.create(
             user=self.user,
             source=DoorCode.Source.SYNCED,
-            code_hash=None,
+            encrypted_pin=None,
             label="Slot 1",
             code_type=DoorCode.CodeType.PERMANENT,
             pin_length=None,
@@ -517,7 +517,7 @@ class DoorCodesApiTests(APITestCase):
     def test_manual_code_still_allows_all_fields(self):
         code = DoorCode.objects.create(
             user=self.user,
-            code_hash="not-used-here",
+            encrypted_pin="not-used-here",
             label="Manual code",
             code_type=DoorCode.CodeType.PERMANENT,
             pin_length=4,

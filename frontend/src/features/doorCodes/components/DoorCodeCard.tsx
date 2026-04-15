@@ -1,3 +1,5 @@
+import { useState } from 'react'
+import { Eye, EyeOff } from 'lucide-react'
 import type { DoorCode, Entity, UpdateDoorCodeRequest } from '@/types'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -48,7 +50,13 @@ export function DoorCodeCard({
   onUpdate,
   onDelete,
 }: Props) {
-  const pinLengthLabel = code.pinLength == null ? 'unknown' : String(code.pinLength)
+  const [pinVisible, setPinVisible] = useState(false)
+
+  const pinDisplay = code.pin != null
+    ? (pinVisible ? code.pin : '•'.repeat(code.pin.length))
+    : 'unknown'
+  const canTogglePin = code.pin != null
+
   return (
     <div className="rounded-md border border-input p-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -58,9 +66,20 @@ export function DoorCodeCard({
             <Badge variant={code.isActive ? 'secondary' : 'outline'}>{code.isActive ? 'Active' : 'Inactive'}</Badge>
             {code.source === 'synced' ? <Badge variant="outline">Synced</Badge> : null}
           </div>
-          <div className="text-sm text-muted-foreground">
-            PIN length: {pinLengthLabel} • Type: {code.codeType}
-            {code.maxUses != null ? ` • Max uses: ${code.maxUses}` : ''}
+          <div className="flex items-center gap-1 text-sm text-muted-foreground">
+            <span>PIN: {pinDisplay}</span>
+            {canTogglePin ? (
+              <button
+                type="button"
+                className="inline-flex items-center text-muted-foreground hover:text-foreground"
+                onClick={() => setPinVisible(!pinVisible)}
+                aria-label={pinVisible ? 'Hide PIN' : 'Show PIN'}
+              >
+                {pinVisible ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+              </button>
+            ) : null}
+            <span> • Type: {code.codeType}</span>
+            {code.maxUses != null ? <span> • Max uses: {code.maxUses}</span> : null}
           </div>
           {code.codeType === 'temporary' ? (
             <>

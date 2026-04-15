@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from django.contrib.auth.hashers import make_password
 from django.db.models import Exists, OuterRef, Q, QuerySet
 
 from accounts.models import User
 from accounts.policies import is_admin
+from alarm.crypto import SettingsEncryption
 from config.domain_exceptions import ForbiddenError, NotFoundError, ValidationError
 from locks.models import DoorCode, DoorCodeEvent, DoorCodeLockAssignment
 
@@ -113,7 +113,7 @@ def create_door_code(
     raw_code = (raw_code or "").strip()
     code = DoorCode.objects.create(
         user=user,
-        code_hash=make_password(raw_code),
+        encrypted_pin=SettingsEncryption.get().encrypt(raw_code),
         label=label or "",
         code_type=code_type,
         pin_length=len(raw_code),
@@ -159,7 +159,7 @@ def update_door_code(
 
     if "code" in changes and changes.get("code"):
         raw_code = str(changes.get("code") or "").strip()
-        code.code_hash = make_password(raw_code)
+        code.encrypted_pin = SettingsEncryption.get().encrypt(raw_code)
         code.pin_length = len(raw_code)
         updated_fields.append("code")
 

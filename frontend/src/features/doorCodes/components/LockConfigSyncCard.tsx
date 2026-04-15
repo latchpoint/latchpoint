@@ -200,7 +200,7 @@ export function LockConfigSyncCard({ userId, locks, locksIsLoading, locksError }
                         Slot {slot.slotIndex}: {slot.action}
                       </div>
                       <div className="text-muted-foreground">
-                        {slot.pinKnown === false ? 'PIN unknown' : slot.pinKnown === true ? 'PIN known' : ''}
+                        {slot.pinKnown === false ? 'PIN unknown' : slot.pinKnown === true ? 'PIN saved' : ''}
                       </div>
                     </div>
                     {slot.scheduleApplied && slot.schedule ? (

@@ -142,13 +142,13 @@ class LockConfigSyncApiTests(EncryptionTestMixin, APITestCase):
         self.assertEqual(slot1.door_code.days_of_week, 1)  # Monday only
         self.assertEqual(str(slot1.door_code.window_start), "08:00:00")
         self.assertEqual(str(slot1.door_code.window_end), "16:00:00")
-        self.assertIsNotNone(slot1.door_code.code_hash)
+        self.assertIsNotNone(slot1.door_code.encrypted_pin)
         self.assertEqual(slot1.door_code.pin_length, 4)
 
         slot2 = DoorCodeLockAssignment.objects.select_related("door_code").get(
             lock_entity_id="lock.front_door", slot_index=2
         )
-        self.assertIsNone(slot2.door_code.code_hash)
+        self.assertIsNone(slot2.door_code.encrypted_pin)
         self.assertIsNone(slot2.door_code.pin_length)
 
     def test_sync_returns_conflict_when_already_in_progress(self):
@@ -189,11 +189,10 @@ class LockConfigSyncApiTests(EncryptionTestMixin, APITestCase):
     # --- Re-sync: idempotent (slot unchanged) ---
 
     def test_resync_slot_unchanged_is_idempotent(self):
-        # Use a masked PIN so code_hash stays None across syncs (make_password
-        # produces a different salt each time, so known PINs always differ).
+        # Use a masked PIN so encrypted_pin stays None across syncs.
         fake = self._make_single_slot_gateway(pin="****")
 
-        # First sync — creates the code with code_hash=None.
+        # First sync — creates the code with encrypted_pin=None.
         resp1 = self._sync(fake)
         self.assertEqual(resp1.status_code, 200)
         self.assertEqual(resp1.json()["data"]["created"], 1)
@@ -202,7 +201,7 @@ class LockConfigSyncApiTests(EncryptionTestMixin, APITestCase):
             lock_entity_id="lock.front_door",
             slot_index=1,
         )
-        self.assertIsNone(original.door_code.code_hash)
+        self.assertIsNone(original.door_code.encrypted_pin)
 
         # Second sync — same masked PIN, should be unchanged.
         resp2 = self._sync(fake)
@@ -223,7 +222,7 @@ class LockConfigSyncApiTests(EncryptionTestMixin, APITestCase):
             lock_entity_id="lock.front_door",
             slot_index=1,
         )
-        original_hash = original.door_code.code_hash
+        original_hash = original.door_code.encrypted_pin
 
         # Re-sync with a different PIN.
         fake_v2 = self._make_single_slot_gateway(pin="5678")
@@ -235,7 +234,7 @@ class LockConfigSyncApiTests(EncryptionTestMixin, APITestCase):
         self.assertEqual(body["unchanged"], 0)
 
         original.door_code.refresh_from_db()
-        self.assertNotEqual(original.door_code.code_hash, original_hash)
+        self.assertNotEqual(original.door_code.encrypted_pin, original_hash)
         self.assertEqual(original.door_code.pin_length, 4)
 
     # --- Re-sync: slot emptied (deactivation) ---
