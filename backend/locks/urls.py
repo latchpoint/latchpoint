@@ -13,6 +13,6 @@ urlpatterns = [
         lock_config_sync_views.LockConfigSyncView.as_view(),
         name="locks-sync-config",
     ),
-path("door-codes/", views.DoorCodesView.as_view(), name="door-codes"),
+    path("door-codes/", views.DoorCodesView.as_view(), name="door-codes"),
     path("door-codes/<int:code_id>/", views.DoorCodeDetailView.as_view(), name="door-code-detail"),
 ]

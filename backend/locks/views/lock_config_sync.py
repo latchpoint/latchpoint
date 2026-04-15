@@ -74,4 +74,3 @@ class LockConfigSyncView(APIView):
         )
 
         return Response(result.as_dict(), status=status.HTTP_200_OK)
-

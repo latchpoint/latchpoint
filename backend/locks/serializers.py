@@ -244,7 +244,6 @@ class DoorCodeUpdateSerializer(serializers.Serializer):
         return attrs
 
 
-
 class LockConfigSyncRequestSerializer(serializers.Serializer):
     reauth_password = serializers.CharField(write_only=True)
     user_id = serializers.UUIDField()

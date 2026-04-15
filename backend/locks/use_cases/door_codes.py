@@ -66,9 +66,7 @@ def resolve_create_target_user(*, actor_user: User, requested_user_id: str | Non
 
 def list_door_codes_for_user(*, user: User) -> QuerySet[DoorCode]:
     """Return a queryset of `DoorCode` rows for `user`, with common relations prefetched."""
-    has_active_assignment = Exists(
-        DoorCodeLockAssignment.objects.filter(door_code=OuterRef("pk"))
-    )
+    has_active_assignment = Exists(DoorCodeLockAssignment.objects.filter(door_code=OuterRef("pk")))
     return (
         DoorCode.objects.select_related("user")
         .prefetch_related("lock_assignments")
@@ -223,7 +221,6 @@ def update_door_code(
         )
 
     return code
-
 
 
 def delete_door_code(
