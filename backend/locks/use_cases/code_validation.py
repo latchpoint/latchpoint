@@ -5,10 +5,10 @@ from datetime import datetime
 from datetime import timezone as dt_timezone
 from zoneinfo import ZoneInfo
 
-from django.contrib.auth.hashers import check_password
 from django.utils import timezone as django_timezone
 
 from accounts.models import User
+from alarm.crypto import InvalidToken, SettingsEncryption
 from config.domain_exceptions import ValidationError
 from locks.models import DoorCode, DoorCodeEvent
 
@@ -60,10 +60,15 @@ def validate_door_code(
     if lock_entity_id:
         candidates = candidates.filter(lock_assignments__lock_entity_id=lock_entity_id)
 
+    enc = SettingsEncryption.get()
     for candidate in candidates:
-        if not candidate.code_hash:
+        if not candidate.encrypted_pin:
             continue
-        if check_password(raw_code, candidate.code_hash):
+        try:
+            stored_pin = enc.decrypt(candidate.encrypted_pin)
+        except (ValueError, InvalidToken):
+            continue
+        if raw_code == stored_pin:
             if candidate.max_uses is not None and candidate.uses_count >= candidate.max_uses:
                 raise CodeExhaustedError("Code has reached maximum uses.")
 

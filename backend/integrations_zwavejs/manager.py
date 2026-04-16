@@ -49,6 +49,13 @@ class ZwavejsCommandError(ZwavejsGatewayError):
     pass
 
 
+# Z-Wave command classes that identify lock devices.
+CC_DOOR_LOCK = 98  # 0x62
+CC_USER_CODE = 99  # 0x63
+CC_SCHEDULE_ENTRY_LOCK = 78  # 0x4E
+LOCK_COMMAND_CLASSES: frozenset[int] = frozenset({CC_DOOR_LOCK, CC_USER_CODE, CC_SCHEDULE_ENTRY_LOCK})
+
+
 class ZwavejsConnectionSettings(TypedDict, total=False):
     enabled: bool
     ws_url: str
@@ -522,6 +529,39 @@ class ZwavejsConnectionManager:
         )
         self._run_coro(self._async_set_value(node_id=node_id, value_id=value_id, value=value), timeout_seconds=10.0)
 
+    def invoke_cc_api(
+        self,
+        *,
+        node_id: int,
+        command_class: int,
+        method_name: str,
+        args: list[Any] | None = None,
+        timeout_seconds: float = 10.0,
+    ) -> Any:
+        """Invoke a CC API method on a node, waiting for the result (ADR 0081)."""
+        if not isinstance(node_id, int) or node_id <= 0:
+            raise ZwavejsCommandValidationError("node_id must be a positive integer.")
+        if not isinstance(command_class, int) or command_class <= 0:
+            raise ZwavejsCommandValidationError("command_class must be a positive integer.")
+        if not isinstance(method_name, str) or not method_name.strip():
+            raise ZwavejsCommandValidationError("method_name must be a non-empty string.")
+        self._logger.debug(
+            "zwavejs event_out invoke_cc_api node_id=%s cc=%s method=%s args=%s",
+            node_id,
+            command_class,
+            method_name,
+            args,
+        )
+        return self._run_coro(
+            self._async_invoke_cc_api(
+                node_id=node_id,
+                command_class=command_class,
+                method_name=method_name,
+                args=args or [],
+            ),
+            timeout_seconds=timeout_seconds,
+        )
+
     # ---- internals ----
     def _set_error(self, error: str | None) -> None:
         """Set the manager's last error message (best-effort, no raising)."""
@@ -785,6 +825,14 @@ class ZwavejsConnectionManager:
         node = await self._async_get_node(node_id=int(node_id))
         value_id_str = _get_value_id_str_from_dict(node, value_id)
         await node.async_set_value(value_id_str, value, wait_for_result=True)
+
+    async def _async_invoke_cc_api(self, *, node_id: int, command_class: int, method_name: str, args: list[Any]) -> Any:
+        """Invoke a CC API method and wait for the result (ADR 0081)."""
+        from zwave_js_server.const import CommandClass as ZwCommandClass
+
+        node = await self._async_get_node(node_id=int(node_id))
+        result = await node.async_invoke_cc_api(ZwCommandClass(command_class), method_name, *args, wait_for_result=True)
+        return result
 
 
 def build_zwavejs_entity_id(*, home_id: int, node_id: int, value_id: dict[str, Any]) -> str:

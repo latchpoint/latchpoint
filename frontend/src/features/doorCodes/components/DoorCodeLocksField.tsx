@@ -29,7 +29,7 @@ type Props = {
 
 export function DoorCodeLocksField(props: Props) {
   return (
-    <FormField label="Locks" help="Select which locks this code applies to. This list comes from the synced entity registry (same as Rules).">
+    <FormField label="Locks" help="Select which locks this code applies to. Only Z-Wave locks with user code support are shown.">
       <DoorCodeLocksPicker {...props} />
     </FormField>
   )

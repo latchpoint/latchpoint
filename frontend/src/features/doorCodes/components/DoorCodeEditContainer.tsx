@@ -86,6 +86,22 @@ export function DoorCodeEditContainer({ code, locks, locksIsLoading, locksError,
       setEditError('Password is required for re-authentication.')
       return
     }
+
+    const isSynced = code.source === 'synced'
+    if (isSynced) {
+      const req: UpdateDoorCodeRequest = {
+        label: editLabel.trim(),
+        reauthPassword: editReauthPassword,
+      }
+      try {
+        await onUpdate(code.id, req)
+        onClose()
+      } catch (err) {
+        setEditError(getErrorMessage(err) || 'Failed to update door code')
+      }
+      return
+    }
+
     if (!resolvedLockEntityIds.length) {
       setEditError('Select at least one lock.')
       return
@@ -147,7 +163,11 @@ export function DoorCodeEditContainer({ code, locks, locksIsLoading, locksError,
       setEditError('Password is required for re-authentication.')
       return
     }
-    const ok = window.confirm('Delete this door code? This cannot be undone.')
+    const confirmMsg =
+      code.source === 'synced'
+        ? 'Delete this door code? This will also clear the code from the physical lock. This cannot be undone.'
+        : 'Delete this door code? This cannot be undone.'
+    const ok = window.confirm(confirmMsg)
     if (!ok) return
     try {
       await onDelete(code.id, editReauthPassword)

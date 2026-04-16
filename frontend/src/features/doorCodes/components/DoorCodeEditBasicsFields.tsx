@@ -56,7 +56,8 @@ export function DoorCodeEditBasicsFields({
           step={1}
           value={maxUses}
           onChange={(e) => onMaxUsesChange(e.target.value)}
-          disabled={isBusy}
+          placeholder={isSynced ? 'Controlled by lock sync' : undefined}
+          disabled={isBusy || isSynced}
         />
       </div>
     </div>

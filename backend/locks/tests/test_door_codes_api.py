@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+from unittest.mock import MagicMock, patch
+
 from django.urls import reverse
 from rest_framework.test import APITestCase
 
 from accounts.models import User
-from locks.models import DoorCode, DoorCodeLockAssignment
+from alarm.models import Entity
+from alarm.tests.settings_test_utils import EncryptionTestMixin
+from locks.models import DoorCode, DoorCodeEvent, DoorCodeLockAssignment
 
 
-class DoorCodesApiTests(APITestCase):
+class DoorCodesApiTests(EncryptionTestMixin, APITestCase):
     def setUp(self):
         self.admin = User.objects.create_superuser(email="admin@example.com", password="pass")
         self.user = User.objects.create_user(email="user@example.com", password="pass")
@@ -16,7 +20,7 @@ class DoorCodesApiTests(APITestCase):
     def test_list_door_codes_for_self(self):
         DoorCode.objects.create(
             user=self.admin,
-            code_hash="not-used-here",
+            encrypted_pin="not-used-here",
             label="Admin code",
             code_type=DoorCode.CodeType.PERMANENT,
             pin_length=4,
@@ -123,7 +127,7 @@ class DoorCodesApiTests(APITestCase):
     def test_admin_can_list_door_codes_for_other_user(self):
         code = DoorCode.objects.create(
             user=self.user,
-            code_hash="not-used-here",
+            encrypted_pin="not-used-here",
             label="User code",
             code_type=DoorCode.CodeType.PERMANENT,
             pin_length=4,
@@ -145,7 +149,7 @@ class DoorCodesApiTests(APITestCase):
     def test_non_admin_can_read_own_door_code_detail(self):
         code = DoorCode.objects.create(
             user=self.user,
-            code_hash="not-used-here",
+            encrypted_pin="not-used-here",
             label="User code",
             code_type=DoorCode.CodeType.PERMANENT,
             pin_length=4,
@@ -160,7 +164,7 @@ class DoorCodesApiTests(APITestCase):
     def test_non_admin_cannot_read_other_user_door_code_detail(self):
         other_code = DoorCode.objects.create(
             user=self.admin,
-            code_hash="not-used-here",
+            encrypted_pin="not-used-here",
             label="Admin code",
             code_type=DoorCode.CodeType.PERMANENT,
             pin_length=4,
@@ -190,7 +194,7 @@ class DoorCodesApiTests(APITestCase):
     def test_non_admin_cannot_update_door_code(self):
         code = DoorCode.objects.create(
             user=self.user,
-            code_hash="not-used-here",
+            encrypted_pin="not-used-here",
             label="User code",
             code_type=DoorCode.CodeType.PERMANENT,
             pin_length=4,
@@ -208,7 +212,7 @@ class DoorCodesApiTests(APITestCase):
     def test_admin_can_update_door_code(self):
         code = DoorCode.objects.create(
             user=self.user,
-            code_hash="not-used-here",
+            encrypted_pin="not-used-here",
             label="User code",
             code_type=DoorCode.CodeType.PERMANENT,
             pin_length=4,
@@ -226,7 +230,7 @@ class DoorCodesApiTests(APITestCase):
     def test_admin_can_update_door_code_lock_assignments(self):
         code = DoorCode.objects.create(
             user=self.user,
-            code_hash="not-used-here",
+            encrypted_pin="not-used-here",
             label="User code",
             code_type=DoorCode.CodeType.PERMANENT,
             pin_length=4,
@@ -244,7 +248,7 @@ class DoorCodesApiTests(APITestCase):
     def test_admin_can_delete_door_code(self):
         code = DoorCode.objects.create(
             user=self.user,
-            code_hash="not-used-here",
+            encrypted_pin="not-used-here",
             label="User code",
             code_type=DoorCode.CodeType.PERMANENT,
             pin_length=4,
@@ -259,11 +263,73 @@ class DoorCodesApiTests(APITestCase):
         self.assertEqual(response.status_code, 204)
         self.assertFalse(DoorCode.objects.filter(id=code.id).exists())
 
-    def test_deleting_synced_door_code_dismisses_slot_instead_of_hard_delete(self):
+    def test_deleting_synced_door_code_clears_lock_and_deletes(self):
+        Entity.objects.create(
+            entity_id="lock.front_door",
+            domain="lock",
+            name="Front Door",
+            attributes={"zwavejs": {"node_id": 5}},
+            source="zwavejs",
+        )
         code = DoorCode.objects.create(
             user=self.user,
             source=DoorCode.Source.SYNCED,
-            code_hash=None,
+            encrypted_pin=None,
+            label="Slot 1",
+            code_type=DoorCode.CodeType.PERMANENT,
+            pin_length=None,
+            is_active=True,
+        )
+        code_id = code.id
+        DoorCodeLockAssignment.objects.create(
+            door_code=code,
+            lock_entity_id="lock.front_door",
+            slot_index=1,
+        )
+
+        fake_gw = MagicMock()
+        url = reverse("door-code-detail", args=[code.id])
+        with patch("locks.views.door_codes.default_zwavejs_gateway", fake_gw):
+            response = self.client.delete(url, {"reauth_password": "pass"}, format="json")
+        self.assertEqual(response.status_code, 204)
+
+        # Verify CC 99 clear was called with correct args.
+        fake_gw.invoke_cc_api.assert_called_once_with(
+            node_id=5,
+            command_class=99,
+            method_name="clear",
+            args=[1],
+            timeout_seconds=10.0,
+        )
+
+        # Code and assignment should be fully deleted from DB.
+        self.assertFalse(DoorCode.objects.filter(id=code_id).exists())
+        self.assertFalse(DoorCodeLockAssignment.objects.filter(lock_entity_id="lock.front_door", slot_index=1).exists())
+
+        # Verify audit event records cleared_from_lock=True.
+        event = DoorCodeEvent.objects.filter(event_type=DoorCodeEvent.EventType.CODE_DELETED).first()
+        self.assertIsNotNone(event)
+        self.assertTrue(event.metadata.get("cleared_from_lock"))
+
+        list_url = reverse("door-codes")
+        list_resp = self.client.get(list_url, {"user_id": str(self.user.id)})
+        self.assertEqual(list_resp.status_code, 200)
+        self.assertEqual(list_resp.json()["data"], [])
+
+    def test_deleting_synced_door_code_fails_when_lock_unreachable(self):
+        from integrations_zwavejs.manager import ZwavejsCommandError
+
+        Entity.objects.create(
+            entity_id="lock.front_door",
+            domain="lock",
+            name="Front Door",
+            attributes={"zwavejs": {"node_id": 5}},
+            source="zwavejs",
+        )
+        code = DoorCode.objects.create(
+            user=self.user,
+            source=DoorCode.Source.SYNCED,
+            encrypted_pin=None,
             label="Slot 1",
             code_type=DoorCode.CodeType.PERMANENT,
             pin_length=None,
@@ -275,24 +341,54 @@ class DoorCodesApiTests(APITestCase):
             slot_index=1,
         )
 
+        fake_gw = MagicMock()
+        fake_gw.invoke_cc_api.side_effect = ZwavejsCommandError("Z-Wave error 202: timeout")
+
         url = reverse("door-code-detail", args=[code.id])
-        response = self.client.delete(url, {"reauth_password": "pass"}, format="json")
-        self.assertEqual(response.status_code, 204)
+        with patch("locks.views.door_codes.default_zwavejs_gateway", fake_gw):
+            response = self.client.delete(url, {"reauth_password": "pass"}, format="json")
 
+        # Should fail with 502 (gateway error).
+        self.assertEqual(response.status_code, 502)
+
+        # DB state should be unchanged (code still active, delete failed).
         code.refresh_from_db()
-        self.assertFalse(code.is_active)
-        assignment = DoorCodeLockAssignment.objects.get(door_code=code, lock_entity_id="lock.front_door")
-        self.assertTrue(assignment.sync_dismissed)
+        self.assertTrue(code.is_active)
+        self.assertTrue(
+            DoorCodeLockAssignment.objects.filter(door_code=code, lock_entity_id="lock.front_door").exists()
+        )
 
-        list_url = reverse("door-codes")
-        list_resp = self.client.get(list_url, {"user_id": str(self.user.id)})
-        self.assertEqual(list_resp.status_code, 200)
-        self.assertEqual(list_resp.json()["data"], [])
+    def test_deleting_synced_door_code_without_gateway_skips_lock_clear(self):
+        """When zwavejs gateway is None, synced code is deleted without clearing the physical lock."""
+        from locks.use_cases.door_codes import delete_door_code
+
+        code = DoorCode.objects.create(
+            user=self.user,
+            source=DoorCode.Source.SYNCED,
+            encrypted_pin=None,
+            label="Slot 1",
+            code_type=DoorCode.CodeType.PERMANENT,
+            pin_length=None,
+            is_active=True,
+        )
+        code_id = code.id
+        DoorCodeLockAssignment.objects.create(
+            door_code=code,
+            lock_entity_id="lock.front_door",
+            slot_index=1,
+        )
+
+        delete_door_code(code=code, actor_user=self.admin, zwavejs=None)
+
+        self.assertFalse(DoorCode.objects.filter(id=code_id).exists())
+        event = DoorCodeEvent.objects.filter(event_type=DoorCodeEvent.EventType.CODE_DELETED).first()
+        self.assertIsNotNone(event)
+        self.assertFalse(event.metadata.get("cleared_from_lock", False))
 
     def test_non_admin_cannot_delete_door_code(self):
         code = DoorCode.objects.create(
             user=self.user,
-            code_hash="not-used-here",
+            encrypted_pin="not-used-here",
             label="User code",
             code_type=DoorCode.CodeType.PERMANENT,
             pin_length=4,
@@ -379,3 +475,100 @@ class DoorCodesApiTests(APITestCase):
             format="json",
         )
         self.assertEqual(response.status_code, 403)
+
+    # ------------------------------------------------------------------
+    # Synced code update restrictions
+    # ------------------------------------------------------------------
+
+    def _create_synced_code(self):
+        code = DoorCode.objects.create(
+            user=self.user,
+            source=DoorCode.Source.SYNCED,
+            encrypted_pin=None,
+            label="Slot 1",
+            code_type=DoorCode.CodeType.PERMANENT,
+            pin_length=None,
+            is_active=True,
+        )
+        DoorCodeLockAssignment.objects.create(
+            door_code=code,
+            lock_entity_id="lock.front_door",
+            slot_index=1,
+        )
+        return code
+
+    def test_synced_code_rejects_restricted_field_updates(self):
+        code = self._create_synced_code()
+        url = reverse("door-code-detail", args=[code.id])
+
+        response = self.client.patch(
+            url,
+            {
+                "max_uses": 5,
+                "is_active": False,
+                "lock_entity_ids": ["lock.back_door"],
+                "days_of_week": 1,
+                "reauth_password": "pass",
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 400)
+        details = response.json()["error"]["details"]
+        for field in ("max_uses", "is_active", "lock_entity_ids", "days_of_week"):
+            self.assertIn(field, details, f"Expected validation error for {field}")
+
+    def test_synced_code_allows_label_update(self):
+        code = self._create_synced_code()
+        url = reverse("door-code-detail", args=[code.id])
+
+        response = self.client.patch(
+            url,
+            {"label": "Front door slot", "reauth_password": "pass"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["data"]["label"], "Front door slot")
+
+    def test_synced_code_rejects_code_change(self):
+        code = self._create_synced_code()
+        url = reverse("door-code-detail", args=[code.id])
+
+        response = self.client.patch(
+            url,
+            {"code": "9999", "reauth_password": "pass"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 400)
+        details = response.json()["error"]["details"]
+        self.assertIn("code", details)
+
+    def test_manual_code_still_allows_all_fields(self):
+        code = DoorCode.objects.create(
+            user=self.user,
+            encrypted_pin="not-used-here",
+            label="Manual code",
+            code_type=DoorCode.CodeType.PERMANENT,
+            pin_length=4,
+            is_active=True,
+        )
+        DoorCodeLockAssignment.objects.create(
+            door_code=code,
+            lock_entity_id="lock.front_door",
+        )
+        url = reverse("door-code-detail", args=[code.id])
+
+        response = self.client.patch(
+            url,
+            {
+                "label": "Updated",
+                "max_uses": 10,
+                "lock_entity_ids": ["lock.back_door"],
+                "reauth_password": "pass",
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200)
+        body = response.json()["data"]
+        self.assertEqual(body["label"], "Updated")
+        self.assertEqual(body["max_uses"], 10)
+        self.assertEqual(body["lock_entity_ids"], ["lock.back_door"])

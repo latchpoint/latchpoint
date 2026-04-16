@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from unittest import TestCase
 from unittest.mock import patch
 
@@ -16,9 +17,16 @@ from locks.use_cases.lock_config_sync import _normalize_pin
 
 
 class FakeZwavejsGateway:
-    def __init__(self, *, value_ids: list[dict], values: dict[tuple[int, str], object]):
+    def __init__(
+        self,
+        *,
+        value_ids: list[dict],
+        values: dict[tuple[int, str], object],
+        cc_api_responses: dict[tuple[int, int, str, str], object] | None = None,
+    ):
         self._value_ids = value_ids
         self._values = values
+        self._cc_api_responses = cc_api_responses or {}
 
     def apply_settings(self, *, settings_obj):  # noqa: ARG002
         return None
@@ -32,6 +40,18 @@ class FakeZwavejsGateway:
     def node_get_value(self, *, node_id: int, value_id: dict, timeout_seconds: float = 5.0):  # noqa: ARG002
         key = (int(node_id), _value_id_key(value_id))
         return self._values.get(key)
+
+    def invoke_cc_api(
+        self,
+        *,
+        node_id: int,
+        command_class: int,
+        method_name: str,
+        args: list | None = None,
+        timeout_seconds: float = 10.0,  # noqa: ARG002
+    ) -> object:
+        key = (node_id, command_class, method_name, json.dumps(args or [], sort_keys=True))
+        return self._cc_api_responses.get(key)
 
 
 def _value_id_key(value_id: dict) -> str:
@@ -74,7 +94,7 @@ class LockConfigSyncApiTests(EncryptionTestMixin, APITestCase):
             {"commandClass": 99, "property": "userCode", "propertyKey": 1},
             {"commandClass": 99, "property": "userIdStatus", "propertyKey": 2},
             {"commandClass": 99, "property": "userCode", "propertyKey": 2},
-            {"commandClass": 76, "property": "weekDaySchedule", "propertyKey": {"userId": 1, "weekday": 1, "slot": 1}},
+            {"commandClass": 78, "property": "weekDaySchedule", "propertyKey": {"userId": 1, "weekday": 1, "slot": 1}},
         ]
         values = {
             (5, _value_id_key({"commandClass": 99, "property": "usersNumber"})): 2,
@@ -86,7 +106,7 @@ class LockConfigSyncApiTests(EncryptionTestMixin, APITestCase):
                 5,
                 _value_id_key(
                     {
-                        "commandClass": 76,
+                        "commandClass": 78,
                         "property": "weekDaySchedule",
                         "propertyKey": {"userId": 1, "weekday": 1, "slot": 1},
                     }
@@ -122,56 +142,14 @@ class LockConfigSyncApiTests(EncryptionTestMixin, APITestCase):
         self.assertEqual(slot1.door_code.days_of_week, 1)  # Monday only
         self.assertEqual(str(slot1.door_code.window_start), "08:00:00")
         self.assertEqual(str(slot1.door_code.window_end), "16:00:00")
-        self.assertIsNotNone(slot1.door_code.code_hash)
+        self.assertIsNotNone(slot1.door_code.encrypted_pin)
         self.assertEqual(slot1.door_code.pin_length, 4)
 
         slot2 = DoorCodeLockAssignment.objects.select_related("door_code").get(
             lock_entity_id="lock.front_door", slot_index=2
         )
-        self.assertIsNone(slot2.door_code.code_hash)
+        self.assertIsNone(slot2.door_code.encrypted_pin)
         self.assertIsNone(slot2.door_code.pin_length)
-
-    def test_sync_skips_dismissed_slot(self):
-        dismissed = DoorCode.objects.create(
-            user=self.user,
-            source=DoorCode.Source.SYNCED,
-            code_hash=None,
-            label="Slot 1",
-            code_type=DoorCode.CodeType.PERMANENT,
-            pin_length=None,
-            is_active=False,
-        )
-        DoorCodeLockAssignment.objects.create(
-            door_code=dismissed,
-            lock_entity_id="lock.front_door",
-            slot_index=1,
-            sync_dismissed=True,
-        )
-
-        value_ids = [
-            {"commandClass": 99, "property": "usersNumber"},
-            {"commandClass": 99, "property": "userIdStatus", "propertyKey": 1},
-            {"commandClass": 99, "property": "userCode", "propertyKey": 1},
-        ]
-        values = {
-            (5, _value_id_key({"commandClass": 99, "property": "usersNumber"})): 1,
-            (5, _value_id_key({"commandClass": 99, "property": "userIdStatus", "propertyKey": 1})): 1,
-            (5, _value_id_key({"commandClass": 99, "property": "userCode", "propertyKey": 1})): "1234",
-        }
-        fake = FakeZwavejsGateway(value_ids=value_ids, values=values)
-
-        url = reverse("locks-sync-config", kwargs={"lock_entity_id": "lock.front_door"})
-        with patch("locks.views.lock_config_sync.zwavejs_gateway", fake):
-            response = self.client.post(
-                url,
-                {"user_id": str(self.user.id), "reauth_password": "pass"},
-                format="json",
-            )
-
-        self.assertEqual(response.status_code, 200)
-        body = response.json()["data"]
-        self.assertEqual(body["dismissed"], 1)
-        self.assertEqual(body["created"], 0)
 
     def test_sync_returns_conflict_when_already_in_progress(self):
         url = reverse("locks-sync-config", kwargs={"lock_entity_id": "lock.front_door"})
@@ -211,11 +189,10 @@ class LockConfigSyncApiTests(EncryptionTestMixin, APITestCase):
     # --- Re-sync: idempotent (slot unchanged) ---
 
     def test_resync_slot_unchanged_is_idempotent(self):
-        # Use a masked PIN so code_hash stays None across syncs (make_password
-        # produces a different salt each time, so known PINs always differ).
+        # Use a masked PIN so encrypted_pin stays None across syncs.
         fake = self._make_single_slot_gateway(pin="****")
 
-        # First sync — creates the code with code_hash=None.
+        # First sync — creates the code with encrypted_pin=None.
         resp1 = self._sync(fake)
         self.assertEqual(resp1.status_code, 200)
         self.assertEqual(resp1.json()["data"]["created"], 1)
@@ -224,7 +201,7 @@ class LockConfigSyncApiTests(EncryptionTestMixin, APITestCase):
             lock_entity_id="lock.front_door",
             slot_index=1,
         )
-        self.assertIsNone(original.door_code.code_hash)
+        self.assertIsNone(original.door_code.encrypted_pin)
 
         # Second sync — same masked PIN, should be unchanged.
         resp2 = self._sync(fake)
@@ -245,7 +222,7 @@ class LockConfigSyncApiTests(EncryptionTestMixin, APITestCase):
             lock_entity_id="lock.front_door",
             slot_index=1,
         )
-        original_hash = original.door_code.code_hash
+        original_hash = original.door_code.encrypted_pin
 
         # Re-sync with a different PIN.
         fake_v2 = self._make_single_slot_gateway(pin="5678")
@@ -257,7 +234,7 @@ class LockConfigSyncApiTests(EncryptionTestMixin, APITestCase):
         self.assertEqual(body["unchanged"], 0)
 
         original.door_code.refresh_from_db()
-        self.assertNotEqual(original.door_code.code_hash, original_hash)
+        self.assertNotEqual(original.door_code.encrypted_pin, original_hash)
         self.assertEqual(original.door_code.pin_length, 4)
 
     # --- Re-sync: slot emptied (deactivation) ---
@@ -436,66 +413,94 @@ class LockConfigSyncApiTests(EncryptionTestMixin, APITestCase):
         self.assertEqual(response.status_code, 200)
         mock_notify.assert_not_called()
 
-    # --- Dismissed assignments endpoints ---
+    # --- CC API fallback for daily repeating schedules (ADR 0081) ---
 
-    def test_list_dismissed_assignments(self):
-        """GET dismissed-assignments returns serialized dismissed assignment."""
-        dismissed_code = DoorCode.objects.create(
-            user=self.user,
-            source=DoorCode.Source.SYNCED,
-            code_hash=None,
-            label="Slot 3",
-            code_type=DoorCode.CodeType.PERMANENT,
-            pin_length=None,
-            is_active=False,
+    def test_sync_imports_daily_repeating_schedule_via_cc_api(self):
+        """When no CC 78 value IDs exist, fall back to invoke_cc_api for schedules."""
+        value_ids = [
+            {"commandClass": 99, "property": "usersNumber"},
+            {"commandClass": 99, "property": "userIdStatus", "propertyKey": 1},
+            {"commandClass": 99, "property": "userCode", "propertyKey": 1},
+            {"commandClass": 99, "property": "userIdStatus", "propertyKey": 2},
+            {"commandClass": 99, "property": "userCode", "propertyKey": 2},
+            # No CC 78 value IDs — triggers CC API fallback.
+        ]
+        values = {
+            (5, _value_id_key({"commandClass": 99, "property": "usersNumber"})): 2,
+            (5, _value_id_key({"commandClass": 99, "property": "userIdStatus", "propertyKey": 1})): 1,
+            (5, _value_id_key({"commandClass": 99, "property": "userCode", "propertyKey": 1})): "1234",
+            (5, _value_id_key({"commandClass": 99, "property": "userIdStatus", "propertyKey": 2})): 1,
+            (5, _value_id_key({"commandClass": 99, "property": "userCode", "propertyKey": 2})): "5678",
+        }
+        cc_api_responses = {
+            # getNumSlots response
+            (5, 78, "getNumSlots", "[]"): {"numWeekDaySlots": 0, "numYearDaySlots": 0, "numDailyRepeatingSlots": 7},
+            # User 1, slot 1: empty schedule
+            (5, 78, "getDailyRepeatingSchedule", '[{"slotId": 1, "userId": 1}]'): {},
+            (5, 78, "getDailyRepeatingSchedule", '[{"slotId": 2, "userId": 1}]'): {},
+            (5, 78, "getDailyRepeatingSchedule", '[{"slotId": 3, "userId": 1}]'): {},
+            (5, 78, "getDailyRepeatingSchedule", '[{"slotId": 4, "userId": 1}]'): {},
+            (5, 78, "getDailyRepeatingSchedule", '[{"slotId": 5, "userId": 1}]'): {},
+            (5, 78, "getDailyRepeatingSchedule", '[{"slotId": 6, "userId": 1}]'): {},
+            (5, 78, "getDailyRepeatingSchedule", '[{"slotId": 7, "userId": 1}]'): {},
+            # User 2, slot 1: Mon+Thu 07:00 for 8h
+            (5, 78, "getDailyRepeatingSchedule", '[{"slotId": 1, "userId": 2}]'): {
+                "weekdays": [1, 4],
+                "startHour": 7,
+                "startMinute": 0,
+                "durationHour": 8,
+                "durationMinute": 0,
+            },
+            (5, 78, "getDailyRepeatingSchedule", '[{"slotId": 2, "userId": 2}]'): {},
+            (5, 78, "getDailyRepeatingSchedule", '[{"slotId": 3, "userId": 2}]'): {},
+            (5, 78, "getDailyRepeatingSchedule", '[{"slotId": 4, "userId": 2}]'): {},
+            (5, 78, "getDailyRepeatingSchedule", '[{"slotId": 5, "userId": 2}]'): {},
+            (5, 78, "getDailyRepeatingSchedule", '[{"slotId": 6, "userId": 2}]'): {},
+            (5, 78, "getDailyRepeatingSchedule", '[{"slotId": 7, "userId": 2}]'): {},
+        }
+        fake = FakeZwavejsGateway(value_ids=value_ids, values=values, cc_api_responses=cc_api_responses)
+        resp = self._sync(fake)
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()["data"]
+        self.assertEqual(body["created"], 2)
+        self.assertEqual(body["errors"], 0)
+
+        # Slot 1: no schedule
+        slot1 = DoorCodeLockAssignment.objects.select_related("door_code").get(
+            lock_entity_id="lock.front_door", slot_index=1
         )
-        DoorCodeLockAssignment.objects.create(
-            door_code=dismissed_code,
-            lock_entity_id="lock.front_door",
-            slot_index=3,
-            sync_dismissed=True,
+        self.assertIsNone(slot1.door_code.days_of_week)
+
+        # Slot 2: Mon (bit 0) + Thu (bit 3) = 0b1001 = 9
+        slot2 = DoorCodeLockAssignment.objects.select_related("door_code").get(
+            lock_entity_id="lock.front_door", slot_index=2
         )
+        self.assertEqual(slot2.door_code.days_of_week, 9)
+        self.assertEqual(str(slot2.door_code.window_start), "07:00:00")
+        self.assertEqual(str(slot2.door_code.window_end), "15:00:00")
+        self.assertEqual(slot2.door_code.code_type, DoorCode.CodeType.TEMPORARY)
 
-        url = reverse("locks-dismissed-assignments", kwargs={"lock_entity_id": "lock.front_door"})
-        response = self.client.get(url)
-
-        self.assertEqual(response.status_code, 200)
-        data = response.json()["data"]
-        self.assertEqual(len(data), 1)
-        item = data[0]
-        self.assertEqual(item["slot_index"], 3)
-        self.assertTrue(item["sync_dismissed"])
-        self.assertEqual(item["door_code_label"], "Slot 3")
-        self.assertEqual(item["door_code_source"], "synced")
-        self.assertFalse(item["door_code_is_active"])
-
-    def test_undismiss_assignment(self):
-        """POST undismiss clears sync_dismissed and returns updated assignment."""
-        dismissed_code = DoorCode.objects.create(
-            user=self.user,
-            source=DoorCode.Source.SYNCED,
-            code_hash=None,
-            label="Slot 2",
-            code_type=DoorCode.CodeType.PERMANENT,
-            pin_length=None,
-            is_active=False,
-        )
-        assignment = DoorCodeLockAssignment.objects.create(
-            door_code=dismissed_code,
-            lock_entity_id="lock.front_door",
-            slot_index=2,
-            sync_dismissed=True,
-        )
-
-        url = reverse("door-code-assignment-undismiss", kwargs={"assignment_id": assignment.id})
-        response = self.client.post(url, {"reauth_password": "pass"}, format="json")
-
-        self.assertEqual(response.status_code, 200)
-        data = response.json()["data"]
-        self.assertFalse(data["sync_dismissed"])
-
-        assignment.refresh_from_db()
-        self.assertFalse(assignment.sync_dismissed)
+    def test_sync_cc_api_graceful_when_no_daily_slots(self):
+        """If the lock reports 0 daily repeating slots, schedules are unsupported but sync completes."""
+        value_ids = [
+            {"commandClass": 99, "property": "usersNumber"},
+            {"commandClass": 99, "property": "userIdStatus", "propertyKey": 1},
+            {"commandClass": 99, "property": "userCode", "propertyKey": 1},
+        ]
+        values = {
+            (5, _value_id_key({"commandClass": 99, "property": "usersNumber"})): 1,
+            (5, _value_id_key({"commandClass": 99, "property": "userIdStatus", "propertyKey": 1})): 1,
+            (5, _value_id_key({"commandClass": 99, "property": "userCode", "propertyKey": 1})): "1234",
+        }
+        cc_api_responses = {
+            (5, 78, "getNumSlots", "[]"): {"numWeekDaySlots": 0, "numYearDaySlots": 0, "numDailyRepeatingSlots": 0},
+        }
+        fake = FakeZwavejsGateway(value_ids=value_ids, values=values, cc_api_responses=cc_api_responses)
+        resp = self._sync(fake)
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()["data"]
+        self.assertEqual(body["created"], 1)
+        self.assertEqual(body["errors"], 0)
 
 
 class PinNormalizationTests(TestCase):

@@ -172,10 +172,10 @@ export function DoorCodeCreateCard({ userId, locks, locksIsLoading, locksError, 
         manualValue: createManualLockIds,
         onManualValueChange: setCreateManualLockIds,
         selectedCount: resolvedLockEntityIds.length,
-        emptyWarning: 'No lock entities found in the registry.',
+        emptyWarning: 'No code-capable locks found. Only Z-Wave locks with user code support are shown. Sync your Z-Wave entities to populate this list.',
         emptyActions: [
-          { label: 'Sync HA', pendingLabel: 'Syncing…', onClick: syncHa.onClick, isPending: syncHa.isPending },
           { label: 'Sync Z-Wave', pendingLabel: 'Syncing…', onClick: syncZwave.onClick, isPending: syncZwave.isPending },
+          { label: 'Sync HA', pendingLabel: 'Syncing…', onClick: syncHa.onClick, isPending: syncHa.isPending },
         ],
       }}
       reauthPassword={createReauthPassword}

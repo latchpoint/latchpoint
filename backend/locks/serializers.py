@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from cryptography.fernet import InvalidToken
 from rest_framework import serializers
+
+from alarm.crypto import SettingsEncryption
 
 from .models import DoorCode, DoorCodeLockAssignment
 
@@ -17,6 +20,7 @@ class DoorCodeLockAssignmentSerializer(serializers.ModelSerializer):
 class DoorCodeSerializer(serializers.ModelSerializer):
     user_id = serializers.UUIDField(read_only=True)
     user_display_name = serializers.SerializerMethodField()
+    pin = serializers.SerializerMethodField()
     lock_assignments = serializers.SerializerMethodField()
     lock_entity_ids = serializers.SerializerMethodField()
 
@@ -29,6 +33,7 @@ class DoorCodeSerializer(serializers.ModelSerializer):
             "source",
             "label",
             "code_type",
+            "pin",
             "pin_length",
             "is_active",
             "max_uses",
@@ -55,6 +60,15 @@ class DoorCodeSerializer(serializers.ModelSerializer):
         if full_name.strip():
             return full_name.strip()
         return user.email
+
+    def get_pin(self, obj: DoorCode) -> str | None:
+        """Decrypt and return the PIN, or None if unavailable."""
+        if not obj.encrypted_pin:
+            return None
+        try:
+            return SettingsEncryption.get().decrypt(obj.encrypted_pin)
+        except (ValueError, InvalidToken):
+            return None
 
     def get_lock_assignments(self, obj: DoorCode) -> list[dict]:
         """Serialize lock assignments, requiring `lock_assignments` to be prefetched."""
@@ -181,12 +195,33 @@ class DoorCodeUpdateSerializer(serializers.Serializer):
             raise serializers.ValidationError("Code must be 4 to 8 digits.")
         return code
 
+    _SYNCED_READONLY_FIELDS = frozenset(
+        {
+            "code",
+            "is_active",
+            "start_at",
+            "end_at",
+            "days_of_week",
+            "window_start",
+            "window_end",
+            "max_uses",
+            "lock_entity_ids",
+        }
+    )
+
     def validate(self, attrs):
         """Validate updates, including time-range edits for eligible code types only."""
         attrs = super().validate(attrs)
         instance: DoorCode | None = getattr(self, "instance", None)
         if instance is None:
             return attrs
+
+        if instance.source == DoorCode.Source.SYNCED:
+            disallowed = self._SYNCED_READONLY_FIELDS & attrs.keys()
+            if disallowed:
+                raise serializers.ValidationError(
+                    {field: "This field cannot be modified on synced codes." for field in sorted(disallowed)}
+                )
 
         updates_time_range = any(
             key in attrs for key in ["start_at", "end_at", "days_of_week", "window_start", "window_end"]
@@ -221,24 +256,6 @@ class DoorCodeUpdateSerializer(serializers.Serializer):
             )
 
         return attrs
-
-
-class DismissedAssignmentSerializer(serializers.ModelSerializer):
-    door_code_label = serializers.CharField(source="door_code.label", read_only=True)
-    door_code_source = serializers.CharField(source="door_code.source", read_only=True)
-    door_code_is_active = serializers.BooleanField(source="door_code.is_active", read_only=True)
-
-    class Meta:
-        model = DoorCodeLockAssignment
-        fields = (
-            "id",
-            "lock_entity_id",
-            "slot_index",
-            "sync_dismissed",
-            "door_code_label",
-            "door_code_source",
-            "door_code_is_active",
-        )
 
 
 class LockConfigSyncRequestSerializer(serializers.Serializer):

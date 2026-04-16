@@ -1,5 +1,5 @@
 import api from './api'
-import type { DismissedAssignment, LockConfigSyncRequest, LockConfigSyncResult } from '@/types'
+import type { LockConfigSyncRequest, LockConfigSyncResult } from '@/types'
 import { apiEndpoints } from './endpoints'
 
 export const locksService = {
@@ -10,13 +10,6 @@ export const locksService = {
     return api.post<LockConfigSyncResult>(url, req)
   },
 
-  async getDismissedAssignments(lockEntityId: string): Promise<DismissedAssignment[]> {
-    return api.get<DismissedAssignment[]>(apiEndpoints.locks.dismissedAssignments(lockEntityId))
-  },
-
-  async undismissAssignment(assignmentId: number, req: { reauthPassword: string }): Promise<DismissedAssignment> {
-    return api.post<DismissedAssignment>(apiEndpoints.doorCodeAssignments.undismiss(assignmentId), req)
-  },
 }
 
 export default locksService

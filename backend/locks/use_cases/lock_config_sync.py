@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import logging
@@ -9,11 +10,11 @@ from dataclasses import dataclass, field
 from datetime import datetime, time, timedelta, timezone
 from typing import Any
 
-from django.contrib.auth.hashers import check_password, make_password
 from django.db import IntegrityError, connection, transaction
 from django.utils import timezone as django_timezone
 
 from accounts.models import User
+from alarm.crypto import InvalidToken, SettingsEncryption
 from alarm.gateways.zwavejs import ZwavejsGateway
 from alarm.models import Entity
 from config.domain_exceptions import ConflictError, NotFoundError, ValidationError
@@ -23,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 # Z-Wave command class IDs
 CC_USER_CODE = 99
-CC_SCHEDULE_ENTRY_LOCK = 76
+CC_SCHEDULE_ENTRY_LOCK = 78  # 0x4E
 
 
 class NotFound(NotFoundError):
@@ -61,7 +62,6 @@ class SyncResult:
     updated: int = 0
     unchanged: int = 0
     skipped: int = 0
-    dismissed: int = 0
     deactivated: int = 0
     errors: int = 0
     timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
@@ -74,7 +74,6 @@ class SyncResult:
             "updated": self.updated,
             "unchanged": self.unchanged,
             "skipped": self.skipped,
-            "dismissed": self.dismissed,
             "deactivated": self.deactivated,
             "errors": self.errors,
             "timestamp": self.timestamp.isoformat(),
@@ -371,12 +370,15 @@ def _extract_weekday_schedule_windows(
         if ("yearday" in prop_l and "schedule" in prop_l) or ("daily" in prop_l and "schedule" in prop_l):
             unsupported_value_ids.append(value_id)
 
-    # If no weekday schedule value IDs exist at all, the lock doesn't support CC 76
-    # weekday schedules. Treat all slots as unsupported to avoid erasing existing schedules.
+    # If no CC 78 schedule value IDs exist in the cache, fall back to direct CC API
+    # invocation for daily repeating schedules (ADR 0081).
     if not weekday_value_ids and not unsupported_value_ids:
-        return {si: None for si in slot_indices}, {
-            si: "Lock does not expose CC 76 schedule value IDs." for si in slot_indices
-        }
+        return _extract_daily_repeating_schedule_windows_via_cc_api(
+            zwavejs=zwavejs,
+            node_id=node_id,
+            slot_indices=slot_indices,
+            timeout_seconds=timeout_seconds,
+        )
 
     # Weekday windows aggregated by slot -> weekday -> list[(start,end)]
     windows: dict[int, dict[int, list[tuple[time, time]]]] = {}
@@ -479,6 +481,148 @@ def _extract_weekday_schedule_windows(
         }
 
     return schedule_by_slot, unsupported_by_slot
+
+
+def _extract_daily_repeating_schedule_windows_via_cc_api(
+    *,
+    zwavejs: ZwavejsGateway,
+    node_id: int,
+    slot_indices: set[int],
+    timeout_seconds: float = 10.0,
+) -> tuple[dict[int, dict[str, Any] | None], dict[int, str]]:
+    """
+    Read daily repeating schedules via invoke_cc_api (CC 78) for locks that
+    don't expose schedule value IDs in the value cache (ADR 0081).
+
+    Returns same structure as _extract_weekday_schedule_windows.
+    """
+    schedule_by_slot: dict[int, dict[str, Any] | None] = {}
+    unsupported_by_slot: dict[int, str] = {}
+
+    try:
+        num_slots_result = zwavejs.invoke_cc_api(
+            node_id=node_id,
+            command_class=CC_SCHEDULE_ENTRY_LOCK,
+            method_name="getNumSlots",
+            args=[],
+            timeout_seconds=timeout_seconds,
+        )
+    except Exception as exc:
+        logger.warning("Failed to get schedule slot counts for node %d: %s", node_id, exc)
+        return {si: None for si in slot_indices}, {
+            si: f"Failed to query schedule slot counts: {exc.__class__.__name__}" for si in slot_indices
+        }
+
+    # The result may be wrapped in a "response" key depending on the server version.
+    if isinstance(num_slots_result, dict) and "response" in num_slots_result:
+        num_slots_result = num_slots_result["response"]
+    if not isinstance(num_slots_result, dict):
+        return {si: None for si in slot_indices}, {
+            si: "Lock returned invalid getNumSlots response." for si in slot_indices
+        }
+
+    num_daily_slots = _coerce_int(num_slots_result.get("numDailyRepeatingSlots"))
+    if not isinstance(num_daily_slots, int) or num_daily_slots <= 0:
+        return {si: None for si in slot_indices}, {
+            si: "Lock has 0 daily repeating schedule slots." for si in slot_indices
+        }
+
+    logger.info("Node %d: %d daily repeating schedule slots available", node_id, num_daily_slots)
+
+    for user_id in sorted(slot_indices):
+        days_mask = 0
+        window: tuple[time, time] | None = None
+        has_any_schedule = False
+        user_error: str | None = None
+
+        for slot_id in range(1, num_daily_slots + 1):
+            try:
+                response = zwavejs.invoke_cc_api(
+                    node_id=node_id,
+                    command_class=CC_SCHEDULE_ENTRY_LOCK,
+                    method_name="getDailyRepeatingSchedule",
+                    args=[{"userId": user_id, "slotId": slot_id}],
+                    timeout_seconds=timeout_seconds,
+                )
+            except Exception as exc:
+                logger.debug(
+                    "Failed to read daily schedule user=%d slot=%d node=%d: %s",
+                    user_id,
+                    slot_id,
+                    node_id,
+                    exc,
+                )
+                user_error = f"Schedule read failed: {exc.__class__.__name__}"
+                break
+
+            # Unwrap "response" envelope if present.
+            if isinstance(response, dict) and "response" in response:
+                response = response["response"]
+
+            # Empty schedule: response is {}, None, or missing keys.
+            if not response or not isinstance(response, dict):
+                continue
+
+            parsed = _parse_schedule_entry(response)
+            if parsed is None:
+                continue
+
+            has_any_schedule = True
+            start_t, end_t = parsed
+
+            # All slots for this user must share the same time window.
+            if window is None:
+                window = (start_t, end_t)
+            elif window != (start_t, end_t):
+                user_error = "Different schedule windows across daily repeating slots."
+                break
+
+            # Build days bitmask from weekdays array (1=Monday .. 7=Sunday).
+            weekdays = response.get("weekdays", [])
+            if isinstance(weekdays, list):
+                for wd in weekdays:
+                    wd_int = _coerce_int(wd)
+                    if wd_int is not None:
+                        mask_idx = _weekday_to_mask_index(int(wd_int))
+                        if mask_idx is not None:
+                            days_mask |= 1 << mask_idx
+
+        if user_error:
+            unsupported_by_slot[user_id] = user_error
+            schedule_by_slot[user_id] = None
+        elif not has_any_schedule or days_mask == 0:
+            schedule_by_slot[user_id] = None
+        else:
+            if window is None:  # pragma: no cover — guarded by has_any_schedule
+                unsupported_by_slot[user_id] = "Schedule data inconsistency."
+                schedule_by_slot[user_id] = None
+                continue
+            schedule_by_slot[user_id] = {
+                "days_of_week": int(days_mask),
+                "window_start": window[0].strftime("%H:%M:%S"),
+                "window_end": window[1].strftime("%H:%M:%S"),
+            }
+
+    return schedule_by_slot, unsupported_by_slot
+
+
+def clear_lock_user_code_slot(
+    *,
+    lock_entity_id: str,
+    slot_index: int,
+    zwavejs: ZwavejsGateway,
+    timeout_seconds: float = 10.0,
+) -> None:
+    """Clear a user code slot on a physical Z-Wave JS lock (CC 99 clear)."""
+    node_id = _resolve_lock_node_id(lock_entity_id=lock_entity_id)
+    logger.info("Clearing user code slot %d on %s (node %d)", slot_index, lock_entity_id, node_id)
+    zwavejs.invoke_cc_api(
+        node_id=node_id,
+        command_class=CC_USER_CODE,
+        method_name="clear",
+        args=[slot_index],
+        timeout_seconds=timeout_seconds,
+    )
 
 
 def _resolve_lock_node_id(*, lock_entity_id: str) -> int:
@@ -648,12 +792,6 @@ def sync_lock_config(
                 .filter(lock_entity_id=lock_entity_id, slot_index=slot_index)
                 .first()
             )
-            if existing and existing.sync_dismissed:
-                logger.debug("Slot %d on %s is dismissed, skipping", slot_index, lock_entity_id)
-                result.dismissed += 1
-                result.slots.append(SlotSyncResult(slot_index=slot_index, action="dismissed"))
-                continue
-
             pin_known = bool(pin_known_by_slot.get(slot_index))
             is_active = slot_active.get(slot_index)
             raw_pin = pin_by_slot.get(slot_index)
@@ -679,13 +817,18 @@ def sync_lock_config(
                     code.source = DoorCode.Source.SYNCED
                     updated_fields.append("source")
 
+                enc = SettingsEncryption.get()
                 if raw_pin is not None:
-                    if not code.code_hash or not check_password(raw_pin, code.code_hash):
-                        code.code_hash = make_password(raw_pin)
-                        updated_fields.append("code_hash")
-                elif code.code_hash is not None:
-                    code.code_hash = None
-                    updated_fields.append("code_hash")
+                    stored_pin = None
+                    if code.encrypted_pin:
+                        with contextlib.suppress(ValueError, InvalidToken):
+                            stored_pin = enc.decrypt(code.encrypted_pin)
+                    if stored_pin != raw_pin:
+                        code.encrypted_pin = enc.encrypt(raw_pin)
+                        updated_fields.append("encrypted_pin")
+                elif code.encrypted_pin is not None:
+                    code.encrypted_pin = None
+                    updated_fields.append("encrypted_pin")
                 if code.pin_length != pin_length:
                     code.pin_length = pin_length
                     updated_fields.append("pin_length")
@@ -787,11 +930,12 @@ def sync_lock_config(
                 window_end = time.fromisoformat(str(schedule_obj["window_end"]))
                 code_type = DoorCode.CodeType.TEMPORARY
 
-            code_hash = make_password(raw_pin) if raw_pin is not None else None
+            enc = SettingsEncryption.get()
+            encrypted_pin = enc.encrypt(raw_pin) if raw_pin is not None else None
             code = DoorCode(
                 user=target_user,
                 source=DoorCode.Source.SYNCED,
-                code_hash=code_hash,
+                encrypted_pin=encrypted_pin,
                 label=f"Slot {slot_index}",
                 code_type=code_type,
                 pin_length=pin_length,
@@ -807,7 +951,6 @@ def sync_lock_config(
                     door_code=code,
                     lock_entity_id=lock_entity_id,
                     slot_index=slot_index,
-                    sync_dismissed=False,
                 )
             except IntegrityError:
                 # Race: another sync created the assignment first. Update the winner's code
@@ -825,11 +968,13 @@ def sync_lock_config(
                 if existing:
                     code.delete()
                     existing_code = existing.door_code
-                    existing_code.code_hash = make_password(raw_pin) if raw_pin is not None else None
+                    existing_code.encrypted_pin = (
+                        SettingsEncryption.get().encrypt(raw_pin) if raw_pin is not None else None
+                    )
                     existing_code.pin_length = pin_length
                     if is_active is not None:
                         existing_code.is_active = bool(is_active)
-                    existing_code.save(update_fields=["code_hash", "pin_length", "is_active", "updated_at"])
+                    existing_code.save(update_fields=["encrypted_pin", "pin_length", "is_active", "updated_at"])
                     result.updated += 1
                     result.slots.append(
                         SlotSyncResult(
@@ -881,7 +1026,7 @@ def sync_lock_config(
 
         # Deactivate previously-synced slots that are now empty.
         previously_synced = DoorCodeLockAssignment.objects.select_related("door_code").filter(
-            lock_entity_id=lock_entity_id, slot_index__isnull=False, sync_dismissed=False
+            lock_entity_id=lock_entity_id, slot_index__isnull=False
         )
         for assignment in previously_synced:
             if assignment.slot_index is None:
@@ -930,14 +1075,13 @@ def sync_lock_config(
 
         logger.info(
             "Lock config sync complete for %s (node %d): created=%d updated=%d unchanged=%d "
-            "deactivated=%d dismissed=%d skipped=%d errors=%d",
+            "deactivated=%d skipped=%d errors=%d",
             lock_entity_id,
             node_id,
             result.created,
             result.updated,
             result.unchanged,
             result.deactivated,
-            result.dismissed,
             result.skipped,
             result.errors,
         )

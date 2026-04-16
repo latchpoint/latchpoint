@@ -10,23 +10,13 @@ import { LoadingInline } from '@/components/ui/loading-inline'
 import { Modal } from '@/components/ui/modal'
 import { Select } from '@/components/ui/select'
 import { formatDaysMask } from '@/features/codes/utils/daysOfWeek'
-import { DismissedSlotsSection } from '@/features/doorCodes/components/DismissedSlotsSection'
+import { getZwavejsNodeId } from '@/features/doorCodes/utils/lockFilters'
 
 type Props = {
   userId: string
   locks: Entity[]
   locksIsLoading: boolean
   locksError: unknown
-}
-
-function getZwavejsNodeId(entity: Entity): number | null {
-  const attrs = entity.attributes || {}
-  const zw = (attrs as Record<string, unknown>).zwavejs
-  if (!zw || typeof zw !== 'object') return null
-  const nodeId = (zw as Record<string, unknown>).nodeId ?? (zw as Record<string, unknown>).node_id
-  if (typeof nodeId === 'number' && Number.isFinite(nodeId)) return nodeId
-  if (typeof nodeId === 'string' && /^\d+$/.test(nodeId)) return Number(nodeId)
-  return null
 }
 
 function getLastSyncedAt(entity: Entity): string | null {
@@ -59,7 +49,6 @@ function ResultSummary({ result }: { result: LockConfigSyncResult }) {
       <div>Updated: {result.updated}</div>
       <div>Unchanged: {result.unchanged}</div>
       <div>Deactivated: {result.deactivated}</div>
-      <div>Dismissed: {result.dismissed}</div>
       <div>Skipped: {result.skipped}</div>
       <div>Errors: {result.errors}</div>
       <div>Node: {result.nodeId}</div>
@@ -189,8 +178,6 @@ export function LockConfigSyncCard({ userId, locks, locksIsLoading, locksError }
         </label>
       </div>
 
-      {selectedLockEntityId ? <DismissedSlotsSection lockEntityId={selectedLockEntityId} /> : null}
-
       <Modal
         open={resultOpen}
         onOpenChange={setResultOpen}
@@ -212,7 +199,7 @@ export function LockConfigSyncCard({ userId, locks, locksIsLoading, locksError }
                         Slot {slot.slotIndex}: {slot.action}
                       </div>
                       <div className="text-muted-foreground">
-                        {slot.pinKnown === false ? 'PIN unknown' : slot.pinKnown === true ? 'PIN known' : ''}
+                        {slot.pinKnown === false ? 'PIN unknown' : slot.pinKnown === true ? 'PIN saved' : ''}
                       </div>
                     </div>
                     {slot.scheduleApplied && slot.schedule ? (

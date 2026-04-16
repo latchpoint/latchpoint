@@ -6,7 +6,15 @@ from django.utils import timezone
 
 from alarm.gateways.zwavejs import ZwavejsGateway
 from alarm.models import Entity
-from integrations_zwavejs.manager import build_zwavejs_entity_id, infer_entity_domain, normalize_entity_state
+from integrations_zwavejs.manager import (
+    CC_DOOR_LOCK,
+    CC_SCHEDULE_ENTRY_LOCK,
+    CC_USER_CODE,
+    LOCK_COMMAND_CLASSES,
+    build_zwavejs_entity_id,
+    infer_entity_domain,
+    normalize_entity_state,
+)
 
 
 def _extract_nodes(controller_state: dict[str, Any]) -> list[dict[str, Any]]:
@@ -98,7 +106,27 @@ def sync_entities_from_zwavejs(*, zwavejs: ZwavejsGateway, now=None, per_node_li
             nodes_value_ids_empty += 1
         value_ids_total += len(value_ids)
 
+        # Pick a single representative lock value_id for this node so exactly one
+        # Entity gets domain="lock" (avoids flooding the UI with dozens of CC 99 slots).
+        # Priority: CC 98 "currentMode" > any CC 98 > any CC 99 > any CC 78.
+        _lock_cc_priority = {CC_DOOR_LOCK: 0, CC_USER_CODE: 1, CC_SCHEDULE_ENTRY_LOCK: 2}
+        _lock_repr_entity_id: str | None = None
+        _best_rank = (999, 1, "")  # (cc_priority, 0 if currentMode else 1, entity_id)
+        for vid in value_ids:
+            if not isinstance(vid, dict):
+                continue
+            cc = vid.get("commandClass")
+            prop = vid.get("property")
+            if not isinstance(cc, int) or cc not in LOCK_COMMAND_CLASSES or prop is None:
+                continue
+            candidate_entity_id = build_zwavejs_entity_id(home_id=home_id, node_id=node_id, value_id=vid)
+            rank = (_lock_cc_priority.get(cc, 999), 0 if prop == "currentMode" else 1, candidate_entity_id)
+            if rank < _best_rank:
+                _best_rank = rank
+                _lock_repr_entity_id = candidate_entity_id
+
         count = 0
+        _lock_repr_found = _lock_repr_entity_id is None
         for value_id in value_ids:
             if not isinstance(value_id, dict):
                 continue
@@ -107,9 +135,17 @@ def sync_entities_from_zwavejs(*, zwavejs: ZwavejsGateway, now=None, per_node_li
             if not isinstance(command_class, int) or prop is None:
                 continue
 
-            count += 1
-            if per_node_limit and count > per_node_limit:
-                break
+            entity_id = build_zwavejs_entity_id(home_id=home_id, node_id=node_id, value_id=value_id)
+            is_lock_repr = _lock_repr_entity_id is not None and entity_id == _lock_repr_entity_id
+
+            if is_lock_repr:
+                _lock_repr_found = True
+            else:
+                count += 1
+                if per_node_limit and count > per_node_limit:
+                    if _lock_repr_found:
+                        break
+                    continue
 
             try:
                 metadata = zwavejs.node_get_value_metadata(node_id=node_id, value_id=value_id, timeout_seconds=10)
@@ -121,10 +157,9 @@ def sync_entities_from_zwavejs(*, zwavejs: ZwavejsGateway, now=None, per_node_li
             except Exception:
                 value = None
 
-            entity_id = build_zwavejs_entity_id(home_id=home_id, node_id=node_id, value_id=value_id)
-            domain = infer_entity_domain(value=value)
+            domain = "lock" if is_lock_repr else infer_entity_domain(value=value)
             label = metadata.get("label") if isinstance(metadata.get("label"), str) else None
-            name = f"{node_name} • {label}" if label else f"{node_name} • {entity_id}"
+            name = node_name if is_lock_repr else (f"{node_name} • {label}" if label else f"{node_name} • {entity_id}")
 
             defaults = {
                 "domain": domain,

@@ -5,6 +5,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from alarm.gateways.zwavejs import default_zwavejs_gateway
 from config.view_utils import ObjectPermissionMixin
 from locks.models import DoorCode
 from locks.permissions import IsAdminOrSelf, IsAdminRole
@@ -106,5 +107,5 @@ class DoorCodeDetailView(ObjectPermissionMixin, APIView):
         door_codes_uc.assert_admin_reauth(user=request.user, reauth_password=reauth_password)
         code = door_codes_uc.get_door_code_for_admin_update(actor_user=request.user, code_id=code_id)
 
-        door_codes_uc.delete_door_code(code=code, actor_user=request.user)
+        door_codes_uc.delete_door_code(code=code, actor_user=request.user, zwavejs=default_zwavejs_gateway)
         return Response(status=status.HTTP_204_NO_CONTENT)

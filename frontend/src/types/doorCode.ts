@@ -13,6 +13,7 @@ export interface DoorCode {
   source: DoorCodeSource
   label: string
   codeType: DoorCodeType
+  pin: string | null
   pinLength: number | null
   isActive: boolean
   maxUses: number | null
@@ -59,16 +60,6 @@ export interface UpdateDoorCodeRequest {
   reauthPassword: string
 }
 
-export interface DismissedAssignment {
-  id: number
-  lockEntityId: string
-  slotIndex: number | null
-  syncDismissed: boolean
-  doorCodeLabel: string
-  doorCodeSource: DoorCodeSource
-  doorCodeIsActive: boolean
-}
-
 export interface LockConfigSyncRequest {
   userId: string
   reauthPassword: string
@@ -100,7 +91,6 @@ export interface LockConfigSyncResult {
   updated: number
   unchanged: number
   skipped: number
-  dismissed: number
   deactivated: number
   errors: number
   timestamp: string

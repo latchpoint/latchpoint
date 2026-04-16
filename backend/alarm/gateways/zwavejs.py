@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Any, Protocol
 
 from integrations_zwavejs.manager import (
     ZwavejsConnectionManager,
@@ -71,6 +71,19 @@ class ZwavejsGateway(Protocol):
 
         ...
 
+    def invoke_cc_api(
+        self,
+        *,
+        node_id: int,
+        command_class: int,
+        method_name: str,
+        args: list | None = None,
+        timeout_seconds: float = 10.0,
+    ) -> Any:
+        """Invoke a CC API method on a node (network I/O, waits for result)."""
+
+        ...
+
 
 @dataclass(frozen=True)
 class DefaultZwavejsGateway:
@@ -130,6 +143,24 @@ class DefaultZwavejsGateway:
             property=property,
             value=value,
             property_key=property_key,
+        )
+
+    def invoke_cc_api(
+        self,
+        *,
+        node_id: int,
+        command_class: int,
+        method_name: str,
+        args: list | None = None,
+        timeout_seconds: float = 10.0,
+    ) -> Any:
+        """Invoke a CC API method on a node (network I/O, waits for result)."""
+        return self.manager.invoke_cc_api(
+            node_id=node_id,
+            command_class=command_class,
+            method_name=method_name,
+            args=args,
+            timeout_seconds=timeout_seconds,
         )
 
 

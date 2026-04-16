@@ -3,21 +3,22 @@ from __future__ import annotations
 from datetime import datetime, time
 from datetime import timezone as dt_timezone
 
-from django.contrib.auth.hashers import make_password
 from django.test import TestCase
 
 from accounts.models import User
+from alarm.crypto import SettingsEncryption
+from alarm.tests.settings_test_utils import EncryptionTestMixin
 from locks.models import DoorCode, DoorCodeLockAssignment
 from locks.use_cases import code_validation
 
 
-class DoorCodeValidationTests(TestCase):
+class DoorCodeValidationTests(EncryptionTestMixin, TestCase):
     def setUp(self):
         self.user = User.objects.create_user(email="codeval@example.com", password="pass")
         self.raw_code = "1234"
         self.code = DoorCode.objects.create(
             user=self.user,
-            code_hash=make_password(self.raw_code),
+            encrypted_pin=SettingsEncryption.get().encrypt(self.raw_code),
             label="Test",
             code_type=DoorCode.CodeType.PERMANENT,
             pin_length=len(self.raw_code),
@@ -173,7 +174,7 @@ class DoorCodeValidationTests(TestCase):
         DoorCode.objects.create(
             user=self.user,
             source=DoorCode.Source.SYNCED,
-            code_hash=None,
+            encrypted_pin=None,
             label="Synced (unknown PIN)",
             code_type=DoorCode.CodeType.PERMANENT,
             pin_length=None,
@@ -185,13 +186,13 @@ class DoorCodeValidationTests(TestCase):
             code_validation.validate_door_code(user=self.user, raw_code=self.raw_code, now=now)
 
 
-class DoorCodeUsageRecordingTests(TestCase):
+class DoorCodeUsageRecordingTests(EncryptionTestMixin, TestCase):
     def setUp(self):
         self.user = User.objects.create_user(email="usage@example.com", password="pass")
         self.raw_code = "1234"
         self.code = DoorCode.objects.create(
             user=self.user,
-            code_hash=make_password(self.raw_code),
+            encrypted_pin=SettingsEncryption.get().encrypt(self.raw_code),
             label="Test",
             code_type=DoorCode.CodeType.PERMANENT,
             pin_length=len(self.raw_code),

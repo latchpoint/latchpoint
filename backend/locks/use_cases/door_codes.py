@@ -1,12 +1,18 @@
 from __future__ import annotations
 
-from django.contrib.auth.hashers import make_password
+from typing import TYPE_CHECKING
+
+from django.db import transaction
 from django.db.models import Exists, OuterRef, Q, QuerySet
 
 from accounts.models import User
 from accounts.policies import is_admin
+from alarm.crypto import SettingsEncryption
 from config.domain_exceptions import ForbiddenError, NotFoundError, ValidationError
 from locks.models import DoorCode, DoorCodeEvent, DoorCodeLockAssignment
+
+if TYPE_CHECKING:
+    from alarm.gateways.zwavejs import ZwavejsGateway
 
 
 class Forbidden(ForbiddenError):
@@ -61,9 +67,7 @@ def resolve_create_target_user(*, actor_user: User, requested_user_id: str | Non
 
 def list_door_codes_for_user(*, user: User) -> QuerySet[DoorCode]:
     """Return a queryset of `DoorCode` rows for `user`, with common relations prefetched."""
-    has_active_assignment = Exists(
-        DoorCodeLockAssignment.objects.filter(door_code=OuterRef("pk"), sync_dismissed=False)
-    )
+    has_active_assignment = Exists(DoorCodeLockAssignment.objects.filter(door_code=OuterRef("pk")))
     return (
         DoorCode.objects.select_related("user")
         .prefetch_related("lock_assignments")
@@ -110,7 +114,7 @@ def create_door_code(
     raw_code = (raw_code or "").strip()
     code = DoorCode.objects.create(
         user=user,
-        code_hash=make_password(raw_code),
+        encrypted_pin=SettingsEncryption.get().encrypt(raw_code),
         label=label or "",
         code_type=code_type,
         pin_length=len(raw_code),
@@ -156,7 +160,7 @@ def update_door_code(
 
     if "code" in changes and changes.get("code"):
         raw_code = str(changes.get("code") or "").strip()
-        code.code_hash = make_password(raw_code)
+        code.encrypted_pin = SettingsEncryption.get().encrypt(raw_code)
         code.pin_length = len(raw_code)
         updated_fields.append("code")
 
@@ -220,78 +224,50 @@ def update_door_code(
     return code
 
 
-def list_dismissed_assignments(*, lock_entity_id: str) -> list[DoorCodeLockAssignment]:
-    """Return all sync-dismissed assignments for a given lock, with their door codes."""
-    return list(
-        DoorCodeLockAssignment.objects.select_related("door_code", "door_code__user")
-        .filter(lock_entity_id=lock_entity_id, sync_dismissed=True)
-        .order_by("slot_index")
-    )
-
-
-def undismiss_assignment(*, assignment_id: int) -> DoorCodeLockAssignment:
-    """Clear sync_dismissed on an assignment, re-enabling sync for that slot."""
-    assignment = (
-        DoorCodeLockAssignment.objects.select_related("door_code").filter(id=assignment_id, sync_dismissed=True).first()
-    )
-    if not assignment:
-        raise NotFound("Dismissed assignment not found.")
-
-    assignment.sync_dismissed = False
-    assignment.save(update_fields=["sync_dismissed", "updated_at"])
-
-    code = assignment.door_code
-    if code and not code.is_active:
-        code.is_active = True
-        code.save(update_fields=["is_active", "updated_at"])
-
-    return assignment
-
-
 def delete_door_code(
     *,
     code: DoorCode,
     actor_user: User | None = None,
+    zwavejs: ZwavejsGateway | None = None,
 ) -> None:
-    """Delete a door code and emit a `DoorCodeEvent` capturing who deleted it."""
+    """Delete a door code and emit a `DoorCodeEvent` capturing who deleted it.
+
+    For synced codes, clears the physical lock slot via Z-Wave JS CC 99 before
+    deleting the record.  If the lock is unreachable the delete is aborted
+    (Option A — fail-fast).
+    """
     code_id = code.id
     label = code.label
     user = code.user
+    extra_metadata: dict[str, object] = {}
 
     if code.source == DoorCode.Source.SYNCED:
-        from django.utils import timezone as django_timezone
-
-        now = django_timezone.now()
         assignments = list(DoorCodeLockAssignment.objects.filter(door_code=code))
-        dismissed_slots = [
+        slots_to_clear = [
             {"lock_entity_id": a.lock_entity_id, "slot_index": int(a.slot_index)}
             for a in assignments
             if a.slot_index is not None
         ]
-        DoorCodeLockAssignment.objects.filter(door_code=code).update(sync_dismissed=True, updated_at=now)
-        if code.is_active:
-            code.is_active = False
-            code.save(update_fields=["is_active", "updated_at"])
 
+        # Clear slots on physical locks before deleting (ADR 0082).
+        if zwavejs is not None and slots_to_clear:
+            from locks.use_cases.lock_config_sync import clear_lock_user_code_slot
+
+            for slot_info in slots_to_clear:
+                clear_lock_user_code_slot(
+                    lock_entity_id=slot_info["lock_entity_id"],
+                    slot_index=slot_info["slot_index"],
+                    zwavejs=zwavejs,
+                )
+            extra_metadata["cleared_from_lock"] = True
+            extra_metadata["cleared_slots"] = slots_to_clear
+
+    with transaction.atomic():
         DoorCodeEvent.objects.create(
             door_code=None,
             user=actor_user,
             event_type=DoorCodeEvent.EventType.CODE_DELETED,
-            metadata={
-                "code_id": code_id,
-                "label": label,
-                "user_id": str(user.id),
-                "dismissed": True,
-                "dismissed_slots": dismissed_slots,
-            },
+            metadata={"code_id": code_id, "label": label, "user_id": str(user.id), **extra_metadata},
         )
-        return
 
-    DoorCodeEvent.objects.create(
-        door_code=None,
-        user=actor_user,
-        event_type=DoorCodeEvent.EventType.CODE_DELETED,
-        metadata={"code_id": code_id, "label": label, "user_id": str(user.id)},
-    )
-
-    code.delete()
+        code.delete()
