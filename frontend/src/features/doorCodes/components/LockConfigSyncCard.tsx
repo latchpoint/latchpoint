@@ -178,7 +178,6 @@ export function LockConfigSyncCard({ userId, locks, locksIsLoading, locksError }
         </label>
       </div>
 
-
       <Modal
         open={resultOpen}
         onOpenChange={setResultOpen}

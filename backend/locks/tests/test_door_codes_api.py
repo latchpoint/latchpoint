@@ -357,6 +357,33 @@ class DoorCodesApiTests(APITestCase):
             DoorCodeLockAssignment.objects.filter(door_code=code, lock_entity_id="lock.front_door").exists()
         )
 
+    def test_deleting_synced_door_code_without_gateway_skips_lock_clear(self):
+        """When zwavejs gateway is None, synced code is deleted without clearing the physical lock."""
+        from locks.use_cases.door_codes import delete_door_code
+
+        code = DoorCode.objects.create(
+            user=self.user,
+            source=DoorCode.Source.SYNCED,
+            encrypted_pin=None,
+            label="Slot 1",
+            code_type=DoorCode.CodeType.PERMANENT,
+            pin_length=None,
+            is_active=True,
+        )
+        code_id = code.id
+        DoorCodeLockAssignment.objects.create(
+            door_code=code,
+            lock_entity_id="lock.front_door",
+            slot_index=1,
+        )
+
+        delete_door_code(code=code, actor_user=self.admin, zwavejs=None)
+
+        self.assertFalse(DoorCode.objects.filter(id=code_id).exists())
+        event = DoorCodeEvent.objects.filter(event_type=DoorCodeEvent.EventType.CODE_DELETED).first()
+        self.assertIsNotNone(event)
+        self.assertFalse(event.metadata.get("cleared_from_lock", False))
+
     def test_non_admin_cannot_delete_door_code(self):
         code = DoorCode.objects.create(
             user=self.user,

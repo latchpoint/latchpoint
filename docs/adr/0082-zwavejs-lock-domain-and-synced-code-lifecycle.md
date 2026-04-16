@@ -70,9 +70,8 @@ DELETE /api/door-codes/{id}  (admin + reauth)
   │   │       ↳ Raises GatewayError if lock unreachable → HTTP 502, delete aborted
   │   │
   │   ├─ All clears succeeded:
-  │   │   ├─ Mark assignments sync_dismissed=True
-  │   │   ├─ Set code.is_active=False
-  │   │   └─ Create DoorCodeEvent(CODE_DELETED, metadata={cleared_from_lock: true})
+  │   │   ├─ Create DoorCodeEvent(CODE_DELETED, metadata={cleared_from_lock: true})
+  │   │   └─ Hard-delete code and assignments from DB
   │   │
   │   └─ Any clear failed:
   │       └─ Raise error, no DB changes (Option A: fail-fast)

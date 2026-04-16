@@ -593,7 +593,10 @@ def _extract_daily_repeating_schedule_windows_via_cc_api(
         elif not has_any_schedule or days_mask == 0:
             schedule_by_slot[user_id] = None
         else:
-            assert window is not None
+            if window is None:  # pragma: no cover — guarded by has_any_schedule
+                unsupported_by_slot[user_id] = "Schedule data inconsistency."
+                schedule_by_slot[user_id] = None
+                continue
             schedule_by_slot[user_id] = {
                 "days_of_week": int(days_mask),
                 "window_start": window[0].strftime("%H:%M:%S"),

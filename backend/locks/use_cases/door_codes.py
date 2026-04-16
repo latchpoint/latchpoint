@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from django.db import transaction
 from django.db.models import Exists, OuterRef, Q, QuerySet
 
 from accounts.models import User
@@ -261,11 +262,12 @@ def delete_door_code(
             extra_metadata["cleared_from_lock"] = True
             extra_metadata["cleared_slots"] = slots_to_clear
 
-    DoorCodeEvent.objects.create(
-        door_code=None,
-        user=actor_user,
-        event_type=DoorCodeEvent.EventType.CODE_DELETED,
-        metadata={"code_id": code_id, "label": label, "user_id": str(user.id), **extra_metadata},
-    )
+    with transaction.atomic():
+        DoorCodeEvent.objects.create(
+            door_code=None,
+            user=actor_user,
+            event_type=DoorCodeEvent.EventType.CODE_DELETED,
+            metadata={"code_id": code_id, "label": label, "user_id": str(user.id), **extra_metadata},
+        )
 
-    code.delete()
+        code.delete()
