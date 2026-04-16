@@ -7,10 +7,11 @@ from rest_framework.test import APITestCase
 
 from accounts.models import User
 from alarm.models import Entity
+from alarm.tests.settings_test_utils import EncryptionTestMixin
 from locks.models import DoorCode, DoorCodeEvent, DoorCodeLockAssignment
 
 
-class DoorCodesApiTests(APITestCase):
+class DoorCodesApiTests(EncryptionTestMixin, APITestCase):
     def setUp(self):
         self.admin = User.objects.create_superuser(email="admin@example.com", password="pass")
         self.user = User.objects.create_user(email="user@example.com", password="pass")
