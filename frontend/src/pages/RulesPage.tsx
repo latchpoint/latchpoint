@@ -63,6 +63,8 @@ export function RulesPage() {
       name: string
       enabled: boolean
       priority: number
+      stopProcessing: boolean
+      stopGroup: string
       schemaVersion: number
       definition: RuleDefinition
       cooldownSeconds?: number | null

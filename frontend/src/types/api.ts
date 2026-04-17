@@ -68,6 +68,7 @@ export const queryKeys = {
   },
   rules: {
     all: ['rules'] as const,
+    stopGroups: ['rules', 'stopGroups'] as const,
   },
   sensors: {
     all: ['sensors'] as const,

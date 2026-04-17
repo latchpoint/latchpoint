@@ -257,15 +257,15 @@ class RuleDispatcher:
             snapshot_ms = (perf_counter() - snapshot_started) * 1000.0
             self._stats.record_entity_state_snapshot(size=len(entity_state_map), query_ms=snapshot_ms)
 
-            stopped_kinds: set[str] = set()
+            stopped_groups: set[str] = set()
             for rule in rules:
-                if rule.kind in stopped_kinds:
-                    logger.debug("Rule %s skipped: kind %s stopped", rule.id, rule.kind)
+                if rule.stop_group and rule.stop_group in stopped_groups:
+                    logger.debug("Rule %s skipped: stop_group %s stopped", rule.id, rule.stop_group)
                     self._stats.record_stopped()
                     continue
                 did_stop = self._evaluate_rule_with_lock(rule, entity_state_map, batch)
-                if did_stop:
-                    stopped_kinds.add(rule.kind)
+                if did_stop and rule.stop_group:
+                    stopped_groups.add(rule.stop_group)
 
         except Exception as exc:
             logger.exception("Batch %s: dispatch failed: %s", batch.batch_id, exc)
@@ -533,7 +533,7 @@ class RuleDispatcher:
                 return False
             else:
                 record_rule_success(runtime=runtime)
-                return result.fired > 0 and rule.stop_processing
+                return result.fired > 0 and rule.stop_processing and bool(rule.stop_group)
 
         except Exception as exc:
             logger.exception("Rule %s evaluation failed: %s", rule.id, exc)

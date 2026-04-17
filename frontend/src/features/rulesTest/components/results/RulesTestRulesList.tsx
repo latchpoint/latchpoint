@@ -8,6 +8,7 @@ export type SimulatedRule = {
   matched?: boolean
   blockedByStopProcessing?: boolean
   blockedByRuleId?: number
+  blockedByStopGroup?: string
   trace?: unknown
   actions?: unknown
   for?: { status?: string; seconds?: number } | null
@@ -46,6 +47,7 @@ export function RulesTestRulesList({
                 {r.blockedByStopProcessing && (
                   <span className="ml-2 rounded bg-amber-100 px-1.5 py-0.5 text-xs font-medium text-amber-800 dark:bg-amber-900 dark:text-amber-200">
                     Blocked by rule #{r.blockedByRuleId}
+                    {r.blockedByStopGroup ? ` (group: ${r.blockedByStopGroup})` : ''}
                   </span>
                 )}
               </summary>

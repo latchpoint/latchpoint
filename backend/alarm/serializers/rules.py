@@ -20,6 +20,7 @@ class RuleSerializer(serializers.ModelSerializer):
             "enabled",
             "priority",
             "stop_processing",
+            "stop_group",
             "schema_version",
             "definition",
             "cooldown_seconds",
@@ -74,6 +75,7 @@ class RuleUpsertSerializer(serializers.ModelSerializer):
             "enabled",
             "priority",
             "stop_processing",
+            "stop_group",
             "schema_version",
             "definition",
             "cooldown_seconds",
@@ -105,7 +107,7 @@ class RuleUpsertSerializer(serializers.ModelSerializer):
         return value
 
     def validate(self, attrs):
-        """Enforce admin privileges for admin-only action types."""
+        """Enforce admin privileges and the stop_processing/stop_group invariant (ADR 0084)."""
         # Check permissions for admin-only action types
         request = self.context.get("request")
         user = getattr(request, "user", None) if request else None
@@ -121,6 +123,20 @@ class RuleUpsertSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError(
                     {"definition": {"then": f"Action type '{action_type}' requires admin privileges"}}
                 )
+
+        # ADR 0084: stop_processing requires a non-empty stop_group.
+        # For partial updates, fall back to the instance's existing values.
+        instance = getattr(self, "instance", None)
+        stop_processing = attrs.get(
+            "stop_processing",
+            getattr(instance, "stop_processing", False) if instance else False,
+        )
+        stop_group = attrs.get(
+            "stop_group",
+            getattr(instance, "stop_group", "") if instance else "",
+        )
+        if stop_processing and not (stop_group or "").strip():
+            raise serializers.ValidationError({"stop_group": "stop_processing requires a non-empty stop_group."})
 
         return attrs
 

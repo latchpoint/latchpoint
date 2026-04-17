@@ -45,6 +45,7 @@ export const apiEndpoints = {
     detail: (id: number) => `/api/alarm/rules/${id}/`,
     run: '/api/alarm/rules/run/',
     simulate: '/api/alarm/rules/simulate/',
+    stopGroups: '/api/alarm/rules/stop-groups/',
   },
   codes: {
     all: '/api/codes/',

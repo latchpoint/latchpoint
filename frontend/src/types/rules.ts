@@ -24,6 +24,7 @@ export interface Rule {
   enabled: boolean
   priority: number
   stopProcessing: boolean
+  stopGroup: string
   schemaVersion: number
   definition: RuleDefinition
   cooldownSeconds: number | null
@@ -62,6 +63,7 @@ export interface RuleSimulateEntry {
   matched: boolean
   blockedByStopProcessing?: boolean
   blockedByRuleId?: number
+  blockedByStopGroup?: string
   for?: RuleSimulateForInfo | null
   trace?: Record<string, unknown>
   actions?: unknown[]

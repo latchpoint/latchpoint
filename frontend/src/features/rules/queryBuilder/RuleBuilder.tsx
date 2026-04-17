@@ -17,6 +17,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { RuleQueryBuilder } from './RuleQueryBuilder'
 import { ActionsEditor } from './ActionsEditor'
 import { alarmDslToRqbWithFor, rqbToAlarmDsl, createEmptyQuery } from './converters'
+import { useRuleStopGroupsQuery } from '@/hooks/useRulesQueries'
 
 interface RuleBuilderProps {
   rule?: Rule | null
@@ -30,6 +31,7 @@ interface RuleBuilderProps {
     enabled: boolean
     priority: number
     stopProcessing: boolean
+    stopGroup: string
     schemaVersion: number
     definition: RuleDefinition
     cooldownSeconds?: number | null
@@ -54,9 +56,25 @@ export function RuleBuilder({
   const [enabled, setEnabled] = useState(rule?.enabled ?? true)
   const [priority, setPriority] = useState(rule?.priority ?? 100)
   const [stopProcessing, setStopProcessing] = useState(rule?.stopProcessing ?? false)
+  const [stopGroup, setStopGroup] = useState<string>(rule?.stopGroup ?? '')
   const [cooldownSeconds, setCooldownSeconds] = useState<string>(
     rule?.cooldownSeconds?.toString() || ''
   )
+
+  // Existing stop groups for the autocomplete datalist
+  const stopGroupsQuery = useRuleStopGroupsQuery()
+  const knownStopGroups = stopGroupsQuery.data?.groups ?? []
+
+  const trimmedStopGroup = stopGroup.trim()
+  const hasStopGroup = trimmedStopGroup.length > 0
+
+  // If the user clears the group, stop_processing must be force-off to match the server invariant.
+  const handleStopGroupChange = useCallback((value: string) => {
+    setStopGroup(value)
+    if (!value.trim()) {
+      setStopProcessing(false)
+    }
+  }, [])
 
   // Advanced mode state
   const [advanced, setAdvanced] = useState(false)
@@ -189,13 +207,14 @@ export function RuleBuilder({
         name: name.trim() || 'Untitled Rule',
         enabled,
         priority,
-        stopProcessing,
+        stopProcessing: stopProcessing && hasStopGroup,
+        stopGroup: trimmedStopGroup,
         schemaVersion: 1,
         definition,
         cooldownSeconds: cooldownSeconds ? parseInt(cooldownSeconds, 10) : null,
       })
     },
-    [query, actions, name, enabled, priority, stopProcessing, cooldownSeconds, onSave, advanced, definitionText, forSecondsNum, builderGuardrailError]
+    [query, actions, name, enabled, priority, stopProcessing, hasStopGroup, trimmedStopGroup, cooldownSeconds, onSave, advanced, definitionText, forSecondsNum, builderGuardrailError]
   )
 
   const isEditing = rule?.id != null
@@ -257,6 +276,28 @@ export function RuleBuilder({
             </FormField>
           </div>
 
+          <FormField
+            label="Stop group"
+            htmlFor="rule-stop-group"
+            help="Optional name shared by rules that should interact via stop processing. Lower-priority rules with the same group are skipped when this rule fires and has stop processing on."
+          >
+            <Input
+              id="rule-stop-group"
+              list="rule-stop-group-suggestions"
+              value={stopGroup}
+              onChange={(e) => handleStopGroupChange(e.target.value)}
+              placeholder="e.g., door-entry"
+              disabled={isSaving}
+              maxLength={64}
+              autoComplete="off"
+            />
+            <datalist id="rule-stop-group-suggestions">
+              {knownStopGroups.map((g) => (
+                <option key={g} value={g} />
+              ))}
+            </datalist>
+          </FormField>
+
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-4">
               <div className="flex items-center gap-2">
@@ -273,15 +314,29 @@ export function RuleBuilder({
               <div className="flex items-center gap-2">
                 <Switch
                   id="rule-stop-processing"
-                  checked={stopProcessing}
+                  checked={stopProcessing && hasStopGroup}
                   onCheckedChange={setStopProcessing}
-                  disabled={isSaving}
+                  disabled={isSaving || !hasStopGroup}
                 />
-                <label htmlFor="rule-stop-processing" className="text-sm">
-                  Stop processing{' '}
+                <label
+                  htmlFor="rule-stop-processing"
+                  className={`text-sm ${!hasStopGroup ? 'text-muted-foreground' : ''}`}
+                >
+                  {hasStopGroup ? (
+                    <>
+                      Stop processing other rules in group{' '}
+                      <span className="font-medium">{trimmedStopGroup}</span>
+                    </>
+                  ) : (
+                    <>Stop processing</>
+                  )}{' '}
                   <HelpTip
                     className="ml-1"
-                    content="When this rule fires, skip all lower-priority rules of the same kind (trigger, disarm, arm, suppress, or escalate) in this evaluation cycle. A trigger rule with stop processing will only block other trigger rules, not disarm or arm rules."
+                    content={
+                      hasStopGroup
+                        ? `When this rule fires, skip all lower-priority rules that share the stop group "${trimmedStopGroup}". Other rules are unaffected.`
+                        : 'Set a stop group first to enable stop processing. The group name scopes which lower-priority rules get skipped when this one fires.'
+                    }
                   />
                 </label>
               </div>

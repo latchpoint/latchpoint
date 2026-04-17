@@ -28,6 +28,7 @@ urlpatterns = [
     path("rules/<int:rule_id>/", views.RuleDetailView.as_view(), name="alarm-rule-detail"),
     path("rules/run/", views.RuleRunView.as_view(), name="alarm-rules-run"),
     path("rules/simulate/", views.RuleSimulateView.as_view(), name="alarm-rules-simulate"),
+    path("rules/stop-groups/", views.RuleStopGroupsView.as_view(), name="alarm-rules-stop-groups"),
     path("rules/supported-actions/", views.SupportedActionsView.as_view(), name="alarm-rules-supported-actions"),
     path("arm/", views.ArmAlarmView.as_view(), name="alarm-arm"),
     path("disarm/", views.DisarmAlarmView.as_view(), name="alarm-disarm"),
