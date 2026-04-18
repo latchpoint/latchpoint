@@ -65,14 +65,14 @@ def run_rules(
     skipped_cooldown = 0
     skipped_stopped = 0
     errors = 0
-    stopped_kinds: set[str] = set()
+    stopped_groups: set[str] = set()
 
     # Pre-fetch due timers (acquires row locks via select_for_update) indexed by rule ID.
     # This allows unified priority-ordered evaluation of both timer and immediate rules.
     due_map = {rt.rule_id: rt for rt in repos.due_runtimes(now)}
 
     for rule in rules:
-        if rule.kind in stopped_kinds:
+        if rule.stop_group and rule.stop_group in stopped_groups:
             skipped_stopped += 1
             continue
 
@@ -116,8 +116,8 @@ def run_rules(
                     runtime_due.scheduled_for = None
                     runtime_due.save(update_fields=["last_fired_at", "scheduled_for", "updated_at"])
                     fired += 1
-                    if rule.stop_processing:
-                        stopped_kinds.add(rule.kind)
+                    if rule.stop_processing and rule.stop_group:
+                        stopped_groups.add(rule.stop_group)
                 except Exception as exc:  # pragma: no cover - defensive
                     errors += 1
                     log_action_func(
@@ -204,8 +204,8 @@ def run_rules(
             runtime.last_fired_at = now
             runtime.save(update_fields=["last_fired_at", "updated_at"])
             fired += 1
-            if rule.stop_processing:
-                stopped_kinds.add(rule.kind)
+            if rule.stop_processing and rule.stop_group:
+                stopped_groups.add(rule.stop_group)
         except Exception as exc:  # pragma: no cover - defensive
             errors += 1
             log_action_func(
@@ -268,11 +268,12 @@ def simulate_rules(
 
     matched: list[dict[str, Any]] = []
     not_matched: list[dict[str, Any]] = []
-    stopped_kinds: dict[str, int] = {}  # kind -> rule id that triggered the stop
+    # stop_group -> rule id that triggered the stop
+    stopped_groups: dict[str, int] = {}
     blocked = 0
 
     for rule in rules:
-        if rule.kind in stopped_kinds:
+        if rule.stop_group and rule.stop_group in stopped_groups:
             blocked += 1
             not_matched.append(
                 {
@@ -282,7 +283,8 @@ def simulate_rules(
                     "priority": rule.priority,
                     "matched": False,
                     "blocked_by_stop_processing": True,
-                    "blocked_by_rule_id": stopped_kinds[rule.kind],
+                    "blocked_by_stop_group": rule.stop_group,
+                    "blocked_by_rule_id": stopped_groups[rule.stop_group],
                 }
             )
             continue
@@ -339,8 +341,8 @@ def simulate_rules(
                     "actions": definition.get("then") if isinstance(definition.get("then"), list) else [],
                 }
             )
-            if rule.stop_processing:
-                stopped_kinds[rule.kind] = rule.id
+            if rule.stop_processing and rule.stop_group:
+                stopped_groups[rule.stop_group] = rule.id
             continue
 
         ok, trace = eval_condition_explain_with_context(when_node, entity_state=merged_state, now=now, repos=repos)
@@ -355,8 +357,8 @@ def simulate_rules(
         }
         if ok:
             matched.append(payload)
-            if rule.stop_processing:
-                stopped_kinds[rule.kind] = rule.id
+            if rule.stop_processing and rule.stop_group:
+                stopped_groups[rule.stop_group] = rule.id
         else:
             not_matched.append(payload)
 

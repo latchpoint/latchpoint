@@ -92,11 +92,14 @@ This document tracks all Architecture Decision Records (ADRs) and their implemen
 | [0073](0073-backend-endpoint-test-baseline-expansion.md) | Backend Endpoint Test Baseline Expansion (Useful Gaps) | **Implemented** |
 | [0074](0074-test-suite-expansion-beyond-endpoint-baseline.md) | Test Suite Expansion Beyond Endpoint Baseline | **Implemented** |
 | [0075](0075-env-var-credentials-remove-encryption.md) | Move Integration Credentials to Env Vars, Remove Encryption | **Implemented** |
+| [0076](0076-per-rule-stop-processing-flag.md) | Per-Rule `stop_processing` Flag | Superseded by 0084 |
+| [0077](0077-ci-cd-docker-image-tagging-strategy.md) | CI/CD Docker Image Tagging Strategy | **Implemented** |
 | [0079](0079-ui-config-with-encrypted-credentials.md) | DB-Backed Settings with Encryption, Schema-Driven UI, and Notification Provider CRUD | **Implemented** |
 | [0080](0080-pushbullet-multi-provider-endpoint-ambiguity.md) | Pushbullet Multi-Provider Endpoint Ambiguity | **Accepted** |
 | [0081](0081-schedule-entry-lock-cc-api-sync.md) | Schedule Entry Lock — CC API Sync for Daily Repeating Schedules | **Proposed** |
 | [0082](0082-zwavejs-lock-domain-and-synced-code-lifecycle.md) | Z-Wave JS Lock Domain, Synced Code Read-Only, Physical Deletion & Code-Capable Lock Filtering | **Implemented** |
 | [0083](0083-door-code-pin-visibility.md) | Door Code PIN Visibility with Encrypted Storage | **Proposed** |
+| [0084](0084-user-named-stop-groups-for-rule-processing.md) | User-Named Stop Groups for Rule Processing (supersedes 0076) | **Proposed** |
 
 ---
 
@@ -104,15 +107,15 @@ This document tracks all Architecture Decision Records (ADRs) and their implemen
 
 | Status | Count |
 |--------|-------|
-| **Implemented** | 60 |
+| **Implemented** | 61 |
 | **Partially Implemented** | 1 |
 | **Accepted** | 1 |
-| **Proposed** | 5 |
-| **Superseded** | 13 |
-| **Total** | 80 |
+| **Proposed** | 6 |
+| **Superseded** | 14 |
+| **Total** | 83 |
 
 Note: **Superseded** includes entries marked as "Superseded by …" in the table above.
 
 ---
 
-*Last updated: 2026-04-12* (ADRs 0079–0083 added)
+*Last updated: 2026-04-17* (ADR 0084 added; ADR 0076 superseded by 0084; 0076 and 0077 rows restored to index)

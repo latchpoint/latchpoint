@@ -325,6 +325,15 @@ class Rule(models.Model):
     enabled = models.BooleanField(default=True, db_index=True)
     priority = models.IntegerField(default=0, db_index=True)
     stop_processing = models.BooleanField(default=False)
+    stop_group = models.CharField(
+        max_length=64,
+        blank=True,
+        default="",
+        help_text=(
+            "Optional named group for stop_processing scoping. "
+            "stop_processing only blocks lower-priority rules sharing this group."
+        ),
+    )
     schema_version = models.PositiveIntegerField(default=1)
     definition = models.JSONField(default=dict, blank=True)
     cooldown_seconds = models.PositiveIntegerField(null=True, blank=True)
@@ -347,6 +356,20 @@ class Rule(models.Model):
     def __str__(self) -> str:  # pragma: no cover - simple representation
         """Return a compact representation for logs/admin lists."""
         return f"{self.kind}:{self.name}"
+
+    def clean(self):
+        """Normalize stop_group and reject stop_processing without a group (ADR 0084).
+
+        DRF ModelSerializer does not call full_clean(); the API gate is
+        RuleUpsertSerializer.validate. This hook guards admin / management /
+        explicit full_clean() paths.
+        """
+        from django.core.exceptions import ValidationError
+
+        super().clean()
+        self.stop_group = (self.stop_group or "").strip()
+        if self.stop_processing and not self.stop_group:
+            raise ValidationError({"stop_group": "stop_processing requires a non-empty stop_group."})
 
 
 class RuleEntityRef(models.Model):

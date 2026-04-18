@@ -100,6 +100,9 @@ export function RulesTestResults({ mode, result, baselineResult }: Props) {
                       {(r as SimulatedRule).blockedByStopProcessing && (
                         <span className="ml-2 rounded bg-amber-100 px-1.5 py-0.5 text-xs font-medium text-amber-800 dark:bg-amber-900 dark:text-amber-200">
                           Blocked by rule #{(r as SimulatedRule).blockedByRuleId}
+                          {(r as SimulatedRule).blockedByStopGroup
+                            ? ` (group: ${(r as SimulatedRule).blockedByStopGroup})`
+                            : ''}
                         </span>
                       )}
                     </summary>

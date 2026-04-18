@@ -1,7 +1,9 @@
 # ADR 0076: Per-Rule `stop_processing` Flag
 
+> **⚠️ Superseded by [ADR 0084](0084-user-named-stop-groups-for-rule-processing.md).** The same-kind scoping decided here is replaced by user-named `stop_group` strings. The `stop_processing` flag itself is retained; only its scoping mechanism changes.
+
 ## Status
-**Implemented**
+**Superseded by [ADR 0084](0084-user-named-stop-groups-for-rule-processing.md)**
 
 ## Context
 

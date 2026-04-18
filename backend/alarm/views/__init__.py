@@ -5,7 +5,14 @@ from .debug_logs import DebugLogsView
 from .dispatcher import DispatcherConfigView, DispatcherStatusView, SuspendedRulesView
 from .entities import EntitiesView, EntitySyncView
 from .events import AlarmEventsView
-from .rules import RuleDetailView, RuleRunView, RuleSimulateView, RulesView, SupportedActionsView
+from .rules import (
+    RuleDetailView,
+    RuleRunView,
+    RuleSimulateView,
+    RuleStopGroupsView,
+    RulesView,
+    SupportedActionsView,
+)
 from .sensors import SensorDetailView, SensorsView
 from .settings import AlarmSettingsView, SettingsRegistryView
 from .settings_profiles import (
@@ -35,6 +42,7 @@ __all__ = [
     "RuleRunView",
     "RuleSimulateView",
     "RulesView",
+    "RuleStopGroupsView",
     "SupportedActionsView",
     "SensorDetailView",
     "SensorsView",

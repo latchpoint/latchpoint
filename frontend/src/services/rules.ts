@@ -15,12 +15,17 @@ export const rulesService = {
     return api.post<RuleSimulateResult>(apiEndpoints.rules.simulate, payload)
   },
 
+  async stopGroups(): Promise<{ groups: string[] }> {
+    return api.get<{ groups: string[] }>(apiEndpoints.rules.stopGroups)
+  },
+
   async create(rule: {
     name: string
     kind?: Rule['kind']  // Optional - auto-derived from actions by backend
     enabled: boolean
     priority: number
     stopProcessing?: boolean
+    stopGroup?: string
     schemaVersion: number
     definition: RuleDefinition
     cooldownSeconds?: number | null

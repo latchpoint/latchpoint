@@ -18,6 +18,14 @@ export function useRulesQuery(params?: { kind?: Rule['kind']; enabled?: boolean 
   })
 }
 
+export function useRuleStopGroupsQuery() {
+  return useQuery({
+    queryKey: queryKeys.rules.stopGroups,
+    queryFn: rulesService.stopGroups,
+    staleTime: 60_000,
+  })
+}
+
 export function useSyncEntitiesMutation() {
   const queryClient = useQueryClient()
   return useMutation({
@@ -55,6 +63,7 @@ export function useSaveRuleMutation() {
         enabled: boolean
         priority: number
         stopProcessing?: boolean
+        stopGroup?: string
         schemaVersion: number
         definition: RuleDefinition
         cooldownSeconds?: number | null
@@ -66,7 +75,10 @@ export function useSaveRuleMutation() {
       return { data, notice: vars.id == null ? 'Rule created.' : 'Rule updated.' }
     },
     onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: queryKeys.rules.all })
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: queryKeys.rules.all }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.rules.stopGroups }),
+      ])
     },
   })
 }

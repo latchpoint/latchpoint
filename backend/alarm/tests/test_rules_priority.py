@@ -124,13 +124,14 @@ class StopProcessingTests(TestCase):
             last_state="on",
         )
 
-    def _make_rule(self, name, kind, priority, stop_processing=False, match="on"):
+    def _make_rule(self, name, kind, priority, stop_processing=False, stop_group="", match="on"):
         return Rule.objects.create(
             name=name,
             kind=kind,
             enabled=True,
             priority=priority,
             stop_processing=stop_processing,
+            stop_group=stop_group,
             schema_version=1,
             definition={
                 "when": {"op": "entity_state", "entity_id": "binary_sensor.test", "equals": match},
@@ -138,29 +139,39 @@ class StopProcessingTests(TestCase):
             },
         )
 
-    def test_stop_processing_skips_lower_priority_same_kind(self):
-        """A rule with stop_processing=True should prevent lower-priority same-kind rules from firing."""
-        self._make_rule("High Stopper", RuleKind.TRIGGER, 100, stop_processing=True)
-        self._make_rule("Low Runner", RuleKind.TRIGGER, 1)
+    def test_stop_processing_skips_lower_priority_same_group(self):
+        """A rule with stop_processing=True should prevent lower-priority rules in the same stop_group from firing."""
+        self._make_rule("High Stopper", RuleKind.TRIGGER, 100, stop_processing=True, stop_group="g")
+        self._make_rule("Low Runner", RuleKind.TRIGGER, 1, stop_group="g")
 
         result = run_rules()
         self.assertEqual(result.fired, 1)
         self.assertEqual(result.skipped_stopped, 1)
         self.assertEqual(result.evaluated, 1)
 
-    def test_stop_processing_does_not_block_different_kind(self):
-        """A trigger rule with stop_processing should not block disarm rules."""
-        self._make_rule("Trigger Stopper", RuleKind.TRIGGER, 100, stop_processing=True)
-        self._make_rule("Disarm Runner", RuleKind.DISARM, 1)
+    def test_stop_processing_does_not_block_different_group(self):
+        """A stopper in group A should not block a rule in group B, regardless of kind."""
+        self._make_rule("Group A Stopper", RuleKind.TRIGGER, 100, stop_processing=True, stop_group="a")
+        self._make_rule("Group B Runner", RuleKind.DISARM, 1, stop_group="b")
+
+        result = run_rules()
+        self.assertEqual(result.fired, 2)
+        self.assertEqual(result.skipped_stopped, 0)
+
+    def test_stop_processing_same_kind_no_shared_group_does_not_block(self):
+        """Regression for ADR 0084: same kind alone no longer implies blocking."""
+        self._make_rule("Stopper", RuleKind.TRIGGER, 100, stop_processing=True, stop_group="a")
+        # Same kind but different (empty) group — must still fire.
+        self._make_rule("Runner", RuleKind.TRIGGER, 1, stop_group="")
 
         result = run_rules()
         self.assertEqual(result.fired, 2)
         self.assertEqual(result.skipped_stopped, 0)
 
     def test_stop_processing_false_does_not_skip(self):
-        """Default stop_processing=False preserves fire-all behavior."""
-        self._make_rule("High Normal", RuleKind.TRIGGER, 100, stop_processing=False)
-        self._make_rule("Low Normal", RuleKind.TRIGGER, 1)
+        """Default stop_processing=False preserves fire-all behavior, even with shared group."""
+        self._make_rule("High Normal", RuleKind.TRIGGER, 100, stop_processing=False, stop_group="g")
+        self._make_rule("Low Normal", RuleKind.TRIGGER, 1, stop_group="g")
 
         result = run_rules()
         self.assertEqual(result.fired, 2)
@@ -168,17 +179,17 @@ class StopProcessingTests(TestCase):
 
     def test_stop_processing_non_matching_rule_does_not_stop(self):
         """A stop_processing rule that doesn't match should not block subsequent rules."""
-        self._make_rule("Non-match Stopper", RuleKind.TRIGGER, 100, stop_processing=True, match="off")
-        self._make_rule("Matching Runner", RuleKind.TRIGGER, 1, match="on")
+        self._make_rule("Non-match Stopper", RuleKind.TRIGGER, 100, stop_processing=True, stop_group="g", match="off")
+        self._make_rule("Matching Runner", RuleKind.TRIGGER, 1, stop_group="g", match="on")
 
         result = run_rules()
         self.assertEqual(result.fired, 1)
         self.assertEqual(result.skipped_stopped, 0)
 
     def test_simulate_shows_blocked_rules(self):
-        """Simulation should annotate rules blocked by stop_processing."""
-        stopper = self._make_rule("High Stopper", RuleKind.TRIGGER, 100, stop_processing=True)
-        blocked = self._make_rule("Low Blocked", RuleKind.TRIGGER, 1)
+        """Simulation should annotate rules blocked by stop_processing, including stop_group name."""
+        stopper = self._make_rule("High Stopper", RuleKind.TRIGGER, 100, stop_processing=True, stop_group="g")
+        blocked = self._make_rule("Low Blocked", RuleKind.TRIGGER, 1, stop_group="g")
 
         result = simulate_rules(entity_states={"binary_sensor.test": "on"})
 
@@ -191,6 +202,7 @@ class StopProcessingTests(TestCase):
         self.assertEqual(len(blocked_entries), 1)
         self.assertEqual(blocked_entries[0]["id"], blocked.id)
         self.assertEqual(blocked_entries[0]["blocked_by_rule_id"], stopper.id)
+        self.assertEqual(blocked_entries[0]["blocked_by_stop_group"], "g")
 
     def test_multiple_matching_rules_all_fire_still_passes(self):
         """Regression: rules without stop_processing should all fire as before."""
@@ -203,12 +215,23 @@ class StopProcessingTests(TestCase):
         self.assertEqual(result.fired, 3)
         self.assertEqual(result.skipped_stopped, 0)
 
+    # --- Empty-group defense ---
+
+    def test_stop_processing_with_empty_group_is_noop(self):
+        """stop_processing=True with empty stop_group must not block anything (engine defense)."""
+        self._make_rule("Empty-group Stopper", RuleKind.TRIGGER, 100, stop_processing=True, stop_group="")
+        self._make_rule("Runner", RuleKind.TRIGGER, 1, stop_group="")
+
+        result = run_rules()
+        self.assertEqual(result.fired, 2)
+        self.assertEqual(result.skipped_stopped, 0)
+
     # --- Same-priority tiebreaking ---
 
     def test_stop_processing_same_priority_lower_id_wins(self):
-        """When two stop_processing rules have the same priority, the lower ID fires first."""
-        first = self._make_rule("First Created", RuleKind.TRIGGER, 100, stop_processing=True)
-        second = self._make_rule("Second Created", RuleKind.TRIGGER, 100, stop_processing=True)
+        """When two stop_processing rules in the same group have the same priority, the lower ID fires first."""
+        first = self._make_rule("First Created", RuleKind.TRIGGER, 100, stop_processing=True, stop_group="g")
+        second = self._make_rule("Second Created", RuleKind.TRIGGER, 100, stop_processing=True, stop_group="g")
         self.assertLess(first.id, second.id)
 
         result = run_rules()
@@ -216,30 +239,30 @@ class StopProcessingTests(TestCase):
         self.assertEqual(result.fired, 1)
         self.assertEqual(result.skipped_stopped, 1)
 
-    # --- Multiple kinds stopped simultaneously ---
+    # --- Multiple groups stopped simultaneously ---
 
-    def test_stop_processing_multiple_kinds_stopped(self):
-        """Stop processing of different kinds are independent — both can be stopped."""
-        self._make_rule("Trigger Stopper", RuleKind.TRIGGER, 100, stop_processing=True)
-        self._make_rule("Disarm Stopper", RuleKind.DISARM, 100, stop_processing=True)
-        self._make_rule("Trigger Blocked", RuleKind.TRIGGER, 1)
-        self._make_rule("Disarm Blocked", RuleKind.DISARM, 1)
+    def test_stop_processing_multiple_groups_stopped(self):
+        """Two distinct groups can be independently stopped."""
+        self._make_rule("Group A Stopper", RuleKind.TRIGGER, 100, stop_processing=True, stop_group="a")
+        self._make_rule("Group B Stopper", RuleKind.DISARM, 100, stop_processing=True, stop_group="b")
+        self._make_rule("Group A Blocked", RuleKind.TRIGGER, 1, stop_group="a")
+        self._make_rule("Group B Blocked", RuleKind.DISARM, 1, stop_group="b")
 
         result = run_rules()
         self.assertEqual(result.fired, 2)  # Both stoppers fire
         self.assertEqual(result.skipped_stopped, 2)  # Both lower-priority rules blocked
         self.assertEqual(result.evaluated, 2)  # Only the stoppers were evaluated
 
-    def test_stop_processing_only_blocks_same_kind_with_many_kinds(self):
-        """With 4 kinds in play, stop only blocks the matching kind."""
-        self._make_rule("Trigger Stopper", RuleKind.TRIGGER, 100, stop_processing=True)
-        self._make_rule("Disarm Runner", RuleKind.DISARM, 50)
-        self._make_rule("Arm Runner", RuleKind.ARM, 50)
-        self._make_rule("Trigger Blocked", RuleKind.TRIGGER, 1)
+    def test_stop_processing_only_blocks_same_group_across_many_groups(self):
+        """With multiple groups in play, stop only blocks the matching group."""
+        self._make_rule("Group A Stopper", RuleKind.TRIGGER, 100, stop_processing=True, stop_group="a")
+        self._make_rule("Group B Runner", RuleKind.DISARM, 50, stop_group="b")
+        self._make_rule("Group C Runner", RuleKind.ARM, 50, stop_group="c")
+        self._make_rule("Group A Blocked", RuleKind.TRIGGER, 1, stop_group="a")
 
         result = run_rules()
-        self.assertEqual(result.fired, 3)  # Stopper + disarm + arm
-        self.assertEqual(result.skipped_stopped, 1)  # Only trigger blocked
+        self.assertEqual(result.fired, 3)  # Stopper + group-b + group-c
+        self.assertEqual(result.skipped_stopped, 1)  # Only group-a blocked
         self.assertEqual(result.evaluated, 3)
 
     # --- Audit trace verification ---
@@ -251,7 +274,7 @@ class StopProcessingTests(TestCase):
         def capture_log(*, rule, fired_at, kind, actions, result, trace, error=None):
             traces.append(trace)
 
-        self._make_rule("Stopper", RuleKind.TRIGGER, 100, stop_processing=True)
+        self._make_rule("Stopper", RuleKind.TRIGGER, 100, stop_processing=True, stop_group="g")
 
         run_rules(log_action_func=capture_log)
         self.assertEqual(len(traces), 1)
@@ -282,10 +305,10 @@ class StopProcessingTests(TestCase):
     # --- Chain of stoppers ---
 
     def test_first_stopper_wins_subsequent_stoppers_blocked(self):
-        """If multiple same-kind rules have stop_processing, only the highest-priority one fires."""
-        self._make_rule("High Stopper", RuleKind.TRIGGER, 100, stop_processing=True)
-        self._make_rule("Mid Stopper", RuleKind.TRIGGER, 50, stop_processing=True)
-        self._make_rule("Low Runner", RuleKind.TRIGGER, 1)
+        """If multiple same-group rules have stop_processing, only the highest-priority one fires."""
+        self._make_rule("High Stopper", RuleKind.TRIGGER, 100, stop_processing=True, stop_group="g")
+        self._make_rule("Mid Stopper", RuleKind.TRIGGER, 50, stop_processing=True, stop_group="g")
+        self._make_rule("Low Runner", RuleKind.TRIGGER, 1, stop_group="g")
 
         result = run_rules()
         self.assertEqual(result.fired, 1)  # Only high stopper
@@ -295,9 +318,9 @@ class StopProcessingTests(TestCase):
 
     def test_non_matching_stopper_allows_lower_stopper_to_fire(self):
         """If a high-priority stopper doesn't match, a lower-priority stopper can still fire and stop."""
-        self._make_rule("High Non-match", RuleKind.TRIGGER, 100, stop_processing=True, match="off")
-        self._make_rule("Mid Stopper", RuleKind.TRIGGER, 50, stop_processing=True)
-        self._make_rule("Low Runner", RuleKind.TRIGGER, 1)
+        self._make_rule("High Non-match", RuleKind.TRIGGER, 100, stop_processing=True, stop_group="g", match="off")
+        self._make_rule("Mid Stopper", RuleKind.TRIGGER, 50, stop_processing=True, stop_group="g")
+        self._make_rule("Low Runner", RuleKind.TRIGGER, 1, stop_group="g")
 
         result = run_rules()
         self.assertEqual(result.fired, 1)  # Only mid stopper
@@ -317,7 +340,7 @@ class StopProcessingTimerTests(TestCase):
         )
         self.now = timezone.now()
 
-    def _make_for_rule(self, name, kind, priority, for_seconds, stop_processing=False, match="on"):
+    def _make_for_rule(self, name, kind, priority, for_seconds, stop_processing=False, stop_group="", match="on"):
         """Create a rule with a 'for' duration condition."""
         return Rule.objects.create(
             name=name,
@@ -325,6 +348,7 @@ class StopProcessingTimerTests(TestCase):
             enabled=True,
             priority=priority,
             stop_processing=stop_processing,
+            stop_group=stop_group,
             schema_version=1,
             definition={
                 "when": {
@@ -336,7 +360,7 @@ class StopProcessingTimerTests(TestCase):
             },
         )
 
-    def _make_immediate_rule(self, name, kind, priority, stop_processing=False, match="on"):
+    def _make_immediate_rule(self, name, kind, priority, stop_processing=False, stop_group="", match="on"):
         """Create a non-timer rule."""
         return Rule.objects.create(
             name=name,
@@ -344,6 +368,7 @@ class StopProcessingTimerTests(TestCase):
             enabled=True,
             priority=priority,
             stop_processing=stop_processing,
+            stop_group=stop_group,
             schema_version=1,
             definition={
                 "when": {"op": "entity_state", "entity_id": "binary_sensor.test", "equals": match},
@@ -363,11 +388,13 @@ class StopProcessingTimerTests(TestCase):
             scheduled_for=sched,
         )
 
-    def test_timer_stopper_blocks_same_kind_immediate_rule(self):
-        """A timer rule with stop_processing that fires should block immediate rules of the same kind."""
-        timer_rule = self._make_for_rule("Timer Stopper", RuleKind.TRIGGER, 100, 60, stop_processing=True)
+    def test_timer_stopper_blocks_same_group_immediate_rule(self):
+        """A timer rule with stop_processing that fires should block immediate rules in the same stop_group."""
+        timer_rule = self._make_for_rule(
+            "Timer Stopper", RuleKind.TRIGGER, 100, 60, stop_processing=True, stop_group="g"
+        )
         self._make_runtime_due(timer_rule)
-        self._make_immediate_rule("Immediate Runner", RuleKind.TRIGGER, 1)
+        self._make_immediate_rule("Immediate Runner", RuleKind.TRIGGER, 1, stop_group="g")
 
         result = run_rules(now=self.now)
         self.assertEqual(result.fired, 1)
@@ -375,20 +402,24 @@ class StopProcessingTimerTests(TestCase):
         # evaluated = len(rules) - skipped_stopped. Both rules are in rules list.
         self.assertEqual(result.evaluated, 1)
 
-    def test_timer_stopper_does_not_block_different_kind(self):
-        """A timer rule with stop_processing only blocks same-kind rules."""
-        timer_rule = self._make_for_rule("Timer Stopper", RuleKind.TRIGGER, 100, 60, stop_processing=True)
+    def test_timer_stopper_does_not_block_different_group(self):
+        """A timer rule with stop_processing only blocks rules in the same stop_group."""
+        timer_rule = self._make_for_rule(
+            "Timer Stopper", RuleKind.TRIGGER, 100, 60, stop_processing=True, stop_group="a"
+        )
         self._make_runtime_due(timer_rule)
-        self._make_immediate_rule("Disarm Runner", RuleKind.DISARM, 1)
+        self._make_immediate_rule("Different-group Runner", RuleKind.DISARM, 1, stop_group="b")
 
         result = run_rules(now=self.now)
         self.assertEqual(result.fired, 2)
         self.assertEqual(result.skipped_stopped, 0)
 
     def test_timer_stopper_blocks_another_due_timer(self):
-        """A timer rule with stop_processing should prevent a lower-priority due timer from firing."""
-        timer_a = self._make_for_rule("High Timer Stopper", RuleKind.TRIGGER, 100, 60, stop_processing=True)
-        timer_b = self._make_for_rule("Low Timer Runner", RuleKind.TRIGGER, 1, 60)
+        """A timer rule with stop_processing should prevent a lower-priority due timer in the same group from firing."""
+        timer_a = self._make_for_rule(
+            "High Timer Stopper", RuleKind.TRIGGER, 100, 60, stop_processing=True, stop_group="g"
+        )
+        timer_b = self._make_for_rule("Low Timer Runner", RuleKind.TRIGGER, 1, 60, stop_group="g")
         self._make_runtime_due(timer_a)
         self._make_runtime_due(timer_b)
 
@@ -396,23 +427,25 @@ class StopProcessingTimerTests(TestCase):
         self.assertEqual(result.fired, 1)  # Only the high-priority timer fires
 
     def test_timer_stopper_evaluated_count_correct(self):
-        """Counters should be correct when a timer stopper fires and blocks immediate rules."""
-        timer_rule = self._make_for_rule("Timer Stopper", RuleKind.TRIGGER, 100, 60, stop_processing=True)
+        """Counters should be correct when a timer stopper fires and blocks same-group immediate rules."""
+        timer_rule = self._make_for_rule(
+            "Timer Stopper", RuleKind.TRIGGER, 100, 60, stop_processing=True, stop_group="g"
+        )
         self._make_runtime_due(timer_rule)
-        self._make_immediate_rule("Blocked A", RuleKind.TRIGGER, 50)
-        self._make_immediate_rule("Blocked B", RuleKind.TRIGGER, 1)
-        self._make_immediate_rule("Disarm OK", RuleKind.DISARM, 1)
+        self._make_immediate_rule("Blocked A", RuleKind.TRIGGER, 50, stop_group="g")
+        self._make_immediate_rule("Blocked B", RuleKind.TRIGGER, 1, stop_group="g")
+        self._make_immediate_rule("Different Group OK", RuleKind.DISARM, 1, stop_group="other")
 
         result = run_rules(now=self.now)
-        self.assertEqual(result.fired, 2)  # Timer stopper + disarm
+        self.assertEqual(result.fired, 2)  # Timer stopper + different-group rule
         self.assertEqual(result.skipped_stopped, 2)  # Blocked A + Blocked B
         # evaluated = len(rules=4) - skipped_stopped(2) = 2
         self.assertEqual(result.evaluated, 2)
 
     def test_immediate_stopper_blocks_lower_priority_due_timer(self):
-        """A high-priority immediate stopper should block a lower-priority due timer."""
-        self._make_immediate_rule("Immediate Stopper", RuleKind.TRIGGER, 100, stop_processing=True)
-        timer_rule = self._make_for_rule("Low Timer", RuleKind.TRIGGER, 1, 60)
+        """A high-priority immediate stopper should block a lower-priority due timer in the same group."""
+        self._make_immediate_rule("Immediate Stopper", RuleKind.TRIGGER, 100, stop_processing=True, stop_group="g")
+        timer_rule = self._make_for_rule("Low Timer", RuleKind.TRIGGER, 1, 60, stop_group="g")
         self._make_runtime_due(timer_rule)
 
         result = run_rules(now=self.now)
@@ -420,9 +453,11 @@ class StopProcessingTimerTests(TestCase):
         self.assertEqual(result.skipped_stopped, 1)  # Timer blocked
 
     def test_timer_priority_wins_over_chronological_order(self):
-        """A higher-priority timer stopper should block a lower-priority timer even if due later."""
-        timer_low = self._make_for_rule("Low Timer", RuleKind.TRIGGER, 1, 60)
-        timer_high = self._make_for_rule("High Timer Stopper", RuleKind.TRIGGER, 100, 60, stop_processing=True)
+        """A higher-priority timer stopper should block a lower-priority same-group timer even if due later."""
+        timer_low = self._make_for_rule("Low Timer", RuleKind.TRIGGER, 1, 60, stop_group="g")
+        timer_high = self._make_for_rule(
+            "High Timer Stopper", RuleKind.TRIGGER, 100, 60, stop_processing=True, stop_group="g"
+        )
         # Low-priority timer is due earlier (chronologically first)
         self._make_runtime_due(timer_low, scheduled_for=self.now - timedelta(seconds=10))
         self._make_runtime_due(timer_high, scheduled_for=self.now - timedelta(seconds=1))
@@ -443,7 +478,7 @@ class StopProcessingSimulationTests(TestCase):
             last_state="on",
         )
 
-    def _make_rule(self, name, kind, priority, stop_processing=False, match="on", for_seconds=None):
+    def _make_rule(self, name, kind, priority, stop_processing=False, stop_group="", match="on", for_seconds=None):
         definition = {
             "when": {"op": "entity_state", "entity_id": "binary_sensor.test", "equals": match},
             "then": [{"action": "test_action"}],
@@ -460,14 +495,15 @@ class StopProcessingSimulationTests(TestCase):
             enabled=True,
             priority=priority,
             stop_processing=stop_processing,
+            stop_group=stop_group,
             schema_version=1,
             definition=definition,
         )
 
     def test_simulate_evaluated_excludes_blocked(self):
         """Simulation evaluated count should exclude blocked rules (consistent with run_rules)."""
-        self._make_rule("Stopper", RuleKind.TRIGGER, 100, stop_processing=True)
-        self._make_rule("Blocked", RuleKind.TRIGGER, 1)
+        self._make_rule("Stopper", RuleKind.TRIGGER, 100, stop_processing=True, stop_group="g")
+        self._make_rule("Blocked", RuleKind.TRIGGER, 1, stop_group="g")
 
         result = simulate_rules(entity_states={"binary_sensor.test": "on"})
         self.assertEqual(result["summary"]["evaluated"], 1)
@@ -476,8 +512,8 @@ class StopProcessingSimulationTests(TestCase):
 
     def test_simulate_non_matching_stopper_does_not_block(self):
         """A stopper that doesn't match should not block other rules in simulation."""
-        self._make_rule("Non-match Stopper", RuleKind.TRIGGER, 100, stop_processing=True, match="off")
-        runner = self._make_rule("Runner", RuleKind.TRIGGER, 1)
+        self._make_rule("Non-match Stopper", RuleKind.TRIGGER, 100, stop_processing=True, stop_group="g", match="off")
+        runner = self._make_rule("Runner", RuleKind.TRIGGER, 1, stop_group="g")
 
         result = simulate_rules(entity_states={"binary_sensor.test": "on"})
         self.assertEqual(result["summary"]["blocked"], 0)
@@ -485,23 +521,23 @@ class StopProcessingSimulationTests(TestCase):
         matched_ids = [r["id"] for r in result["matched_rules"] if r["matched"]]
         self.assertIn(runner.id, matched_ids)
 
-    def test_simulate_multiple_kinds_blocked(self):
-        """Simulation should track blocked rules per-kind independently."""
-        self._make_rule("Trigger Stopper", RuleKind.TRIGGER, 100, stop_processing=True)
-        self._make_rule("Disarm Stopper", RuleKind.DISARM, 100, stop_processing=True)
-        self._make_rule("Trigger Blocked", RuleKind.TRIGGER, 1)
-        self._make_rule("Disarm Blocked", RuleKind.DISARM, 1)
-        self._make_rule("Arm Runner", RuleKind.ARM, 1)
+    def test_simulate_multiple_groups_blocked(self):
+        """Simulation should track blocked rules per-group independently."""
+        self._make_rule("Group A Stopper", RuleKind.TRIGGER, 100, stop_processing=True, stop_group="a")
+        self._make_rule("Group B Stopper", RuleKind.DISARM, 100, stop_processing=True, stop_group="b")
+        self._make_rule("Group A Blocked", RuleKind.TRIGGER, 1, stop_group="a")
+        self._make_rule("Group B Blocked", RuleKind.DISARM, 1, stop_group="b")
+        self._make_rule("Ungrouped Runner", RuleKind.ARM, 1, stop_group="")
 
         result = simulate_rules(entity_states={"binary_sensor.test": "on"})
         self.assertEqual(result["summary"]["blocked"], 2)
-        self.assertEqual(result["summary"]["matched"], 3)  # 2 stoppers + arm runner
+        self.assertEqual(result["summary"]["matched"], 3)  # 2 stoppers + ungrouped runner
         self.assertEqual(result["summary"]["evaluated"], 3)  # 5 total - 2 blocked
 
     def test_simulate_blocked_rule_has_no_trace(self):
-        """Blocked rules should have blocked_by annotations but no trace."""
-        stopper = self._make_rule("Stopper", RuleKind.TRIGGER, 100, stop_processing=True)
-        self._make_rule("Blocked", RuleKind.TRIGGER, 1)
+        """Blocked rules should have blocked_by annotations (including stop_group) but no trace."""
+        stopper = self._make_rule("Stopper", RuleKind.TRIGGER, 100, stop_processing=True, stop_group="g")
+        self._make_rule("Blocked", RuleKind.TRIGGER, 1, stop_group="g")
 
         result = simulate_rules(entity_states={"binary_sensor.test": "on"})
         blocked_entries = [r for r in result["non_matching_rules"] if r.get("blocked_by_stop_processing")]
@@ -509,13 +545,14 @@ class StopProcessingSimulationTests(TestCase):
         entry = blocked_entries[0]
         self.assertTrue(entry["blocked_by_stop_processing"])
         self.assertEqual(entry["blocked_by_rule_id"], stopper.id)
+        self.assertEqual(entry["blocked_by_stop_group"], "g")
         # Blocked rules don't have trace data since condition was never evaluated
         self.assertNotIn("trace", entry)
 
     def test_simulate_for_rule_would_schedule_does_not_block(self):
         """A for-rule stopper in 'would_schedule' state has not fired — should NOT block."""
-        self._make_rule("For Stopper", RuleKind.TRIGGER, 100, stop_processing=True, for_seconds=30)
-        runner = self._make_rule("Runner", RuleKind.TRIGGER, 1)
+        self._make_rule("For Stopper", RuleKind.TRIGGER, 100, stop_processing=True, stop_group="g", for_seconds=30)
+        runner = self._make_rule("Runner", RuleKind.TRIGGER, 1, stop_group="g")
 
         # Without assume_for_seconds, the for-rule is "would_schedule" — not yet fired
         result = simulate_rules(entity_states={"binary_sensor.test": "on"})
@@ -525,8 +562,8 @@ class StopProcessingSimulationTests(TestCase):
 
     def test_simulate_for_rule_stopper_with_assume_for(self):
         """A for-rule stopper with assumed duration should show as fully matched and still block."""
-        self._make_rule("For Stopper", RuleKind.TRIGGER, 100, stop_processing=True, for_seconds=30)
-        self._make_rule("Blocked", RuleKind.TRIGGER, 1)
+        self._make_rule("For Stopper", RuleKind.TRIGGER, 100, stop_processing=True, stop_group="g", for_seconds=30)
+        self._make_rule("Blocked", RuleKind.TRIGGER, 1, stop_group="g")
 
         result = simulate_rules(
             entity_states={"binary_sensor.test": "on"},
@@ -537,8 +574,16 @@ class StopProcessingSimulationTests(TestCase):
 
     def test_simulate_for_rule_non_matching_does_not_block(self):
         """A for-rule stopper whose child condition is false should not block."""
-        self._make_rule("For Stopper", RuleKind.TRIGGER, 100, stop_processing=True, for_seconds=30, match="off")
-        self._make_rule("Runner", RuleKind.TRIGGER, 1)
+        self._make_rule(
+            "For Stopper",
+            RuleKind.TRIGGER,
+            100,
+            stop_processing=True,
+            stop_group="g",
+            for_seconds=30,
+            match="off",
+        )
+        self._make_rule("Runner", RuleKind.TRIGGER, 1, stop_group="g")
 
         result = simulate_rules(entity_states={"binary_sensor.test": "on"})
         self.assertEqual(result["summary"]["blocked"], 0)
@@ -546,7 +591,7 @@ class StopProcessingSimulationTests(TestCase):
 
     def test_simulate_stopper_appears_in_matched_rules(self):
         """The stopper rule itself should appear in matched_rules with its actions."""
-        stopper = self._make_rule("Stopper", RuleKind.TRIGGER, 100, stop_processing=True)
+        stopper = self._make_rule("Stopper", RuleKind.TRIGGER, 100, stop_processing=True, stop_group="g")
 
         result = simulate_rules(entity_states={"binary_sensor.test": "on"})
         matched_ids = [r["id"] for r in result["matched_rules"]]
@@ -555,10 +600,10 @@ class StopProcessingSimulationTests(TestCase):
         self.assertEqual(stopper_entry["actions"], [{"action": "test_action"}])
 
     def test_simulate_chain_of_stoppers_only_first_fires(self):
-        """In simulation, only the highest-priority stopper matches; lower stoppers are blocked."""
-        high = self._make_rule("High Stopper", RuleKind.TRIGGER, 100, stop_processing=True)
-        mid = self._make_rule("Mid Stopper", RuleKind.TRIGGER, 50, stop_processing=True)
-        low = self._make_rule("Low Runner", RuleKind.TRIGGER, 1)
+        """In simulation, only the highest-priority stopper in a group matches; lower stoppers are blocked."""
+        high = self._make_rule("High Stopper", RuleKind.TRIGGER, 100, stop_processing=True, stop_group="g")
+        mid = self._make_rule("Mid Stopper", RuleKind.TRIGGER, 50, stop_processing=True, stop_group="g")
+        low = self._make_rule("Low Runner", RuleKind.TRIGGER, 1, stop_group="g")
 
         result = simulate_rules(entity_states={"binary_sensor.test": "on"})
         self.assertEqual(result["summary"]["matched"], 1)
@@ -569,3 +614,4 @@ class StopProcessingSimulationTests(TestCase):
         self.assertEqual(blocked_ids, {mid.id, low.id})
         for entry in blocked_entries:
             self.assertEqual(entry["blocked_by_rule_id"], high.id)
+            self.assertEqual(entry["blocked_by_stop_group"], "g")
