@@ -141,36 +141,36 @@ A hybrid: use `stop_group` when set, fall back to kind when empty. **Rejected**:
 
 ### Docs
 - [x] Write this ADR file
-- [ ] Mark ADR 0076 as `Superseded by 0084`
-- [ ] Add 0084 row to ADR 0000 index
+- [x] Mark ADR 0076 as `Superseded by 0084`
+- [x] Add 0084 row to ADR 0000 index
 
 ### Backend
-- [ ] Add `stop_group` CharField to `Rule` in `backend/alarm/models.py`
-- [ ] Add model `clean()` enforcing stop_processing+stop_group invariant
-- [ ] Generate migration `backend/alarm/migrations/0017_rule_stop_group.py`
-- [ ] Replace `stopped_kinds` with `stopped_groups` in `backend/alarm/dispatcher/dispatcher.py`
-- [ ] Replace `stopped_kinds` with `stopped_groups` in `backend/alarm/rules_engine.py` (both `run_rules` and `simulate_rules`)
-- [ ] Update simulation annotations: `blocked_by_stop_group` in place of implicit kind
-- [ ] Update `RuleSerializer` and `RuleUpsertSerializer` in `backend/alarm/serializers/rules.py`; add cross-field validator
-- [ ] New endpoint `GET /api/rules/stop-groups/` in `backend/alarm/views/rules.py`
-- [ ] Update/replace tests in `backend/alarm/tests/test_dispatcher_stop_processing.py` (remove same-kind assertions; add same-group assertions)
+- [x] Add `stop_group` CharField to `Rule` in `backend/alarm/models.py`
+- [x] Add model `clean()` enforcing stop_processing+stop_group invariant
+- [x] Generate migration `backend/alarm/migrations/0017_rule_stop_group.py`
+- [x] Replace `stopped_kinds` with `stopped_groups` in `backend/alarm/dispatcher/dispatcher.py`
+- [x] Replace `stopped_kinds` with `stopped_groups` in `backend/alarm/rules_engine.py` (both `run_rules` and `simulate_rules`)
+- [x] Update simulation annotations: `blocked_by_stop_group` in place of implicit kind
+- [x] Update `RuleSerializer` and `RuleUpsertSerializer` in `backend/alarm/serializers/rules.py`; add cross-field validator
+- [x] New endpoint `GET /api/alarm/rules/stop-groups/` in `backend/alarm/views/rules.py`
+- [x] Update/replace tests in `backend/alarm/tests/test_dispatcher_stop_processing.py` (remove same-kind assertions; add same-group assertions)
 
 ### Frontend
-- [ ] Add `stopGroup: string` to `Rule` in `frontend/src/types/rules.ts`; update related types
-- [ ] Add Stop group input (with autocomplete) in `frontend/src/features/rules/queryBuilder/RuleBuilder.tsx`
-- [ ] Disable stop_processing toggle when stopGroup is empty; update label+tooltip to interpolate group
-- [ ] Add `useRuleStopGroups()` hook in `frontend/src/hooks/useRulesQueries.ts`
-- [ ] Update simulation results display to show blocking group name
-- [ ] Update the run-result notice if `skippedStopped` output needs label refinement
+- [x] Add `stopGroup: string` to `Rule` in `frontend/src/types/rules.ts`; update related types
+- [x] Add Stop group input (with autocomplete) in `frontend/src/features/rules/queryBuilder/RuleBuilder.tsx`
+- [x] Disable stop_processing toggle when stopGroup is empty; update label+tooltip to interpolate group
+- [x] Add `useRuleStopGroups()` hook in `frontend/src/hooks/useRulesQueries.ts`
+- [x] Update simulation results display to show blocking group name
+- [x] Update the run-result notice if `skippedStopped` output needs label refinement
 
 ### Tests
-- [ ] `test_stop_processing_blocks_same_group` (higher-priority rule with group `G`, stop_processing=True blocks lower-priority rule with group `G`)
-- [ ] `test_stop_processing_does_not_block_different_group` (group `G` does not stop group `H`)
-- [ ] `test_stop_processing_no_group_is_no_op` (stop_processing=True, stop_group="" → no stopping)
-- [ ] `test_validation_rejects_stop_processing_without_group`
-- [ ] `test_distinct_stop_groups_endpoint`
-- [ ] Frontend RuleBuilder test: toggle disabled when group empty, enabled when set
-- [ ] Verify existing regression: `test_multiple_matching_rules_all_fire` still passes
+- [x] `test_stop_processing_blocks_same_group` (higher-priority rule with group `G`, stop_processing=True blocks lower-priority rule with group `G`)
+- [x] `test_stop_processing_does_not_block_different_group` (group `G` does not stop group `H`)
+- [x] `test_stop_processing_no_group_is_no_op` (stop_processing=True, stop_group="" → no stopping)
+- [x] `test_validation_rejects_stop_processing_without_group`
+- [x] `test_distinct_stop_groups_endpoint`
+- [x] Frontend RuleBuilder test: toggle disabled when group empty, enabled when set
+- [x] Verify existing regression: `test_multiple_matching_rules_all_fire` still passes
 
 ## References
 - [ADR 0076](0076-per-rule-stop-processing-flag.md) — superseded by this ADR
