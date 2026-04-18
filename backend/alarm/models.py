@@ -358,11 +358,17 @@ class Rule(models.Model):
         return f"{self.kind}:{self.name}"
 
     def clean(self):
-        """Reject stop_processing=True without a non-empty stop_group (ADR 0084)."""
+        """Normalize stop_group and reject stop_processing without a group (ADR 0084).
+
+        DRF ModelSerializer does not call full_clean(); the API gate is
+        RuleUpsertSerializer.validate. This hook guards admin / management /
+        explicit full_clean() paths.
+        """
         from django.core.exceptions import ValidationError
 
         super().clean()
-        if self.stop_processing and not (self.stop_group or "").strip():
+        self.stop_group = (self.stop_group or "").strip()
+        if self.stop_processing and not self.stop_group:
             raise ValidationError({"stop_group": "stop_processing requires a non-empty stop_group."})
 
 

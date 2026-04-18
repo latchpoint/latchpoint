@@ -22,6 +22,7 @@ export function useRuleStopGroupsQuery() {
   return useQuery({
     queryKey: queryKeys.rules.stopGroups,
     queryFn: rulesService.stopGroups,
+    staleTime: 60_000,
   })
 }
 

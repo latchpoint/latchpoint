@@ -119,6 +119,29 @@ class StopProcessingValidatorTests(APITestCase):
         self.assertFalse(body["stop_processing"])
         self.assertEqual(body["stop_group"], "door-entry")
 
+    def test_post_strips_whitespace_stop_group(self):
+        """Surrounding whitespace on stop_group must be stripped before persisting."""
+        url = reverse("alarm-rules")
+        resp = self.client.post(
+            url,
+            data=self._payload(stop_processing=True, stop_group="  door-entry  "),
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 201)
+        body = self._body(resp)
+        self.assertEqual(body["stop_group"], "door-entry")
+
+    def test_post_rejects_whitespace_only_stop_group_when_stopping(self):
+        """A whitespace-only stop_group is equivalent to empty once stripped and must be rejected."""
+        url = reverse("alarm-rules")
+        resp = self.client.post(
+            url,
+            data=self._payload(stop_processing=True, stop_group="   "),
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("stop_group", self._errors(resp))
+
     def test_patch_rejects_enabling_stop_processing_without_group(self):
         """PATCH that flips stop_processing=True while stop_group is still empty must fail."""
         create = self.client.post(

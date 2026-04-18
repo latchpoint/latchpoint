@@ -131,11 +131,14 @@ class RuleUpsertSerializer(serializers.ModelSerializer):
             "stop_processing",
             getattr(instance, "stop_processing", False) if instance else False,
         )
-        stop_group = attrs.get(
+        raw_stop_group = attrs.get(
             "stop_group",
             getattr(instance, "stop_group", "") if instance else "",
         )
-        if stop_processing and not (stop_group or "").strip():
+        stop_group = (raw_stop_group or "").strip()
+        if "stop_group" in attrs:
+            attrs["stop_group"] = stop_group
+        if stop_processing and not stop_group:
             raise serializers.ValidationError({"stop_group": "stop_processing requires a non-empty stop_group."})
 
         return attrs
