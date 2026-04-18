@@ -85,7 +85,7 @@ class RuleSimulateView(APIView):
 
 class RuleStopGroupsView(APIView):
     """
-    GET /api/rules/stop-groups/
+    GET /api/alarm/rules/stop-groups/
 
     Returns the distinct set of non-empty stop_group values currently in use, for
     frontend autocomplete (ADR 0084).
@@ -93,9 +93,12 @@ class RuleStopGroupsView(APIView):
 
     def get(self, request):
         """Return the distinct non-empty stop_group values across all rules."""
-        # Clear the model's default ordering before .distinct(); otherwise Postgres
-        # includes the ORDER BY columns in SELECT DISTINCT, defeating de-duplication.
-        groups = sorted(Rule.objects.exclude(stop_group="").order_by().values_list("stop_group", flat=True).distinct())
+        # Order by the same column used for DISTINCT so Postgres can sort in the DB
+        # while preserving de-duplication (the model's default ordering would otherwise
+        # get appended to SELECT DISTINCT and defeat dedup).
+        groups = list(
+            Rule.objects.exclude(stop_group="").order_by("stop_group").values_list("stop_group", flat=True).distinct()
+        )
         return Response({"groups": groups}, status=status.HTTP_200_OK)
 
 

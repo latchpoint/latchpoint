@@ -74,7 +74,7 @@ Add `stop_group` to `RuleSerializer.Meta.fields` and `RuleUpsertSerializer.Meta.
 
 ### 7. New API endpoint
 
-`GET /api/rules/stop-groups/` returns the distinct set of non-empty `stop_group` values currently in use, for frontend autocomplete:
+`GET /api/alarm/rules/stop-groups/` returns the distinct set of non-empty `stop_group` values currently in use, for frontend autocomplete:
 
 ```json
 { "groups": ["door-entry-handling", "perimeter-alerts", "guest-mode-overrides"] }
