@@ -54,14 +54,17 @@ describe('RuleQueryBuilder', () => {
   // unmounted `EntityStateValueEditor` and reset its local `isOpen` to
   // false — closing the entity picker popover on the user's first click.
   //
-  // The fix hoists `CustomValueEditor` to module scope so its identity is
-  // permanent. This assertion pins that invariant: if someone moves the
-  // dispatcher back inside the component body (or replaces it with a
-  // `useCallback`/`useMemo` result), the named import below disappears and
-  // this test fails loudly before the regression can ship.
+  // The fix hoists `CustomValueEditor` to module scope. This assertion
+  // pins the stable contract: the dispatcher is exported from the module
+  // as a function. The named import at the top of this file would fail at
+  // module load if the export ever moved back inside the component body,
+  // and the behavioral test below pins the user-visible symptom across
+  // re-renders. We deliberately avoid asserting on `Function.name` since
+  // bundlers/minifiers can rename functions and safe refactors (e.g.
+  // wrapping the dispatcher in `React.memo`) would change the name while
+  // preserving the actual invariant.
   it('CustomValueEditor dispatcher lives at module scope', () => {
     expect(typeof CustomValueEditor).toBe('function')
-    expect(CustomValueEditor.name).toBe('CustomValueEditor')
   })
 
   // Behavioral regression guard. The structural test above pins the
