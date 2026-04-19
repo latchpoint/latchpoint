@@ -19,20 +19,18 @@ import {
   TimeInRangeValueEditor,
 } from './valueEditors'
 import type { Entity } from '@/types/rules'
+import type { EntitySource, FrigateConfig, ValueEditorContext } from './types'
+
+export type { EntitySource } from './types'
+
 
 interface RuleQueryBuilderProps {
   query: RuleGroupType
   onQueryChange: (query: RuleGroupType) => void
   entities: Entity[]
-  frigateConfig?: {
-    cameras: string[]
-    zonesByCamera: Record<string, string[]>
-  }
+  frigateConfig?: FrigateConfig
   disabled?: boolean
 }
-
-// Entity sources for filtering
-export type EntitySource = 'home_assistant' | 'zwavejs' | 'zigbee2mqtt' | 'all'
 
 // Field definitions for the query builder
 const fields: Field[] = [
@@ -128,19 +126,27 @@ const translations = {
 // unmounts the value-editor instance — local state (e.g. dropdown open/closed)
 // survives parent re-renders. Per-render data is forwarded through the
 // QueryBuilder `context` prop and arrives here on props.context.
-function CustomValueEditor(props: ValueEditorProps) {
-  const { field } = props
-  const context = (props as ValueEditorProps & { context?: unknown }).context
+// Exported for a structural regression test (see RuleQueryBuilder.test.tsx)
+// that guards against anyone moving this back inside the component body.
+export function CustomValueEditor(props: ValueEditorProps) {
+  const { field, context } = props
+  const editorContext = context as ValueEditorContext | undefined
 
   if (field === 'alarm_state_in') {
     return <AlarmStateValueEditor {...props} />
   }
   if (field === 'entity_state' || field?.startsWith('entity_state_')) {
     const sourceFilter = fieldToSource[field] ?? 'all'
-    return <EntityStateValueEditor {...props} context={context as never} sourceFilter={sourceFilter} />
+    return (
+      <EntityStateValueEditor
+        {...props}
+        context={editorContext}
+        sourceFilter={sourceFilter}
+      />
+    )
   }
   if (field === 'frigate_person_detected') {
-    return <FrigateValueEditor {...props} context={context as never} />
+    return <FrigateValueEditor {...props} context={editorContext} />
   }
   if (field === 'time_in_range') {
     return <TimeInRangeValueEditor {...props} />
@@ -172,7 +178,7 @@ export function RuleQueryBuilder({
   // Context object passed to value editors via QueryBuilder's `context` prop.
   // Memoised so a single identity is reused across renders whenever the inputs
   // haven't meaningfully changed.
-  const context = useMemo(
+  const context = useMemo<ValueEditorContext>(
     () => ({
       entities: entityOptions,
       frigate: frigateConfig,
