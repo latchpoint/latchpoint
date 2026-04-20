@@ -99,8 +99,10 @@ const fields: Field[] = [
   },
 ]
 
-// Map field names to entity sources for filtering
-const fieldToSource: Record<string, EntitySource> = {
+// Map field names to entity sources for filtering. `Partial` makes the
+// lookup honest — only these four keys resolve; any other field yields
+// `undefined`, which the `?? 'all'` fallback at the call site handles.
+const fieldToSource: Partial<Record<string, EntitySource>> = {
   entity_state: 'all',
   entity_state_ha: 'home_assistant',
   entity_state_zwavejs: 'zwavejs',

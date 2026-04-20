@@ -28,8 +28,17 @@ export interface ValueEditorContext {
   frigate?: FrigateConfig
 }
 
-// Field names that map to our condition operators
-export type ConditionFieldName = 'alarm_state_in' | 'entity_state' | 'frigate_person_detected' | 'time_in_range'
+// Field names that map to our condition operators. Source-specific
+// `entity_state_*` variants are produced by converters.ts and registered as
+// fields in RuleQueryBuilder.tsx, so they belong in the union.
+export type ConditionFieldName =
+  | 'alarm_state_in'
+  | 'entity_state'
+  | 'entity_state_ha'
+  | 'entity_state_zwavejs'
+  | 'entity_state_z2m'
+  | 'frigate_person_detected'
+  | 'time_in_range'
 
 // Custom rule value types
 export interface AlarmStateValue {
