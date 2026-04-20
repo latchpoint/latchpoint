@@ -4,25 +4,13 @@
  */
 import { useState, useMemo } from 'react'
 import type { ValueEditorProps } from 'react-querybuilder'
-import type { EntityStateValue } from '../types'
+import type { EntitySource, EntityStateValue, ValueEditorContext } from '../types'
 import { Input } from '@/components/ui/input'
 import { cn } from '@/lib/utils'
 
-interface EntityOption {
-  entityId: string
-  name: string
-  domain: string
-  source?: string
-}
-
-// Entity source filter type
-export type EntitySourceFilter = 'home_assistant' | 'zwavejs' | 'zigbee2mqtt' | 'all'
-
 interface EntityStateValueEditorProps extends ValueEditorProps {
-  context?: {
-    entities?: EntityOption[]
-  }
-  sourceFilter?: EntitySourceFilter
+  context?: ValueEditorContext
+  sourceFilter?: EntitySource
 }
 
 export function EntityStateValueEditor({

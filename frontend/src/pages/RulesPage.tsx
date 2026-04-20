@@ -21,8 +21,12 @@ import {
 import { useSyncZwavejsEntitiesMutation } from '@/hooks/useZwavejs'
 import { queryKeys } from '@/types'
 import { getErrorMessage } from '@/types/errors'
-import type { Rule } from '@/types/rules'
+import type { Entity, Rule } from '@/types/rules'
 import type { RuleDefinition } from '@/types/ruleDefinition'
+
+// Stable empty-array reference so downstream memos (entityOptions, context, …)
+// don't invalidate every render while the entities query resolves.
+const EMPTY_ENTITIES: Entity[] = []
 
 export function RulesPage() {
   const queryClient = useQueryClient()
@@ -245,7 +249,7 @@ export function RulesPage() {
             <RuleBuilder
               key={`${selectedRuleId ?? 'new'}-${builderNonce}`}
               rule={selectedRule}
-              entities={entities || []}
+              entities={entities ?? EMPTY_ENTITIES}
               onSave={handleSave}
               onCancel={handleCancel}
               onDelete={selectedRule ? handleDelete : undefined}

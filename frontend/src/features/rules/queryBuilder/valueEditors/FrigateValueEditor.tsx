@@ -3,20 +3,13 @@
  * Provides camera/zone selection and threshold configuration
  */
 import type { ValueEditorProps } from 'react-querybuilder'
-import type { FrigatePersonValue } from '../types'
+import type { FrigatePersonValue, ValueEditorContext } from '../types'
 import { Input } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
 import { cn } from '@/lib/utils'
 
-interface FrigateContext {
-  cameras?: string[]
-  zonesByCamera?: Record<string, string[]>
-}
-
 interface FrigateValueEditorProps extends ValueEditorProps {
-  context?: {
-    frigate?: FrigateContext
-  }
+  context?: ValueEditorContext
 }
 
 export function FrigateValueEditor({

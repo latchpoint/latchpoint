@@ -3,8 +3,42 @@
  */
 import type { RuleGroupType, RuleType, Field, OptionGroup } from 'react-querybuilder'
 
-// Field names that map to our condition operators
-export type ConditionFieldName = 'alarm_state_in' | 'entity_state' | 'frigate_person_detected' | 'time_in_range'
+// Entity source filter used to scope entity pickers to a single integration.
+export type EntitySource = 'home_assistant' | 'zwavejs' | 'zigbee2mqtt' | 'all'
+
+// Minimal entity shape consumed by value editors. Kept separate from the
+// wire-format Entity type so editors don't depend on unrelated fields.
+export interface EntityOption {
+  entityId: string
+  name: string
+  domain: string
+  source?: string
+}
+
+export interface FrigateConfig {
+  cameras: string[]
+  zonesByCamera: Record<string, string[]>
+}
+
+// Shape of the object forwarded to value editors via QueryBuilder's `context`
+// prop. Centralising this type lets every editor narrow `props.context`
+// without scattered casts.
+export interface ValueEditorContext {
+  entities: EntityOption[]
+  frigate?: FrigateConfig
+}
+
+// Field names that map to our condition operators. Source-specific
+// `entity_state_*` variants are produced by converters.ts and registered as
+// fields in RuleQueryBuilder.tsx, so they belong in the union.
+export type ConditionFieldName =
+  | 'alarm_state_in'
+  | 'entity_state'
+  | 'entity_state_ha'
+  | 'entity_state_zwavejs'
+  | 'entity_state_z2m'
+  | 'frigate_person_detected'
+  | 'time_in_range'
 
 // Custom rule value types
 export interface AlarmStateValue {

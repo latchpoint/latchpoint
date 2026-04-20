@@ -2,7 +2,7 @@
  * Rule Query Builder component using react-querybuilder
  * Provides a visual interface for building alarm rule conditions
  */
-import { useMemo, useCallback } from 'react'
+import { useMemo } from 'react'
 import {
   QueryBuilder,
   type RuleGroupType,
@@ -19,20 +19,18 @@ import {
   TimeInRangeValueEditor,
 } from './valueEditors'
 import type { Entity } from '@/types/rules'
+import type { EntitySource, FrigateConfig, ValueEditorContext } from './types'
+
+export type { EntitySource } from './types'
+
 
 interface RuleQueryBuilderProps {
   query: RuleGroupType
   onQueryChange: (query: RuleGroupType) => void
   entities: Entity[]
-  frigateConfig?: {
-    cameras: string[]
-    zonesByCamera: Record<string, string[]>
-  }
+  frigateConfig?: FrigateConfig
   disabled?: boolean
 }
-
-// Entity sources for filtering
-export type EntitySource = 'home_assistant' | 'zwavejs' | 'zigbee2mqtt' | 'all'
 
 // Field definitions for the query builder
 const fields: Field[] = [
@@ -101,8 +99,10 @@ const fields: Field[] = [
   },
 ]
 
-// Map field names to entity sources for filtering
-const fieldToSource: Record<string, EntitySource> = {
+// Map field names to entity sources for filtering. `Partial` makes the
+// lookup honest — only these four keys resolve; any other field yields
+// `undefined`, which the `?? 'all'` fallback at the call site handles.
+const fieldToSource: Partial<Record<string, EntitySource>> = {
   entity_state: 'all',
   entity_state_ha: 'home_assistant',
   entity_state_zwavejs: 'zwavejs',
@@ -123,6 +123,41 @@ const translations = {
   removeGroup: { label: '×', title: 'Remove group' },
 }
 
+// Module-scope dispatcher. Its identity is stable for the lifetime of the app,
+// so react-querybuilder never treats it as a "new component type" and never
+// unmounts the value-editor instance — local state (e.g. dropdown open/closed)
+// survives parent re-renders. Per-render data is forwarded through the
+// QueryBuilder `context` prop and arrives here on props.context.
+// Exported for a structural regression test (see RuleQueryBuilder.test.tsx)
+// that guards against anyone moving this back inside the component body.
+export function CustomValueEditor(props: ValueEditorProps) {
+  const { field, context } = props
+  const editorContext = context as ValueEditorContext | undefined
+
+  if (field === 'alarm_state_in') {
+    return <AlarmStateValueEditor {...props} />
+  }
+  if (field === 'entity_state' || field?.startsWith('entity_state_')) {
+    const sourceFilter = fieldToSource[field] ?? 'all'
+    return (
+      <EntityStateValueEditor
+        {...props}
+        context={editorContext}
+        sourceFilter={sourceFilter}
+      />
+    )
+  }
+  if (field === 'frigate_person_detected') {
+    return <FrigateValueEditor {...props} context={editorContext} />
+  }
+  if (field === 'time_in_range') {
+    return <TimeInRangeValueEditor {...props} />
+  }
+  return null
+}
+
+const controlElements = { valueEditor: CustomValueEditor }
+
 export function RuleQueryBuilder({
   query,
   onQueryChange,
@@ -142,44 +177,15 @@ export function RuleQueryBuilder({
     [entities]
   )
 
-  // Context object passed to value editors
-  const context = useMemo(
+  // Context object passed to value editors via QueryBuilder's `context` prop.
+  // Memoised so a single identity is reused across renders whenever the inputs
+  // haven't meaningfully changed.
+  const context = useMemo<ValueEditorContext>(
     () => ({
       entities: entityOptions,
       frigate: frigateConfig,
     }),
     [entityOptions, frigateConfig]
-  )
-
-  // Custom value editor that routes to the correct editor based on field
-  const CustomValueEditor = useCallback(
-    (props: ValueEditorProps) => {
-      const { field } = props
-
-      // Handle alarm state
-      if (field === 'alarm_state_in') {
-        return <AlarmStateValueEditor {...props} context={context} />
-      }
-
-      // Handle entity state fields (includes generic 'entity_state' and source-specific fields)
-      if (field === 'entity_state' || field?.startsWith('entity_state_')) {
-        const sourceFilter = fieldToSource[field] || 'all'
-        return <EntityStateValueEditor {...props} context={context} sourceFilter={sourceFilter} />
-      }
-
-      // Handle frigate
-      if (field === 'frigate_person_detected') {
-        return <FrigateValueEditor {...props} context={context} />
-      }
-
-      // Handle time of day
-      if (field === 'time_in_range') {
-        return <TimeInRangeValueEditor {...props} />
-      }
-
-      return null
-    },
-    [context]
   )
 
   return (
@@ -215,9 +221,8 @@ export function RuleQueryBuilder({
         onQueryChange={onQueryChange}
         translations={translations}
         combinators={combinators}
-        controlElements={{
-          valueEditor: CustomValueEditor,
-        }}
+        controlElements={controlElements}
+        context={context}
         addRuleToNewGroups
         showCombinatorsBetweenRules={false}
         resetOnFieldChange={false}
