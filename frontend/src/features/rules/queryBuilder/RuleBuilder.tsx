@@ -17,10 +17,12 @@ import { Textarea } from '@/components/ui/textarea'
 import { RuleQueryBuilder } from './RuleQueryBuilder'
 import { ActionsEditor } from './ActionsEditor'
 import { alarmDslToRqbWithFor, rqbToAlarmDsl, createEmptyQuery } from './converters'
+import type { RuleSeed } from './cloneRule'
 import { useRuleStopGroupsQuery } from '@/hooks/useRulesQueries'
 
 interface RuleBuilderProps {
   rule?: Rule | null
+  seed?: RuleSeed | null
   entities: Entity[]
   frigateConfig?: {
     cameras: string[]
@@ -44,6 +46,7 @@ interface RuleBuilderProps {
 
 export function RuleBuilder({
   rule,
+  seed,
   entities,
   frigateConfig,
   onSave,
@@ -51,14 +54,18 @@ export function RuleBuilder({
   onDelete,
   isSaving,
 }: RuleBuilderProps) {
+  // Initial values come from an existing rule (edit mode) or a seed (copied rule,
+  // still treated as a new rule because it has no id).
+  const source = rule ?? seed ?? null
+
   // Form state (kind is auto-derived from actions by backend)
-  const [name, setName] = useState(rule?.name || '')
-  const [enabled, setEnabled] = useState(rule?.enabled ?? true)
-  const [priority, setPriority] = useState(rule?.priority ?? 100)
-  const [stopProcessing, setStopProcessing] = useState(rule?.stopProcessing ?? false)
-  const [stopGroup, setStopGroup] = useState<string>(rule?.stopGroup ?? '')
+  const [name, setName] = useState(source?.name || '')
+  const [enabled, setEnabled] = useState(source?.enabled ?? true)
+  const [priority, setPriority] = useState(source?.priority ?? 100)
+  const [stopProcessing, setStopProcessing] = useState(source?.stopProcessing ?? false)
+  const [stopGroup, setStopGroup] = useState<string>(source?.stopGroup ?? '')
   const [cooldownSeconds, setCooldownSeconds] = useState<string>(
-    rule?.cooldownSeconds?.toString() || ''
+    source?.cooldownSeconds?.toString() || ''
   )
 
   // Existing stop groups for the autocomplete datalist
@@ -84,15 +91,15 @@ export function RuleBuilder({
   // Condition state (RQB format) and forSeconds
   // Pass entities to converter for source lookup
   const [query, setQuery] = useState<RuleGroupType>(() => {
-    if (rule?.definition?.when) {
-      return alarmDslToRqbWithFor(rule.definition.when, entities).query
+    if (source?.definition?.when) {
+      return alarmDslToRqbWithFor(source.definition.when, entities).query
     }
     return createEmptyQuery()
   })
 
   const [forSeconds, setForSeconds] = useState<string>(() => {
-    if (rule?.definition?.when) {
-      const result = alarmDslToRqbWithFor(rule.definition.when, entities)
+    if (source?.definition?.when) {
+      const result = alarmDslToRqbWithFor(source.definition.when, entities)
       return result.forSeconds?.toString() || ''
     }
     return ''
@@ -100,7 +107,7 @@ export function RuleBuilder({
 
   // Actions state
   const [actions, setActions] = useState<ActionNode[]>(() => {
-    return rule?.definition?.then || [{ type: 'alarm_trigger' }]
+    return source?.definition?.then || [{ type: 'alarm_trigger' }]
   })
 
   // Parse forSeconds to number
@@ -218,6 +225,7 @@ export function RuleBuilder({
   )
 
   const isEditing = rule?.id != null
+  const isCopy = !isEditing && !!seed
 
   return (
     <form onSubmit={handleSubmit} className="space-y-4">
@@ -225,10 +233,12 @@ export function RuleBuilder({
       <Card>
         <CardHeader>
           <CardTitle className="text-base">
-            {isEditing ? 'Edit Rule' : 'New Rule'}
+            {isEditing ? 'Edit Rule' : isCopy ? 'New Rule (copied)' : 'New Rule'}
           </CardTitle>
           <CardDescription>
-            Configure the rule's basic settings
+            {isCopy
+              ? 'Review the copied settings and save to create a new rule'
+              : "Configure the rule's basic settings"}
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">

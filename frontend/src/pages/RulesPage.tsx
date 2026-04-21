@@ -4,11 +4,13 @@
 import { useState, useCallback } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
+import { Copy } from 'lucide-react'
 import { Page } from '@/components/layout'
 import { Spinner } from '@/components/ui/spinner'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
-import { RuleBuilder, RulesPageActions } from '@/features/rules/queryBuilder'
+import { RuleBuilder, RulesPageActions, cloneRule } from '@/features/rules/queryBuilder'
+import type { RuleSeed } from '@/features/rules/queryBuilder'
 import { RulesPageNotices } from '@/features/rules/components/RulesPageNotices'
 import {
   useRulesQuery,
@@ -48,6 +50,7 @@ export function RulesPage() {
   const [selectedRuleId, setSelectedRuleId] = useState<number | null>(
     editId ? parseInt(editId, 10) : null
   )
+  const [seed, setSeed] = useState<RuleSeed | null>(null)
   const [builderNonce, setBuilderNonce] = useState(0)
 
   const selectedRule = rules?.find((r) => r.id === selectedRuleId) || null
@@ -83,6 +86,7 @@ export function RulesPage() {
         })
         setNotice(result.notice)
         setSelectedRuleId(null)
+        setSeed(null)
         setBuilderNonce((n) => n + 1)
       } catch (err) {
         setError(getErrorMessage(err) || 'Failed to save rule')
@@ -101,6 +105,7 @@ export function RulesPage() {
       const result = await deleteMutation.mutateAsync(selectedRuleId)
       setNotice(result.notice)
       setSelectedRuleId(null)
+      setSeed(null)
     } catch (err) {
       setError(getErrorMessage(err) || 'Failed to delete rule')
     }
@@ -108,17 +113,32 @@ export function RulesPage() {
 
   const handleCancel = useCallback(() => {
     setSelectedRuleId(null)
+    setSeed(null)
     setBuilderNonce((n) => n + 1)
   }, [])
 
   const handleNewRule = useCallback(() => {
     setSelectedRuleId(null)
+    setSeed(null)
     setBuilderNonce((n) => n + 1)
   }, [])
 
   const handleEditRule = useCallback((rule: Rule) => {
     setSelectedRuleId(rule.id)
+    setSeed(null)
   }, [])
+
+  const handleCopyRule = useCallback(
+    (rule: Rule) => {
+      if (!confirm(`Copy rule "${rule.name}"?`)) return
+      const existingNames = rules?.map((r) => r.name) ?? []
+      const nextSeed = cloneRule(rule, existingNames)
+      setSelectedRuleId(null)
+      setSeed(nextSeed)
+      setBuilderNonce((n) => n + 1)
+    },
+    [rules]
+  )
 
   const handleSyncHaEntities = useCallback(async () => {
     setNotice(null)
@@ -205,39 +225,48 @@ export function RulesPage() {
 
             {rules && rules.length > 0 && (
               <div className="space-y-1 pt-2">
-                {rules.map((rule) => (
-                  <button
-                    key={rule.id}
-                    onClick={() => handleEditRule(rule)}
-                    className={`w-full rounded-md px-3 py-2 text-left text-sm transition-colors ${
-                      selectedRuleId === rule.id
-                        ? 'bg-primary text-primary-foreground'
-                        : 'hover:bg-muted'
-                    }`}
-                  >
-                    <div className="flex items-center justify-between">
-                      <span className="font-medium">{rule.name}</span>
-                      <span
-                        className={`text-xs ${
-                          selectedRuleId === rule.id
-                            ? 'text-primary-foreground/70'
-                            : 'text-muted-foreground'
-                        }`}
-                      >
-                        {rule.kind}
-                      </span>
-                    </div>
+                {rules.map((rule) => {
+                  const isSelected = selectedRuleId === rule.id
+                  const mutedClass = isSelected
+                    ? 'text-primary-foreground/70'
+                    : 'text-muted-foreground'
+                  return (
                     <div
-                      className={`text-xs ${
-                        selectedRuleId === rule.id
-                          ? 'text-primary-foreground/70'
-                          : 'text-muted-foreground'
+                      key={rule.id}
+                      className={`flex items-stretch gap-1 rounded-md transition-colors ${
+                        isSelected ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'
                       }`}
                     >
-                      {rule.enabled ? 'Enabled' : 'Disabled'} • Priority {rule.priority}
+                      <button
+                        type="button"
+                        onClick={() => handleEditRule(rule)}
+                        className="flex-1 rounded-l-md px-3 py-2 text-left text-sm"
+                      >
+                        <div className="flex items-center justify-between">
+                          <span className="font-medium">{rule.name}</span>
+                          <span className={`text-xs ${mutedClass}`}>{rule.kind}</span>
+                        </div>
+                        <div className={`text-xs ${mutedClass}`}>
+                          {rule.enabled ? 'Enabled' : 'Disabled'} • Priority {rule.priority}
+                        </div>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleCopyRule(rule)}
+                        aria-label={`Copy rule ${rule.name}`}
+                        title="Copy rule"
+                        disabled={isBusy}
+                        className={`flex items-center justify-center rounded-r-md px-2 text-sm transition-colors ${
+                          isSelected
+                            ? 'hover:bg-primary-foreground/10'
+                            : 'hover:bg-muted-foreground/10'
+                        } disabled:cursor-not-allowed disabled:opacity-50`}
+                      >
+                        <Copy className="h-4 w-4" aria-hidden="true" />
+                      </button>
                     </div>
-                  </button>
-                ))}
+                  )
+                })}
               </div>
             )}
           </CardContent>
@@ -247,8 +276,9 @@ export function RulesPage() {
         <div>
           {showBuilder && (
             <RuleBuilder
-              key={`${selectedRuleId ?? 'new'}-${builderNonce}`}
+              key={`${selectedRuleId ?? (seed ? 'copy' : 'new')}-${builderNonce}`}
               rule={selectedRule}
+              seed={selectedRule ? null : seed}
               entities={entities ?? EMPTY_ENTITIES}
               onSave={handleSave}
               onCancel={handleCancel}
