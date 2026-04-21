@@ -100,6 +100,7 @@ This document tracks all Architecture Decision Records (ADRs) and their implemen
 | [0082](0082-zwavejs-lock-domain-and-synced-code-lifecycle.md) | Z-Wave JS Lock Domain, Synced Code Read-Only, Physical Deletion & Code-Capable Lock Filtering | **Implemented** |
 | [0083](0083-door-code-pin-visibility.md) | Door Code PIN Visibility with Encrypted Storage | **Proposed** |
 | [0084](0084-user-named-stop-groups-for-rule-processing.md) | User-Named Stop Groups for Rule Processing (supersedes 0076) | **Proposed** |
+| [0085](0085-rule-copy-duplicate-action.md) | Rule Copy / Duplicate Action | **Proposed** |
 
 ---
 
@@ -110,12 +111,12 @@ This document tracks all Architecture Decision Records (ADRs) and their implemen
 | **Implemented** | 61 |
 | **Partially Implemented** | 1 |
 | **Accepted** | 1 |
-| **Proposed** | 6 |
+| **Proposed** | 7 |
 | **Superseded** | 14 |
-| **Total** | 83 |
+| **Total** | 84 |
 
 Note: **Superseded** includes entries marked as "Superseded by …" in the table above.
 
 ---
 
-*Last updated: 2026-04-17* (ADR 0084 added; ADR 0076 superseded by 0084; 0076 and 0077 rows restored to index)
+*Last updated: 2026-04-20* (ADR 0085 added: frontend-only rule copy action)

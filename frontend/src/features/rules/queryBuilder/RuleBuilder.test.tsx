@@ -49,4 +49,38 @@ describe('RuleBuilder', () => {
     expect(screen.getByText(/time of day must be combined/i)).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /update rule/i })).toBeDisabled()
   })
+
+  it('initializes from a seed in create mode with the copied values', async () => {
+    const { RuleBuilder } = await import('./RuleBuilder')
+
+    const seed = {
+      name: 'My Rule (copy)',
+      kind: 'trigger' as const,
+      enabled: true,
+      priority: 77,
+      stopProcessing: false,
+      stopGroup: '',
+      schemaVersion: 1,
+      definition: { when: null, then: [{ type: 'alarm_trigger' }] },
+      cooldownSeconds: 45,
+    }
+
+    renderWithProviders(
+      <RuleBuilder
+        rule={null}
+        seed={seed}
+        entities={[]}
+        onSave={vi.fn()}
+        onCancel={() => {}}
+        isSaving={false}
+      />
+    )
+
+    expect(screen.getByText(/new rule \(copied\)/i)).toBeInTheDocument()
+    expect(screen.getByLabelText(/name/i)).toHaveValue('My Rule (copy)')
+    expect(screen.getByLabelText(/priority/i)).toHaveValue(77)
+    expect(screen.getByLabelText(/cooldown/i)).toHaveValue(45)
+    expect(screen.getByRole('button', { name: /create rule/i })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /delete rule/i })).not.toBeInTheDocument()
+  })
 })

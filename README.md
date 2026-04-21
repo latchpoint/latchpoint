@@ -55,13 +55,7 @@ A home security alarm panel system built with Django and React. Integrates with 
 cp .env.example .env
 ```
 
-2. Configure required variables in `.env`:
-```
-SECRET_KEY=your-secure-secret-key
-DEBUG=False
-ALLOWED_HOSTS=your-domain.com
-DATABASE_URL=postgresql://user:pass@host:5432/dbname
-```
+2. Edit `.env` and set values for your deployment. See [`.env.example`](.env.example) for the full list of variables, defaults, and inline documentation.
 
 3. Pull and run the production container (published to GHCR):
 ```bash
@@ -143,26 +137,6 @@ docker compose exec app python backend/manage.py shell
 
 ### Environment Variables
 
-| Variable | Description | Default |
-|----------|-------------|---------|
-| SECRET_KEY | Django secret key | Required |
-| DEBUG | Enable debug mode | False |
-| LOG_LEVEL | Logging level | INFO |
-| ALLOWED_HOSTS | Comma-separated allowed hosts | localhost,127.0.0.1 |
-| DATABASE_URL | PostgreSQL connection URL | SQLite fallback |
-| CSRF_TRUSTED_ORIGINS | Trusted origins for CSRF | Auto-configured in debug |
-| CORS_ALLOWED_ORIGINS | Allowed CORS origins | - |
-| SETTINGS_ENCRYPTION_KEY | Fernet key for encrypting secrets at rest ([how to generate](#generating-a-fernet-key)) | Auto-generated on first boot |
-| DATA_DIR | Persistent data directory for auto-generated encryption key | /data |
+See [`.env.example`](.env.example) for the full list of environment variables, defaults, and inline documentation (including how to generate a `SETTINGS_ENCRYPTION_KEY`).
 
-### Generating a Fernet Key
-
-If omitted, a key is auto-generated on first boot and saved to `DATA_DIR`. To set one explicitly:
-
-```bash
-python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
-```
-
-Copy the output into your `.env` as `SETTINGS_ENCRYPTION_KEY`.
-
-Integration settings (Home Assistant, MQTT, Z-Wave JS, Zigbee2MQTT, Frigate) and notification providers are configured entirely via the Settings UI and stored in the database with encryption at rest (ADR 0079). See `.env.example` for the minimal set of required environment variables.
+Integration settings (Home Assistant, MQTT, Z-Wave JS, Zigbee2MQTT, Frigate) and notification providers are configured entirely via the Settings UI and stored in the database with encryption at rest (ADR 0079), which is why the env file stays minimal.
