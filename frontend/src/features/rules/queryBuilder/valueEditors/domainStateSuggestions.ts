@@ -1,3 +1,4 @@
+/** Domain → canonical HA state suggestions. See ADR-0086. */
 export const DOMAIN_STATE_SUGGESTIONS: Record<string, readonly string[]> = {
   binary_sensor: ['on', 'off'],
   switch: ['on', 'off'],

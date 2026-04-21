@@ -49,10 +49,7 @@ export function EntityStateValueEditor({
 
   const selectedEntity = entities.find((e) => e.entityId === currentValue.entityId)
   const equalsListId = useId()
-  const suggestions = useMemo(
-    () => [...getSuggestionsForDomain(selectedEntity?.domain)],
-    [selectedEntity?.domain],
-  )
+  const suggestions = getSuggestionsForDomain(selectedEntity?.domain)
 
   const handleEntitySelect = (entityId: string) => {
     handleOnChange({ ...currentValue, entityId } as EntityStateValue)
@@ -150,7 +147,7 @@ export function EntityStateValueEditor({
         onChange={(e) => handleEqualsChange(e.target.value)}
         disabled={disabled}
         placeholder="on"
-        className="h-8 w-28"
+        className="h-8 w-44"
       />
     </div>
   )

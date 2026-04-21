@@ -4,7 +4,7 @@ import { Input } from '@/components/ui/input'
 
 export interface DatalistInputProps extends React.ComponentProps<typeof Input> {
   listId: string
-  options: string[]
+  options: readonly string[]
   maxOptions?: number
 }
 
