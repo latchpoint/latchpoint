@@ -80,8 +80,9 @@ describe('getSuggestionsForDomain', () => {
       'alarm_control_panel',
     ]
     for (const domain of required) {
-      expect(DOMAIN_STATE_SUGGESTIONS[domain]).toBeDefined()
-      expect(DOMAIN_STATE_SUGGESTIONS[domain].length).toBeGreaterThan(0)
+      const values = DOMAIN_STATE_SUGGESTIONS[domain]
+      expect(values).toBeDefined()
+      expect(values?.length ?? 0).toBeGreaterThan(0)
     }
   })
 })

@@ -58,7 +58,7 @@ type any custom value.
   opaque string by design.
 - **Existing UI primitive**: `frontend/src/components/ui/datalist-input.tsx`
   already wraps an `<Input>` with an HTML5 `<datalist>`. Its API is
-  `{ listId, options: string[], maxOptions?: number }` and it natively
+  `{ listId, options: readonly string[], maxOptions?: number }` and it natively
   supports "pick from list OR type anything" with zero JS logic.
 
 ### Requirements

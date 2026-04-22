@@ -1,18 +1,18 @@
 /** Domain → canonical HA state suggestions. See ADR-0086. */
-export const DOMAIN_STATE_SUGGESTIONS: Readonly<Record<string, readonly string[]>> = Object.freeze({
-  binary_sensor: ['on', 'off'],
-  switch: ['on', 'off'],
-  input_boolean: ['on', 'off'],
-  light: ['on', 'off'],
-  fan: ['on', 'off'],
-  lock: ['locked', 'unlocked', 'locking', 'unlocking', 'jammed', 'unknown'],
-  cover: ['open', 'closed', 'opening', 'closing', 'stopped'],
-  climate: ['off', 'heat', 'cool', 'heat_cool', 'auto', 'dry', 'fan_only'],
-  media_player: ['off', 'on', 'idle', 'playing', 'paused', 'standby', 'buffering'],
-  person: ['home', 'not_home'],
-  device_tracker: ['home', 'not_home'],
-  sun: ['above_horizon', 'below_horizon'],
-  alarm_control_panel: [
+export const DOMAIN_STATE_SUGGESTIONS: Readonly<Partial<Record<string, readonly string[]>>> = Object.freeze({
+  binary_sensor: Object.freeze(['on', 'off']),
+  switch: Object.freeze(['on', 'off']),
+  input_boolean: Object.freeze(['on', 'off']),
+  light: Object.freeze(['on', 'off']),
+  fan: Object.freeze(['on', 'off']),
+  lock: Object.freeze(['locked', 'unlocked', 'locking', 'unlocking', 'jammed', 'unknown']),
+  cover: Object.freeze(['open', 'closed', 'opening', 'closing', 'stopped']),
+  climate: Object.freeze(['off', 'heat', 'cool', 'heat_cool', 'auto', 'dry', 'fan_only']),
+  media_player: Object.freeze(['off', 'on', 'idle', 'playing', 'paused', 'standby', 'buffering']),
+  person: Object.freeze(['home', 'not_home']),
+  device_tracker: Object.freeze(['home', 'not_home']),
+  sun: Object.freeze(['above_horizon', 'below_horizon']),
+  alarm_control_panel: Object.freeze([
     'disarmed',
     'armed_home',
     'armed_away',
@@ -22,7 +22,7 @@ export const DOMAIN_STATE_SUGGESTIONS: Readonly<Record<string, readonly string[]
     'pending',
     'arming',
     'triggered',
-  ],
+  ]),
 })
 
 const EMPTY: readonly string[] = Object.freeze([])
