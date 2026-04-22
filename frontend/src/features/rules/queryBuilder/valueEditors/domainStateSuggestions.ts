@@ -1,5 +1,5 @@
 /** Domain → canonical HA state suggestions. See ADR-0086. */
-export const DOMAIN_STATE_SUGGESTIONS: Record<string, readonly string[]> = {
+export const DOMAIN_STATE_SUGGESTIONS: Readonly<Record<string, readonly string[]>> = Object.freeze({
   binary_sensor: ['on', 'off'],
   switch: ['on', 'off'],
   input_boolean: ['on', 'off'],
@@ -23,7 +23,7 @@ export const DOMAIN_STATE_SUGGESTIONS: Record<string, readonly string[]> = {
     'arming',
     'triggered',
   ],
-}
+})
 
 const EMPTY: readonly string[] = Object.freeze([])
 
