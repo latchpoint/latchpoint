@@ -8,6 +8,7 @@ This document tracks all Architecture Decision Records (ADRs) and their implemen
 |--------|-------------|
 | **Implemented** | Decision has been fully implemented |
 | **Partially Implemented** | Core functionality implemented, some features pending |
+| **Accepted** | Decision approved; implementation pending or ongoing |
 | **Proposed** | Decision documented but not yet implemented |
 | **Superseded** | Replaced by a newer ADR |
 
@@ -109,8 +110,8 @@ This document tracks all Architecture Decision Records (ADRs) and their implemen
 
 | Status | Count |
 |--------|-------|
-| **Implemented** | 61 |
-| **Partially Implemented** | 1 |
+| **Implemented** | 62 |
+| **Partially Implemented** | 0 |
 | **Accepted** | 1 |
 | **Proposed** | 8 |
 | **Superseded** | 14 |
@@ -120,4 +121,4 @@ Note: **Superseded** includes entries marked as "Superseded by …" in the table
 
 ---
 
-*Last updated: 2026-04-20* (ADR 0086 added: domain-aware editable dropdown for HA entity `equals` values)
+*Last updated: 2026-04-21* (ADR 0086 added; summary counts recalculated)
