@@ -1,3 +1,4 @@
+import type { ComponentProps } from 'react'
 import { describe, expect, it, vi } from 'vitest'
 import { fireEvent, render } from '@testing-library/react'
 
@@ -26,7 +27,7 @@ function renderEditor({
     handleOnChange,
     disabled: false,
     context,
-  } as unknown as React.ComponentProps<typeof EntityStateValueEditor>
+  } as unknown as ComponentProps<typeof EntityStateValueEditor>
   return render(<EntityStateValueEditor {...props} />)
 }
 
