@@ -2,11 +2,13 @@
  * Custom value editor for entity_state condition
  * Provides entity picker + state value input
  */
-import { useState, useMemo } from 'react'
+import { useId, useMemo, useState } from 'react'
 import type { ValueEditorProps } from 'react-querybuilder'
 import type { EntitySource, EntityStateValue, ValueEditorContext } from '../types'
+import { DatalistInput } from '@/components/ui/datalist-input'
 import { Input } from '@/components/ui/input'
 import { cn } from '@/lib/utils'
+import { getSuggestionsForDomain } from './domainStateSuggestions'
 
 interface EntityStateValueEditorProps extends ValueEditorProps {
   context?: ValueEditorContext
@@ -46,6 +48,8 @@ export function EntityStateValueEditor({
   }, [entities, searchText, sourceFilter])
 
   const selectedEntity = entities.find((e) => e.entityId === currentValue.entityId)
+  const equalsListId = useId()
+  const suggestions = getSuggestionsForDomain(selectedEntity?.domain)
 
   const handleEntitySelect = (entityId: string) => {
     handleOnChange({ ...currentValue, entityId } as EntityStateValue)
@@ -133,14 +137,17 @@ export function EntityStateValueEditor({
       {/* Equals label */}
       <span className="text-sm text-muted-foreground">equals</span>
 
-      {/* State value input */}
-      <Input
+      {/* State value input — editable datalist: pick a canonical domain
+          state or type a custom value. */}
+      <DatalistInput
+        listId={equalsListId}
+        options={suggestions}
         type="text"
         value={currentValue.equals}
         onChange={(e) => handleEqualsChange(e.target.value)}
         disabled={disabled}
         placeholder="on"
-        className="h-8 w-20"
+        className="h-8 w-44"
       />
     </div>
   )

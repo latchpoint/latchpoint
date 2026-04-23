@@ -8,6 +8,7 @@ This document tracks all Architecture Decision Records (ADRs) and their implemen
 |--------|-------------|
 | **Implemented** | Decision has been fully implemented |
 | **Partially Implemented** | Core functionality implemented, some features pending |
+| **Accepted** | Decision approved; implementation pending or ongoing |
 | **Proposed** | Decision documented but not yet implemented |
 | **Superseded** | Replaced by a newer ADR |
 
@@ -101,6 +102,7 @@ This document tracks all Architecture Decision Records (ADRs) and their implemen
 | [0083](0083-door-code-pin-visibility.md) | Door Code PIN Visibility with Encrypted Storage | **Proposed** |
 | [0084](0084-user-named-stop-groups-for-rule-processing.md) | User-Named Stop Groups for Rule Processing (supersedes 0076) | **Proposed** |
 | [0085](0085-rule-copy-duplicate-action.md) | Rule Copy / Duplicate Action | **Proposed** |
+| [0086](0086-ha-entity-equals-editable-dropdown.md) | Domain-Aware Editable Dropdown for HA Entity `equals` Values | **Proposed** |
 
 ---
 
@@ -108,15 +110,15 @@ This document tracks all Architecture Decision Records (ADRs) and their implemen
 
 | Status | Count |
 |--------|-------|
-| **Implemented** | 61 |
-| **Partially Implemented** | 1 |
+| **Implemented** | 62 |
+| **Partially Implemented** | 0 |
 | **Accepted** | 1 |
-| **Proposed** | 7 |
+| **Proposed** | 8 |
 | **Superseded** | 14 |
-| **Total** | 84 |
+| **Total** | 85 |
 
 Note: **Superseded** includes entries marked as "Superseded by …" in the table above.
 
 ---
 
-*Last updated: 2026-04-20* (ADR 0085 added: frontend-only rule copy action)
+*Last updated: 2026-04-21* (ADR 0086 added; summary counts recalculated)
