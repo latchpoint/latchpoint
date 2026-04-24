@@ -1,8 +1,9 @@
-import { useMemo, useState } from 'react'
+import { useMemo } from 'react'
 import { UserRole } from '@/lib/constants'
 import { useCurrentUserQuery } from '@/hooks/useAuthQueries'
 import { useDraftFromQuery } from '@/features/settings/hooks/useDraftFromQuery'
 import { shallowEqual, splitMaskedFlags } from '@/features/settings/hooks/settingsUtils'
+import { useSettingsActionFeedback } from '@/features/integrations/lib/settingsFeedback'
 import { useMqttSettingsQuery, useMqttStatusQuery } from '@/hooks/useMqtt'
 import { useHomeAssistantSettingsQuery, useHomeAssistantStatus, useUpdateHomeAssistantSettingsMutation } from '@/hooks/useHomeAssistant'
 import {
@@ -38,8 +39,7 @@ export function useHomeAssistantSettingsModel() {
   const mqttReady = Boolean(mqttStatusQuery.data?.enabled && mqttSettingsQuery.data?.host)
   const haMqttEntityStatus = haMqttAlarmEntityStatusQuery.data?.status ?? null
 
-  const [error, setError] = useState<string | null>(null)
-  const [notice, setNotice] = useState<string | null>(null)
+  const feedback = useSettingsActionFeedback()
 
   const { values: initialDraft, maskedFlags } = useMemo(
     () => splitMaskedFlags(haSettingsQuery.data),
@@ -66,60 +66,52 @@ export function useHomeAssistantSettingsModel() {
 
   const saveConnection = async () => {
     if (!connectionDraft) return
-    setError(null)
-    setNotice(null)
-    try {
-      await updateHaSettings.mutateAsync(connectionDraft)
-      setNotice('Saved Home Assistant settings.')
-    } catch (err) {
-      setError(getErrorMessage(err) || 'Failed to save Home Assistant settings.')
-    }
+    await feedback.runSave(
+      () => updateHaSettings.mutateAsync(connectionDraft),
+      'Saved Home Assistant settings.'
+    )
   }
 
   const connectionSaveDisabled = !connectionDraft || !initialDraft || shallowEqual(connectionDraft, initialDraft)
 
-  const refreshConnection = () => {
-    void haStatusQuery.refetch()
-    void haSettingsQuery.refetch()
-  }
+  const refreshConnection = () =>
+    feedback.runRefresh(async () => {
+      await Promise.all([haStatusQuery.refetch(), haSettingsQuery.refetch()])
+    }, 'Refreshed Home Assistant settings.')
 
-  const refreshMqttEntity = () => {
-    void haMqttAlarmEntityQuery.refetch()
-    void haMqttAlarmEntityStatusQuery.refetch()
-  }
+  const refreshMqttEntity = () =>
+    feedback.runRefresh(async () => {
+      await Promise.all([haMqttAlarmEntityQuery.refetch(), haMqttAlarmEntityStatusQuery.refetch()])
+    }, 'Refreshed Home Assistant MQTT alarm entity.')
 
   const saveMqttEntity = async () => {
     if (!haMqttEntityDraft) return
-    setError(null)
-    setNotice(null)
-    try {
-      await updateHaMqttAlarmEntityMutation.mutateAsync({
-        enabled: haMqttEntityDraft.enabled,
-        entityName: haMqttEntityDraft.entityName.trim(),
-        haEntityId: haMqttEntityDraft.haEntityId.trim(),
-        alsoRenameInHomeAssistant: haMqttEntityDraft.alsoRenameInHomeAssistant,
-      })
-      setNotice('Saved Home Assistant MQTT alarm entity settings.')
-    } catch (err) {
-      setError(getErrorMessage(err) || 'Failed to save Home Assistant MQTT alarm entity settings')
-    }
+    await feedback.runSave(
+      () =>
+        updateHaMqttAlarmEntityMutation.mutateAsync({
+          enabled: haMqttEntityDraft.enabled,
+          entityName: haMqttEntityDraft.entityName.trim(),
+          haEntityId: haMqttEntityDraft.haEntityId.trim(),
+          alsoRenameInHomeAssistant: haMqttEntityDraft.alsoRenameInHomeAssistant,
+        }),
+      'Saved Home Assistant MQTT alarm entity settings.'
+    )
   }
 
   const publishDiscovery = async () => {
-    setError(null)
-    setNotice(null)
     try {
       await publishHaMqttDiscoveryMutation.mutateAsync()
-      setNotice('Published Home Assistant discovery config.')
+      feedback.setNotice('Published Home Assistant discovery config.')
     } catch (err) {
-      setError(getErrorMessage(err) || 'Failed to publish discovery config')
+      feedback.setError(getErrorMessage(err) || 'Failed to publish discovery config')
     }
   }
 
   return {
     isAdmin,
-    error,
-    notice,
+    error: feedback.error,
+    notice: feedback.notice,
+    noticeVariant: feedback.noticeVariant,
     mqttReady,
     haMqttEntityStatus,
     haStatusQuery,
