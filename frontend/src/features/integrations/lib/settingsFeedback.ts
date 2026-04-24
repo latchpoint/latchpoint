@@ -27,6 +27,12 @@ export function categorizeSettingsError(
       message: `${verbPrefix} failed: ${firstKey} — ${firstMsg}`,
     }
   }
+  if (isRecord(err) && (err.code === '401' || err.code === '403')) {
+    return {
+      category: 'auth',
+      message: `${verbPrefix} failed: you don't have permission to change these settings.`,
+    }
+  }
   return {
     category: 'unknown',
     message: `${verbPrefix} failed: ${String(err)}`,
