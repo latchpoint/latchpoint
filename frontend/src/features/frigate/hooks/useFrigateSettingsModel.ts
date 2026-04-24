@@ -1,9 +1,10 @@
-import { useMemo, useState } from 'react'
+import { useMemo } from 'react'
 import { UserRole } from '@/lib/constants'
 import { parseIntInRange } from '@/lib/numberParsers'
 import { useCurrentUserQuery } from '@/hooks/useAuthQueries'
 import { getErrorMessage } from '@/types/errors'
 import { useDraftFromQuery } from '@/features/settings/hooks/useDraftFromQuery'
+import { useSettingsActionFeedback } from '@/features/integrations/lib/settingsFeedback'
 import { useFrigateDetectionsQuery, useFrigateSettingsQuery, useFrigateStatusQuery, useUpdateFrigateSettingsMutation } from '@/hooks/useFrigate'
 
 export type FrigateDraft = {
@@ -43,8 +44,7 @@ export function useFrigateSettingsModel() {
   }, [settingsQuery.data])
 
   const { draft, setDraft } = useDraftFromQuery<FrigateDraft>(initialDraft)
-  const [error, setError] = useState<string | null>(null)
-  const [notice, setNotice] = useState<string | null>(null)
+  const feedback = useSettingsActionFeedback()
 
   const isBusy = settingsQuery.isLoading || updateSettings.isPending
 
@@ -53,8 +53,6 @@ export function useFrigateSettingsModel() {
     const ok = window.confirm('Reset Frigate settings?\n\nThis will disable Frigate and reset its MQTT topic and retention settings to defaults.')
     if (!ok) return
     void (async () => {
-      setError(null)
-      setNotice(null)
       try {
         await updateSettings.mutateAsync({
           enabled: false,
@@ -85,18 +83,16 @@ export function useFrigateSettingsModel() {
               }
             : prev
         )
-        setNotice('Reset Frigate settings.')
+        feedback.setNotice('Reset Frigate settings.')
       } catch (err) {
-        setError(getErrorMessage(err) || 'Failed to reset Frigate settings.')
+        feedback.setError(getErrorMessage(err) || 'Failed to reset Frigate settings.')
       }
     })()
   }
 
   const save = async () => {
     if (!isAdmin || !draft || isBusy) return
-    setError(null)
-    setNotice(null)
-    try {
+    await feedback.runSave(async () => {
       const retentionSeconds = parseIntInRange('Retention seconds', draft.retentionSeconds, 60, 60 * 60 * 24 * 7)
       const runRulesDebounceSeconds = parseIntInRange('Rules debounce seconds', draft.runRulesDebounceSeconds, 0, 60)
       const runRulesMaxPerMinute = parseIntInRange('Rules max per minute', draft.runRulesMaxPerMinute, 0, 600)
@@ -128,10 +124,7 @@ export function useFrigateSettingsModel() {
         knownZonesByCamera,
       })
       await statusQuery.refetch()
-      setNotice('Saved Frigate settings.')
-    } catch (err) {
-      setError(getErrorMessage(err) || 'Failed to save Frigate settings.')
-    }
+    }, 'Saved Frigate settings.')
   }
 
   const status = statusQuery.data
@@ -140,22 +133,20 @@ export function useFrigateSettingsModel() {
   const mqttConfigured = status?.mqtt?.configured ?? false
   const mqttReady = mqttEnabled && mqttConfigured
 
-  const refresh = () => {
-    setError(null)
-    setNotice(null)
-    void statusQuery.refetch()
-    void settingsQuery.refetch()
-    void detectionsQuery.refetch()
-  }
+  const refresh = () =>
+    feedback.runRefresh(async () => {
+      await Promise.all([statusQuery.refetch(), settingsQuery.refetch(), detectionsQuery.refetch()])
+    }, 'Refreshed Frigate settings.')
 
   return {
     isAdmin,
     draft,
     setDraft,
-    error,
-    notice,
-    setError,
-    setNotice,
+    error: feedback.error,
+    notice: feedback.notice,
+    noticeVariant: feedback.noticeVariant,
+    setError: feedback.setError,
+    setNotice: feedback.setNotice,
     isBusy,
     mqttReady,
     mqttConnected,
