@@ -33,6 +33,12 @@ export function categorizeSettingsError(
       message: `${verbPrefix} failed: you don't have permission to change these settings.`,
     }
   }
+  if (err instanceof TypeError) {
+    return {
+      category: 'network',
+      message: `${verbPrefix} failed: could not reach the server. Check your connection and try again.`,
+    }
+  }
   return {
     category: 'unknown',
     message: `${verbPrefix} failed: ${String(err)}`,
