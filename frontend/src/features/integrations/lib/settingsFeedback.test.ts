@@ -32,4 +32,17 @@ describe('categorizeSettingsError', () => {
     expect(result.message).toContain('Refresh failed')
     expect(result.message.toLowerCase()).toContain('connection')
   })
+
+  it('AC-4: returns server category for HTTP >= 500 and appends detail', () => {
+    const err = {
+      message: 'Internal server error',
+      code: '503',
+      details: { detail: ['database unreachable'] },
+    }
+    const result = categorizeSettingsError(err, 'Save')
+    expect(result.category).toBe('server')
+    expect(result.message).toContain('Save failed')
+    expect(result.message).toContain('server')
+    expect(result.message).toContain('database unreachable')
+  })
 })
