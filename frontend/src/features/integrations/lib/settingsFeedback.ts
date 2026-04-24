@@ -110,6 +110,10 @@ export function useSettingsActionFeedback(
     }, ms)
   }
 
+  /**
+   * Resets error and notice to null, noticeVariant to 'info', and cancels any
+   * pending auto-dismiss timer. Safe to call when no state is set.
+   */
   const clear = () => {
     cancelDismiss()
     setErrorState(null)
