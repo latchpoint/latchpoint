@@ -178,4 +178,40 @@ describe('useSettingsActionFeedback', () => {
       vi.useRealTimers()
     }
   })
+
+  it('AC-11: setNotice/setError write info-variant without auto-dismiss', async () => {
+    vi.useFakeTimers()
+    try {
+      const { result } = renderHook(() => useSettingsActionFeedback({ saveDismissMs: 5000 }))
+
+      // setNotice: info variant, no auto-dismiss, clears prior error
+      act(() => {
+        result.current.setError('boom')
+      })
+      expect(result.current.error).toBe('boom')
+      expect(result.current.notice).toBeNull()
+
+      act(() => {
+        result.current.setNotice('sync ran')
+      })
+      expect(result.current.notice).toBe('sync ran')
+      expect(result.current.noticeVariant).toBe('info')
+      expect(result.current.error).toBeNull()
+
+      // no auto-dismiss
+      await act(async () => {
+        vi.advanceTimersByTime(60_000)
+      })
+      expect(result.current.notice).toBe('sync ran')
+
+      // setError clears prior notice
+      act(() => {
+        result.current.setError('sync failed')
+      })
+      expect(result.current.error).toBe('sync failed')
+      expect(result.current.notice).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })
