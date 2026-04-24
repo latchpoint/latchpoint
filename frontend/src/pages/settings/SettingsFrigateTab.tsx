@@ -9,7 +9,13 @@ export function SettingsFrigateTab() {
   const status = model.statusQuery.data
 
   return (
-    <SettingsTabShell isAdmin={model.isAdmin} error={model.error} notice={model.notice} adminMessage="Admin role required to edit Frigate settings.">
+    <SettingsTabShell
+      isAdmin={model.isAdmin}
+      error={model.error}
+      notice={model.notice}
+      noticeVariant={model.noticeVariant}
+      adminMessage="Admin role required to edit Frigate settings."
+    >
       <div className="space-y-6 pt-6">
         <FrigateOverviewCard
           isAdmin={model.isAdmin}

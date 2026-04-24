@@ -6,7 +6,12 @@ export function SettingsMqttTab() {
   const model = useMqttSettingsModel()
 
   return (
-    <SettingsTabShell isAdmin={model.isAdmin} error={model.error} notice={model.notice}>
+    <SettingsTabShell
+      isAdmin={model.isAdmin}
+      error={model.error}
+      notice={model.notice}
+      noticeVariant={model.noticeVariant}
+    >
       <MqttSettingsCard
         isAdmin={model.isAdmin}
         isBusy={model.isBusy}

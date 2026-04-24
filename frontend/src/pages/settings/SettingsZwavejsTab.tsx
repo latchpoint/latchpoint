@@ -6,7 +6,12 @@ export function SettingsZwavejsTab() {
   const model = useZwavejsSettingsModel()
 
   return (
-    <SettingsTabShell isAdmin={model.isAdmin} error={model.error} notice={model.notice}>
+    <SettingsTabShell
+      isAdmin={model.isAdmin}
+      error={model.error}
+      notice={model.notice}
+      noticeVariant={model.noticeVariant}
+    >
       <ZwavejsSettingsCard
         isAdmin={model.isAdmin}
         isBusy={model.isBusy}
