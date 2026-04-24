@@ -1,4 +1,5 @@
 import { isRecord } from '@/lib/typeGuards'
+import { getErrorMessage } from '@/types/errors'
 
 export type SettingsErrorCategory =
   | 'validation'
@@ -55,6 +56,6 @@ export function categorizeSettingsError(
   }
   return {
     category: 'unknown',
-    message: `${verbPrefix} failed: ${String(err)}`,
+    message: `${verbPrefix} failed: ${getErrorMessage(err)}`,
   }
 }
