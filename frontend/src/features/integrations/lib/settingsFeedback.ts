@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { isRecord } from '@/lib/typeGuards'
 import { getErrorMessage } from '@/types/errors'
 
@@ -58,4 +59,62 @@ export function categorizeSettingsError(
     category: 'unknown',
     message: `${verbPrefix} failed: ${getErrorMessage(err)}`,
   }
+}
+
+export type NoticeVariant = 'info' | 'success'
+
+export interface UseSettingsActionFeedbackResult {
+  error: string | null
+  notice: string | null
+  noticeVariant: NoticeVariant
+  setError: (msg: string | null) => void
+  setNotice: (msg: string | null) => void
+  clear: () => void
+  runSave: <T>(fn: () => Promise<T>, successMessage: string) => Promise<T | undefined>
+  runRefresh: <T>(fn: () => Promise<T>, successMessage: string) => Promise<T | undefined>
+}
+
+export interface UseSettingsActionFeedbackOptions {
+  saveDismissMs?: number
+  refreshDismissMs?: number
+}
+
+export function useSettingsActionFeedback(
+  _options?: UseSettingsActionFeedbackOptions
+): UseSettingsActionFeedbackResult {
+  const [error, setErrorState] = useState<string | null>(null)
+  const [notice, setNoticeState] = useState<string | null>(null)
+  const [noticeVariant, setNoticeVariant] = useState<NoticeVariant>('info')
+
+  const clear = () => {
+    setErrorState(null)
+    setNoticeState(null)
+    setNoticeVariant('info')
+  }
+
+  const setError = (msg: string | null) => {
+    setErrorState(msg)
+  }
+
+  const setNotice = (msg: string | null) => {
+    setNoticeState(msg)
+  }
+
+  async function runSave<T>(fn: () => Promise<T>, successMessage: string): Promise<T | undefined> {
+    try {
+      const result = await fn()
+      setErrorState(null)
+      setNoticeState(successMessage)
+      setNoticeVariant('success')
+      return result
+    } catch {
+      return undefined
+    }
+  }
+
+  async function runRefresh<T>(fn: () => Promise<T>, successMessage: string): Promise<T | undefined> {
+    return runSave(fn, successMessage)
+  }
+
+  return { error, notice, noticeVariant, setError, setNotice, clear, runSave, runRefresh }
 }
