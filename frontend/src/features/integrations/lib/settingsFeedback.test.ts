@@ -45,4 +45,11 @@ describe('categorizeSettingsError', () => {
     expect(result.message).toContain('server')
     expect(result.message).toContain('database unreachable')
   })
+
+  it('AC-5: returns unknown category with getErrorMessage fallback', () => {
+    const err = new Error('Something weird happened')
+    const result = categorizeSettingsError(err, 'Save')
+    expect(result.category).toBe('unknown')
+    expect(result.message).toBe('Save failed: Something weird happened')
+  })
 })
