@@ -107,7 +107,10 @@ export function useSettingsActionFeedback(
       setNoticeState(successMessage)
       setNoticeVariant('success')
       return result
-    } catch {
+    } catch (err) {
+      const { message } = categorizeSettingsError(err, 'Save')
+      setErrorState(message)
+      setNoticeState(null)
       return undefined
     }
   }
