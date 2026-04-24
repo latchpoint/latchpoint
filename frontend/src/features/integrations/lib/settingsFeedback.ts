@@ -121,12 +121,27 @@ export function useSettingsActionFeedback(
     setNoticeVariant('info')
   }
 
+  /**
+   * Write an error without triggering categorization or auto-dismiss.
+   * Entry point for non-Save/Refresh actions (sync, reset, publishDiscovery)
+   * that need to surface a message through the same banner slot. Clears any
+   * prior notice.
+   */
   const setError = (msg: string | null) => {
+    cancelDismiss()
     setErrorState(msg)
+    setNoticeState(null)
   }
 
+  /**
+   * Write an info-variant notice without scheduling auto-dismiss.
+   * Entry point for non-Save/Refresh actions. Clears any prior error.
+   */
   const setNotice = (msg: string | null) => {
+    cancelDismiss()
     setNoticeState(msg)
+    setNoticeVariant('info')
+    setErrorState(null)
   }
 
   async function runAction<T>(
