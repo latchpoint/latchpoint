@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { isRecord } from '@/lib/typeGuards'
 import { getErrorMessage } from '@/types/errors'
 
@@ -80,13 +80,38 @@ export interface UseSettingsActionFeedbackOptions {
 }
 
 export function useSettingsActionFeedback(
-  _options?: UseSettingsActionFeedbackOptions
+  options?: UseSettingsActionFeedbackOptions
 ): UseSettingsActionFeedbackResult {
+  const saveDismissMs = options?.saveDismissMs ?? 5000
+  const refreshDismissMs = options?.refreshDismissMs ?? 3000
+
   const [error, setErrorState] = useState<string | null>(null)
   const [notice, setNoticeState] = useState<string | null>(null)
   const [noticeVariant, setNoticeVariant] = useState<NoticeVariant>('info')
+  const dismissTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const cancelDismiss = () => {
+    if (dismissTimerRef.current !== null) {
+      clearTimeout(dismissTimerRef.current)
+      dismissTimerRef.current = null
+    }
+  }
+
+  useEffect(() => {
+    return () => cancelDismiss()
+  }, [])
+
+  const scheduleDismiss = (ms: number) => {
+    cancelDismiss()
+    dismissTimerRef.current = setTimeout(() => {
+      setNoticeState(null)
+      setNoticeVariant('info')
+      dismissTimerRef.current = null
+    }, ms)
+  }
 
   const clear = () => {
+    cancelDismiss()
     setErrorState(null)
     setNoticeState(null)
     setNoticeVariant('info')
@@ -103,16 +128,20 @@ export function useSettingsActionFeedback(
   async function runAction<T>(
     fn: () => Promise<T>,
     successMessage: string,
-    verb: SettingsActionVerb
+    verb: SettingsActionVerb,
+    dismissMs: number
   ): Promise<T | undefined> {
     try {
       const result = await fn()
+      cancelDismiss()
       setErrorState(null)
       setNoticeState(successMessage)
       setNoticeVariant('success')
+      scheduleDismiss(dismissMs)
       return result
     } catch (err) {
       const { message } = categorizeSettingsError(err, verb)
+      cancelDismiss()
       setErrorState(message)
       setNoticeState(null)
       return undefined
@@ -120,11 +149,11 @@ export function useSettingsActionFeedback(
   }
 
   async function runSave<T>(fn: () => Promise<T>, successMessage: string): Promise<T | undefined> {
-    return runAction(fn, successMessage, 'Save')
+    return runAction(fn, successMessage, 'Save', saveDismissMs)
   }
 
   async function runRefresh<T>(fn: () => Promise<T>, successMessage: string): Promise<T | undefined> {
-    return runAction(fn, successMessage, 'Refresh')
+    return runAction(fn, successMessage, 'Refresh', refreshDismissMs)
   }
 
   return { error, notice, noticeVariant, setError, setNotice, clear, runSave, runRefresh }
