@@ -151,4 +151,31 @@ describe('useSettingsActionFeedback', () => {
       vi.useRealTimers()
     }
   })
+
+  it('AC-10: clear() resets error, notice, variant and cancels pending timer', async () => {
+    vi.useFakeTimers()
+    try {
+      const { result } = renderHook(() => useSettingsActionFeedback({ saveDismissMs: 5000 }))
+      await act(async () => {
+        await result.current.runSave(async () => null, 'Saved.')
+      })
+      expect(result.current.notice).toBe('Saved.')
+      expect(result.current.noticeVariant).toBe('success')
+
+      act(() => {
+        result.current.clear()
+      })
+      expect(result.current.notice).toBeNull()
+      expect(result.current.error).toBeNull()
+      expect(result.current.noticeVariant).toBe('info')
+
+      // pending timer was cancelled; advancing doesn't re-trigger anything
+      await act(async () => {
+        vi.advanceTimersByTime(10_000)
+      })
+      expect(result.current.notice).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })
