@@ -1,5 +1,9 @@
-import { describe, expect, it } from 'vitest'
-import { categorizeSettingsError } from '@/features/integrations/lib/settingsFeedback'
+import { describe, expect, it, vi } from 'vitest'
+import { act, renderHook } from '@testing-library/react'
+import {
+  categorizeSettingsError,
+  useSettingsActionFeedback,
+} from '@/features/integrations/lib/settingsFeedback'
 
 describe('categorizeSettingsError', () => {
   it('AC-1: returns validation category for HTTP 400 with field errors', () => {
@@ -51,5 +55,19 @@ describe('categorizeSettingsError', () => {
     const result = categorizeSettingsError(err, 'Save')
     expect(result.category).toBe('unknown')
     expect(result.message).toBe('Save failed: Something weird happened')
+  })
+})
+
+describe('useSettingsActionFeedback', () => {
+  it('AC-6: runSave on success sets success notice and returns the value', async () => {
+    const { result } = renderHook(() => useSettingsActionFeedback())
+    let returned: unknown
+    await act(async () => {
+      returned = await result.current.runSave(async () => 42, 'Saved ok.')
+    })
+    expect(returned).toBe(42)
+    expect(result.current.notice).toBe('Saved ok.')
+    expect(result.current.noticeVariant).toBe('success')
+    expect(result.current.error).toBeNull()
   })
 })
