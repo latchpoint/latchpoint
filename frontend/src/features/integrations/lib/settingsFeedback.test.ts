@@ -13,4 +13,15 @@ describe('categorizeSettingsError', () => {
     expect(result.message).toContain('host')
     expect(result.message).toContain('required')
   })
+
+  it('AC-2: returns auth category for HTTP 401 and 403', () => {
+    const err401 = { message: 'Unauthorized', code: '401' }
+    const err403 = { message: 'Forbidden', code: '403' }
+    const r401 = categorizeSettingsError(err401, 'Save')
+    const r403 = categorizeSettingsError(err403, 'Refresh')
+    expect(r401.category).toBe('auth')
+    expect(r403.category).toBe('auth')
+    expect(r401.message).toBe("Save failed: you don't have permission to change these settings.")
+    expect(r403.message).toBe("Refresh failed: you don't have permission to change these settings.")
+  })
 })
