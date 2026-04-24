@@ -24,4 +24,12 @@ describe('categorizeSettingsError', () => {
     expect(r401.message).toBe("Save failed: you don't have permission to change these settings.")
     expect(r403.message).toBe("Refresh failed: you don't have permission to change these settings.")
   })
+
+  it('AC-3: returns network category when fetch threw a TypeError', () => {
+    const err = new TypeError('Failed to fetch')
+    const result = categorizeSettingsError(err, 'Refresh')
+    expect(result.category).toBe('network')
+    expect(result.message).toContain('Refresh failed')
+    expect(result.message.toLowerCase()).toContain('connection')
+  })
 })
