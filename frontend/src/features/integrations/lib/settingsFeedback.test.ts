@@ -105,4 +105,50 @@ describe('useSettingsActionFeedback', () => {
     )
     expect(result.current.notice).toBeNull()
   })
+
+  it('AC-9: success notices auto-clear after dismissMs; errors do not', async () => {
+    vi.useFakeTimers()
+    try {
+      const { result } = renderHook(() =>
+        useSettingsActionFeedback({ saveDismissMs: 5000, refreshDismissMs: 3000 })
+      )
+      await act(async () => {
+        await result.current.runSave(async () => null, 'Saved.')
+      })
+      expect(result.current.notice).toBe('Saved.')
+      await act(async () => {
+        vi.advanceTimersByTime(4999)
+      })
+      expect(result.current.notice).toBe('Saved.')
+      await act(async () => {
+        vi.advanceTimersByTime(2)
+      })
+      expect(result.current.notice).toBeNull()
+
+      // refresh uses its own dismiss
+      await act(async () => {
+        await result.current.runRefresh(async () => null, 'Refreshed.')
+      })
+      expect(result.current.notice).toBe('Refreshed.')
+      await act(async () => {
+        vi.advanceTimersByTime(3001)
+      })
+      expect(result.current.notice).toBeNull()
+
+      // errors never auto-clear
+      await act(async () => {
+        await result.current.runSave(async () => {
+          throw { message: 'x', code: '500' }
+        }, 'Saved.')
+      })
+      const errBefore = result.current.error
+      expect(errBefore).not.toBeNull()
+      await act(async () => {
+        vi.advanceTimersByTime(60_000)
+      })
+      expect(result.current.error).toBe(errBefore)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })
