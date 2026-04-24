@@ -100,7 +100,11 @@ export function useSettingsActionFeedback(
     setNoticeState(msg)
   }
 
-  async function runSave<T>(fn: () => Promise<T>, successMessage: string): Promise<T | undefined> {
+  async function runAction<T>(
+    fn: () => Promise<T>,
+    successMessage: string,
+    verb: SettingsActionVerb
+  ): Promise<T | undefined> {
     try {
       const result = await fn()
       setErrorState(null)
@@ -108,15 +112,19 @@ export function useSettingsActionFeedback(
       setNoticeVariant('success')
       return result
     } catch (err) {
-      const { message } = categorizeSettingsError(err, 'Save')
+      const { message } = categorizeSettingsError(err, verb)
       setErrorState(message)
       setNoticeState(null)
       return undefined
     }
   }
 
+  async function runSave<T>(fn: () => Promise<T>, successMessage: string): Promise<T | undefined> {
+    return runAction(fn, successMessage, 'Save')
+  }
+
   async function runRefresh<T>(fn: () => Promise<T>, successMessage: string): Promise<T | undefined> {
-    return runSave(fn, successMessage)
+    return runAction(fn, successMessage, 'Refresh')
   }
 
   return { error, notice, noticeVariant, setError, setNotice, clear, runSave, runRefresh }
