@@ -392,6 +392,27 @@ feedback pattern proves out.
   - No CLAUDE.md change — the contract lives in the helper's JSDoc and is
     discoverable from any integration settings model.
 
+## Acceptance Criteria
+
+- [ ] **AC-1:** `categorizeSettingsError(err, 'Save')` returns `{category: 'validation', message}` when the error has HTTP status 400 with field errors; the message names the first offending field.
+- [ ] **AC-2:** `categorizeSettingsError(err, verb)` returns `{category: 'auth', message}` for HTTP 401 and 403; message reads "<Verb> failed: you don't have permission to change these settings."
+- [ ] **AC-3:** `categorizeSettingsError(err, verb)` returns `{category: 'network', message}` when the error is `ECONNABORTED` / `ERR_NETWORK` / has no response / is a timeout; message tells the user to check their connection.
+- [ ] **AC-4:** `categorizeSettingsError(err, verb)` returns `{category: 'server', message}` for HTTP status >= 500; appends the server `detail` field if present.
+- [ ] **AC-5:** `categorizeSettingsError(err, verb)` returns `{category: 'unknown', message}` for anything else — message prefixed with `<Verb> failed: ` and body from `getErrorMessage(err)`.
+- [ ] **AC-6:** `useSettingsActionFeedback().runSave(fn, msg)` on success sets `notice === msg`, `noticeVariant === 'success'`, `error === null`, and returns the resolved value.
+- [ ] **AC-7:** `useSettingsActionFeedback().runSave(fn, msg)` on failure sets `error` to the categorized message, leaves `notice === null`, and returns `undefined`.
+- [ ] **AC-8:** `useSettingsActionFeedback().runRefresh(fn, msg)` mirrors AC-6/AC-7 with `'Refresh'` as the verb prefix in error messages.
+- [ ] **AC-9:** Success notices auto-clear after `saveDismissMs` (default 5000) for Save and `refreshDismissMs` (default 3000) for Refresh; errors do NOT auto-clear.
+- [ ] **AC-10:** `useSettingsActionFeedback().clear()` resets both `error` and `notice` to `null`, resets `noticeVariant` to `'info'`, and cancels any pending dismiss timer.
+- [ ] **AC-11:** `useSettingsActionFeedback().setNotice(msg)` writes `notice = msg`, forces `noticeVariant = 'info'`, does NOT start the dismiss timer, and clears any prior `error`. `setError(msg)` mirrors it for `error` (and clears `notice`). These are the entry points for non-Save/Refresh actions (`sync`, `reset`, `publishDiscovery`) so they keep today's UX byte-for-byte.
+- [ ] **AC-12:** `<SettingsTabShell noticeVariant="success" notice="x">` renders the notice in the success Alert variant; omitting the prop preserves the existing `info` default (back-compat for non-integration callers).
+- [ ] **AC-13:** `useMqttSettingsModel`'s `save()` routes through `runSave` (success → green notice; failure → categorized red error). Its `refresh()` routes through `runRefresh` (success → green notice; failure → categorized red error).
+- [ ] **AC-14:** Same as AC-13 for `useZwavejsSettingsModel`. The `sync()` action calls `helper.setError` / `helper.setNotice` (info variant, no auto-dismiss) — regression test asserts `sync()` notices stay info-colored and do not auto-clear.
+- [ ] **AC-15:** Same as AC-13 for `useZigbee2mqttSettingsModel`.
+- [ ] **AC-16:** Same as AC-13 for `useFrigateSettingsModel`. The `reset()` action calls `helper.setError` / `helper.setNotice` (info variant, no auto-dismiss) — regression test asserts `reset()` notices stay info-colored and do not auto-clear.
+- [ ] **AC-17:** Same as AC-13 for `useHomeAssistantSettingsModel`, applied to both pairs (`saveConnection`/`refreshConnection` and `saveMqttEntity`/`refreshMqttEntity`) sharing one helper instance. The `publishDiscovery()` action calls `helper.setError` / `helper.setNotice` (info variant, no auto-dismiss) — regression test asserts `publishDiscovery()` notices stay info-colored and do not auto-clear.
+- [ ] **AC-18:** Each of the five integration settings tab pages (`SettingsMqttTab`, `SettingsZwavejsTab`, `SettingsZigbee2mqttTab`, `SettingsFrigateTab`, `SettingsHomeAssistantTab`) passes `noticeVariant={model.noticeVariant}` to `SettingsTabShell`.
+
 ## Related ADRs
 
 - [ADR-0025](./0025-api-error-envelope.md) — API error envelope
