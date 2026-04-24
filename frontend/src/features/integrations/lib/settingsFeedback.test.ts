@@ -70,4 +70,19 @@ describe('useSettingsActionFeedback', () => {
     expect(result.current.noticeVariant).toBe('success')
     expect(result.current.error).toBeNull()
   })
+
+  it('AC-7: runSave on failure sets categorized error and returns undefined', async () => {
+    const { result } = renderHook(() => useSettingsActionFeedback())
+    let returned: unknown = 'sentinel'
+    await act(async () => {
+      returned = await result.current.runSave(async () => {
+        throw { message: 'nope', code: '403' }
+      }, 'Saved ok.')
+    })
+    expect(returned).toBeUndefined()
+    expect(result.current.notice).toBeNull()
+    expect(result.current.error).toBe(
+      "Save failed: you don't have permission to change these settings."
+    )
+  })
 })
