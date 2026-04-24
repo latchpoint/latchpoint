@@ -3,6 +3,9 @@ import { renderHook, act } from '@testing-library/react'
 import { useFrigateSettingsModel } from '@/features/frigate/hooks/useFrigateSettingsModel'
 
 const update = vi.fn().mockResolvedValue({ ok: true })
+const statusRefetch = vi.fn().mockResolvedValue({})
+const settingsRefetch = vi.fn().mockResolvedValue({})
+const detectionsRefetch = vi.fn().mockResolvedValue({})
 
 vi.mock('@/hooks/useAuthQueries', () => {
   return { useCurrentUserQuery: () => ({ data: { role: 'admin' } }) }
@@ -10,7 +13,7 @@ vi.mock('@/hooks/useAuthQueries', () => {
 
 vi.mock('@/hooks/useFrigate', () => {
   return {
-    useFrigateStatusQuery: () => ({ data: { mqtt: { enabled: true, configured: true, connected: true } }, refetch: vi.fn() }),
+    useFrigateStatusQuery: () => ({ data: { mqtt: { enabled: true, configured: true, connected: true } }, refetch: statusRefetch }),
     useFrigateSettingsQuery: () => ({
       data: {
         enabled: false,
@@ -24,10 +27,10 @@ vi.mock('@/hooks/useFrigate', () => {
         knownZonesByCamera: {},
       },
       isLoading: false,
-      refetch: vi.fn(),
+      refetch: settingsRefetch,
     }),
     useUpdateFrigateSettingsMutation: () => ({ isPending: false, mutateAsync: update }),
-    useFrigateDetectionsQuery: () => ({ data: [], refetch: vi.fn() }),
+    useFrigateDetectionsQuery: () => ({ data: [], refetch: detectionsRefetch }),
   }
 })
 
@@ -49,5 +52,54 @@ describe('useFrigateSettingsModel', () => {
 
     expect(update).toHaveBeenCalledWith(expect.objectContaining({ knownZonesByCamera: {} }))
   })
-})
 
+  it('AC-16: save/refresh through helper; reset stays info variant', async () => {
+    update.mockReset().mockResolvedValue({ ok: true })
+    statusRefetch.mockReset().mockResolvedValue({})
+    settingsRefetch.mockReset().mockResolvedValue({})
+    detectionsRefetch.mockReset().mockResolvedValue({})
+
+    const { result } = renderHook(() => useFrigateSettingsModel())
+    await act(async () => {
+      await Promise.resolve()
+    })
+
+    // save success → green notice
+    await act(async () => {
+      await result.current.save()
+    })
+    expect(result.current.noticeVariant).toBe('success')
+    expect(result.current.notice).toMatch(/Saved Frigate/i)
+
+    // save failure → categorized error
+    update.mockRejectedValueOnce({ message: 'x', code: '400', details: { eventsTopic: ['required'] } })
+    await act(async () => {
+      await result.current.save()
+    })
+    expect(result.current.error).toMatch(/^Save failed/)
+    expect(result.current.error).toMatch(/eventsTopic/)
+
+    // refresh success
+    await act(async () => {
+      await result.current.refresh()
+    })
+    expect(result.current.noticeVariant).toBe('success')
+    expect(result.current.notice).toMatch(/Refreshed Frigate/i)
+
+    // reset regression — uses window.confirm; info variant, not 'success'
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
+    try {
+      update.mockResolvedValueOnce({ ok: true })
+      await act(async () => {
+        result.current.reset()
+        await Promise.resolve()
+        await Promise.resolve()
+        await Promise.resolve()
+      })
+      expect(result.current.notice).toBe('Reset Frigate settings.')
+      expect(result.current.noticeVariant).toBe('info')
+    } finally {
+      confirmSpy.mockRestore()
+    }
+  })
+})
