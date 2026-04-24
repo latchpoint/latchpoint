@@ -85,4 +85,24 @@ describe('useSettingsActionFeedback', () => {
       "Save failed: you don't have permission to change these settings."
     )
   })
+
+  it('AC-8: runRefresh uses Refresh verb prefix on failure and green notice on success', async () => {
+    const { result } = renderHook(() => useSettingsActionFeedback())
+    await act(async () => {
+      await result.current.runRefresh(async () => 'data', 'Refreshed.')
+    })
+    expect(result.current.notice).toBe('Refreshed.')
+    expect(result.current.noticeVariant).toBe('success')
+    expect(result.current.error).toBeNull()
+
+    await act(async () => {
+      await result.current.runRefresh(async () => {
+        throw { message: 'nope', code: '401' }
+      }, 'Refreshed.')
+    })
+    expect(result.current.error).toBe(
+      "Refresh failed: you don't have permission to change these settings."
+    )
+    expect(result.current.notice).toBeNull()
+  })
 })
