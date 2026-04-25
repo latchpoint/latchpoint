@@ -87,8 +87,10 @@ export function useZigbee2mqttSettingsModel() {
     void (async () => {
       try {
         await updateSettings.mutateAsync({ enabled: false, baseTopic: DEFAULT_DRAFT.baseTopic })
-        await settingsQuery.refetch()
-        await statusQuery.refetch()
+        const settingsResult = await settingsQuery.refetch()
+        if (settingsResult.isError) throw settingsResult.error
+        const statusResult = await statusQuery.refetch()
+        if (statusResult.isError) throw statusResult.error
         setDraftOverride(null)
         feedback.setNotice('Reset Zigbee2MQTT settings.')
       } catch (err) {
@@ -111,8 +113,10 @@ export function useZigbee2mqttSettingsModel() {
           .map((s) => s.trim())
           .filter(Boolean),
       })
-      await settingsQuery.refetch()
-      await statusQuery.refetch()
+      const settingsResult = await settingsQuery.refetch()
+      if (settingsResult.isError) throw settingsResult.error
+      const statusResult = await statusQuery.refetch()
+      if (statusResult.isError) throw statusResult.error
       setDraftOverride(null)
     }, 'Saved Zigbee2MQTT settings.')
   }
@@ -122,7 +126,8 @@ export function useZigbee2mqttSettingsModel() {
     feedback.clear()
     try {
       const res = await syncDevices.mutateAsync()
-      await devicesQuery.refetch()
+      const devicesResult = await devicesQuery.refetch()
+      if (devicesResult.isError) throw devicesResult.error
       feedback.setNotice(`Synced Zigbee2MQTT: ${res.devices} device(s), ${res.entitiesUpserted} entity(ies).`)
     } catch (err) {
       feedback.setError(getErrorMessage(err) || 'Failed to sync Zigbee2MQTT devices')

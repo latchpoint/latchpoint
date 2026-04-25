@@ -66,8 +66,10 @@ export function useFrigateSettingsModel() {
           knownCameras: [],
           knownZonesByCamera: {},
         })
-        await settingsQuery.refetch()
-        await statusQuery.refetch()
+        const settingsResult = await settingsQuery.refetch()
+        if (settingsResult.isError) throw settingsResult.error
+        const statusResult = await statusQuery.refetch()
+        if (statusResult.isError) throw statusResult.error
         setDraft((prev) =>
           prev
             ? {
@@ -124,7 +126,8 @@ export function useFrigateSettingsModel() {
         knownCameras,
         knownZonesByCamera,
       })
-      await statusQuery.refetch()
+      const statusResult = await statusQuery.refetch()
+      if (statusResult.isError) throw statusResult.error
     }, 'Saved Frigate settings.')
   }
 
