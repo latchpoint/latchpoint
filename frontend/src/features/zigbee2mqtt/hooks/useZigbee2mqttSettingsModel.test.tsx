@@ -3,9 +3,9 @@ import { renderHook, act } from '@testing-library/react'
 import { useZigbee2mqttSettingsModel } from '@/features/zigbee2mqtt/hooks/useZigbee2mqttSettingsModel'
 
 const update = vi.fn().mockResolvedValue({ ok: true })
-const statusRefetch = vi.fn().mockResolvedValue({})
-const settingsRefetch = vi.fn().mockResolvedValue({})
-const devicesRefetch = vi.fn().mockResolvedValue({})
+const statusRefetch = vi.fn().mockResolvedValue({ isError: false })
+const settingsRefetch = vi.fn().mockResolvedValue({ isError: false })
+const devicesRefetch = vi.fn().mockResolvedValue({ isError: false })
 
 vi.mock('@/hooks/useAuthQueries', () => {
   return { useCurrentUserQuery: () => ({ data: { role: 'admin' } }) }
@@ -42,9 +42,9 @@ describe('useZigbee2mqttSettingsModel', () => {
 
   it('AC-15: save/refresh route through helper', async () => {
     update.mockReset()
-    statusRefetch.mockReset().mockResolvedValue({})
-    settingsRefetch.mockReset().mockResolvedValue({})
-    devicesRefetch.mockReset().mockResolvedValue({})
+    statusRefetch.mockReset().mockResolvedValue({ isError: false })
+    settingsRefetch.mockReset().mockResolvedValue({ isError: false })
+    devicesRefetch.mockReset().mockResolvedValue({ isError: false })
 
     const { result } = renderHook(() => useZigbee2mqttSettingsModel())
     await act(async () => {

@@ -98,8 +98,8 @@ describe('useMqttSettingsModel', () => {
     expect(result.current.notice).toBeNull()
 
     // refresh success → green notice
-    statusRefetchMock.mockResolvedValueOnce({})
-    settingsRefetchMock.mockResolvedValueOnce({})
+    statusRefetchMock.mockResolvedValueOnce({ isError: false })
+    settingsRefetchMock.mockResolvedValueOnce({ isError: false })
     await act(async () => {
       await result.current.refresh()
     })

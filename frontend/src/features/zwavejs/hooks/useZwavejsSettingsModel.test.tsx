@@ -70,8 +70,8 @@ describe('useZwavejsSettingsModel', () => {
     expect(result.current.error).toMatch(/wsUrl/)
 
     // refresh success → green notice
-    statusRefetch.mockResolvedValueOnce({})
-    settingsRefetch.mockResolvedValueOnce({})
+    statusRefetch.mockResolvedValueOnce({ isError: false })
+    settingsRefetch.mockResolvedValueOnce({ isError: false })
     await act(async () => {
       await result.current.refresh()
     })

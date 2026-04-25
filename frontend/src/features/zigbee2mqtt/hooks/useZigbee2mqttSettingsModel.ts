@@ -83,6 +83,7 @@ export function useZigbee2mqttSettingsModel() {
     if (!isAdmin || isBusy) return
     const ok = window.confirm('Reset Zigbee2MQTT settings?\n\nThis will disable Zigbee2MQTT and reset base topic to default.')
     if (!ok) return
+    feedback.clear()
     void (async () => {
       try {
         await updateSettings.mutateAsync({ enabled: false, baseTopic: DEFAULT_DRAFT.baseTopic })
@@ -118,6 +119,7 @@ export function useZigbee2mqttSettingsModel() {
 
   const runSync = async () => {
     if (!isAdmin || isBusy) return
+    feedback.clear()
     try {
       const res = await syncDevices.mutateAsync()
       await devicesQuery.refetch()

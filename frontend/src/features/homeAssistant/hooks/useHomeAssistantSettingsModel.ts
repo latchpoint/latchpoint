@@ -104,6 +104,7 @@ export function useHomeAssistantSettingsModel() {
   }
 
   const publishDiscovery = async () => {
+    feedback.clear()
     try {
       await publishHaMqttDiscoveryMutation.mutateAsync()
       feedback.setNotice('Published Home Assistant discovery config.')

@@ -5,10 +5,10 @@ import { useHomeAssistantSettingsModel } from '@/features/homeAssistant/hooks/us
 const haUpdate = vi.fn()
 const mqttEntityUpdate = vi.fn()
 const publishDiscovery = vi.fn()
-const haStatusRefetch = vi.fn().mockResolvedValue({})
-const haSettingsRefetch = vi.fn().mockResolvedValue({})
-const mqttEntityRefetch = vi.fn().mockResolvedValue({})
-const mqttEntityStatusRefetch = vi.fn().mockResolvedValue({})
+const haStatusRefetch = vi.fn().mockResolvedValue({ isError: false })
+const haSettingsRefetch = vi.fn().mockResolvedValue({ isError: false })
+const mqttEntityRefetch = vi.fn().mockResolvedValue({ isError: false })
+const mqttEntityStatusRefetch = vi.fn().mockResolvedValue({ isError: false })
 
 vi.mock('@/hooks/useAuthQueries', () => {
   return { useCurrentUserQuery: () => ({ data: { role: 'admin' } }) }
@@ -63,10 +63,10 @@ describe('useHomeAssistantSettingsModel', () => {
     haUpdate.mockReset()
     mqttEntityUpdate.mockReset()
     publishDiscovery.mockReset()
-    haStatusRefetch.mockReset().mockResolvedValue({})
-    haSettingsRefetch.mockReset().mockResolvedValue({})
-    mqttEntityRefetch.mockReset().mockResolvedValue({})
-    mqttEntityStatusRefetch.mockReset().mockResolvedValue({})
+    haStatusRefetch.mockReset().mockResolvedValue({ isError: false })
+    haSettingsRefetch.mockReset().mockResolvedValue({ isError: false })
+    mqttEntityRefetch.mockReset().mockResolvedValue({ isError: false })
+    mqttEntityStatusRefetch.mockReset().mockResolvedValue({ isError: false })
 
     const { result } = renderHook(() => useHomeAssistantSettingsModel())
     await act(async () => {

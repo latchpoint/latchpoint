@@ -52,6 +52,7 @@ export function useFrigateSettingsModel() {
     if (!isAdmin || isBusy) return
     const ok = window.confirm('Reset Frigate settings?\n\nThis will disable Frigate and reset its MQTT topic and retention settings to defaults.')
     if (!ok) return
+    feedback.clear()
     void (async () => {
       try {
         await updateSettings.mutateAsync({

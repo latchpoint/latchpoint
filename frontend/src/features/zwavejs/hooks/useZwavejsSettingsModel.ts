@@ -56,6 +56,7 @@ export function useZwavejsSettingsModel() {
       feedback.setError('Admin role required to sync entities.')
       return
     }
+    feedback.clear()
     try {
       const res = await syncEntities.mutateAsync()
       feedback.setNotice(res.notice)

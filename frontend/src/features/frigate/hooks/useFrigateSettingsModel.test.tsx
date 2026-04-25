@@ -3,9 +3,9 @@ import { renderHook, act } from '@testing-library/react'
 import { useFrigateSettingsModel } from '@/features/frigate/hooks/useFrigateSettingsModel'
 
 const update = vi.fn().mockResolvedValue({ ok: true })
-const statusRefetch = vi.fn().mockResolvedValue({})
-const settingsRefetch = vi.fn().mockResolvedValue({})
-const detectionsRefetch = vi.fn().mockResolvedValue({})
+const statusRefetch = vi.fn().mockResolvedValue({ isError: false })
+const settingsRefetch = vi.fn().mockResolvedValue({ isError: false })
+const detectionsRefetch = vi.fn().mockResolvedValue({ isError: false })
 
 vi.mock('@/hooks/useAuthQueries', () => {
   return { useCurrentUserQuery: () => ({ data: { role: 'admin' } }) }
@@ -55,9 +55,9 @@ describe('useFrigateSettingsModel', () => {
 
   it('AC-16: save/refresh through helper; reset stays info variant', async () => {
     update.mockReset().mockResolvedValue({ ok: true })
-    statusRefetch.mockReset().mockResolvedValue({})
-    settingsRefetch.mockReset().mockResolvedValue({})
-    detectionsRefetch.mockReset().mockResolvedValue({})
+    statusRefetch.mockReset().mockResolvedValue({ isError: false })
+    settingsRefetch.mockReset().mockResolvedValue({ isError: false })
+    detectionsRefetch.mockReset().mockResolvedValue({ isError: false })
 
     const { result } = renderHook(() => useFrigateSettingsModel())
     await act(async () => {

@@ -59,7 +59,7 @@ export function categorizeSettingsError(
   }
   return {
     category: 'unknown',
-    message: `${verbPrefix} failed: ${getErrorMessage(err)}`,
+    message: `${verbPrefix} failed: ${getErrorMessage(err) || 'an unknown error occurred.'}`,
   }
 }
 
