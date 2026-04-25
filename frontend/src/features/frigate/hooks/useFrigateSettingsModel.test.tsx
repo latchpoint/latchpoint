@@ -86,6 +86,18 @@ describe('useFrigateSettingsModel', () => {
     expect(result.current.noticeVariant).toBe('success')
     expect(result.current.notice).toMatch(/Refreshed Frigate/i)
 
+    // refresh failure → Refresh-prefixed error.
+    // TanStack Query's refetch() resolves with { isError, error } — it does
+    // not reject — so mock that shape to exercise the helper's isError check.
+    settingsRefetch.mockResolvedValueOnce({
+      isError: true,
+      error: new TypeError('Failed to fetch'),
+    })
+    await act(async () => {
+      await result.current.refresh()
+    })
+    expect(result.current.error).toMatch(/^Refresh failed/)
+
     // reset regression — uses window.confirm; info variant, not 'success'
     const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
     try {

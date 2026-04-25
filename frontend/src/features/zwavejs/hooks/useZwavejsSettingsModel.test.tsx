@@ -78,9 +78,14 @@ describe('useZwavejsSettingsModel', () => {
     expect(result.current.noticeVariant).toBe('success')
     expect(result.current.notice).toMatch(/Refreshed Z-Wave/i)
 
-    // refresh failure → Refresh-prefixed error
-    statusRefetch.mockRejectedValueOnce(new TypeError('Failed to fetch'))
-    settingsRefetch.mockResolvedValueOnce({})
+    // refresh failure → Refresh-prefixed error.
+    // TanStack Query's refetch() resolves with { isError, error } — it does
+    // not reject — so mock that shape to exercise the helper's isError check.
+    statusRefetch.mockResolvedValueOnce({
+      isError: true,
+      error: new TypeError('Failed to fetch'),
+    })
+    settingsRefetch.mockResolvedValueOnce({ isError: false })
     await act(async () => {
       await result.current.refresh()
     })

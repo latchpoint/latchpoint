@@ -107,9 +107,15 @@ describe('useMqttSettingsModel', () => {
     expect(result.current.noticeVariant).toBe('success')
     expect(result.current.error).toBeNull()
 
-    // refresh failure → categorized red error (Refresh prefix)
-    statusRefetchMock.mockRejectedValueOnce({ message: 'nope', code: '500' })
-    settingsRefetchMock.mockResolvedValueOnce({})
+    // refresh failure → categorized red error (Refresh prefix).
+    // Reality check: TanStack Query's refetch() swallows errors and resolves
+    // with { isError: true, error: ... }; it does not reject. This mock
+    // mirrors that so the fix's isError check is the thing under test.
+    statusRefetchMock.mockResolvedValueOnce({
+      isError: true,
+      error: { message: 'nope', code: '500' },
+    })
+    settingsRefetchMock.mockResolvedValueOnce({ isError: false })
     await act(async () => {
       await result.current.refresh()
     })

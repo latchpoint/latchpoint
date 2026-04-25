@@ -73,8 +73,13 @@ describe('useZigbee2mqttSettingsModel', () => {
     expect(result.current.noticeVariant).toBe('success')
     expect(result.current.notice).toMatch(/Refreshed Zigbee2MQTT/i)
 
-    // refresh failure
-    settingsRefetch.mockRejectedValueOnce(new TypeError('Failed to fetch'))
+    // refresh failure.
+    // TanStack Query's refetch() resolves with { isError, error } — it does
+    // not reject — so mock that shape to exercise the helper's isError check.
+    settingsRefetch.mockResolvedValueOnce({
+      isError: true,
+      error: new TypeError('Failed to fetch'),
+    })
     await act(async () => {
       await result.current.refresh()
     })

@@ -76,12 +76,17 @@ export function useHomeAssistantSettingsModel() {
 
   const refreshConnection = () =>
     feedback.runRefresh(async () => {
-      await Promise.all([haStatusQuery.refetch(), haSettingsQuery.refetch()])
+      const results = await Promise.all([haStatusQuery.refetch(), haSettingsQuery.refetch()])
+      for (const r of results) if (r.isError) throw r.error
     }, 'Refreshed Home Assistant settings.')
 
   const refreshMqttEntity = () =>
     feedback.runRefresh(async () => {
-      await Promise.all([haMqttAlarmEntityQuery.refetch(), haMqttAlarmEntityStatusQuery.refetch()])
+      const results = await Promise.all([
+        haMqttAlarmEntityQuery.refetch(),
+        haMqttAlarmEntityStatusQuery.refetch(),
+      ])
+      for (const r of results) if (r.isError) throw r.error
     }, 'Refreshed Home Assistant MQTT alarm entity.')
 
   const saveMqttEntity = async () => {
