@@ -56,6 +56,14 @@ describe('categorizeSettingsError', () => {
     expect(result.category).toBe('unknown')
     expect(result.message).toBe('Save failed: Something weird happened')
   })
+
+  it('falls through to unknown for HTTP 400 with empty details (no synthetic "undefined" leaks)', () => {
+    const err = { message: 'Validation failed', code: '400', details: {} }
+    const result = categorizeSettingsError(err, 'Save')
+    expect(result.category).toBe('unknown')
+    expect(result.message).not.toContain('undefined')
+    expect(result.message).toBe('Save failed: Validation failed')
+  })
 })
 
 describe('useSettingsActionFeedback', () => {
@@ -177,6 +185,43 @@ describe('useSettingsActionFeedback', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  it('clears stale error/notice at the start of runSave/runRefresh, before the response lands', async () => {
+    const { result } = renderHook(() => useSettingsActionFeedback())
+
+    // Seed a prior error.
+    await act(async () => {
+      await result.current.runSave(async () => {
+        throw { message: 'nope', code: '500' }
+      }, 'Saved.')
+    })
+    expect(result.current.error).not.toBeNull()
+
+    // Kick off a second runSave whose promise we control. The stale error
+    // must be gone *before* we resolve the new promise — i.e. on click,
+    // not on response.
+    let resolveFn: ((v: unknown) => void) | undefined
+    const pending = new Promise((resolve) => {
+      resolveFn = resolve
+    })
+    let runSavePromise: Promise<unknown>
+    await act(async () => {
+      runSavePromise = result.current.runSave(() => pending, 'Saved.')
+      // Yield once so React commits the synchronous state updates that
+      // runAction performed before its first await.
+      await Promise.resolve()
+    })
+    expect(result.current.error).toBeNull()
+    expect(result.current.notice).toBeNull()
+
+    // Now resolve and verify the success notice lands.
+    await act(async () => {
+      resolveFn!(undefined)
+      await runSavePromise!
+    })
+    expect(result.current.notice).toBe('Saved.')
+    expect(result.current.noticeVariant).toBe('success')
   })
 
   it('AC-11: setNotice/setError write info-variant without auto-dismiss', async () => {

@@ -22,11 +22,13 @@ export function categorizeSettingsError(
 ): CategorizedError {
   if (isRecord(err) && err.code === '400' && isRecord(err.details)) {
     const firstKey = Object.keys(err.details)[0]
-    const raw = err.details[firstKey]
-    const firstMsg = Array.isArray(raw) && typeof raw[0] === 'string' ? raw[0] : 'invalid'
-    return {
-      category: 'validation',
-      message: `${verbPrefix} failed: ${firstKey} — ${firstMsg}`,
+    if (firstKey !== undefined) {
+      const raw = err.details[firstKey]
+      const firstMsg = Array.isArray(raw) && typeof raw[0] === 'string' ? raw[0] : 'invalid'
+      return {
+        category: 'validation',
+        message: `${verbPrefix} failed: ${firstKey} — ${firstMsg}`,
+      }
     }
   }
   if (isRecord(err) && (err.code === '401' || err.code === '403')) {
@@ -150,19 +152,18 @@ export function useSettingsActionFeedback(
     verb: SettingsActionVerb,
     dismissMs: number
   ): Promise<T | undefined> {
+    cancelDismiss()
+    setErrorState(null)
+    setNoticeState(null)
     try {
       const result = await fn()
-      cancelDismiss()
-      setErrorState(null)
       setNoticeState(successMessage)
       setNoticeVariant('success')
       scheduleDismiss(dismissMs)
       return result
     } catch (err) {
       const { message } = categorizeSettingsError(err, verb)
-      cancelDismiss()
       setErrorState(message)
-      setNoticeState(null)
       return undefined
     }
   }
