@@ -244,16 +244,21 @@ export function useSettingsActionFeedback(options?: {
 }
 ```
 
-Error categorization heuristic (client-side, based on what Axios/`fetch`
-surfaces):
+Error categorization heuristic (client-side, keyed on the `ApiError` shape
+thrown by `services/api.ts` and the `TypeError` that `fetch` throws on
+network failure):
 
 | Condition | Category | Message template |
 |---|---|---|
-| `status === 400` and body has field errors | `validation` | `"<Verb> failed: <field> — <detail>"` (first 1–2 offending fields) |
-| `status === 401 \|\| 403` | `auth` | `"<Verb> failed: you don't have permission to change these settings."` |
-| No response / `ECONNABORTED` / `ERR_NETWORK` / timeout | `network` | `"<Verb> failed: could not reach the server. Check your connection and try again."` |
-| `status >= 500` | `server` | `"<Verb> failed: the server returned an error. Check logs."` (+ appended server `detail` if present) |
+| `err.code === '400'` and `err.details` is a record of field errors | `validation` | `"<Verb> failed: <field> — <detail>"` (first offending field) |
+| `err.code === '401' \|\| '403'` | `auth` | `"<Verb> failed: you don't have permission to change these settings."` |
+| `err instanceof TypeError` (fetch failed: DNS, offline, CORS, abort) | `network` | `"<Verb> failed: could not reach the server. Check your connection and try again."` |
+| `Number.parseInt(err.code) >= 500` | `server` | `"<Verb> failed: the server returned an error. Check logs."` (+ appended server `detail` if present) |
 | Anything else | `unknown` | `getErrorMessage(err)` fallback, prefixed with `"<Verb> failed: "` |
+
+Note: `services/api.ts` always sets `code` to `response.status.toString()`,
+so the validation/auth/server rows compare strings, not numbers. There is
+no Axios in this codebase — `ECONNABORTED` / `ERR_NETWORK` do not appear.
 
 `<Verb>` is `"Save"` or `"Refresh"`. The template picker is an internal
 switch; integrations never see the category label in the UI — only the
@@ -401,7 +406,7 @@ feedback pattern proves out.
 
 - [x] **AC-1:** `categorizeSettingsError(err, 'Save')` returns `{category: 'validation', message}` when the error has HTTP status 400 with field errors; the message names the first offending field.
 - [x] **AC-2:** `categorizeSettingsError(err, verb)` returns `{category: 'auth', message}` for HTTP 401 and 403; message reads "<Verb> failed: you don't have permission to change these settings."
-- [x] **AC-3:** `categorizeSettingsError(err, verb)` returns `{category: 'network', message}` when the error is `ECONNABORTED` / `ERR_NETWORK` / has no response / is a timeout; message tells the user to check their connection.
+- [x] **AC-3:** `categorizeSettingsError(err, verb)` returns `{category: 'network', message}` when the error is a `TypeError` (the shape `fetch()` throws on network failure: offline, DNS, CORS, abort); message tells the user to check their connection.
 - [x] **AC-4:** `categorizeSettingsError(err, verb)` returns `{category: 'server', message}` for HTTP status >= 500; appends the server `detail` field if present.
 - [x] **AC-5:** `categorizeSettingsError(err, verb)` returns `{category: 'unknown', message}` for anything else — message prefixed with `<Verb> failed: ` and body from `getErrorMessage(err)`.
 - [x] **AC-6:** `useSettingsActionFeedback().runSave(fn, msg)` on success sets `notice === msg`, `noticeVariant === 'success'`, `error === null`, and returns the resolved value.

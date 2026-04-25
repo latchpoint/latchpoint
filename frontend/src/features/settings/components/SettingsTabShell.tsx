@@ -42,7 +42,7 @@ export function SettingsTabShell({
           <AlertDescription>{error}</AlertDescription>
         </Alert>
       ) : notice ? (
-        <Alert variant={noticeVariant === 'success' ? 'success' : 'info'}>
+        <Alert variant={noticeVariant}>
           <AlertDescription>{notice}</AlertDescription>
         </Alert>
       ) : null}
