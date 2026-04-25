@@ -1,6 +1,6 @@
 # ADR-0087: Banner Feedback for Integration Settings Save and Refresh
 
-**Status:** Proposed
+**Status:** Implemented
 **Date:** 2026-04-23
 **Author:** Leonardo Merza
 
@@ -349,7 +349,7 @@ feedback pattern proves out.
 
 ## Implementation Plan
 
-- [ ] **Phase 1 — Helper module**
+- [x] **Phase 1 — Helper module**
   - Add `frontend/src/features/integrations/lib/settingsFeedback.ts` with
     `categorizeSettingsError(err, verbPrefix)` and
     `useSettingsActionFeedback(options?)`.
@@ -359,12 +359,12 @@ feedback pattern proves out.
     return `undefined` on failure and the value on success; `clear()`
     resets both state slots.
 
-- [ ] **Phase 2 — Shell prop**
+- [x] **Phase 2 — Shell prop**
   - Add `noticeVariant?: 'info' | 'success'` to `SettingsTabShell` with
     default `'info'`.
   - Extend `SettingsTabShell.test.tsx` to cover both variants.
 
-- [ ] **Phase 3 — Integration adoption**
+- [x] **Phase 3 — Integration adoption**
   - Migrate `useMqttSettingsModel` to use the helper. Tests in
     `useMqttSettingsModel.test.tsx` (or the tab-level test) verify that
     Save success sets a success notice, Save failure sets an error in the
@@ -374,8 +374,13 @@ feedback pattern proves out.
     `useFrigateSettingsModel`, `useHomeAssistantSettingsModel`.
   - Pass `noticeVariant` from each model down through the respective
     settings tab page into `SettingsTabShell`.
+  - Follow-up fix: TanStack Query's `query.refetch()` resolves with
+    `{ isError, error }` rather than rejecting; each hook's `runRefresh`
+    inspects the resolved results and rethrows the first `isError` so
+    failures are categorized instead of silently turning into a green
+    success notice.
 
-- [ ] **Phase 4 — Verification**
+- [x] **Phase 4 — Verification**
   - `npx eslint src/` — no new errors.
   - `npx tsc --noEmit` — types clean.
   - `npx vitest run` — all existing suites pass; new helper + shell tests
@@ -385,7 +390,7 @@ feedback pattern proves out.
     backend stopped. Confirm banners match the table in the Decision
     section.
 
-- [ ] **Phase 5 — Docs**
+- [x] **Phase 5 — Docs**
   - Flip this ADR to **Implemented**.
   - Entry in `docs/adr/0000-adr-index.md` moves from Proposed to
     Implemented.
@@ -394,24 +399,24 @@ feedback pattern proves out.
 
 ## Acceptance Criteria
 
-- [ ] **AC-1:** `categorizeSettingsError(err, 'Save')` returns `{category: 'validation', message}` when the error has HTTP status 400 with field errors; the message names the first offending field.
-- [ ] **AC-2:** `categorizeSettingsError(err, verb)` returns `{category: 'auth', message}` for HTTP 401 and 403; message reads "<Verb> failed: you don't have permission to change these settings."
-- [ ] **AC-3:** `categorizeSettingsError(err, verb)` returns `{category: 'network', message}` when the error is `ECONNABORTED` / `ERR_NETWORK` / has no response / is a timeout; message tells the user to check their connection.
-- [ ] **AC-4:** `categorizeSettingsError(err, verb)` returns `{category: 'server', message}` for HTTP status >= 500; appends the server `detail` field if present.
-- [ ] **AC-5:** `categorizeSettingsError(err, verb)` returns `{category: 'unknown', message}` for anything else — message prefixed with `<Verb> failed: ` and body from `getErrorMessage(err)`.
-- [ ] **AC-6:** `useSettingsActionFeedback().runSave(fn, msg)` on success sets `notice === msg`, `noticeVariant === 'success'`, `error === null`, and returns the resolved value.
-- [ ] **AC-7:** `useSettingsActionFeedback().runSave(fn, msg)` on failure sets `error` to the categorized message, leaves `notice === null`, and returns `undefined`.
-- [ ] **AC-8:** `useSettingsActionFeedback().runRefresh(fn, msg)` mirrors AC-6/AC-7 with `'Refresh'` as the verb prefix in error messages.
-- [ ] **AC-9:** Success notices auto-clear after `saveDismissMs` (default 5000) for Save and `refreshDismissMs` (default 3000) for Refresh; errors do NOT auto-clear.
-- [ ] **AC-10:** `useSettingsActionFeedback().clear()` resets both `error` and `notice` to `null`, resets `noticeVariant` to `'info'`, and cancels any pending dismiss timer.
-- [ ] **AC-11:** `useSettingsActionFeedback().setNotice(msg)` writes `notice = msg`, forces `noticeVariant = 'info'`, does NOT start the dismiss timer, and clears any prior `error`. `setError(msg)` mirrors it for `error` (and clears `notice`). These are the entry points for non-Save/Refresh actions (`sync`, `reset`, `publishDiscovery`) so they keep today's UX byte-for-byte.
-- [ ] **AC-12:** `<SettingsTabShell noticeVariant="success" notice="x">` renders the notice in the success Alert variant; omitting the prop preserves the existing `info` default (back-compat for non-integration callers).
-- [ ] **AC-13:** `useMqttSettingsModel`'s `save()` routes through `runSave` (success → green notice; failure → categorized red error). Its `refresh()` routes through `runRefresh` (success → green notice; failure → categorized red error).
-- [ ] **AC-14:** Same as AC-13 for `useZwavejsSettingsModel`. The `sync()` action calls `helper.setError` / `helper.setNotice` (info variant, no auto-dismiss) — regression test asserts `sync()` notices stay info-colored and do not auto-clear.
-- [ ] **AC-15:** Same as AC-13 for `useZigbee2mqttSettingsModel`.
-- [ ] **AC-16:** Same as AC-13 for `useFrigateSettingsModel`. The `reset()` action calls `helper.setError` / `helper.setNotice` (info variant, no auto-dismiss) — regression test asserts `reset()` notices stay info-colored and do not auto-clear.
-- [ ] **AC-17:** Same as AC-13 for `useHomeAssistantSettingsModel`, applied to both pairs (`saveConnection`/`refreshConnection` and `saveMqttEntity`/`refreshMqttEntity`) sharing one helper instance. The `publishDiscovery()` action calls `helper.setError` / `helper.setNotice` (info variant, no auto-dismiss) — regression test asserts `publishDiscovery()` notices stay info-colored and do not auto-clear.
-- [ ] **AC-18:** Each of the five integration settings tab pages (`SettingsMqttTab`, `SettingsZwavejsTab`, `SettingsZigbee2mqttTab`, `SettingsFrigateTab`, `SettingsHomeAssistantTab`) passes `noticeVariant={model.noticeVariant}` to `SettingsTabShell`.
+- [x] **AC-1:** `categorizeSettingsError(err, 'Save')` returns `{category: 'validation', message}` when the error has HTTP status 400 with field errors; the message names the first offending field.
+- [x] **AC-2:** `categorizeSettingsError(err, verb)` returns `{category: 'auth', message}` for HTTP 401 and 403; message reads "<Verb> failed: you don't have permission to change these settings."
+- [x] **AC-3:** `categorizeSettingsError(err, verb)` returns `{category: 'network', message}` when the error is `ECONNABORTED` / `ERR_NETWORK` / has no response / is a timeout; message tells the user to check their connection.
+- [x] **AC-4:** `categorizeSettingsError(err, verb)` returns `{category: 'server', message}` for HTTP status >= 500; appends the server `detail` field if present.
+- [x] **AC-5:** `categorizeSettingsError(err, verb)` returns `{category: 'unknown', message}` for anything else — message prefixed with `<Verb> failed: ` and body from `getErrorMessage(err)`.
+- [x] **AC-6:** `useSettingsActionFeedback().runSave(fn, msg)` on success sets `notice === msg`, `noticeVariant === 'success'`, `error === null`, and returns the resolved value.
+- [x] **AC-7:** `useSettingsActionFeedback().runSave(fn, msg)` on failure sets `error` to the categorized message, leaves `notice === null`, and returns `undefined`.
+- [x] **AC-8:** `useSettingsActionFeedback().runRefresh(fn, msg)` mirrors AC-6/AC-7 with `'Refresh'` as the verb prefix in error messages.
+- [x] **AC-9:** Success notices auto-clear after `saveDismissMs` (default 5000) for Save and `refreshDismissMs` (default 3000) for Refresh; errors do NOT auto-clear.
+- [x] **AC-10:** `useSettingsActionFeedback().clear()` resets both `error` and `notice` to `null`, resets `noticeVariant` to `'info'`, and cancels any pending dismiss timer.
+- [x] **AC-11:** `useSettingsActionFeedback().setNotice(msg)` writes `notice = msg`, forces `noticeVariant = 'info'`, does NOT start the dismiss timer, and clears any prior `error`. `setError(msg)` mirrors it for `error` (and clears `notice`). These are the entry points for non-Save/Refresh actions (`sync`, `reset`, `publishDiscovery`) so they keep today's UX byte-for-byte.
+- [x] **AC-12:** `<SettingsTabShell noticeVariant="success" notice="x">` renders the notice in the success Alert variant; omitting the prop preserves the existing `info` default (back-compat for non-integration callers).
+- [x] **AC-13:** `useMqttSettingsModel`'s `save()` routes through `runSave` (success → green notice; failure → categorized red error). Its `refresh()` routes through `runRefresh` (success → green notice; failure → categorized red error).
+- [x] **AC-14:** Same as AC-13 for `useZwavejsSettingsModel`. The `sync()` action calls `helper.setError` / `helper.setNotice` (info variant, no auto-dismiss) — regression test asserts `sync()` notices stay info-colored and do not auto-clear.
+- [x] **AC-15:** Same as AC-13 for `useZigbee2mqttSettingsModel`.
+- [x] **AC-16:** Same as AC-13 for `useFrigateSettingsModel`. The `reset()` action calls `helper.setError` / `helper.setNotice` (info variant, no auto-dismiss) — regression test asserts `reset()` notices stay info-colored and do not auto-clear.
+- [x] **AC-17:** Same as AC-13 for `useHomeAssistantSettingsModel`, applied to both pairs (`saveConnection`/`refreshConnection` and `saveMqttEntity`/`refreshMqttEntity`) sharing one helper instance. The `publishDiscovery()` action calls `helper.setError` / `helper.setNotice` (info variant, no auto-dismiss) — regression test asserts `publishDiscovery()` notices stay info-colored and do not auto-clear.
+- [x] **AC-18:** Each of the five integration settings tab pages (`SettingsMqttTab`, `SettingsZwavejsTab`, `SettingsZigbee2mqttTab`, `SettingsFrigateTab`, `SettingsHomeAssistantTab`) passes `noticeVariant={model.noticeVariant}` to `SettingsTabShell`.
 
 ## Related ADRs
 

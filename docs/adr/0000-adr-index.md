@@ -103,7 +103,7 @@ This document tracks all Architecture Decision Records (ADRs) and their implemen
 | [0084](0084-user-named-stop-groups-for-rule-processing.md) | User-Named Stop Groups for Rule Processing (supersedes 0076) | **Proposed** |
 | [0085](0085-rule-copy-duplicate-action.md) | Rule Copy / Duplicate Action | **Proposed** |
 | [0086](0086-ha-entity-equals-editable-dropdown.md) | Domain-Aware Editable Dropdown for HA Entity `equals` Values | **Proposed** |
-| [0087](0087-integration-settings-save-refresh-banner-feedback.md) | Banner Feedback for Integration Settings Save and Refresh | **Proposed** |
+| [0087](0087-integration-settings-save-refresh-banner-feedback.md) | Banner Feedback for Integration Settings Save and Refresh | **Implemented** |
 
 ---
 
@@ -111,10 +111,10 @@ This document tracks all Architecture Decision Records (ADRs) and their implemen
 
 | Status | Count |
 |--------|-------|
-| **Implemented** | 62 |
+| **Implemented** | 63 |
 | **Partially Implemented** | 0 |
 | **Accepted** | 1 |
-| **Proposed** | 9 |
+| **Proposed** | 8 |
 | **Superseded** | 14 |
 | **Total** | 86 |
 
@@ -122,4 +122,4 @@ Note: **Superseded** includes entries marked as "Superseded by …" in the table
 
 ---
 
-*Last updated: 2026-04-23* (ADR 0087 added; summary counts recalculated)
+*Last updated: 2026-04-24* (ADR 0087 flipped to Implemented; summary counts recalculated)
