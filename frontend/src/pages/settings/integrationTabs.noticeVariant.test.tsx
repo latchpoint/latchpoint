@@ -30,6 +30,15 @@ vi.mock('@/features/homeAssistant/components/HomeAssistantConnectionCard', () =>
 vi.mock('@/features/homeAssistant/components/HomeAssistantMqttAlarmEntityCard', () => ({
   HomeAssistantMqttAlarmEntityCard: () => <div data-testid="ha-mqtt-card" />,
 }))
+vi.mock('@/features/homeAssistant/components/HomeAssistantOverviewCard', () => ({
+  HomeAssistantOverviewCard: () => <div data-testid="ha-overview-card" />,
+}))
+vi.mock('@/features/frigate/components/FrigateOverviewCard', () => ({
+  FrigateOverviewCard: () => <div data-testid="frigate-overview-card" />,
+}))
+vi.mock('@/features/frigate/components/FrigateRecentDetectionsCard', () => ({
+  FrigateRecentDetectionsCard: () => <div data-testid="frigate-recent-card" />,
+}))
 
 const makeModelStub = (noticeVariant: 'info' | 'success' = 'success') => ({
   isAdmin: true,
