@@ -72,7 +72,9 @@ describe('useFrigateSettingsModel', () => {
     expect(result.current.notice).toMatch(/Saved Frigate/i)
 
     // save failure → categorized error
-    update.mockRejectedValueOnce({ message: 'x', code: '400', details: { eventsTopic: ['required'] } })
+    // Backend validation errors arrive snake_case (ApiClient does not camelCase
+    // error payloads). categorizeSettingsError normalizes for display.
+    update.mockRejectedValueOnce({ message: 'x', code: '400', details: { events_topic: ['required'] } })
     await act(async () => {
       await result.current.save()
     })

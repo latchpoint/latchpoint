@@ -64,6 +64,19 @@ describe('categorizeSettingsError', () => {
     expect(result.message).not.toContain('undefined')
     expect(result.message).toBe('Save failed: Validation failed')
   })
+
+  it('normalizes snake_case backend field names to camelCase in the validation message', () => {
+    // ApiClient only camelCases success bodies; error payloads pass through as-is,
+    // so backend field names like ws_url / events_topic land here snake_case.
+    const err = {
+      message: 'Validation failed',
+      code: '400',
+      details: { ws_url: ['Must be a valid URL.'] },
+    }
+    const result = categorizeSettingsError(err, 'Save')
+    expect(result.category).toBe('validation')
+    expect(result.message).toBe('Save failed: wsUrl — Must be a valid URL.')
+  })
 })
 
 describe('useSettingsActionFeedback', () => {
@@ -222,6 +235,38 @@ describe('useSettingsActionFeedback', () => {
     })
     expect(result.current.notice).toBe('Saved.')
     expect(result.current.noticeVariant).toBe('success')
+  })
+
+  it("noticeVariant resets to 'info' on action failure after a prior success", async () => {
+    // Regression: without a reset, noticeVariant would stay 'success' from the
+    // prior runSave even though the banner is now showing an error.
+    const { result } = renderHook(() => useSettingsActionFeedback())
+    await act(async () => {
+      await result.current.runSave(async () => null, 'Saved.')
+    })
+    expect(result.current.noticeVariant).toBe('success')
+
+    await act(async () => {
+      await result.current.runSave(async () => {
+        throw { message: 'nope', code: '500' }
+      }, 'Saved.')
+    })
+    expect(result.current.error).not.toBeNull()
+    expect(result.current.noticeVariant).toBe('info')
+  })
+
+  it("setError resets noticeVariant to 'info' (clears stale 'success' from prior run)", async () => {
+    const { result } = renderHook(() => useSettingsActionFeedback())
+    await act(async () => {
+      await result.current.runSave(async () => null, 'Saved.')
+    })
+    expect(result.current.noticeVariant).toBe('success')
+
+    act(() => {
+      result.current.setError('sync failed')
+    })
+    expect(result.current.error).toBe('sync failed')
+    expect(result.current.noticeVariant).toBe('info')
   })
 
   it('AC-11: setNotice/setError write info-variant without auto-dismiss', async () => {

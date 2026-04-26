@@ -16,6 +16,17 @@ export interface CategorizedError {
 
 export type SettingsActionVerb = 'Save' | 'Refresh'
 
+// Backend error payloads are not run through ApiClient's camelCase transform
+// (only success bodies are), so validation field names arrive snake_case.
+// Normalize for display so the banner matches the camelCase keys used by the
+// schema-driven settings UI.
+function toCamelCaseField(key: string): string {
+  if (!key.includes('_')) return key
+  return key.replace(/_([a-z0-9])/g, (_, next: string) =>
+    /[a-z]/.test(next) ? next.toUpperCase() : next
+  )
+}
+
 export function categorizeSettingsError(
   err: unknown,
   verbPrefix: SettingsActionVerb
@@ -27,7 +38,7 @@ export function categorizeSettingsError(
       const firstMsg = Array.isArray(raw) && typeof raw[0] === 'string' ? raw[0] : 'invalid'
       return {
         category: 'validation',
-        message: `${verbPrefix} failed: ${firstKey} — ${firstMsg}`,
+        message: `${verbPrefix} failed: ${toCamelCaseField(firstKey)} — ${firstMsg}`,
       }
     }
   }
@@ -133,6 +144,7 @@ export function useSettingsActionFeedback(
     cancelDismiss()
     setErrorState(msg)
     setNoticeState(null)
+    setNoticeVariant('info')
   }
 
   /**
@@ -164,6 +176,7 @@ export function useSettingsActionFeedback(
     } catch (err) {
       const { message } = categorizeSettingsError(err, verb)
       setErrorState(message)
+      setNoticeVariant('info')
       return undefined
     }
   }

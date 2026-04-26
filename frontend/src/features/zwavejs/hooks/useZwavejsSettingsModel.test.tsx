@@ -62,7 +62,9 @@ describe('useZwavejsSettingsModel', () => {
     expect(result.current.noticeVariant).toBe('success')
 
     // save failure → categorized error
-    updateMutateAsync.mockRejectedValueOnce({ message: 'x', code: '400', details: { wsUrl: ['Invalid'] } })
+    // Backend validation errors arrive snake_case (ApiClient does not camelCase
+    // error payloads). categorizeSettingsError normalizes for display.
+    updateMutateAsync.mockRejectedValueOnce({ message: 'x', code: '400', details: { ws_url: ['Invalid'] } })
     await act(async () => {
       await result.current.save()
     })
