@@ -4,7 +4,10 @@
  * Renders form fields from a config_schema definition. Handles:
  * - String, number, integer, boolean field types
  * - Secret fields (password inputs with "A value is saved" / "Clear" UX)
- * - The `enabled` toggle is rendered separately at the top
+ *
+ * The `enabled` field, if declared in the schema, is intentionally NOT
+ * rendered here — consumers own the enabled UI on their overview/header
+ * card (e.g. `IntegrationOverviewCard`'s `onEnabledChange`).
  */
 
 import { Button } from '@/components/ui/button'
@@ -181,23 +184,11 @@ export function IntegrationSettingsForm({
 
   const properties = Object.entries(schema.properties)
 
-  // Separate `enabled` from other fields — it's rendered as a top-level toggle
-  const enabledProp = schema.properties.enabled
+  // Strip `enabled` — the overview card owns the enable toggle, not this form.
   const fieldProperties = properties.filter(([key]) => key !== 'enabled')
 
   return (
     <div className="space-y-4">
-      {enabledProp && (
-        <div className="flex items-center justify-between rounded-md border p-3">
-          <span className="text-sm font-medium">{enabledProp.title || 'Enabled'}</span>
-          <Switch
-            checked={Boolean(values.enabled)}
-            onCheckedChange={(checked) => onChange('enabled', checked)}
-            disabled={disabled}
-          />
-        </div>
-      )}
-
       <div className="space-y-3">
         {fieldProperties.map(([key, property]) => {
           const isSecret = normalizedEncryptedFields.includes(key) || property.secret === true

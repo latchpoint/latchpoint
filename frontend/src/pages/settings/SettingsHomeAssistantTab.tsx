@@ -8,7 +8,12 @@ export function SettingsHomeAssistantTab() {
   const model = useHomeAssistantSettingsModel()
 
   return (
-    <SettingsTabShell isAdmin={model.isAdmin} error={model.error} notice={model.notice}>
+    <SettingsTabShell
+      isAdmin={model.isAdmin}
+      error={model.error}
+      notice={model.notice}
+      noticeVariant={model.noticeVariant}
+    >
       <div className="space-y-4">
         <HomeAssistantOverviewCard
           isAdmin={model.isAdmin}

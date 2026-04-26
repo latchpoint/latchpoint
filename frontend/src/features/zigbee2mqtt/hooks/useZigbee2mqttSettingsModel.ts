@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react'
 import { UserRole } from '@/lib/constants'
 import { useCurrentUserQuery } from '@/hooks/useAuthQueries'
 import { getErrorMessage } from '@/types/errors'
+import { useSettingsActionFeedback } from '@/features/integrations/lib/settingsFeedback'
 import {
   useSyncZigbee2mqttDevicesMutation,
   useUpdateZigbee2mqttSettingsMutation,
@@ -53,8 +54,7 @@ export function useZigbee2mqttSettingsModel() {
   }, [settingsQuery.data])
 
   const [draftOverride, setDraftOverride] = useState<Zigbee2mqttDraft | null>(null)
-  const [error, setError] = useState<string | null>(null)
-  const [notice, setNotice] = useState<string | null>(null)
+  const feedback = useSettingsActionFeedback()
 
   const draft = draftOverride ?? initialDraft
   const ensureDraft = (prev: Zigbee2mqttDraft | null | undefined) => prev ?? draft ?? initialDraft ?? DEFAULT_DRAFT
@@ -83,26 +83,25 @@ export function useZigbee2mqttSettingsModel() {
     if (!isAdmin || isBusy) return
     const ok = window.confirm('Reset Zigbee2MQTT settings?\n\nThis will disable Zigbee2MQTT and reset base topic to default.')
     if (!ok) return
+    feedback.clear()
     void (async () => {
-      setError(null)
-      setNotice(null)
       try {
         await updateSettings.mutateAsync({ enabled: false, baseTopic: DEFAULT_DRAFT.baseTopic })
-        await settingsQuery.refetch()
-        await statusQuery.refetch()
+        const settingsResult = await settingsQuery.refetch()
+        if (settingsResult.isError) throw settingsResult.error
+        const statusResult = await statusQuery.refetch()
+        if (statusResult.isError) throw statusResult.error
         setDraftOverride(null)
-        setNotice('Reset Zigbee2MQTT settings.')
+        feedback.setNotice('Reset Zigbee2MQTT settings.')
       } catch (err) {
-        setError(getErrorMessage(err) || 'Failed to reset Zigbee2MQTT settings')
+        feedback.setError(getErrorMessage(err) || 'Failed to reset Zigbee2MQTT settings')
       }
     })()
   }
 
   const save = async () => {
     if (!isAdmin || !draft || isBusy) return
-    setError(null)
-    setNotice(null)
-    try {
+    await feedback.runSave(async () => {
       await updateSettings.mutateAsync({
         enabled: draft.enabled,
         baseTopic: (draft.baseTopic || '').trim() || DEFAULT_DRAFT.baseTopic,
@@ -114,35 +113,36 @@ export function useZigbee2mqttSettingsModel() {
           .map((s) => s.trim())
           .filter(Boolean),
       })
-      await settingsQuery.refetch()
-      await statusQuery.refetch()
+      const settingsResult = await settingsQuery.refetch()
+      if (settingsResult.isError) throw settingsResult.error
+      const statusResult = await statusQuery.refetch()
+      if (statusResult.isError) throw statusResult.error
       setDraftOverride(null)
-      setNotice('Saved Zigbee2MQTT settings.')
-    } catch (err) {
-      setError(getErrorMessage(err) || 'Failed to save Zigbee2MQTT settings')
-    }
+    }, 'Saved Zigbee2MQTT settings.')
   }
 
   const runSync = async () => {
     if (!isAdmin || isBusy) return
-    setError(null)
-    setNotice(null)
+    feedback.clear()
     try {
       const res = await syncDevices.mutateAsync()
-      await devicesQuery.refetch()
-      setNotice(`Synced Zigbee2MQTT: ${res.devices} device(s), ${res.entitiesUpserted} entity(ies).`)
+      const devicesResult = await devicesQuery.refetch()
+      if (devicesResult.isError) throw devicesResult.error
+      feedback.setNotice(`Synced Zigbee2MQTT: ${res.devices} device(s), ${res.entitiesUpserted} entity(ies).`)
     } catch (err) {
-      setError(getErrorMessage(err) || 'Failed to sync Zigbee2MQTT devices')
+      feedback.setError(getErrorMessage(err) || 'Failed to sync Zigbee2MQTT devices')
     }
   }
 
-  const refresh = () => {
-    setError(null)
-    setNotice(null)
-    void settingsQuery.refetch()
-    void statusQuery.refetch()
-    void devicesQuery.refetch()
-  }
+  const refresh = () =>
+    feedback.runRefresh(async () => {
+      const results = await Promise.all([
+        settingsQuery.refetch(),
+        statusQuery.refetch(),
+        devicesQuery.refetch(),
+      ])
+      for (const r of results) if (r.isError) throw r.error
+    }, 'Refreshed Zigbee2MQTT settings.')
 
   return {
     isAdmin,
@@ -155,10 +155,11 @@ export function useZigbee2mqttSettingsModel() {
     lastSyncAt,
     lastDeviceCount,
     lastSyncError,
-    error,
-    notice,
-    setError,
-    setNotice,
+    error: feedback.error,
+    notice: feedback.notice,
+    noticeVariant: feedback.noticeVariant,
+    setError: feedback.setError,
+    setNotice: feedback.setNotice,
     updateDraft,
     save,
     reset,

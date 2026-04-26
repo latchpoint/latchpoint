@@ -1,9 +1,9 @@
-import { useMemo, useState } from 'react'
+import { useMemo } from 'react'
 import { UserRole } from '@/lib/constants'
 import { useCurrentUserQuery } from '@/hooks/useAuthQueries'
-import { getErrorMessage } from '@/types/errors'
 import { useDraftFromQuery } from '@/features/settings/hooks/useDraftFromQuery'
 import { shallowEqual, splitMaskedFlags } from '@/features/settings/hooks/settingsUtils'
+import { useSettingsActionFeedback } from '@/features/integrations/lib/settingsFeedback'
 import { useFrigateSettingsQuery } from '@/hooks/useFrigate'
 import {
   useMqttSettingsQuery,
@@ -32,8 +32,7 @@ export function useMqttSettingsModel() {
   )
 
   const { draft, setDraft } = useDraftFromQuery<Record<string, unknown>>(initialDraft)
-  const [error, setError] = useState<string | null>(null)
-  const [notice, setNotice] = useState<string | null>(null)
+  const feedback = useSettingsActionFeedback()
 
   const isBusy = settingsQuery.isLoading || updateSettings.isPending
 
@@ -41,21 +40,18 @@ export function useMqttSettingsModel() {
     setDraft((prev) => (prev ? { ...prev, [key]: value } : prev))
   }
 
-  const refresh = () => {
-    void statusQuery.refetch()
-    void settingsQuery.refetch()
-  }
+  const refresh = () =>
+    feedback.runRefresh(
+      async () => {
+        const results = await Promise.all([statusQuery.refetch(), settingsQuery.refetch()])
+        for (const r of results) if (r.isError) throw r.error
+      },
+      'Refreshed MQTT settings.'
+    )
 
   const save = async () => {
     if (!draft) return
-    setError(null)
-    setNotice(null)
-    try {
-      await updateSettings.mutateAsync(draft)
-      setNotice('Saved MQTT settings.')
-    } catch (err) {
-      setError(getErrorMessage(err) || 'Failed to save MQTT settings.')
-    }
+    await feedback.runSave(() => updateSettings.mutateAsync(draft), 'Saved MQTT settings.')
   }
 
   const saveDisabled = !draft || !initialDraft || shallowEqual(draft, initialDraft)
@@ -66,8 +62,9 @@ export function useMqttSettingsModel() {
     maskedFlags,
     handleFieldChange,
     isBusy,
-    error,
-    notice,
+    error: feedback.error,
+    notice: feedback.notice,
+    noticeVariant: feedback.noticeVariant,
     statusQuery,
     settingsQuery,
     zigbee2mqttSettingsQuery,

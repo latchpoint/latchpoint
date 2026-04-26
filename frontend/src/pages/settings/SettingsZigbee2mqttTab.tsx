@@ -6,7 +6,13 @@ export function SettingsZigbee2mqttTab() {
   const model = useZigbee2mqttSettingsModel()
 
   return (
-    <SettingsTabShell isAdmin={model.isAdmin} showAdminBanner={false} error={model.error} notice={model.notice}>
+    <SettingsTabShell
+      isAdmin={model.isAdmin}
+      showAdminBanner={false}
+      error={model.error}
+      notice={model.notice}
+      noticeVariant={model.noticeVariant}
+    >
       <div className="mt-4 space-y-4">
         <Zigbee2mqttSettingsCard
           isAdmin={model.isAdmin}

@@ -9,6 +9,7 @@ type Props = {
   loadError?: string | null
   error?: string | null
   notice?: string | null
+  noticeVariant?: 'info' | 'success'
   children: ReactNode
 }
 
@@ -19,6 +20,7 @@ export function SettingsTabShell({
   loadError,
   error,
   notice,
+  noticeVariant = 'info',
   children,
 }: Props) {
   return (
@@ -40,7 +42,7 @@ export function SettingsTabShell({
           <AlertDescription>{error}</AlertDescription>
         </Alert>
       ) : notice ? (
-        <Alert>
+        <Alert variant={noticeVariant}>
           <AlertDescription>{notice}</AlertDescription>
         </Alert>
       ) : null}

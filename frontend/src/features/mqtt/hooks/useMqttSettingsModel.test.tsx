@@ -1,15 +1,19 @@
 import { describe, expect, it, vi } from 'vitest'
-import { renderHook, act } from '@testing-library/react'
+import { act, renderHook } from '@testing-library/react'
 import { useMqttSettingsModel } from '@/features/mqtt/hooks/useMqttSettingsModel'
 
 vi.mock('@/hooks/useAuthQueries', () => {
   return { useCurrentUserQuery: () => ({ data: { role: 'admin' } }) }
 })
 
+const mutateAsyncMock = vi.fn()
+const statusRefetchMock = vi.fn()
+const settingsRefetchMock = vi.fn()
+
 vi.mock('@/hooks/useMqtt', () => {
   return {
-    useMqttStatusQuery: () => ({ data: { enabled: true }, refetch: vi.fn() }),
-    useUpdateMqttSettingsMutation: () => ({ isPending: false, mutateAsync: vi.fn() }),
+    useMqttStatusQuery: () => ({ data: { enabled: true }, refetch: statusRefetchMock }),
+    useUpdateMqttSettingsMutation: () => ({ isPending: false, mutateAsync: mutateAsyncMock }),
     useMqttSettingsQuery: () => ({
       data: {
         enabled: false,
@@ -24,7 +28,7 @@ vi.mock('@/hooks/useMqtt', () => {
         hasPassword: false,
       },
       isLoading: false,
-      refetch: vi.fn(),
+      refetch: settingsRefetchMock,
     }),
   }
 })
@@ -62,5 +66,59 @@ describe('useMqttSettingsModel', () => {
     expect(result.current.isAdmin).toBe(true)
     expect(result.current.error).toBeNull()
     expect(result.current.notice).toBeNull()
+  })
+
+  it('AC-13: save/refresh route through useSettingsActionFeedback', async () => {
+    mutateAsyncMock.mockReset()
+    statusRefetchMock.mockReset()
+    settingsRefetchMock.mockReset()
+
+    const { result } = renderHook(() => useMqttSettingsModel())
+    await act(async () => {
+      await Promise.resolve()
+    })
+
+    // save success → green notice
+    mutateAsyncMock.mockResolvedValueOnce(undefined)
+    await act(async () => {
+      await result.current.save()
+    })
+    expect(result.current.notice).toMatch(/Saved MQTT settings/i)
+    expect(result.current.noticeVariant).toBe('success')
+    expect(result.current.error).toBeNull()
+
+    // save failure → categorized red error
+    mutateAsyncMock.mockRejectedValueOnce({ message: 'nope', code: '403' })
+    await act(async () => {
+      await result.current.save()
+    })
+    expect(result.current.error).toBe(
+      "Save failed: you don't have permission to change these settings."
+    )
+    expect(result.current.notice).toBeNull()
+
+    // refresh success → green notice
+    statusRefetchMock.mockResolvedValueOnce({ isError: false })
+    settingsRefetchMock.mockResolvedValueOnce({ isError: false })
+    await act(async () => {
+      await result.current.refresh()
+    })
+    expect(result.current.notice).toMatch(/Refreshed MQTT/i)
+    expect(result.current.noticeVariant).toBe('success')
+    expect(result.current.error).toBeNull()
+
+    // refresh failure → categorized red error (Refresh prefix).
+    // Reality check: TanStack Query's refetch() swallows errors and resolves
+    // with { isError: true, error: ... }; it does not reject. This mock
+    // mirrors that so the fix's isError check is the thing under test.
+    statusRefetchMock.mockResolvedValueOnce({
+      isError: true,
+      error: { message: 'nope', code: '500' },
+    })
+    settingsRefetchMock.mockResolvedValueOnce({ isError: false })
+    await act(async () => {
+      await result.current.refresh()
+    })
+    expect(result.current.error).toMatch(/^Refresh failed/)
   })
 })
