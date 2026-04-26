@@ -110,6 +110,36 @@ npx vitest run
 - **`docker-compose.prod.yml`**: production compose
 - PostgreSQL runs in a separate infra compose file (`/media/cubxi/docker/docker-compose.infra.yml`), not in this project's compose
 
+### Local dev stack — quick test login
+
+Used when reviewing PRs that need a real browser (Playwright/manual) and we don't want a full demo dataset.
+
+```bash
+# 1. Boot stack (frontend at http://localhost:5427, backend at :8000)
+docker compose up -d
+
+# 2. Create / reset a superuser directly (bypasses seed_test_home, which currently
+#    errors with "Entities config file not found: /app/backend/schema/seed_entities.json"
+#    because the command looks under backend/ but schema/ lives at repo root)
+docker compose exec -T -w /app/backend backend python manage.py shell -c "
+from accounts.models import User
+u, _ = User.objects.get_or_create(email='admin@testhome.local', defaults={'is_staff': True, 'is_superuser': True, 'is_active': True})
+u.set_password('adminpass'); u.is_staff = True; u.is_superuser = True; u.is_active = True; u.save()
+print(u.email)
+"
+```
+
+| Field | Value |
+|-------|-------|
+| Frontend URL | `http://localhost:5427/login` |
+| Backend URL  | `http://localhost:8000` |
+| Email        | `admin@testhome.local` |
+| Password     | `adminpass` |
+
+No 2FA / setup-wizard gate (`requires2FA: False` in `backend/accounts/views/auth.py`, `setup_required = False` in `backend/accounts/use_cases/setup_status.py`) — login lands directly on `/`.
+
+If the full demo dataset *is* needed (sensors, codes, control panels, rules), fix the path bug in `backend/alarm/management/commands/seed_test_home.py` first or symlink `backend/schema -> ../schema`.
+
 ## Architecture
 
 - **All config is DB-backed** (ADR 0079) — connection config, credentials, and operational settings all live in `AlarmSettingsEntry` JSON blobs per profile
