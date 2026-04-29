@@ -68,6 +68,14 @@ def build_discovery_payload(*, entity_name: str, code_arm_required: bool) -> dic
     - We publish our app states directly (they already match HA alarm states).
     - We publish commands as JSON: {"action": "<payload>", "code": "<code>"}.
       `{{ value }}` is the selected payload (payload_arm_away, payload_disarm, etc).
+    - `code: "REMOTE_CODE"` is HA's sentinel for "validate remotely" — it makes
+      HA expose `code_format = NUMBER` so the Lovelace card renders a numeric
+      keypad, while skipping HA-side comparison. The typed code is forwarded
+      verbatim through `{{ code }}` and validated server-side in
+      `handle_mqtt_alarm_command` via `code_validation.validate_any_active_code`.
+    - `supported_features` is constrained to the modes Latchpoint actually
+      implements; the HA default also advertises `arm_custom_bypass` and
+      `trigger`, neither of which we wire up.
     """
     command_template = json.dumps({"action": "{{ value }}", "code": "{{ code }}"})
     return {
@@ -85,6 +93,10 @@ def build_discovery_payload(*, entity_name: str, code_arm_required: bool) -> dic
         "payload_arm_away": "ARM_AWAY",
         "payload_arm_night": "ARM_NIGHT",
         "payload_arm_vacation": "ARM_VACATION",
+        # Sentinel that triggers HA's numeric keypad without enabling HA-side
+        # code validation. See the Notes in this function's docstring above.
+        "code": "REMOTE_CODE",
+        "supported_features": ["arm_home", "arm_away", "arm_night", "arm_vacation"],
         # Requirement: HA users must enter an alarm code to disarm.
         "code_disarm_required": True,
         # Respect app policy for arming.
