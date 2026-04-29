@@ -94,7 +94,7 @@ def build_discovery_payload(*, entity_name: str, code_arm_required: bool) -> dic
         "payload_arm_night": "ARM_NIGHT",
         "payload_arm_vacation": "ARM_VACATION",
         # Sentinel that triggers HA's numeric keypad without enabling HA-side
-        # code validation. See module docstring above.
+        # code validation. See the Notes in this function's docstring above.
         "code": "REMOTE_CODE",
         "supported_features": ["arm_home", "arm_away", "arm_night", "arm_vacation"],
         # Requirement: HA users must enter an alarm code to disarm.
