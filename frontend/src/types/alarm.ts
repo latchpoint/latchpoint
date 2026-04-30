@@ -28,7 +28,6 @@ export interface AlarmSettingsProfile {
   name: string
   isActive: boolean
   delayTime: number // seconds
-  armingTime: number // seconds
   triggerTime: number // seconds
   disarmAfterTrigger: boolean
   codeArmRequired: boolean

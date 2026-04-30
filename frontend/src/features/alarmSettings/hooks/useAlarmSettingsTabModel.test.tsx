@@ -19,7 +19,6 @@ vi.mock('@/hooks/useAlarmQueries', () => {
         name: 'Default',
         isActive: true,
         delayTime: 5,
-        armingTime: 10,
         triggerTime: 30,
         disarmAfterTrigger: false,
         codeArmRequired: true,
@@ -47,7 +46,6 @@ describe('useAlarmSettingsTabModel', () => {
     act(() => {
       result.current.setDraft({
         delayTime: '0',
-        armingTime: '0',
         armingTimeHome: '0',
         armingTimeAway: '0',
         armingTimeNight: '0',
@@ -73,7 +71,6 @@ describe('useAlarmSettingsTabModel', () => {
     act(() => {
       result.current.setDraft({
         delayTime: '5',
-        armingTime: '10',
         armingTimeHome: '1',
         armingTimeAway: '2',
         armingTimeNight: '3',
@@ -95,7 +92,6 @@ describe('useAlarmSettingsTabModel', () => {
         changes: expect.objectContaining({
           entries: expect.arrayContaining([
             { key: 'delay_time', value: 5 },
-            { key: 'arming_time', value: 10 },
             { key: 'trigger_time', value: 30 },
             { key: 'disarm_after_trigger', value: true },
             { key: 'code_arm_required', value: true },

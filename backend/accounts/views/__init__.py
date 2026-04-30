@@ -4,6 +4,7 @@ from .auth import CsrfView, LoginView, LogoutView, RefreshTokenView
 from .codes import CodeDetailView, CodesView
 from .onboarding import OnboardingView
 from .setup_status import SetupStatusView
+from .system import SystemTimeView
 from .users import CurrentUserView, UsersView
 
 __all__ = [
@@ -16,5 +17,6 @@ __all__ = [
     "OnboardingView",
     "RefreshTokenView",
     "SetupStatusView",
+    "SystemTimeView",
     "UsersView",
 ]

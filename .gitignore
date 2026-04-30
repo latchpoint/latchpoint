@@ -31,4 +31,8 @@ sessions/.archived/
 
 # Tooling
 .claude/
+CLAUDE.md
+claude.md
+.mcp.json
 node_modules/
+.playwright-mcp/

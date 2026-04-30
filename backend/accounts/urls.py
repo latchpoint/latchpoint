@@ -15,4 +15,5 @@ urlpatterns = [
     path("users/me/", views.CurrentUserView.as_view(), name="users-me"),
     path("codes/", views.CodesView.as_view(), name="codes"),
     path("codes/<int:code_id>/", views.CodeDetailView.as_view(), name="code-detail"),
+    path("system/time/", views.SystemTimeView.as_view(), name="system-time"),
 ]

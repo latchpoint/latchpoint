@@ -57,7 +57,6 @@ describe('alarm', () => {
         profile: { id: 1, name: 'Default', isActive: true, createdAt: '2025-01-01', updatedAt: '2025-01-01' },
         entries: [
           { key: 'delay_time', value: 45 },
-          { key: 'arming_time', value: 15 },
           { key: 'trigger_time', value: 300 },
           { key: 'disarm_after_trigger', value: true },
           { key: 'code_arm_required', value: false },
@@ -82,7 +81,6 @@ describe('alarm', () => {
         createdAt: '2025-01-01',
         updatedAt: '2025-01-01',
         delayTime: 60,
-        armingTime: 60,
         triggerTime: 600,
         disarmAfterTrigger: false,
         codeArmRequired: false,
@@ -108,8 +106,7 @@ describe('alarm', () => {
       })
       const result = await alarmService.getSettings()
       expect(result.delayTime).toBe(30)
-      expect(result.armingTime).toBe(10)
-      expect(result.triggerTime).toBe(120)
+      expect(result.triggerTime).toBe(0)
       expect(result.availableArmingStates).toEqual([])
       expect(result.stateOverrides).toEqual({})
     })
