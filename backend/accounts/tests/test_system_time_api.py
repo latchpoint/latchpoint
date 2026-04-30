@@ -16,7 +16,7 @@ class SystemTimeApiTests(APITestCase):
         payload = response.json()["data"]
         self.assertIn("timestamp", payload)
         self.assertIn("timezone", payload)
-        self.assertIn("epochMs", payload)
+        self.assertIn("epoch_ms", payload)
         self.assertIn("formatted", payload)
 
     @override_settings(TIME_ZONE="America/Los_Angeles")
@@ -33,7 +33,7 @@ class SystemTimeApiTests(APITestCase):
         response = self.client.get(url)
         after_ms = int(time.time() * 1000)
         self.assertEqual(response.status_code, 200)
-        epoch_ms = response.json()["data"]["epochMs"]
+        epoch_ms = response.json()["data"]["epoch_ms"]
         self.assertGreaterEqual(epoch_ms, before_ms - 1000)
         self.assertLessEqual(epoch_ms, after_ms + 1000)
 
