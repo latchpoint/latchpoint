@@ -16,9 +16,34 @@ export function SystemTime({ collapsed }: SystemTimeProps) {
   const [tickNow, setTickNow] = useState(() => Date.now())
 
   useEffect(() => {
-    const id = window.setInterval(() => setTickNow(Date.now()), 1000)
-    return () => window.clearInterval(id)
-  }, [])
+    const intervalMs = collapsed ? 60_000 : 1000
+    let intervalId: number | undefined
+
+    const start = () => {
+      if (intervalId !== undefined) return
+      setTickNow(Date.now())
+      intervalId = window.setInterval(() => setTickNow(Date.now()), intervalMs)
+    }
+
+    const stop = () => {
+      if (intervalId === undefined) return
+      window.clearInterval(intervalId)
+      intervalId = undefined
+    }
+
+    const handleVisibility = () => {
+      if (document.hidden) stop()
+      else start()
+    }
+
+    if (!document.hidden) start()
+    document.addEventListener('visibilitychange', handleVisibility)
+
+    return () => {
+      stop()
+      document.removeEventListener('visibilitychange', handleVisibility)
+    }
+  }, [collapsed])
 
   // Build formatters with the *server's* IANA timezone but the *browser's*
   // locale defaults (dateStyle/timeStyle). The explicit timeZone is what
