@@ -92,6 +92,9 @@ export const queryKeys = {
   systemConfig: {
     all: ['systemConfig'] as const,
   },
+  system: {
+    time: ['system', 'time'] as const,
+  },
   users: {
     all: ['users'] as const,
     current: ['users', 'current'] as const,

@@ -112,6 +112,23 @@ class AlarmTransitionTests(TestCase):
         self.assertEqual(snapshot.current_state, AlarmState.DISARMED)
         self.assertIsNone(snapshot.target_armed_state)
 
+    def test_trigger_time_zero_keeps_alarm_triggered_until_disarmed(self):
+        set_profile_setting(self.profile, "trigger_time", 0)
+        snapshot = arm(target_state=AlarmState.ARMED_AWAY, user=self.user)
+        snapshot.exit_at = timezone.now() - timedelta(seconds=1)
+        snapshot.save(update_fields=["exit_at"])
+        timer_expired()
+        snapshot = sensor_triggered(sensor=self.motion_sensor)
+        snapshot.refresh_from_db()
+        self.assertEqual(snapshot.current_state, AlarmState.TRIGGERED)
+        self.assertIsNone(snapshot.exit_at)
+        snapshot = timer_expired()
+        snapshot.refresh_from_db()
+        self.assertEqual(snapshot.current_state, AlarmState.TRIGGERED)
+        snapshot = disarm(user=self.user)
+        snapshot.refresh_from_db()
+        self.assertEqual(snapshot.current_state, AlarmState.DISARMED)
+
 
 class AlarmSnapshotBootstrapTests(TestCase):
     def test_bootstrap_creates_snapshot(self):

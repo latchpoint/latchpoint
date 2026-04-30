@@ -6,6 +6,7 @@ import { Routes } from '@/lib/constants'
 import { Button } from '@/components/ui/button'
 import { Tooltip } from '@/components/ui/tooltip'
 import { navItems } from './navItems'
+import { SystemTime } from './SystemTime'
 
 export function Sidebar() {
   const location = useLocation()
@@ -62,8 +63,9 @@ export function Sidebar() {
         })}
       </nav>
 
-      {/* Version Info + Collapse Toggle */}
+      {/* System Time + Version Info + Collapse Toggle */}
       <div className="absolute bottom-4 left-0 right-0 px-2 space-y-2">
+        <SystemTime collapsed={sidebarCollapsed} />
         <VersionInfo collapsed={sidebarCollapsed} />
         <Button
           variant="ghost"

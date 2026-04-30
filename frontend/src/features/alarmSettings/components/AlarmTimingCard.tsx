@@ -35,7 +35,7 @@ export function AlarmTimingCard({ isAdmin, isLoading, hasInitialDraft, draft, on
         </div>
       }
     >
-      <div className="grid gap-4 md:grid-cols-3">
+      <div className="grid gap-4 md:grid-cols-2">
         <FormField
           label="Entry delay"
           htmlFor="delayTime"
@@ -44,11 +44,7 @@ export function AlarmTimingCard({ isAdmin, isLoading, hasInitialDraft, draft, on
           <Input id="delayTime" type="number" min={0} inputMode="numeric" value={draft.delayTime} onChange={(e) => onSetDraft((prev) => (prev ? { ...prev, delayTime: e.target.value } : prev))} disabled={!isAdmin || isLoading} />
         </FormField>
 
-        <FormField label="Exit delay (default)" htmlFor="armingTime" help="Fallback countdown after you arm before the alarm is active. Per-mode exit delays below override this.">
-          <Input id="armingTime" type="number" min={0} inputMode="numeric" value={draft.armingTime} onChange={(e) => onSetDraft((prev) => (prev ? { ...prev, armingTime: e.target.value } : prev))} disabled={!isAdmin || isLoading} />
-        </FormField>
-
-        <FormField label="Trigger time" htmlFor="triggerTime" help="How long the alarm remains in the Triggered state before it returns to the previous armed state (or disarms, if configured).">
+        <FormField label="Trigger time" htmlFor="triggerTime" help="How long the alarm stays in the Triggered state before auto-clearing. Set to 0 to keep it triggered until you disarm manually.">
           <Input id="triggerTime" type="number" min={0} inputMode="numeric" value={draft.triggerTime} onChange={(e) => onSetDraft((prev) => (prev ? { ...prev, triggerTime: e.target.value } : prev))} disabled={!isAdmin || isLoading} />
         </FormField>
       </div>

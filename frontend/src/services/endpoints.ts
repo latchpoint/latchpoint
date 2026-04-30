@@ -69,6 +69,9 @@ export const apiEndpoints = {
     all: '/api/system-config/',
     key: (key: string) => `/api/system-config/${encodeURIComponent(key)}/`,
   },
+  system: {
+    time: '/api/system/time/',
+  },
   debug: {
     logs: '/api/alarm/debug/logs/',
   },

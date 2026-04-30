@@ -51,7 +51,6 @@ class FrontendContractSmokeApiTests(APITestCase):
         entries_by_key = {row["key"]: row for row in entries}
         for key in (
             "delay_time",
-            "arming_time",
             "trigger_time",
             "code_arm_required",
             "available_arming_states",
