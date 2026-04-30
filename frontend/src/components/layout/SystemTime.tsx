@@ -20,29 +20,21 @@ export function SystemTime({ collapsed }: SystemTimeProps) {
     return () => window.clearInterval(id)
   }, [])
 
-  // Build formatters with the *server's* IANA timezone. Without an explicit
-  // timeZone option, Intl falls back to the browser's local zone — which would
-  // silently render the wrong wall-clock for any user not co-located with the
-  // server. This option is the entire point of the feature.
+  // Build formatters with the *server's* IANA timezone but the *browser's*
+  // locale defaults (dateStyle/timeStyle). The explicit timeZone is what
+  // defeats Intl's silent fallback to the browser's local zone — that fallback
+  // is the JS Date footgun this whole feature exists to defend against.
   const formatters = useMemo(() => {
     const timeZone = data?.timezone
     return {
       full: new Intl.DateTimeFormat(undefined, {
         timeZone,
-        year: 'numeric',
-        month: '2-digit',
-        day: '2-digit',
-        hour: '2-digit',
-        minute: '2-digit',
-        second: '2-digit',
-        hour12: false,
-        timeZoneName: 'short',
+        dateStyle: 'short',
+        timeStyle: 'long',
       }),
       short: new Intl.DateTimeFormat(undefined, {
         timeZone,
-        hour: '2-digit',
-        minute: '2-digit',
-        hour12: false,
+        timeStyle: 'short',
       }),
     }
   }, [data?.timezone])

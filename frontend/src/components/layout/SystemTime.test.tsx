@@ -55,16 +55,26 @@ describe('SystemTime', () => {
   })
 
   it("renders the server's wall-clock, not the browser's TZ (regression: JS Date silent reformat)", () => {
-    // 2026-04-30T03:00:00Z is 12:00:00 in Asia/Tokyo (JST = UTC+9).
+    // 2026-04-30T03:00:00Z is 12:00 in Asia/Tokyo (JST = UTC+9).
     const epochMs = Date.UTC(2026, 3, 30, 3, 0, 0)
     vi.useFakeTimers()
     vi.setSystemTime(epochMs)
     mockSuccess(epochMs, 'Asia/Tokyo')
 
+    // Compute the expected/wrong strings with the same Intl options the
+    // component uses. This keeps the assertions locale-agnostic — what
+    // matters is that Tokyo wall-clock appears and UTC wall-clock does not.
+    const opts = { dateStyle: 'short', timeStyle: 'long' } as const
+    const tokyoStr = new Intl.DateTimeFormat(undefined, { timeZone: 'Asia/Tokyo', ...opts }).format(
+      new Date(epochMs)
+    )
+    const utcStr = new Intl.DateTimeFormat(undefined, { timeZone: 'UTC', ...opts }).format(
+      new Date(epochMs)
+    )
+
     const { container } = render(<SystemTime collapsed={false} />)
-    expect(container.textContent).toContain('12:00:00')
-    // 03:00:00 would only appear if the formatter silently used UTC/browser TZ.
-    expect(container.textContent).not.toContain('03:00:00')
+    expect(container.textContent).toContain(tokyoStr)
+    expect(container.textContent).not.toContain(utcStr)
   })
 
   it('ticks the displayed time forward by one second per tick', () => {
@@ -73,25 +83,38 @@ describe('SystemTime', () => {
     vi.setSystemTime(epochMs)
     mockSuccess(epochMs, 'UTC')
 
+    const opts = { timeZone: 'UTC', dateStyle: 'short', timeStyle: 'long' } as const
+    const initialStr = new Intl.DateTimeFormat(undefined, opts).format(new Date(epochMs))
+    const advancedStr = new Intl.DateTimeFormat(undefined, opts).format(new Date(epochMs + 5_000))
+
     const { container } = render(<SystemTime collapsed={false} />)
-    expect(container.textContent).toContain('03:00:00')
+    expect(container.textContent).toContain(initialStr)
 
     act(() => {
       vi.advanceTimersByTime(5_000)
     })
-    expect(container.textContent).toContain('03:00:05')
+    expect(container.textContent).toContain(advancedStr)
   })
 
-  it('renders HH:MM only in collapsed mode', () => {
+  it('renders without seconds in collapsed mode', () => {
     const epochMs = Date.UTC(2026, 3, 30, 3, 0, 45)
     vi.useFakeTimers()
     vi.setSystemTime(epochMs)
     mockSuccess(epochMs, 'UTC')
 
+    const shortStr = new Intl.DateTimeFormat(undefined, {
+      timeZone: 'UTC',
+      timeStyle: 'short',
+    }).format(new Date(epochMs))
+    const longStr = new Intl.DateTimeFormat(undefined, {
+      timeZone: 'UTC',
+      timeStyle: 'long',
+    }).format(new Date(epochMs))
+
     const { container } = render(<SystemTime collapsed={true} />)
-    expect(container.textContent).toContain('03:00')
-    // Seconds should not appear in the visible (non-tooltip) collapsed view.
-    expect(container.textContent).not.toContain('03:00:45')
+    expect(container.textContent).toContain(shortStr)
+    // The long form (which includes seconds) should NOT appear in the visible collapsed view.
+    expect(container.textContent).not.toContain(longStr)
   })
 
   it('clears the tick interval on unmount', () => {
