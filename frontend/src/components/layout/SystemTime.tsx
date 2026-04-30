@@ -12,7 +12,7 @@ interface SystemTimeProps {
 }
 
 export function SystemTime({ collapsed }: SystemTimeProps) {
-  const { data, dataUpdatedAt, isSuccess } = useServerTimeQuery()
+  const { data, dataUpdatedAt } = useServerTimeQuery()
   const [tickNow, setTickNow] = useState(() => Date.now())
 
   useEffect(() => {
@@ -39,7 +39,7 @@ export function SystemTime({ collapsed }: SystemTimeProps) {
     }
   }, [data?.timezone])
 
-  if (!isSuccess || !data) {
+  if (!data) {
     return collapsed ? <PlaceholderCollapsed /> : <PlaceholderExpanded />
   }
 

@@ -32,6 +32,21 @@ function mockLoading() {
   } as unknown as ReturnType<typeof useServerTimeQuery>)
 }
 
+// TanStack Query keeps `data` from a prior success when a background refetch
+// fails (status flips to 'error', isSuccess to false). Mimic that state.
+function mockErrorWithStaleData(epochMs: number, timezone: string) {
+  mockedUseServerTime.mockReturnValue({
+    isSuccess: false,
+    data: {
+      timestamp: new Date(epochMs).toISOString(),
+      timezone,
+      epochMs,
+      formatted: '',
+    },
+    dataUpdatedAt: epochMs,
+  } as unknown as ReturnType<typeof useServerTimeQuery>)
+}
+
 describe('SystemTime', () => {
   beforeEach(() => {
     mockedUseServerTime.mockReset()
@@ -115,6 +130,23 @@ describe('SystemTime', () => {
     expect(container.textContent).toContain(shortStr)
     // The long form (which includes seconds) should NOT appear in the visible collapsed view.
     expect(container.textContent).not.toContain(longStr)
+  })
+
+  it('keeps showing last-known time when a refetch fails (data present, isSuccess false)', () => {
+    const epochMs = Date.UTC(2026, 3, 30, 3, 0, 0)
+    vi.useFakeTimers()
+    vi.setSystemTime(epochMs)
+    mockErrorWithStaleData(epochMs, 'UTC')
+
+    const expected = new Intl.DateTimeFormat(undefined, {
+      timeZone: 'UTC',
+      dateStyle: 'short',
+      timeStyle: 'long',
+    }).format(new Date(epochMs))
+
+    const { container } = render(<SystemTime collapsed={false} />)
+    expect(container.textContent).toContain(expected)
+    expect(container.textContent).not.toContain('--:--:--')
   })
 
   it('clears the tick interval on unmount', () => {
