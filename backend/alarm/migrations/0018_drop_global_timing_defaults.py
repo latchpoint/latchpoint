@@ -55,8 +55,28 @@ def hoist_global_arming_time_into_overrides(apps, schema_editor):
 
 
 def drop_orphan_timing_rows(apps, schema_editor):
+    """Remove rows that should fall back to the new registry defaults.
+
+    `arming_time` is no longer a global setting (per-state only via
+    `state_overrides`), so every row is dropped — the hoist step above
+    already copied the value into the overrides so nothing is lost.
+
+    `trigger_time`'s default flipped from 600 to 0; only delete rows that
+    still hold the prior default, so user-customized values (e.g. 300, 900)
+    survive the migration instead of silently snapping to 0.
+    """
     AlarmSettingsEntry = apps.get_model("alarm", "AlarmSettingsEntry")
-    AlarmSettingsEntry.objects.filter(key__in=("arming_time", "trigger_time")).delete()
+
+    AlarmSettingsEntry.objects.filter(key="arming_time").delete()
+
+    old_trigger_time_default = 600
+    for row in AlarmSettingsEntry.objects.filter(key="trigger_time"):
+        try:
+            stored = int(row.value)
+        except (TypeError, ValueError):
+            continue
+        if stored == old_trigger_time_default:
+            row.delete()
 
 
 def noop(apps, schema_editor):
