@@ -18,7 +18,8 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { HelpTip } from '@/components/ui/help-tip'
 import { cn } from '@/lib/utils'
 import { Trash2, ChevronDown, ChevronUp } from 'lucide-react'
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useRef } from 'react'
+import { TemplateVariablePicker } from '@/features/rules/queryBuilder/TemplateVariablePicker'
 import { useHomeAssistantStatus, useHomeAssistantNotifyServices } from '@/hooks/useHomeAssistant'
 import { useEnabledNotificationProviders } from '@/features/notifications/hooks/useNotificationProviders'
 import { useZwavejsStatusQuery } from '@/hooks/useZwavejs'
@@ -571,32 +572,86 @@ function SendNotificationFields({
         </div>
       )}
 
-      <div className="space-y-1">
-        <label className="text-xs text-muted-foreground">
-          Message{' '}
-          <HelpTip content="The notification message content" className="ml-1" />
-        </label>
-        <Textarea
-          value={action.message}
-          onChange={(e) => onUpdate({ ...action, message: e.target.value })}
-          placeholder="Alarm triggered! Check your security cameras."
-          disabled={disabled}
-          className="min-h-[60px]"
-        />
-      </div>
+      <NotificationMessageField action={action} onUpdate={onUpdate} disabled={disabled} />
 
-      <div className="space-y-1">
-        <label className="text-xs text-muted-foreground">
-          Title (optional){' '}
-          <HelpTip content="The notification title" className="ml-1" />
-        </label>
-        <Input
-          value={action.title || ''}
-          onChange={(e) => onUpdate({ ...action, title: e.target.value || undefined })}
-          placeholder="Security Alert"
-          disabled={disabled}
-        />
-      </div>
+      <NotificationTitleField action={action} onUpdate={onUpdate} disabled={disabled} />
+    </div>
+  )
+}
+
+/**
+ * Message textarea for send_notification, with the ADR-0088 template-variable
+ * picker rendered beneath. Extracted so the textarea ref / state stays local.
+ */
+function NotificationMessageField({
+  action,
+  onUpdate,
+  disabled,
+}: {
+  action: SendNotificationAction
+  onUpdate: (action: ActionNode) => void
+  disabled?: boolean
+}) {
+  const ref = useRef<HTMLTextAreaElement>(null)
+  return (
+    <div className="space-y-1">
+      <label className="text-xs text-muted-foreground">
+        Message{' '}
+        <HelpTip content="The notification message content. Supports {{trigger.name}} and other variables." className="ml-1" />
+      </label>
+      <Textarea
+        ref={ref}
+        value={action.message}
+        onChange={(e) => onUpdate({ ...action, message: e.target.value })}
+        placeholder="Alarm triggered by {{trigger.name}}"
+        disabled={disabled}
+        className="min-h-[60px] font-mono text-xs"
+      />
+      <TemplateVariablePicker
+        inputRef={ref}
+        value={action.message}
+        onChange={(next) => onUpdate({ ...action, message: next })}
+        disabled={disabled}
+      />
+    </div>
+  )
+}
+
+/**
+ * Title input for send_notification, with the ADR-0088 template-variable
+ * picker rendered beneath. Extracted so the input ref / state stays local.
+ */
+function NotificationTitleField({
+  action,
+  onUpdate,
+  disabled,
+}: {
+  action: SendNotificationAction
+  onUpdate: (action: ActionNode) => void
+  disabled?: boolean
+}) {
+  const ref = useRef<HTMLInputElement>(null)
+  const titleValue = action.title || ''
+  return (
+    <div className="space-y-1">
+      <label className="text-xs text-muted-foreground">
+        Title (optional){' '}
+        <HelpTip content="The notification title. Supports {{trigger.name}} and other variables." className="ml-1" />
+      </label>
+      <Input
+        ref={ref}
+        value={titleValue}
+        onChange={(e) => onUpdate({ ...action, title: e.target.value || undefined })}
+        placeholder="Security Alert"
+        disabled={disabled}
+        className="font-mono text-xs"
+      />
+      <TemplateVariablePicker
+        inputRef={ref}
+        value={titleValue}
+        onChange={(next) => onUpdate({ ...action, title: next || undefined })}
+        disabled={disabled}
+      />
     </div>
   )
 }

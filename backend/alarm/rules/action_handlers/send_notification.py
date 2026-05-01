@@ -4,6 +4,7 @@ import logging
 from typing import Any
 
 from alarm.rules.action_handlers import ActionContext, register
+from alarm.rules.template_render import render as render_template
 from alarm.state_machine.settings import get_active_settings_profile
 from notifications.dispatcher import get_dispatcher as get_notification_dispatcher
 
@@ -12,14 +13,18 @@ logger = logging.getLogger(__name__)
 
 def execute(action: dict[str, Any], ctx: ActionContext) -> tuple[dict[str, Any], str | None]:
     provider_id = action.get("provider_id")
-    message = action.get("message")
-    title = action.get("title")
+    raw_message = action.get("message")
+    raw_title = action.get("title")
     data = action.get("data")
 
     if not isinstance(provider_id, str) or not provider_id:
         return {"ok": False, "type": "send_notification", "error": "missing_provider_id"}, None
-    if not isinstance(message, str) or not message:
+    if not isinstance(raw_message, str) or not raw_message:
         return {"ok": False, "type": "send_notification", "error": "missing_message"}, None
+
+    # ADR-0088: interpolate {{trigger.*}}, {{rule.*}}, {{now}} placeholders.
+    message = render_template(raw_message, rule=ctx.rule, triggers=ctx.triggers)
+    title = render_template(raw_title, rule=ctx.rule, triggers=ctx.triggers) if isinstance(raw_title, str) else None
 
     try:
         dispatcher = get_notification_dispatcher()
@@ -28,7 +33,7 @@ def execute(action: dict[str, Any], ctx: ActionContext) -> tuple[dict[str, Any],
             profile=profile,
             provider_id=provider_id,
             message=message,
-            title=title if isinstance(title, str) else None,
+            title=title if isinstance(title, str) and title else None,
             data=data if isinstance(data, dict) else None,
             rule_name=ctx.rule.name,
         )

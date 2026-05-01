@@ -11,6 +11,7 @@ from alarm.rules.action_handlers import (  # noqa: F401 — AlarmServices re-exp
     AlarmServices,
     get_handler,
 )
+from alarm.rules.template_render import TriggerContext
 from alarm.state_machine import transitions as _transitions_module
 
 
@@ -20,6 +21,7 @@ def execute_actions(
     actions: list[dict[str, Any]],
     now,
     actor_user=None,
+    triggers: TriggerContext | None = None,
     alarm_services: AlarmServices = _transitions_module,
     ha: HomeAssistantGateway = default_home_assistant_gateway,
     zwavejs: ZwavejsGateway = default_zwavejs_gateway,
@@ -38,6 +40,7 @@ def execute_actions(
         ha=ha,
         zwavejs=zwavejs,
         zigbee2mqtt=zigbee2mqtt,
+        triggers=triggers if triggers is not None else TriggerContext.empty(now),
     )
 
     for action in actions:

@@ -100,6 +100,8 @@ def _make_ctx(
 ) -> ActionContext:
     if rule is None:
         rule = Rule(id=99, name="TestRule", kind="trigger", enabled=True, priority=0, schema_version=1, definition={})
+    from alarm.rules.template_render import TriggerContext
+
     return ActionContext(
         rule=rule,
         actor_user=None,
@@ -107,6 +109,7 @@ def _make_ctx(
         ha=ha or _FakeHA(fail=fail),
         zwavejs=zwavejs or _FakeZwavejs(fail=fail),
         zigbee2mqtt=zigbee2mqtt or _FakeZ2M(fail=fail),
+        triggers=TriggerContext.empty(),
     )
 
 
@@ -506,3 +509,81 @@ class SendNotificationHandlerTests(TestCase):
         )
         self.assertFalse(result["ok"])
         self.assertIn("dispatch boom", error)
+
+    @patch("alarm.rules.action_handlers.send_notification.get_notification_dispatcher")
+    @patch("alarm.rules.action_handlers.send_notification.get_active_settings_profile")
+    def test_template_variables_interpolated(self, mock_get_profile, mock_get_dispatcher):
+        """ADR-0088: ``{{trigger.name}}`` in message resolves at fire time."""
+        from django.utils import timezone
+
+        from alarm.models import Entity
+        from alarm.rules.template_render import TriggerContext
+
+        mock_get_profile.return_value = MagicMock()
+        mock_delivery = MagicMock()
+        mock_delivery.id = "delivery-template"
+        mock_dispatcher = MagicMock()
+        mock_dispatcher.enqueue.return_value = (mock_delivery, None)
+        mock_get_dispatcher.return_value = mock_dispatcher
+
+        entity = Entity(
+            entity_id="binary_sensor.back_door",
+            name="Back Door",
+            domain="binary_sensor",
+            last_state="on",
+            source="home_assistant",
+            attributes={},
+        )
+        ctx = _make_ctx()
+        triggers = TriggerContext(
+            fired_at=timezone.now(),
+            fire_source="immediate",
+            trigger=entity,
+            triggers=[entity],
+        )
+        # Replace the empty default with a populated TriggerContext.
+        ctx = ActionContext(
+            rule=ctx.rule,
+            actor_user=ctx.actor_user,
+            alarm_services=ctx.alarm_services,
+            ha=ctx.ha,
+            zwavejs=ctx.zwavejs,
+            zigbee2mqtt=ctx.zigbee2mqtt,
+            triggers=triggers,
+        )
+
+        send_notification_execute(
+            {
+                "type": "send_notification",
+                "provider_id": "prov-1",
+                "message": "Triggered by {{trigger.name}}",
+                "title": "Alert: {{trigger.entity_id}}",
+            },
+            ctx,
+        )
+        kwargs = mock_dispatcher.enqueue.call_args.kwargs
+        self.assertEqual(kwargs["message"], "Triggered by Back Door")
+        self.assertEqual(kwargs["title"], "Alert: binary_sensor.back_door")
+
+    @patch("alarm.rules.action_handlers.send_notification.get_notification_dispatcher")
+    @patch("alarm.rules.action_handlers.send_notification.get_active_settings_profile")
+    def test_template_passthrough_when_no_trigger(self, mock_get_profile, mock_get_dispatcher):
+        """ADR-0088: time-only rules ship literal ``{{trigger.*}}`` text."""
+        mock_get_profile.return_value = MagicMock()
+        mock_delivery = MagicMock()
+        mock_delivery.id = "delivery-passthrough"
+        mock_dispatcher = MagicMock()
+        mock_dispatcher.enqueue.return_value = (mock_delivery, None)
+        mock_get_dispatcher.return_value = mock_dispatcher
+
+        ctx = _make_ctx()  # default TriggerContext.empty() — no trigger entity
+        send_notification_execute(
+            {
+                "type": "send_notification",
+                "provider_id": "prov-1",
+                "message": "By {{trigger.name}}",
+            },
+            ctx,
+        )
+        kwargs = mock_dispatcher.enqueue.call_args.kwargs
+        self.assertEqual(kwargs["message"], "By {{trigger.name}}")

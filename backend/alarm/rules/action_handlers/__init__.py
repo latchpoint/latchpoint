@@ -15,6 +15,7 @@ from alarm.gateways.home_assistant import HomeAssistantGateway
 from alarm.gateways.zigbee2mqtt import Zigbee2mqttGateway
 from alarm.gateways.zwavejs import ZwavejsGateway
 from alarm.models import Rule
+from alarm.rules.template_render import TriggerContext
 
 
 class AlarmServices(Protocol):
@@ -49,6 +50,7 @@ class ActionContext:
     ha: HomeAssistantGateway
     zwavejs: ZwavejsGateway
     zigbee2mqtt: Zigbee2mqttGateway
+    triggers: TriggerContext
 
 
 ActionHandler = Callable[[dict[str, Any], ActionContext], tuple[dict[str, Any], str | None]]
