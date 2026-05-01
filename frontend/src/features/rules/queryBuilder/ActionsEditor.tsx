@@ -304,6 +304,18 @@ function HaCallServiceFields({
 
   const entityIds = action.target?.entityIds ?? []
 
+  // Parallel stable keys for entity rows. Index keys would migrate row-local
+  // EntityPicker state (open/search) onto a different row after delete/reorder.
+  /* eslint-disable react-hooks/refs */
+  const nextRowId = useRef(0)
+  const rowKeysRef = useRef<string[]>(
+    entityIds.map(() => `entity-row-${nextRowId.current++}`)
+  )
+  if (rowKeysRef.current.length !== entityIds.length) {
+    rowKeysRef.current = entityIds.map(() => `entity-row-${nextRowId.current++}`)
+  }
+  /* eslint-enable react-hooks/refs */
+
   const handleDomainChange = (newDomain: string) => {
     onUpdate({ ...action, action: `${newDomain}.${service}` })
   }
@@ -319,10 +331,12 @@ function HaCallServiceFields({
   }
 
   const handleAddEntity = () => {
+    rowKeysRef.current.push(`entity-row-${nextRowId.current++}`)
     onUpdate({ ...action, target: { entityIds: [...entityIds, ''] } })
   }
 
   const handleRemoveEntity = (index: number) => {
+    rowKeysRef.current.splice(index, 1)
     const next = entityIds.filter((_, i) => i !== index)
     onUpdate({ ...action, target: { entityIds: next } })
   }
@@ -378,8 +392,9 @@ function HaCallServiceFields({
           </p>
         ) : (
           <div className="space-y-2">
+            {/* eslint-disable react-hooks/refs */}
             {entityIds.map((entityId, idx) => (
-              <div key={idx} className="flex items-center gap-2">
+              <div key={rowKeysRef.current[idx]} className="flex items-center gap-2">
                 <EntityPicker
                   value={entityId}
                   onChange={(id) => handleEntityIdChange(idx, id)}
@@ -401,6 +416,7 @@ function HaCallServiceFields({
                 </Button>
               </div>
             ))}
+            {/* eslint-enable react-hooks/refs */}
           </div>
         )}
         <Button

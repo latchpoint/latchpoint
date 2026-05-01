@@ -3,7 +3,7 @@
  * Shared between the WHEN entity_state value editor and the THEN call-service
  * action's target list.
  */
-import { useMemo, useState } from 'react'
+import { useId, useMemo, useState } from 'react'
 import { Input } from '@/components/ui/input'
 import { cn } from '@/lib/utils'
 import type { EntityOption, EntitySource } from './types'
@@ -29,6 +29,7 @@ export function EntityPicker({
 }: EntityPickerProps) {
   const [searchText, setSearchText] = useState('')
   const [isOpen, setIsOpen] = useState(false)
+  const listboxId = useId()
 
   // Filter entities by source first, then by search text
   const filteredEntities = useMemo(() => {
@@ -63,6 +64,9 @@ export function EntityPicker({
         type="button"
         disabled={disabled}
         onClick={() => setIsOpen(!isOpen)}
+        aria-haspopup="listbox"
+        aria-expanded={isOpen}
+        aria-controls={isOpen ? listboxId : undefined}
         className={cn(
           'flex h-8 w-full items-center justify-between rounded-md border border-input bg-background px-3 py-1 text-sm',
           'hover:bg-accent hover:text-accent-foreground',
@@ -77,6 +81,7 @@ export function EntityPicker({
           fill="none"
           stroke="currentColor"
           viewBox="0 0 24 24"
+          aria-hidden="true"
         >
           <path
             strokeLinecap="round"
@@ -88,7 +93,11 @@ export function EntityPicker({
       </button>
 
       {isOpen && !disabled && (
-        <div className="absolute z-50 mt-1 max-h-60 w-full min-w-[300px] overflow-hidden rounded-md border bg-popover shadow-md">
+        <div
+          id={listboxId}
+          role="listbox"
+          className="absolute z-50 mt-1 max-h-60 w-full min-w-[300px] overflow-hidden rounded-md border bg-popover shadow-md"
+        >
           <div className="p-2">
             <Input
               type="text"
@@ -109,6 +118,8 @@ export function EntityPicker({
                 <button
                   key={entity.entityId}
                   type="button"
+                  role="option"
+                  aria-selected={entity.entityId === value}
                   onClick={() => handleSelect(entity.entityId)}
                   className={cn(
                     'flex w-full flex-col items-start px-3 py-1.5 text-left text-sm',

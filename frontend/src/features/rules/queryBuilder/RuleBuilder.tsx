@@ -30,9 +30,14 @@ import { useRuleStopGroupsQuery } from '@/hooks/useRulesQueries'
 // can keep half-filled rows while editing without leaking them to the wire.
 function cleanHaCallService(a: HaCallServiceAction): HaCallServiceAction {
   const trimmed = (a.target?.entityIds ?? []).map((s) => s.trim()).filter(Boolean)
-  return trimmed.length > 0
-    ? { ...a, target: { entityIds: trimmed } }
-    : { type: a.type, action: a.action, data: a.data }
+  if (trimmed.length > 0) {
+    return { ...a, target: { entityIds: trimmed } }
+  }
+  // Drop the target wrapper but preserve every other field so future shape
+  // additions don't get silently stripped.
+  const rest = { ...a }
+  delete rest.target
+  return rest
 }
 
 function cleanThen(then: ActionNode[] | undefined): ActionNode[] | undefined {
