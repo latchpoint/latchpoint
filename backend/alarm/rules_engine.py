@@ -144,12 +144,12 @@ def run_rules(
                 try:
                     then = definition.get("then") if isinstance(definition, dict) else []
                     actions = then if isinstance(then, list) else []
-                    triggers_ctx = _build_trigger_context(
-                        when_node=child,
-                        triggering_set=triggering_set,
-                        fired_at=now,
-                        fire_source="timer",
-                    )
+                    # Timer fires are decoupled from the dispatcher batch in flight.
+                    # The current `triggering_set` rarely relates to the entity that
+                    # started this `for` timer, so resolving `{{trigger.*}}` against it
+                    # would silently mis-bind. Pass an empty context — `{{trigger.*}}`
+                    # tokens fall through literally per ADR-0088 / AC-10.
+                    triggers_ctx = TriggerContext.empty(fired_at=now, fire_source="timer")
                     result = execute_actions_func(
                         rule=rule,
                         actions=actions,

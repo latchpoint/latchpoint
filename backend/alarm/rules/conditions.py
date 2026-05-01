@@ -53,7 +53,8 @@ def extract_when_entity_ids(node: Any) -> list[str]:
     Walks ``all`` / ``any`` / ``not`` / ``for`` recursively. Returns ``[]`` for
     ops that do not carry an entity reference (``time_in_range``,
     ``alarm_state_in``, ``frigate_person_detected``). Order matches first-seen
-    traversal; duplicates are preserved by the caller's needs.
+    traversal; the same ``entity_id`` is emitted only once even if it appears in
+    multiple ``entity_state`` ops within the tree.
 
     Used by ADR-0088 to determine which entity in a dispatcher batch caused
     a rule to fire, without modifying the condition evaluator.

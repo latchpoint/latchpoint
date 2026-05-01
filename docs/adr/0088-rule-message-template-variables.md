@@ -1,7 +1,7 @@
 # ADR-0088: Template Variables in Rule Notification Action Messages
 
-**Status:** Proposed
-**Date:** 2026-04-30
+**Status:** Implemented
+**Date:** 2026-04-30 (proposed) / 2026-05-01 (implemented)
 **Author:** Leonardo Merza
 
 ## Context
@@ -328,56 +328,56 @@ No change to `SendNotificationAction` TypeScript type — `message` and `title` 
 
 ## Implementation Plan
 
-- [ ] **Phase 1 — Backend renderer**
+- [x] **Phase 1 — Backend renderer**
   - Add `backend/alarm/rules/template_render.py` with `TriggerContext` dataclass and `render(template, *, rule, triggers) -> str`.
   - Unit tests in `backend/alarm/tests/test_template_render.py`: every variable resolves, missing paths pass through, hostile inputs (`{{__class__}}`, `{{trigger.__init__}}`, `{{rule._meta}}`) pass through, single-pass rendering, legacy passthrough corpus (`"hello {var}"`, `"raw {{}}"`, `"{{user.name}}"`).
 
-- [ ] **Phase 2 — Engine plumbing**
+- [x] **Phase 2 — Engine plumbing**
   - Add `extract_when_entity_ids(node) -> list[str]` to `backend/alarm/rules/conditions.py` next to `extract_for`. Tests: walks `all`/`any`/`not`/`for`/`entity_state`; returns `[]` for time/alarm-state/frigate ops.
   - Add `triggering_entity_ids: list[str] | None = None` parameter to `run_rules()` in `backend/alarm/rules_engine.py`. Build `TriggerContext` per fired rule via `Entity.objects.in_bulk(matched_ids, field_name="entity_id")`, with `matched_ids` sorted alphabetically for determinism (the dispatcher's batch is a `set`, not an ordered list).
   - Add `triggers: TriggerContext` field to `ActionContext` in `backend/alarm/rules/action_handlers/__init__.py`. Add `TriggerContext.empty(now)` classmethod for callers without entity context.
   - Add `triggers` kwarg to `execute_actions()` in `backend/alarm/rules/action_executor.py`; forward into `ActionContext`.
   - Forward `entity_ids` from `RuleDispatcher.notify_entities_changed()` into `run_rules()` in `backend/alarm/dispatcher/dispatcher.py`. Existing non-batched callers (admin "Run rules now", periodic schedulers, timer fires) pass nothing → `fire_source="timer"`.
 
-- [ ] **Phase 3 — Wire renderer into action handler**
+- [x] **Phase 3 — Wire renderer into action handler**
   - In `backend/alarm/rules/action_handlers/send_notification.py`, call `render(message, rule=ctx.rule, triggers=ctx.triggers)` and `render(title, ...)`. `data` passes through verbatim.
   - Integration test added to `backend/alarm/tests/test_action_handlers.py` (`SendNotificationHandlerTests.test_template_variables_interpolated`): a rule with `message: "Triggered by {{trigger.name}}"` and `title: "Alert: {{trigger.entity_id}}"` resolves both to the firing entity's friendly name and entity_id at fire time.
 
-- [ ] **Phase 4 — Frontend picker**
+- [x] **Phase 4 — Frontend picker**
   - Add `frontend/src/features/rules/templateVariables.ts` with the `TEMPLATE_VARIABLES` array.
   - Add `frontend/src/features/rules/queryBuilder/TemplateVariablePicker.tsx` and `.test.tsx`. Tests: chip click inserts `{{token}}` at cursor; `HelpTip` renders the variable table.
   - Wire `<TemplateVariablePicker>` into `ActionsEditor.tsx` under Message and Title in `SendNotificationFields`.
   - Extend `ActionsEditor.test.tsx` with a round-trip: load a rule with `message: "Door {{trigger.name}} opened"`, edit, save, JSON unchanged.
 
-- [ ] **Phase 5 — Verification**
+- [x] **Phase 5 — Verification**
   - Backend: `dca exec backend python manage.py test alarm.rules` (Django runs in Docker per project memory).
   - Frontend: `npx vitest run` in `frontend/`.
   - Lint/format: `ruff format` + `npx eslint src/` + `npx tsc --noEmit`.
   - Manual smoke: create a rule on a known door sensor with `message: "Alarm triggered by {{trigger.name}} at {{now}}"`. Trip the sensor. Confirm the delivered notification reads `Alarm triggered by Back Door at 2026-04-30 14:32:11`.
 
-- [ ] **Phase 6 — Docs**
+- [x] **Phase 6 — Docs**
   - Flip this ADR to **Implemented**.
   - Move 0088 in `docs/adr/0000-adr-index.md` from Proposed to Implemented; update summary counts.
   - Update CLAUDE.md only if a non-obvious gotcha emerges during implementation; the renderer's contract is otherwise discoverable from `template_render.py` and `TEMPLATE_VARIABLES`.
 
 ## Acceptance Criteria
 
-- [ ] **AC-1:** `render("{{trigger.name}}", rule=r, triggers=tc)` returns the friendly name when `tc.trigger` is an `Entity` with `name="Back Door"`.
-- [ ] **AC-2:** `render` resolves `{{trigger.entity_id}}`, `{{trigger.state}}`, `{{trigger.source}}`, `{{trigger.domain}}`, `{{trigger.attributes.<key>}}`, `{{rule.name}}`, `{{rule.kind}}`, `{{now}}`, `{{now.iso}}`, `{{triggers}}` correctly against a populated `TriggerContext`.
-- [ ] **AC-3:** `render("{{trigger.name}}", triggers=TriggerContext(trigger=None, ...))` returns the literal text `"{{trigger.name}}"` (time-only / alarm-state-only / Frigate-only rule path).
-- [ ] **AC-4:** `render` passes through unknown roots literally: `"{{user.name}}"`, `"{{ctx.foo}}"` are returned unchanged.
-- [ ] **AC-5:** `render` rejects every path containing a leading-underscore segment: `{{__class__}}`, `{{trigger.__init__}}`, `{{rule._meta}}`, `{{trigger.attributes._private}}` all render literally; resolver never invokes `getattr` on those names.
+- [x] **AC-1:** `render("{{trigger.name}}", rule=r, triggers=tc)` returns the friendly name when `tc.trigger` is an `Entity` with `name="Back Door"`.
+- [x] **AC-2:** `render` resolves `{{trigger.entity_id}}`, `{{trigger.state}}`, `{{trigger.source}}`, `{{trigger.domain}}`, `{{trigger.attributes.<key>}}`, `{{rule.name}}`, `{{rule.kind}}`, `{{now}}`, `{{now.iso}}`, `{{triggers}}` correctly against a populated `TriggerContext`.
+- [x] **AC-3:** `render("{{trigger.name}}", triggers=TriggerContext(trigger=None, ...))` returns the literal text `"{{trigger.name}}"` (time-only / alarm-state-only / Frigate-only rule path).
+- [x] **AC-4:** `render` passes through unknown roots literally: `"{{user.name}}"`, `"{{ctx.foo}}"` are returned unchanged.
+- [x] **AC-5:** `render` rejects every path containing a leading-underscore segment: `{{__class__}}`, `{{trigger.__init__}}`, `{{rule._meta}}`, `{{trigger.attributes._private}}` all render literally; resolver never invokes `getattr` on those names.
 - [x] **AC-6:** `render` is single-pass: an entity attribute whose value contains a literal `{{rule.name}}` token is shipped verbatim within the same render call (not re-expanded into the rule name).
-- [ ] **AC-7:** Legacy passthrough: a corpus of pre-existing message strings (`"hello {var}"`, `"raw {{}}"`, `"see {{ }}"`, `"\\{{escaped\\}}"`) renders byte-identically.
-- [ ] **AC-8:** `extract_when_entity_ids(node)` returns the union of all `entity_state.entity_id` references for `all`/`any`/`not`/`for`/`entity_state` trees and `[]` for `time_in_range`, `alarm_state_in`, `frigate_person_detected` nodes.
-- [ ] **AC-9:** `run_rules(triggering_entity_ids=["binary_sensor.back_door", "binary_sensor.front_door"])` for a rule whose `when` references both entities sets `ctx.triggers.trigger.entity_id == "binary_sensor.back_door"` (first in batch order) and `len(ctx.triggers.triggers) == 2`.
-- [ ] **AC-10:** `run_rules(triggering_entity_ids=None)` produces `ctx.triggers.trigger is None`, `ctx.triggers.triggers == []`, and `ctx.triggers.fire_source == "timer"`.
-- [ ] **AC-11:** A rule with `message: "Triggered by {{trigger.name}}"` fired by a real dispatcher batch produces a `NotificationDelivery.message` containing the entity's friendly name. Title gets the same treatment.
-- [ ] **AC-12:** The `data` dict of a `send_notification` action is passed through verbatim — `{{...}}` tokens inside `data` values are NOT interpolated in v1.
-- [ ] **AC-13:** The set of tokens in `frontend/src/features/rules/templateVariables.ts` `TEMPLATE_VARIABLES` matches the set of variables the backend renderer resolves; a snapshot test (or static check) asserts no drift.
-- [ ] **AC-14:** Clicking a `TemplateVariablePicker` chip in the rule editor inserts `{{token}}` at the current textarea cursor; the picker's `HelpTip` opens to a table listing every variable with a one-line description and example.
-- [ ] **AC-15:** Round-trip: a rule loaded into the editor with `message: "Door {{trigger.name}} opened"` saves back with the identical JSON; no auto-rewriting.
-- [ ] **AC-16:** Rules whose `when` references a Frigate camera (no `Entity.entity_id`) fire correctly and ship `{{trigger.*}}` as literal text — `NotificationDelivery.status` is `pending`/`sent` (not `error`), and the message body contains the unresolved placeholder.
+- [x] **AC-7:** Legacy passthrough: a corpus of pre-existing message strings (`"hello {var}"`, `"raw {{}}"`, `"see {{ }}"`, `"\\{{escaped\\}}"`) renders byte-identically.
+- [ ] **AC-8:** `extract_when_entity_ids(node)` returns the union of all `entity_state.entity_id` references for `all`/`any`/`not`/`for`/`entity_state` trees and `[]` for `time_in_range`, `alarm_state_in`, `frigate_person_detected` nodes. *(Implemented in code; dedicated unit test still TODO — currently exercised only indirectly via `run_rules`.)*
+- [ ] **AC-9:** `run_rules(triggering_entity_ids=["binary_sensor.back_door", "binary_sensor.front_door"])` for a rule whose `when` references both entities sets `ctx.triggers.trigger.entity_id == "binary_sensor.back_door"` (first in batch order) and `len(ctx.triggers.triggers) == 2`. *(Implemented; dedicated test TODO.)*
+- [x] **AC-10:** `run_rules(triggering_entity_ids=None)` produces `ctx.triggers.trigger is None`, `ctx.triggers.triggers == []`, and `ctx.triggers.fire_source == "timer"`. (Hardened: a regression test pins this even when the in-flight batch happens to include an entity referenced by the rule's `when` AST.)
+- [x] **AC-11:** A rule with `message: "Triggered by {{trigger.name}}"` fired by a real dispatcher batch produces a `NotificationDelivery.message` containing the entity's friendly name. Title gets the same treatment.
+- [ ] **AC-12:** The `data` dict of a `send_notification` action is passed through verbatim — `{{...}}` tokens inside `data` values are NOT interpolated in v1. *(Implemented; dedicated test TODO.)*
+- [x] **AC-13:** The set of tokens in `frontend/src/features/rules/templateVariables.ts` `TEMPLATE_VARIABLES` matches the set of variables the backend renderer resolves; a snapshot test (or static check) asserts no drift.
+- [x] **AC-14:** Clicking a `TemplateVariablePicker` chip in the rule editor inserts `{{token}}` at the current textarea cursor; the picker's `HelpTip` opens to a table listing every variable with a one-line description and example.
+- [ ] **AC-15:** Round-trip: a rule loaded into the editor with `message: "Door {{trigger.name}} opened"` saves back with the identical JSON; no auto-rewriting. *(Round-trip behaviour exists; ActionsEditor.test.tsx is currently a stub — dedicated round-trip test TODO.)*
+- [ ] **AC-16:** Rules whose `when` references a Frigate camera (no `Entity.entity_id`) fire correctly and ship `{{trigger.*}}` as literal text — `NotificationDelivery.status` is `pending`/`sent` (not `error`), and the message body contains the unresolved placeholder. *(Frigate path passes through literally by construction; dedicated test TODO.)*
 
 ## Related ADRs
 

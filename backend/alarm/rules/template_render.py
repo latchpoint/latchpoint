@@ -3,7 +3,9 @@
 Renders ``{{trigger.entity_id}}``-style placeholders in rule action message
 fields against the entity that satisfied the rule's ``when``. Unknown roots,
 missing path segments, and underscore-prefixed segments render as the literal
-``{{...}}`` text — the renderer is idempotent and never raises.
+``{{...}}`` text. Rendering is single-pass: a substituted value is not
+re-scanned for further ``{{...}}`` tokens within the same call. The renderer
+never raises.
 
 The allow-list of root keys (``trigger``, ``triggers``, ``rule``, ``now``)
 must stay in sync with ``frontend/src/features/rules/templateVariables.ts``.
