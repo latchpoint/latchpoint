@@ -40,8 +40,7 @@ function cleanHaCallService(a: HaCallServiceAction): HaCallServiceAction {
   return rest
 }
 
-function cleanThen(then: ActionNode[] | undefined): ActionNode[] | undefined {
-  if (!then) return then
+function cleanThen(then: ActionNode[]): ActionNode[] {
   return then.map((a) => (a.type === 'ha_call_service' ? cleanHaCallService(a) : a))
 }
 
