@@ -6,7 +6,12 @@
 import { useState, useCallback, useMemo } from 'react'
 import type { RuleGroupType } from 'react-querybuilder'
 import type { Rule, Entity } from '@/types/rules'
-import type { ActionNode, RuleDefinition, WhenNode } from '@/types/ruleDefinition'
+import type {
+  ActionNode,
+  HaCallServiceAction,
+  RuleDefinition,
+  WhenNode,
+} from '@/types/ruleDefinition'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
@@ -19,6 +24,21 @@ import { ActionsEditor } from './ActionsEditor'
 import { alarmDslToRqbWithFor, rqbToAlarmDsl, createEmptyQuery } from './converters'
 import type { RuleSeed } from './cloneRule'
 import { useRuleStopGroupsQuery } from '@/hooks/useRulesQueries'
+
+// Strip whitespace-only entity ids from a ha_call_service action and drop the
+// target wrapper entirely if the result is empty. Runs at save time so the user
+// can keep half-filled rows while editing without leaking them to the wire.
+function cleanHaCallService(a: HaCallServiceAction): HaCallServiceAction {
+  const trimmed = (a.target?.entityIds ?? []).map((s) => s.trim()).filter(Boolean)
+  return trimmed.length > 0
+    ? { ...a, target: { entityIds: trimmed } }
+    : { type: a.type, action: a.action, data: a.data }
+}
+
+function cleanThen(then: ActionNode[] | undefined): ActionNode[] | undefined {
+  if (!then) return then
+  return then.map((a) => (a.type === 'ha_call_service' ? cleanHaCallService(a) : a))
+}
 
 interface RuleBuilderProps {
   rule?: Rule | null
@@ -210,6 +230,11 @@ export function RuleBuilder({
         }
       }
 
+      const cleanedDefinition: RuleDefinition = {
+        ...definition,
+        then: cleanThen(definition.then),
+      }
+
       onSave({
         name: name.trim() || 'Untitled Rule',
         enabled,
@@ -217,7 +242,7 @@ export function RuleBuilder({
         stopProcessing: stopProcessing && hasStopGroup,
         stopGroup: trimmedStopGroup,
         schemaVersion: 1,
-        definition,
+        definition: cleanedDefinition,
         cooldownSeconds: cooldownSeconds ? parseInt(cooldownSeconds, 10) : null,
       })
     },
@@ -423,7 +448,12 @@ export function RuleBuilder({
           </Card>
 
           {/* Actions (THEN) */}
-          <ActionsEditor actions={actions} onChange={setActions} disabled={isSaving} />
+          <ActionsEditor
+            actions={actions}
+            onChange={setActions}
+            entities={entities}
+            disabled={isSaving}
+          />
         </>
       )}
 
