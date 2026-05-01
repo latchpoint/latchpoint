@@ -29,7 +29,7 @@ EXPECTED_FRONTEND_TOKENS: frozenset[str] = frozenset(
         "{{trigger.state}}",
         "{{trigger.source}}",
         "{{trigger.domain}}",
-        "{{trigger.attributes.<key>}}",
+        "{{trigger.attributes.battery}}",
         "{{triggers}}",
         "{{rule.name}}",
         "{{rule.kind}}",

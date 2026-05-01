@@ -68,9 +68,10 @@ export const TEMPLATE_VARIABLES: TemplateVariable[] = [
     example: 'binary_sensor',
   },
   {
-    token: '{{trigger.attributes.<key>}}',
+    token: '{{trigger.attributes.battery}}',
     label: 'trigger.attributes.<key>',
-    description: 'Any attribute on the firing entity (dotted path for nested objects)',
+    description:
+      'Any attribute on the firing entity — replace "battery" with the attribute key (dotted path for nested objects)',
     example: '{{trigger.attributes.battery}} → 87',
   },
   {
