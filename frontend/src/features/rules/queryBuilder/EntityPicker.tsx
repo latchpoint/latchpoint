@@ -74,7 +74,7 @@ export function EntityPicker({
         )}
       >
         <span className="truncate">
-          {selectedEntity ? selectedEntity.entityId : placeholder}
+          {selectedEntity ? selectedEntity.entityId : value || placeholder}
         </span>
         <svg
           className="h-4 w-4 opacity-50"

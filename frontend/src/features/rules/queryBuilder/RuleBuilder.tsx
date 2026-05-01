@@ -41,6 +41,10 @@ function cleanHaCallService(a: HaCallServiceAction): HaCallServiceAction {
 }
 
 function cleanThen(then: ActionNode[]): ActionNode[] {
+  // Advanced JSON mode lets users hand-type `definition.then`, so the TS type
+  // is a lie at runtime. Pass non-arrays through unchanged so the backend can
+  // return its schema error instead of us throwing TypeError on .map().
+  if (!Array.isArray(then)) return then
   return then.map((a) => (a.type === 'ha_call_service' ? cleanHaCallService(a) : a))
 }
 
