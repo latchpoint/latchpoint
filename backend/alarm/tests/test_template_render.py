@@ -111,6 +111,22 @@ class TriggerVariableTests(TestCase):
         out = render("{{trigger.attributes.nonexistent}}", rule=_rule(), triggers=_ctx(trigger=ent))
         self.assertEqual(out, "{{trigger.attributes.nonexistent}}")
 
+    def test_trigger_attributes_nested_dict_traversal(self):
+        """Nested attribute dicts walk dotted paths (HA emits nested payloads)."""
+        ent = _entity(attributes={"location": {"floor": "2", "room": "office"}})
+        out = render(
+            "{{trigger.attributes.location.room}}/{{trigger.attributes.location.floor}}",
+            rule=_rule(),
+            triggers=_ctx(trigger=ent),
+        )
+        self.assertEqual(out, "office/2")
+
+    def test_trigger_attributes_nested_missing_passes_through(self):
+        """Missing leaf inside a nested attribute dict passes through literally."""
+        ent = _entity(attributes={"location": {"floor": "2"}})
+        out = render("{{trigger.attributes.location.room}}", rule=_rule(), triggers=_ctx(trigger=ent))
+        self.assertEqual(out, "{{trigger.attributes.location.room}}")
+
     def test_bare_trigger_uses_friendly_name(self):
         """Bare ``{{trigger}}`` resolves to the friendly name."""
         out = render("By {{trigger}}", rule=_rule(), triggers=_ctx(trigger=_entity()))
@@ -165,6 +181,11 @@ class RuleVariableTests(TestCase):
         """Unknown ``{{rule.*}}`` paths render literally (no attribute walk)."""
         out = render("{{rule.id}}", rule=_rule(), triggers=_ctx())
         self.assertEqual(out, "{{rule.id}}")
+
+    def test_bare_rule_uses_name(self):
+        """Bare ``{{rule}}`` resolves to the rule name (mirrors ``{{trigger}}``)."""
+        out = render("Rule: {{rule}}", rule=_rule(name="Door Watch"), triggers=_ctx())
+        self.assertEqual(out, "Rule: Door Watch")
 
 
 class NowVariableTests(TestCase):

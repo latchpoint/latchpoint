@@ -70,7 +70,7 @@ export const TEMPLATE_VARIABLES: TemplateVariable[] = [
   {
     token: '{{trigger.attributes.<key>}}',
     label: 'trigger.attributes.<key>',
-    description: 'Any attribute on the firing entity (replace <key>)',
+    description: 'Any attribute on the firing entity (dotted path for nested objects)',
     example: '{{trigger.attributes.battery}} → 87',
   },
   {

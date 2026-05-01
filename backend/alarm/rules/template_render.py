@@ -163,8 +163,12 @@ class _Rule:
         self._rule = rule
 
     def bare(self) -> Any:
-        """Bare ``{{rule}}`` is not supported."""
-        return _MISSING
+        """Resolve a bare ``{{rule}}`` token to the rule's name.
+
+        Mirrors ``{{trigger}}`` (friendly name) and ``{{now}}`` (formatted time)
+        — the bare form of a root key resolves to its most useful single value.
+        """
+        return self._rule.name
 
     def _get(self, name: str) -> Any:
         """Resolve one path segment under ``rule``."""
