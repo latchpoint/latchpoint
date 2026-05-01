@@ -73,16 +73,19 @@ export function SystemTime({ collapsed }: SystemTimeProps) {
   const stale = tickNow - dataUpdatedAt > STALE_THRESHOLD_MS
 
   if (collapsed) {
+    const fullTime = formatters.full.format(serverNow)
     return (
       <div className="flex justify-center">
-        <Tooltip content={formatters.full.format(serverNow)} side="right">
+        <Tooltip content={fullTime} side="right">
           <span
+            tabIndex={0}
+            aria-label={fullTime}
             className={cn(
-              'flex items-center gap-1.5 text-xs text-muted-foreground',
+              'flex items-center gap-1.5 text-xs text-muted-foreground rounded-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring',
               stale && 'opacity-60'
             )}
           >
-            <Clock className="h-3 w-3 shrink-0" />
+            <Clock className="h-3 w-3 shrink-0" aria-hidden="true" />
             <span className="tabular-nums">{formatters.short.format(serverNow)}</span>
           </span>
         </Tooltip>

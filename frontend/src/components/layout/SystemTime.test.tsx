@@ -111,6 +111,28 @@ describe('SystemTime', () => {
     expect(container.textContent).toContain(advancedStr)
   })
 
+  it('exposes the collapsed-mode trigger as keyboard-focusable with the full timestamp as its accessible name', () => {
+    // Regression: in collapsed mode the date+seconds are only available via a
+    // hover/focus tooltip. The trigger was a plain <span>, which is not
+    // tabbable, so keyboard-only users had no way to reveal it.
+    const epochMs = Date.UTC(2026, 3, 30, 3, 0, 45)
+    vi.useFakeTimers()
+    vi.setSystemTime(epochMs)
+    mockSuccess(epochMs, 'UTC')
+
+    const fullTime = new Intl.DateTimeFormat(undefined, {
+      timeZone: 'UTC',
+      dateStyle: 'short',
+      timeStyle: 'long',
+    }).format(new Date(epochMs))
+
+    const { container } = render(<SystemTime collapsed={true} />)
+    const trigger = container.querySelector<HTMLSpanElement>('span[aria-label]')
+    expect(trigger).not.toBeNull()
+    expect(trigger?.tabIndex).toBe(0)
+    expect(trigger?.getAttribute('aria-label')).toBe(fullTime)
+  })
+
   it('renders without seconds in collapsed mode', () => {
     const epochMs = Date.UTC(2026, 3, 30, 3, 0, 45)
     vi.useFakeTimers()
