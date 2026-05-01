@@ -104,6 +104,7 @@ This document tracks all Architecture Decision Records (ADRs) and their implemen
 | [0085](0085-rule-copy-duplicate-action.md) | Rule Copy / Duplicate Action | **Proposed** |
 | [0086](0086-ha-entity-equals-editable-dropdown.md) | Domain-Aware Editable Dropdown for HA Entity `equals` Values | **Proposed** |
 | [0087](0087-integration-settings-save-refresh-banner-feedback.md) | Banner Feedback for Integration Settings Save and Refresh | **Implemented** |
+| [0088](0088-rule-message-template-variables.md) | Template Variables in Rule Notification Action Messages | **Implemented** |
 
 ---
 
@@ -111,15 +112,15 @@ This document tracks all Architecture Decision Records (ADRs) and their implemen
 
 | Status | Count |
 |--------|-------|
-| **Implemented** | 63 |
+| **Implemented** | 64 |
 | **Partially Implemented** | 0 |
 | **Accepted** | 1 |
 | **Proposed** | 8 |
 | **Superseded** | 14 |
-| **Total** | 86 |
+| **Total** | 87 |
 
 Note: **Superseded** includes entries marked as "Superseded by …" in the table above.
 
 ---
 
-*Last updated: 2026-04-24* (ADR 0087 flipped to Implemented; summary counts recalculated)
+*Last updated: 2026-05-01* (ADR 0088 flipped to Implemented: template variables in rule notification messages)

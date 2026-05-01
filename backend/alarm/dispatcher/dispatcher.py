@@ -511,9 +511,14 @@ class RuleDispatcher:
                 get_alarm_state=base_repos.get_alarm_state,
             )
 
-            # Run evaluation
+            # Run evaluation. Forward the batch's entity_ids so ADR-0088
+            # template variables (`{{trigger.*}}`) bind to the firing entity.
             eval_started = perf_counter()
-            result = rules_engine.run_rules(now=now, repos=repos)
+            result = rules_engine.run_rules(
+                now=now,
+                repos=repos,
+                triggering_entity_ids=list(batch.entity_ids),
+            )
             eval_ms = (perf_counter() - eval_started) * 1000.0
             self._stats.record_rule_eval_time(eval_ms=eval_ms)
             self._stats.record_rules_result(
