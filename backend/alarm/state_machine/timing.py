@@ -22,10 +22,15 @@ class TimingSnapshot:
 
 
 def base_timing(profile: AlarmSettingsProfile) -> TimingSnapshot:
-    """Return base timing values from the settings profile."""
+    """Return base timing values from the settings profile.
+
+    `arming_time` is per-state only; the base value is 0 and is overlaid by
+    `resolve_timing()` from the `state_overrides` setting for the chosen
+    target state.
+    """
     return TimingSnapshot(
         delay_time=get_setting_int(profile, "delay_time"),
-        arming_time=get_setting_int(profile, "arming_time"),
+        arming_time=0,
         trigger_time=get_setting_int(profile, "trigger_time"),
     )
 

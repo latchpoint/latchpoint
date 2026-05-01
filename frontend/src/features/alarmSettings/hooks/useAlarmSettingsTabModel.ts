@@ -10,7 +10,6 @@ import { ARM_MODE_OPTIONS, normalizeStateOverrides, parseNonNegativeInt } from '
 
 export type AlarmSettingsDraft = {
   delayTime: string
-  armingTime: string
   armingTimeHome: string
   armingTimeAway: string
   armingTimeNight: string
@@ -27,16 +26,14 @@ function draftFromSettings(settings: AlarmSettingsProfile): AlarmSettingsDraft {
     return Math.max(0, Math.floor(value))
   }
 
-  const armingTimeDefault = getOverrideInt(settings.armingTime) ?? 0
   const overrides = normalizeStateOverrides(settings.stateOverrides ?? {})
-  const armingTimeHome = getOverrideInt(overrides[AlarmState.ARMED_HOME]?.armingTime) ?? armingTimeDefault
-  const armingTimeAway = getOverrideInt(overrides[AlarmState.ARMED_AWAY]?.armingTime) ?? armingTimeDefault
-  const armingTimeNight = getOverrideInt(overrides[AlarmState.ARMED_NIGHT]?.armingTime) ?? armingTimeDefault
-  const armingTimeVacation = getOverrideInt(overrides[AlarmState.ARMED_VACATION]?.armingTime) ?? armingTimeDefault
+  const armingTimeHome = getOverrideInt(overrides[AlarmState.ARMED_HOME]?.armingTime) ?? 0
+  const armingTimeAway = getOverrideInt(overrides[AlarmState.ARMED_AWAY]?.armingTime) ?? 0
+  const armingTimeNight = getOverrideInt(overrides[AlarmState.ARMED_NIGHT]?.armingTime) ?? 0
+  const armingTimeVacation = getOverrideInt(overrides[AlarmState.ARMED_VACATION]?.armingTime) ?? 0
 
   return {
     delayTime: String(settings.delayTime ?? 0),
-    armingTime: String(settings.armingTime ?? 0),
     armingTimeHome: String(armingTimeHome),
     armingTimeAway: String(armingTimeAway),
     armingTimeNight: String(armingTimeNight),
@@ -53,8 +50,6 @@ function parseDraft(
 ): { ok: true; value: Record<string, unknown> } | { ok: false; error: string } {
   const delayTime = parseNonNegativeInt('Entry delay', draft.delayTime)
   if (!delayTime.ok) return delayTime
-  const armingTime = parseNonNegativeInt('Exit delay', draft.armingTime)
-  if (!armingTime.ok) return armingTime
   const armingTimeHome = parseNonNegativeInt(`Exit delay (${AlarmStateLabels[AlarmState.ARMED_HOME]})`, draft.armingTimeHome)
   if (!armingTimeHome.ok) return armingTimeHome
   const armingTimeAway = parseNonNegativeInt(`Exit delay (${AlarmStateLabels[AlarmState.ARMED_AWAY]})`, draft.armingTimeAway)
@@ -73,7 +68,6 @@ function parseDraft(
     ok: true,
     value: {
       delayTime: delayTime.value,
-      armingTime: armingTime.value,
       armingTimeHome: armingTimeHome.value,
       armingTimeAway: armingTimeAway.value,
       armingTimeNight: armingTimeNight.value,
@@ -137,7 +131,6 @@ export function useAlarmSettingsTabModel() {
         changes: {
           entries: [
             { key: 'delay_time', value: parsed.value.delayTime },
-            { key: 'arming_time', value: parsed.value.armingTime },
             { key: 'trigger_time', value: parsed.value.triggerTime },
             { key: 'disarm_after_trigger', value: parsed.value.disarmAfterTrigger },
             { key: 'code_arm_required', value: parsed.value.codeArmRequired },

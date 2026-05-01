@@ -141,7 +141,7 @@ def sensor_triggered(*, sensor: Sensor, user=None, reason: str = "sensor_trigger
             sensor=sensor,
         )
 
-    exit_at = now + timedelta(seconds=timing.trigger_time)
+    exit_at = now + timedelta(seconds=timing.trigger_time) if timing.trigger_time > 0 else None
     return transition(
         snapshot=snapshot,
         state_to=AlarmState.TRIGGERED,
@@ -181,7 +181,7 @@ def timer_expired(*, reason: str = "timer_expired") -> AlarmStateSnapshot:
         )
 
     if snapshot.current_state == AlarmState.PENDING:
-        exit_at = now + timedelta(seconds=timing.trigger_time)
+        exit_at = now + timedelta(seconds=timing.trigger_time) if timing.trigger_time > 0 else None
         return transition(
             snapshot=snapshot,
             state_to=AlarmState.TRIGGERED,
@@ -238,7 +238,7 @@ def trigger(*, user=None, reason: str = "trigger") -> AlarmStateSnapshot:
 
     timing = timing_from_snapshot(snapshot)
 
-    exit_at = now + timedelta(seconds=timing.trigger_time)
+    exit_at = now + timedelta(seconds=timing.trigger_time) if timing.trigger_time > 0 else None
     return transition(
         snapshot=snapshot,
         state_to=AlarmState.TRIGGERED,

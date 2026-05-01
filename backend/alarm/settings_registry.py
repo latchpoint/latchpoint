@@ -95,18 +95,14 @@ ALARM_PROFILE_SETTINGS: list[SettingDefinition] = [
         description="Entry delay (seconds) before triggering after a sensor is tripped while armed.",
     ),
     SettingDefinition(
-        key="arming_time",
-        name="Arming time",
-        value_type=SystemConfigValueType.INTEGER,
-        default=60,
-        description="Exit delay (seconds) before the system becomes armed.",
-    ),
-    SettingDefinition(
         key="trigger_time",
         name="Trigger time",
         value_type=SystemConfigValueType.INTEGER,
-        default=600,
-        description="How long (seconds) the alarm remains triggered before auto behavior applies.",
+        default=0,
+        description=(
+            "Seconds the alarm stays in the Triggered state before auto-clearing. "
+            "0 keeps it triggered until manually disarmed."
+        ),
     ),
     SettingDefinition(
         key="disarm_after_trigger",
