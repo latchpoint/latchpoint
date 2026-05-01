@@ -15,7 +15,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from django.test import TestCase
+from django.test import SimpleTestCase
 
 # Canonical list of tokens advertised to users. Must match every entry in
 # ``TEMPLATE_VARIABLES`` in ``frontend/src/features/rules/templateVariables.ts``.
@@ -43,10 +43,13 @@ EXPECTED_FRONTEND_TOKENS: frozenset[str] = frozenset(
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _FE_TEMPLATE_VARIABLES = _REPO_ROOT / "frontend/src/features/rules/templateVariables.ts"
 
-_TOKEN_RE = re.compile(r"token:\s*'([^']+)'")
+# Backref ensures the closing quote matches the opener (no `"foo'` cross-pairs).
+# Tolerant of single quotes, double quotes, and backticks so a Prettier reformat
+# does not falsely trip the drift check.
+_TOKEN_RE = re.compile(r"token:\s*(['\"`])(.+?)\1")
 
 
-class TemplateVariableDriftTests(TestCase):
+class TemplateVariableDriftTests(SimpleTestCase):
     """AC-13: keep frontend ``TEMPLATE_VARIABLES`` and backend renderer in sync."""
 
     def test_frontend_advertises_exactly_the_expected_token_set(self):
@@ -56,7 +59,8 @@ class TemplateVariableDriftTests(TestCase):
             f"frontend template-variables file not reachable at {_FE_TEMPLATE_VARIABLES}",
         )
         text = _FE_TEMPLATE_VARIABLES.read_text(encoding="utf-8")
-        found = set(_TOKEN_RE.findall(text))
+        # Group 1 is the quote char (used by the backref); group 2 is the token.
+        found = {m.group(2) for m in _TOKEN_RE.finditer(text)}
         missing = EXPECTED_FRONTEND_TOKENS - found
         extra = found - EXPECTED_FRONTEND_TOKENS
         self.assertEqual(

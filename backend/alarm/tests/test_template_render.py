@@ -10,7 +10,7 @@ from __future__ import annotations
 from datetime import datetime
 from datetime import timezone as dt_timezone
 
-from django.test import TestCase
+from django.test import SimpleTestCase
 from django.utils import timezone
 
 from alarm.models import Entity, Rule
@@ -58,7 +58,7 @@ def _ctx(
     )
 
 
-class TriggerVariableTests(TestCase):
+class TriggerVariableTests(SimpleTestCase):
     """Variable-by-variable resolution under ``{{trigger.*}}``."""
 
     def test_trigger_entity_id(self):
@@ -142,7 +142,7 @@ class TriggerVariableTests(TestCase):
         self.assertEqual(out, "By {{trigger.name}} ({{trigger.entity_id}})")
 
 
-class TriggersListTests(TestCase):
+class TriggersListTests(SimpleTestCase):
     """Bare ``{{triggers}}`` joins matched-entity friendly names."""
 
     def test_single_entity(self):
@@ -164,7 +164,7 @@ class TriggersListTests(TestCase):
         self.assertEqual(out, "[]")
 
 
-class RuleVariableTests(TestCase):
+class RuleVariableTests(SimpleTestCase):
     """Resolution under ``{{rule.*}}``."""
 
     def test_rule_name(self):
@@ -188,7 +188,7 @@ class RuleVariableTests(TestCase):
         self.assertEqual(out, "Rule: Door Watch")
 
 
-class NowVariableTests(TestCase):
+class NowVariableTests(SimpleTestCase):
     """Resolution of ``{{now}}`` and ``{{now.iso}}``."""
 
     def test_now_local_format(self):
@@ -205,7 +205,7 @@ class NowVariableTests(TestCase):
         self.assertEqual(out, "ts=2026-04-30T14:32:11+00:00")
 
 
-class HostileInputTests(TestCase):
+class HostileInputTests(SimpleTestCase):
     """Path-traversal and engine-internals attacks must render literally."""
 
     def test_dunder_class_passes_through(self):
@@ -245,7 +245,7 @@ class HostileInputTests(TestCase):
         self.assertEqual(out, "see {{ }}")
 
 
-class SinglePassRenderingTests(TestCase):
+class SinglePassRenderingTests(SimpleTestCase):
     """Security property: within ONE render call, resolved values are not re-scanned."""
 
     def test_attribute_value_containing_template_is_not_expanded(self):
@@ -275,7 +275,7 @@ class SinglePassRenderingTests(TestCase):
         self.assertEqual(twice, once)
 
 
-class LegacyPassthroughTests(TestCase):
+class LegacyPassthroughTests(SimpleTestCase):
     """Pre-existing literal content must not be reinterpreted as templates."""
 
     def test_single_brace_text(self):
@@ -304,7 +304,7 @@ class LegacyPassthroughTests(TestCase):
         self.assertEqual(out, "By {{trigger.nme}}")
 
 
-class WhitespaceAndMixedTests(TestCase):
+class WhitespaceAndMixedTests(SimpleTestCase):
     """Grammar tolerates inner whitespace; mixed templates resolve independently."""
 
     def test_inner_whitespace_tolerated(self):
