@@ -31,13 +31,23 @@ import { useRuleStopGroupsQuery } from '@/hooks/useRulesQueries'
 function cleanHaCallService(a: HaCallServiceAction): HaCallServiceAction {
   const ids = a.target?.entityIds
   // Advanced JSON mode lets the user hand-type non-string entries (numbers,
-  // null, objects). Skip non-strings so the backend can flag the schema error
-  // instead of us throwing TypeError on .trim().
-  const trimmed = Array.isArray(ids)
-    ? ids.filter((s): s is string => typeof s === 'string').map((s) => s.trim()).filter(Boolean)
+  // null, objects). Trim strings (dropping ones that are empty after trim);
+  // pass non-strings through unchanged so the backend's schema validator can
+  // flag them instead of us silently swallowing them on the wire.
+  const cleaned = Array.isArray(ids)
+    ? ids.flatMap((id) => {
+        if (typeof id !== 'string') return [id]
+        const trimmed = id.trim()
+        return trimmed ? [trimmed] : []
+      })
     : []
-  if (trimmed.length > 0) {
-    return { ...a, target: { entityIds: trimmed } }
+  if (cleaned.length > 0) {
+    return {
+      ...a,
+      // Cast at the wire boundary: non-strings are intentionally preserved so
+      // backend schema validation surfaces the error to the user.
+      target: { ...a.target, entityIds: cleaned as NonNullable<HaCallServiceAction['target']>['entityIds'] },
+    }
   }
   // Drop the target wrapper but preserve every other field so future shape
   // additions don't get silently stripped.
