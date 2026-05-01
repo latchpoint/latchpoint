@@ -36,12 +36,18 @@ class BuildDiscoveryPayloadTests(SimpleTestCase):
         self.assertIs(self._payload(code_arm_required=True)["code_arm_required"], True)
         self.assertIs(self._payload(code_arm_required=False)["code_arm_required"], False)
 
-    def test_command_template_is_valid_json_with_action_and_code_placeholders(self):
-        """Regression guard: the typed code must flow through `{{ code }}` for server-side validation."""
+    def test_command_template_uses_ha_documented_action_and_code_variables(self):
+        """
+        Regression guard: HA's `alarm_control_panel.mqtt` exposes only `action`
+        and `code` to `command_template` (NOT `value`, which is `lock.mqtt`'s
+        scope). Rendering `{{ value }}` would emit the literal "None" and the
+        action would fail to dispatch. See:
+        https://www.home-assistant.io/integrations/alarm_control_panel.mqtt/#command_template
+        """
         payload = self._payload()
         template = payload["command_template"]
         parsed = json.loads(template)
-        self.assertEqual(parsed, {"action": "{{ value }}", "code": "{{ code }}"})
+        self.assertEqual(parsed, {"action": "{{ action }}", "code": "{{ code }}"})
 
     def test_entity_name_is_passed_through(self):
         payload = self._payload(entity_name="Front Door Alarm")
@@ -55,3 +61,26 @@ class BuildDiscoveryPayloadTests(SimpleTestCase):
         self.assertEqual(payload["payload_arm_away"], "ARM_AWAY")
         self.assertEqual(payload["payload_arm_night"], "ARM_NIGHT")
         self.assertEqual(payload["payload_arm_vacation"], "ARM_VACATION")
+
+    def test_rendered_command_payload_has_real_action_not_literal_none(self):
+        """
+        Simulated render check against HA's documented variable scope.
+
+        Captures the empirical failure mode that motivated this test class:
+        when the template referenced `{{ value }}` (undefined for
+        `alarm_control_panel.mqtt`), Jinja rendered it as the literal string
+        "None" and the broker payload looked like
+        `{"action": "None", "code": "1996"}`, which `_ACTION_TO_STATE` then
+        rejected as "Unknown action.".
+
+        Uses Django's template engine (always available) as a stand-in for
+        Jinja2; both substitute `{{ var }}` identically when the variables
+        are defined.
+        """
+        from django.template import Context, Template
+
+        payload = self._payload()
+        rendered = Template(payload["command_template"]).render(Context({"action": "ARM_AWAY", "code": "1234"}))
+        parsed = json.loads(rendered)
+        self.assertEqual(parsed, {"action": "ARM_AWAY", "code": "1234"})
+        self.assertNotEqual(parsed["action"], "None")
