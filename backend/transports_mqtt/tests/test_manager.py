@@ -150,3 +150,32 @@ class MqttClientIdSuffixTests(SimpleTestCase):
         )
         self.assertNotEqual(live.client_id, test.client_id)
         self.assertTrue(test.client_id.endswith("-abcd1234"))
+
+    def test_test_connection_passes_a_fresh_non_live_suffix_to_build_client(self):
+        """
+        Wiring guard: `test_connection()` MUST forward a non-None override
+        suffix that differs from the manager's live persistent suffix. If this
+        ever regresses, a `test_connection` invoked from inside the live
+        container would reuse the live suffix and the broker would evict the
+        running daphne client mid-validation.
+        """
+        mgr = MqttConnectionManager()
+        captured: dict[str, object] = {}
+
+        def fake_build_client(*, mqtt, settings, client_id_suffix=None):
+            captured["client_id_suffix"] = client_id_suffix
+            raise RuntimeError("short-circuit before connect_async")
+
+        mgr._build_client = fake_build_client  # type: ignore[assignment]
+        mgr._import_paho = lambda: _FakePahoModule  # type: ignore[assignment]
+
+        with self.assertRaises(RuntimeError):
+            mgr.test_connection(settings={"host": "broker.example", "port": 1883, "client_id": "latchpoint-alarm"})
+
+        suffix = captured.get("client_id_suffix")
+        self.assertIsNotNone(suffix, "test_connection must pass a non-None client_id_suffix to _build_client")
+        self.assertNotEqual(
+            suffix,
+            mgr._client_id_suffix,
+            "test_connection's per-call suffix must differ from the live manager suffix",
+        )
