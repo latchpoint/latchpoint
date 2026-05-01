@@ -50,17 +50,26 @@ export function SystemTime({ collapsed }: SystemTimeProps) {
   // defeats Intl's silent fallback to the browser's local zone — that fallback
   // is the JS Date footgun this whole feature exists to defend against.
   const formatters = useMemo(() => {
-    const timeZone = data?.timezone
-    return {
+    const buildFormatters = (resolvedTimeZone: string | undefined) => ({
       full: new Intl.DateTimeFormat(undefined, {
-        timeZone,
+        timeZone: resolvedTimeZone,
         dateStyle: 'short',
         timeStyle: 'long',
       }),
       short: new Intl.DateTimeFormat(undefined, {
-        timeZone,
+        timeZone: resolvedTimeZone,
         timeStyle: 'short',
       }),
+    })
+
+    // A misconfigured server `TIME_ZONE` (invalid IANA string) would make
+    // `Intl.DateTimeFormat` throw RangeError and crash the sidebar. Fall back
+    // to UTC so the clock still renders — the wrong-zone tradeoff is loud
+    // (UTC is obvious to anyone watching) but not catastrophic.
+    try {
+      return buildFormatters(data?.timezone)
+    } catch {
+      return buildFormatters('UTC')
     }
   }, [data?.timezone])
 

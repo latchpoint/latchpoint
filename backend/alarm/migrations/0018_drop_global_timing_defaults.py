@@ -69,14 +69,14 @@ def drop_orphan_timing_rows(apps, schema_editor):
 
     AlarmSettingsEntry.objects.filter(key="arming_time").delete()
 
+    # `value` is a JSONField, so the old default may be stored as either the
+    # numeric literal `600` or the JSON string `"600"`. Match both in one
+    # bulk DELETE rather than looping per row.
     old_trigger_time_default = 600
-    for row in AlarmSettingsEntry.objects.filter(key="trigger_time"):
-        try:
-            stored = int(row.value)
-        except (TypeError, ValueError):
-            continue
-        if stored == old_trigger_time_default:
-            row.delete()
+    AlarmSettingsEntry.objects.filter(
+        key="trigger_time",
+        value__in=[old_trigger_time_default, str(old_trigger_time_default)],
+    ).delete()
 
 
 def noop(apps, schema_editor):

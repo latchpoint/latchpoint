@@ -171,6 +171,25 @@ describe('SystemTime', () => {
     expect(container.textContent).not.toContain('--:--:--')
   })
 
+  it('falls back to UTC and renders without throwing when the server reports an invalid IANA timezone', () => {
+    // Regression: a misconfigured server `TIME_ZONE` (e.g. typo'd "Asia/Tokio")
+    // would make Intl.DateTimeFormat throw RangeError and crash the sidebar.
+    const epochMs = Date.UTC(2026, 3, 30, 3, 0, 0)
+    vi.useFakeTimers()
+    vi.setSystemTime(epochMs)
+    mockSuccess(epochMs, 'Not/AReal_Zone')
+
+    const utcStr = new Intl.DateTimeFormat(undefined, {
+      timeZone: 'UTC',
+      dateStyle: 'short',
+      timeStyle: 'long',
+    }).format(new Date(epochMs))
+
+    expect(() => render(<SystemTime collapsed={false} />)).not.toThrow()
+    const { container } = render(<SystemTime collapsed={false} />)
+    expect(container.textContent).toContain(utcStr)
+  })
+
   it('clears the tick interval on unmount', () => {
     vi.useFakeTimers()
     const epochMs = Date.UTC(2026, 3, 30, 3, 0, 0)
