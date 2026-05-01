@@ -77,3 +77,76 @@ class MqttSubscriptionDispatchTests(SimpleTestCase):
         mgr._on_message(None, None, _Msg())
 
         self.assertEqual(calls, ["t"])
+
+
+class _FakePahoModule:
+    """Stand-in for `paho.mqtt.client` that captures the client_id paho would receive."""
+
+    class Client:
+        def __init__(self, client_id=None):
+            self.client_id = client_id
+
+        def username_pw_set(self, *_a, **_k):
+            pass
+
+        def tls_set(self, *_a, **_k):
+            pass
+
+        def tls_insecure_set(self, *_a, **_k):
+            pass
+
+        def reconnect_delay_set(self, *_a, **_k):
+            pass
+
+
+class MqttClientIdSuffixTests(SimpleTestCase):
+    """
+    Per-process suffix on the broker-side client_id.
+
+    Without the suffix, two processes connecting with the configured
+    `client_id` (default "latchpoint-alarm") would knock each other off the
+    broker on every reconnect — including a diagnostic script that imported
+    the Django app and ran AppConfig.ready() inside the live container.
+    """
+
+    def test_two_managers_produce_distinct_client_ids(self):
+        a = MqttConnectionManager()
+        b = MqttConnectionManager()
+        client_a = a._build_client(mqtt=_FakePahoModule, settings={"client_id": "latchpoint-alarm"})
+        client_b = b._build_client(mqtt=_FakePahoModule, settings={"client_id": "latchpoint-alarm"})
+        self.assertNotEqual(client_a.client_id, client_b.client_id)
+
+    def test_same_manager_produces_stable_client_id_across_rebuilds(self):
+        """Reconnects within a process must not look like new identities to the broker."""
+        mgr = MqttConnectionManager()
+        first = mgr._build_client(mqtt=_FakePahoModule, settings={"client_id": "latchpoint-alarm"})
+        second = mgr._build_client(mqtt=_FakePahoModule, settings={"client_id": "latchpoint-alarm"})
+        self.assertEqual(first.client_id, second.client_id)
+
+    def test_built_client_id_preserves_configured_prefix(self):
+        mgr = MqttConnectionManager()
+        client = mgr._build_client(mqtt=_FakePahoModule, settings={"client_id": "my-custom-id"})
+        self.assertTrue(
+            client.client_id.startswith("my-custom-id-"),
+            f"expected prefix preserved, got {client.client_id!r}",
+        )
+
+    def test_empty_configured_client_id_falls_back_to_latchpoint_alarm_prefix(self):
+        mgr = MqttConnectionManager()
+        client = mgr._build_client(mqtt=_FakePahoModule, settings={})
+        self.assertTrue(
+            client.client_id.startswith("latchpoint-alarm-"),
+            f"expected default prefix preserved, got {client.client_id!r}",
+        )
+
+    def test_explicit_suffix_override_does_not_collide_with_live_suffix(self):
+        """`test_connection` opts into a fresh suffix so it never knocks the live client off."""
+        mgr = MqttConnectionManager()
+        live = mgr._build_client(mqtt=_FakePahoModule, settings={"client_id": "latchpoint-alarm"})
+        test = mgr._build_client(
+            mqtt=_FakePahoModule,
+            settings={"client_id": "latchpoint-alarm"},
+            client_id_suffix="abcd1234",
+        )
+        self.assertNotEqual(live.client_id, test.client_id)
+        self.assertTrue(test.client_id.endswith("-abcd1234"))

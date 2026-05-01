@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import secrets
 import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -159,6 +160,14 @@ class MqttConnectionManager:
         self._subscriptions: dict[str, dict[str, Any]] = {}
         self._on_connect_hooks: list[callable] = []
         self._logger = logging.getLogger(__name__)
+        # Per-process random suffix appended to the configured client_id when
+        # paho clients are built. Two processes that share the configured
+        # `client_id` (e.g. daphne + a diagnostic script that imported the
+        # Django app and ran AppConfig.ready()) would otherwise both connect
+        # as the same identity and the broker would knock them off each other
+        # in a tight loop. Stable within a process, so reconnects/settings
+        # changes don't churn the broker's view of the live client.
+        self._client_id_suffix = secrets.token_hex(4)
 
     @staticmethod
     def _topic_matches(*, topic_filter: str, topic: str) -> bool:
@@ -233,7 +242,10 @@ class MqttConnectionManager:
         connected_evt = threading.Event()
         result: dict[str, Any] = {"rc": None, "error": None}
 
-        client = self._build_client(mqtt=mqtt, settings=settings)
+        # A fresh suffix per test guarantees the throwaway client never knocks
+        # the live persistent client off the broker, even when called from the
+        # same process.
+        client = self._build_client(mqtt=mqtt, settings=settings, client_id_suffix=secrets.token_hex(4))
 
         def on_connect(_client, _userdata, _flags, rc, _properties=None):
             """Capture connect return code and release the waiter."""
@@ -367,10 +379,19 @@ class MqttConnectionManager:
         except Exception:
             return None
 
-    @staticmethod
-    def _build_client(*, mqtt, settings: MqttConnectionSettings):
-        """Create and configure a paho client from settings (auth/TLS/client_id)."""
-        client_id = str(settings.get("client_id") or "latchpoint-alarm")
+    def _build_client(self, *, mqtt, settings: MqttConnectionSettings, client_id_suffix: str | None = None):
+        """
+        Create and configure a paho client from settings (auth/TLS/client_id).
+
+        The configured `client_id` is treated as a prefix; a per-process
+        random suffix is appended so independent processes can never collide
+        on the same MQTT identity. Callers (e.g. `test_connection`) may pass
+        an override suffix to ensure their throwaway client never collides
+        with the live one.
+        """
+        base_client_id = str(settings.get("client_id") or "latchpoint-alarm")
+        suffix = client_id_suffix or self._client_id_suffix
+        client_id = f"{base_client_id}-{suffix}"
         try:
             client = mqtt.Client(client_id=client_id)
         except TypeError:
