@@ -83,4 +83,3 @@ class BuildDiscoveryPayloadTests(SimpleTestCase):
         rendered = Template(payload["command_template"]).render(Context({"action": "ARM_AWAY", "code": "1234"}))
         parsed = json.loads(rendered)
         self.assertEqual(parsed, {"action": "ARM_AWAY", "code": "1234"})
-        self.assertNotEqual(parsed["action"], "None")

@@ -395,7 +395,7 @@ class MqttConnectionManager:
         try:
             client = mqtt.Client(client_id=client_id)
         except TypeError:
-            client = mqtt.Client()
+            client = mqtt.Client(client_id)
 
         username = settings.get("username") or ""
         password = settings.get("password") or ""
