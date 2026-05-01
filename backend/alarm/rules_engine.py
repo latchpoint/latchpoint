@@ -15,13 +15,49 @@ from .rules.conditions import (
     eval_condition_explain_with_context,
     eval_condition_with_context,
     extract_for,
+    extract_when_entity_ids,
 )
 from .rules.repositories import RuleEngineRepositories, default_rule_engine_repositories
 from .rules.runtime_state import cooldown_active
+from .rules.template_render import TriggerContext
 
 
 class RuleEngineError(DomainError):
     pass
+
+
+def _build_trigger_context(
+    *,
+    when_node: Any,
+    triggering_set: set[str],
+    fired_at,
+    fire_source: str,
+) -> TriggerContext:
+    """Resolve which entities in the dispatcher batch satisfy the rule's when AST.
+
+    Intersection of ``extract_when_entity_ids(when_node)`` with the dispatcher
+    batch's ``triggering_set``. Results are sorted by ``entity_id`` for
+    deterministic ordering (the batch arrives as an unordered set; sorting by
+    entity_id gives a stable choice for ``{{trigger}}`` when multiple match).
+    """
+    if not triggering_set:
+        return TriggerContext(fired_at=fired_at, fire_source=fire_source)
+
+    referenced = extract_when_entity_ids(when_node)
+    matched_ids = sorted(eid for eid in referenced if eid in triggering_set)
+    if not matched_ids:
+        return TriggerContext(fired_at=fired_at, fire_source=fire_source)
+
+    from alarm.models import Entity
+
+    by_id = Entity.objects.in_bulk(matched_ids, field_name="entity_id")
+    ordered = [by_id[eid] for eid in matched_ids if eid in by_id]
+    return TriggerContext(
+        fired_at=fired_at,
+        fire_source=fire_source,
+        trigger=ordered[0] if ordered else None,
+        triggers=ordered,
+    )
 
 
 @dataclass(frozen=True)
@@ -50,15 +86,23 @@ def run_rules(
     *,
     now=None,
     actor_user=None,
+    triggering_entity_ids: list[str] | None = None,
     repos: RuleEngineRepositories | None = None,
     execute_actions_func: Callable[..., dict[str, Any]] = execute_actions,
     log_action_func: Callable[..., None] = log_rule_action,
 ) -> RuleRunResult:
-    """Evaluate enabled rules and execute/schedule actions, returning summary counters."""
+    """Evaluate enabled rules and execute/schedule actions, returning summary counters.
+
+    ``triggering_entity_ids`` (when provided) is the dispatcher's batch — used
+    by ADR-0088 to bind ``{{trigger.*}}`` template variables to the entity
+    that actually caused the rule to match. ``None`` (timer fires, admin
+    runs, periodic schedulers) results in an empty TriggerContext.
+    """
     repos = repos or default_rule_engine_repositories()
     now = now or timezone.now()
     rules = repos.list_enabled_rules()
     entity_state = repos.entity_state_map()
+    triggering_set = set(triggering_entity_ids or ())
 
     fired = 0
     scheduled = 0
@@ -100,7 +144,19 @@ def run_rules(
                 try:
                     then = definition.get("then") if isinstance(definition, dict) else []
                     actions = then if isinstance(then, list) else []
-                    result = execute_actions_func(rule=rule, actions=actions, now=now, actor_user=actor_user)
+                    triggers_ctx = _build_trigger_context(
+                        when_node=child,
+                        triggering_set=triggering_set,
+                        fired_at=now,
+                        fire_source="timer",
+                    )
+                    result = execute_actions_func(
+                        rule=rule,
+                        actions=actions,
+                        now=now,
+                        actor_user=actor_user,
+                        triggers=triggers_ctx,
+                    )
                     trace = {"source": "timer"}
                     if rule.stop_processing:
                         trace["stop_processing"] = True
@@ -189,7 +245,19 @@ def run_rules(
         then = definition.get("then") if isinstance(definition, dict) else []
         actions = then if isinstance(then, list) else []
         try:
-            result = execute_actions_func(rule=rule, actions=actions, now=now, actor_user=actor_user)
+            triggers_ctx = _build_trigger_context(
+                when_node=when_node,
+                triggering_set=triggering_set,
+                fired_at=now,
+                fire_source="immediate",
+            )
+            result = execute_actions_func(
+                rule=rule,
+                actions=actions,
+                now=now,
+                actor_user=actor_user,
+                triggers=triggers_ctx,
+            )
             trace = {"source": "immediate"}
             if rule.stop_processing:
                 trace["stop_processing"] = True

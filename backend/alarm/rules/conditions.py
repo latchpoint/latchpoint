@@ -47,6 +47,50 @@ def extract_for(node: Any) -> tuple[int | None, Any]:
     return seconds, child
 
 
+def extract_when_entity_ids(node: Any) -> list[str]:
+    """Return all entity_ids referenced by ``entity_state`` ops in a when AST.
+
+    Walks ``all`` / ``any`` / ``not`` / ``for`` recursively. Returns ``[]`` for
+    ops that do not carry an entity reference (``time_in_range``,
+    ``alarm_state_in``, ``frigate_person_detected``). Order matches first-seen
+    traversal; duplicates are preserved by the caller's needs.
+
+    Used by ADR-0088 to determine which entity in a dispatcher batch caused
+    a rule to fire, without modifying the condition evaluator.
+    """
+    out: list[str] = []
+    seen: set[str] = set()
+
+    def _walk(n: Any) -> None:
+        """Depth-first AST walk; collects entity_state.entity_id refs uniquely."""
+        if not _is_mapping(n):
+            return
+        op = _get_op(n)
+        if op == "entity_state":
+            entity_id = n.get("entity_id")
+            if isinstance(entity_id, str) and entity_id.strip() and entity_id not in seen:
+                seen.add(entity_id)
+                out.append(entity_id)
+            return
+        if op in {"all", "any"}:
+            children = n.get("children")
+            if isinstance(children, list):
+                for child in children:
+                    _walk(child)
+            return
+        if op == "not":
+            _walk(n.get("child"))
+            return
+        if op == "for":
+            _walk(n.get("child"))
+            return
+        # time_in_range / alarm_state_in / frigate_person_detected — no entity ref.
+        return
+
+    _walk(node)
+    return out
+
+
 _DAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
 _HHMM_RE = re.compile(r"^(?P<hour>\d{2}):(?P<minute>\d{2})$")
 
