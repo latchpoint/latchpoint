@@ -18,7 +18,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { HelpTip } from '@/components/ui/help-tip'
 import { cn } from '@/lib/utils'
 import { Trash2, ChevronDown, ChevronUp } from 'lucide-react'
-import { useState, useMemo, useRef } from 'react'
+import { useState, useMemo } from 'react'
 import { useHomeAssistantStatus, useHomeAssistantNotifyServices } from '@/hooks/useHomeAssistant'
 import { useEnabledNotificationProviders } from '@/features/notifications/hooks/useNotificationProviders'
 import { useZwavejsStatusQuery } from '@/hooks/useZwavejs'
@@ -305,16 +305,19 @@ function HaCallServiceFields({
   const entityIds = action.target?.entityIds ?? []
 
   // Parallel stable keys for entity rows. Index keys would migrate row-local
-  // EntityPicker state (open/search) onto a different row after delete/reorder.
-  /* eslint-disable react-hooks/refs */
-  const nextRowId = useRef(0)
-  const rowKeysRef = useRef<string[]>(
-    entityIds.map(() => `entity-row-${nextRowId.current++}`)
+  // EntityPicker state (open/search) onto a different row after delete.
+  // Using state (not refs) so the keys participate in normal React rendering;
+  // the render-time sync below covers external length changes (e.g., loading
+  // a saved rule or applying advanced-JSON edits).
+  const [rowKeys, setRowKeys] = useState<string[]>(() =>
+    entityIds.map((_, i) => `entity-row-${i}`)
   )
-  if (rowKeysRef.current.length !== entityIds.length) {
-    rowKeysRef.current = entityIds.map(() => `entity-row-${nextRowId.current++}`)
+  const [nextRowId, setNextRowId] = useState(entityIds.length)
+  if (rowKeys.length !== entityIds.length) {
+    let counter = nextRowId
+    setRowKeys(entityIds.map(() => `entity-row-${counter++}`))
+    setNextRowId(counter)
   }
-  /* eslint-enable react-hooks/refs */
 
   const handleDomainChange = (newDomain: string) => {
     onUpdate({ ...action, action: `${newDomain}.${service}` })
@@ -331,12 +334,13 @@ function HaCallServiceFields({
   }
 
   const handleAddEntity = () => {
-    rowKeysRef.current.push(`entity-row-${nextRowId.current++}`)
+    setRowKeys([...rowKeys, `entity-row-${nextRowId}`])
+    setNextRowId(nextRowId + 1)
     onUpdate({ ...action, target: { entityIds: [...entityIds, ''] } })
   }
 
   const handleRemoveEntity = (index: number) => {
-    rowKeysRef.current.splice(index, 1)
+    setRowKeys(rowKeys.filter((_, i) => i !== index))
     const next = entityIds.filter((_, i) => i !== index)
     onUpdate({ ...action, target: { entityIds: next } })
   }
@@ -392,9 +396,8 @@ function HaCallServiceFields({
           </p>
         ) : (
           <div className="space-y-2">
-            {/* eslint-disable react-hooks/refs */}
             {entityIds.map((entityId, idx) => (
-              <div key={rowKeysRef.current[idx]} className="flex items-center gap-2">
+              <div key={rowKeys[idx]} className="flex items-center gap-2">
                 <EntityPicker
                   value={entityId}
                   onChange={(id) => handleEntityIdChange(idx, id)}
@@ -416,7 +419,6 @@ function HaCallServiceFields({
                 </Button>
               </div>
             ))}
-            {/* eslint-enable react-hooks/refs */}
           </div>
         )}
         <Button
@@ -839,21 +841,23 @@ export function ActionsEditor({ actions, onChange, entities, disabled = false }:
     })
   }, [isHaConfigured, isZwavejsConfigured, isZigbee2mqttConfigured, hasNotificationProviders])
 
-  // Stable keys for React reconciliation (avoid index-based keys)
-  const nextActionId = useRef(0)
-  /* eslint-disable react-hooks/refs */
-  const actionKeysRef = useRef<string[]>(
-    actions.map(() => `action-${nextActionId.current++}`)
+  // Stable keys for React reconciliation (avoid index-based keys, which would
+  // migrate row-local state onto a neighbour after delete). Using state lets
+  // the render-time sync below queue an update through React rather than
+  // mutating a ref during render.
+  const [actionKeys, setActionKeys] = useState<string[]>(() =>
+    actions.map((_, i) => `action-${i}`)
   )
-
-  // Sync if actions changed externally (e.g., loading a saved rule)
-  if (actionKeysRef.current.length !== actions.length) {
-    actionKeysRef.current = actions.map(() => `action-${nextActionId.current++}`)
+  const [nextActionId, setNextActionId] = useState(actions.length)
+  if (actionKeys.length !== actions.length) {
+    let counter = nextActionId
+    setActionKeys(actions.map(() => `action-${counter++}`))
+    setNextActionId(counter)
   }
-  /* eslint-enable react-hooks/refs */
 
   const handleAddAction = () => {
-    actionKeysRef.current.push(`action-${nextActionId.current++}`)
+    setActionKeys([...actionKeys, `action-${nextActionId}`])
+    setNextActionId(nextActionId + 1)
     onChange([...actions, { type: 'alarm_trigger' }])
   }
 
@@ -864,7 +868,7 @@ export function ActionsEditor({ actions, onChange, entities, disabled = false }:
   }
 
   const handleRemoveAction = (index: number) => {
-    actionKeysRef.current.splice(index, 1)
+    setActionKeys(actionKeys.filter((_, i) => i !== index))
     const newActions = actions.filter((_, i) => i !== index)
     onChange(newActions)
   }
@@ -888,10 +892,9 @@ export function ActionsEditor({ actions, onChange, entities, disabled = false }:
           </div>
         ) : (
           <div className="space-y-2">
-            {/* eslint-disable react-hooks/refs */}
             {actions.map((action, index) => (
               <ActionRow
-                key={actionKeysRef.current[index]}
+                key={actionKeys[index]}
                 action={action}
                 index={index}
                 onUpdate={(updated) => handleUpdateAction(index, updated)}
@@ -902,7 +905,6 @@ export function ActionsEditor({ actions, onChange, entities, disabled = false }:
                 entityOptions={entityOptions}
               />
             ))}
-            {/* eslint-enable react-hooks/refs */}
           </div>
         )}
 

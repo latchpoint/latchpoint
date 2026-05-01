@@ -29,7 +29,13 @@ import { useRuleStopGroupsQuery } from '@/hooks/useRulesQueries'
 // target wrapper entirely if the result is empty. Runs at save time so the user
 // can keep half-filled rows while editing without leaking them to the wire.
 function cleanHaCallService(a: HaCallServiceAction): HaCallServiceAction {
-  const trimmed = (a.target?.entityIds ?? []).map((s) => s.trim()).filter(Boolean)
+  const ids = a.target?.entityIds
+  // Advanced JSON mode lets the user hand-type non-string entries (numbers,
+  // null, objects). Skip non-strings so the backend can flag the schema error
+  // instead of us throwing TypeError on .trim().
+  const trimmed = Array.isArray(ids)
+    ? ids.filter((s): s is string => typeof s === 'string').map((s) => s.trim()).filter(Boolean)
+    : []
   if (trimmed.length > 0) {
     return { ...a, target: { entityIds: trimmed } }
   }
@@ -40,12 +46,18 @@ function cleanHaCallService(a: HaCallServiceAction): HaCallServiceAction {
   return rest
 }
 
-function cleanThen(then: ActionNode[]): ActionNode[] {
-  // Advanced JSON mode lets users hand-type `definition.then`, so the TS type
-  // is a lie at runtime. Pass non-arrays through unchanged so the backend can
-  // return its schema error instead of us throwing TypeError on .map().
-  if (!Array.isArray(then)) return then
-  return then.map((a) => (a.type === 'ha_call_service' ? cleanHaCallService(a) : a))
+function cleanThen(then: unknown): ActionNode[] {
+  // Advanced JSON mode lets users hand-type `definition.then`, so the runtime
+  // shape may not match ActionNode[]. Pass non-arrays and non-object entries
+  // through unchanged so the backend can return its schema error instead of
+  // us throwing TypeError on .map() or property access.
+  if (!Array.isArray(then)) return then as ActionNode[]
+  return then.map((a) => {
+    if (a && typeof a === 'object' && (a as { type?: unknown }).type === 'ha_call_service') {
+      return cleanHaCallService(a as HaCallServiceAction)
+    }
+    return a as ActionNode
+  })
 }
 
 interface RuleBuilderProps {
