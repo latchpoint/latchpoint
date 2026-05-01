@@ -9,6 +9,7 @@ import type {
   SendNotificationAction,
   Zigbee2mqttSetValueAction,
 } from '@/types/ruleDefinition'
+import type { Entity } from '@/types/rules'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
@@ -24,6 +25,8 @@ import { useEnabledNotificationProviders } from '@/features/notifications/hooks/
 import { useZwavejsStatusQuery } from '@/hooks/useZwavejs'
 import { useZigbee2mqttStatusQuery } from '@/hooks/useZigbee2mqtt'
 import { HA_SYSTEM_PROVIDER_ID } from '@/lib/constants'
+import { EntityPicker } from './EntityPicker'
+import type { EntityOption } from './types'
 
 const ACTION_TYPES = [
   { value: 'alarm_trigger', label: 'Trigger Alarm', requiresConfig: null },
@@ -45,6 +48,7 @@ const ARM_MODES = [
 interface ActionsEditorProps {
   actions: ActionNode[]
   onChange: (actions: ActionNode[]) => void
+  entities: Entity[]
   disabled?: boolean
 }
 
@@ -56,9 +60,10 @@ interface ActionRowProps {
   disabled?: boolean
   canRemove: boolean
   availableActionTypes: typeof ACTION_TYPES[number][]
+  entityOptions: EntityOption[]
 }
 
-function ActionRow({ action, onUpdate, onRemove, disabled, canRemove, availableActionTypes }: ActionRowProps) {
+function ActionRow({ action, onUpdate, onRemove, disabled, canRemove, availableActionTypes, entityOptions }: ActionRowProps) {
   const actionType = action.type
 
   // Check if this action type has expandable details
@@ -247,6 +252,7 @@ function ActionRow({ action, onUpdate, onRemove, disabled, canRemove, availableA
           action={action as HaCallServiceAction}
           onUpdate={onUpdate}
           disabled={disabled}
+          entityOptions={entityOptions}
         />
       )}
 
@@ -279,10 +285,12 @@ function HaCallServiceFields({
   action,
   onUpdate,
   disabled,
+  entityOptions,
 }: {
   action: HaCallServiceAction
   onUpdate: (action: ActionNode) => void
   disabled?: boolean
+  entityOptions: EntityOption[]
 }) {
   // Parse action field (e.g., "notify.notify") into domain and service for editing
   const actionStr = action.action || ''
@@ -295,12 +303,47 @@ function HaCallServiceFields({
   )
   const [dataError, setDataError] = useState<string | null>(null)
 
+  const entityIds = action.target?.entityIds ?? []
+
+  // Parallel stable keys for entity rows. Index keys would migrate row-local
+  // EntityPicker state (open/search) onto a different row after delete.
+  // Using state (not refs) so the keys participate in normal React rendering;
+  // the render-time sync below covers external length changes (e.g., loading
+  // a saved rule or applying advanced-JSON edits).
+  const [rowKeys, setRowKeys] = useState<string[]>(() =>
+    entityIds.map((_, i) => `entity-row-${i}`)
+  )
+  const [nextRowId, setNextRowId] = useState(entityIds.length)
+  if (rowKeys.length !== entityIds.length) {
+    let counter = nextRowId
+    setRowKeys(entityIds.map(() => `entity-row-${counter++}`))
+    setNextRowId(counter)
+  }
+
   const handleDomainChange = (newDomain: string) => {
     onUpdate({ ...action, action: `${newDomain}.${service}` })
   }
 
   const handleServiceChange = (newService: string) => {
     onUpdate({ ...action, action: `${domain}.${newService}` })
+  }
+
+  const handleEntityIdChange = (index: number, entityId: string) => {
+    const next = [...entityIds]
+    next[index] = entityId
+    onUpdate({ ...action, target: { entityIds: next } })
+  }
+
+  const handleAddEntity = () => {
+    setRowKeys([...rowKeys, `entity-row-${nextRowId}`])
+    setNextRowId(nextRowId + 1)
+    onUpdate({ ...action, target: { entityIds: [...entityIds, ''] } })
+  }
+
+  const handleRemoveEntity = (index: number) => {
+    setRowKeys(rowKeys.filter((_, i) => i !== index))
+    const next = entityIds.filter((_, i) => i !== index)
+    onUpdate({ ...action, target: { entityIds: next } })
   }
 
   const handleDataChange = (text: string) => {
@@ -340,25 +383,54 @@ function HaCallServiceFields({
         </div>
       </div>
 
-      <div className="space-y-1">
+      <div className="space-y-2">
         <label className="text-xs text-muted-foreground">
-          Target Entity IDs (comma-separated)
+          Target Entities{' '}
+          <HelpTip
+            content="Home Assistant entities the service call targets. Add one or more."
+            className="ml-1"
+          />
         </label>
-        <Input
-          value={action.target?.entityIds?.join(', ') || ''}
-          onChange={(e) => {
-            const entityIds = e.target.value
-              .split(',')
-              .map((s) => s.trim())
-              .filter(Boolean)
-            onUpdate({
-              ...action,
-              target: { entityIds },
-            })
-          }}
-          placeholder="e.g., light.living_room, switch.kitchen"
+        {entityIds.length === 0 ? (
+          <p className="text-xs text-muted-foreground italic">
+            No entities targeted yet — click &ldquo;Add entity&rdquo; below.
+          </p>
+        ) : (
+          <div className="space-y-2">
+            {entityIds.map((entityId, idx) => (
+              <div key={rowKeys[idx]} className="flex items-center gap-2">
+                <EntityPicker
+                  value={entityId}
+                  onChange={(id) => handleEntityIdChange(idx, id)}
+                  entities={entityOptions}
+                  sourceFilter="home_assistant"
+                  disabled={disabled}
+                  className="flex-1"
+                />
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => handleRemoveEntity(idx)}
+                  disabled={disabled}
+                  className="h-8 w-8 shrink-0 p-0 text-destructive hover:bg-destructive/10 hover:text-destructive"
+                  aria-label="Remove entity"
+                >
+                  <Trash2 className="h-4 w-4" />
+                </Button>
+              </div>
+            ))}
+          </div>
+        )}
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          onClick={handleAddEntity}
           disabled={disabled}
-        />
+        >
+          + Add entity
+        </Button>
       </div>
 
       <div className="space-y-1">
@@ -786,12 +858,26 @@ function Zigbee2mqttSetValueFields({
   )
 }
 
-export function ActionsEditor({ actions, onChange, disabled = false }: ActionsEditorProps) {
+export function ActionsEditor({ actions, onChange, entities, disabled = false }: ActionsEditorProps) {
   // Check what services are configured
   const haStatus = useHomeAssistantStatus()
   const zwavejsStatus = useZwavejsStatusQuery()
   const zigbee2mqttStatus = useZigbee2mqttStatusQuery()
   const providersQuery = useEnabledNotificationProviders()
+
+  // Same shape used by the WHEN editor's value-editor context (RuleQueryBuilder).
+  // Memoised so passing it through to children does not invalidate React.memo
+  // boundaries on each render.
+  const entityOptions = useMemo<EntityOption[]>(
+    () =>
+      entities.map((e) => ({
+        entityId: e.entityId,
+        name: e.name,
+        domain: e.domain,
+        source: e.source,
+      })),
+    [entities]
+  )
 
   const isHaConfigured = haStatus.data?.configured ?? false
   const isZwavejsConfigured = zwavejsStatus.data?.configured && zwavejsStatus.data?.enabled
@@ -810,21 +896,23 @@ export function ActionsEditor({ actions, onChange, disabled = false }: ActionsEd
     })
   }, [isHaConfigured, isZwavejsConfigured, isZigbee2mqttConfigured, hasNotificationProviders])
 
-  // Stable keys for React reconciliation (avoid index-based keys)
-  const nextActionId = useRef(0)
-  /* eslint-disable react-hooks/refs */
-  const actionKeysRef = useRef<string[]>(
-    actions.map(() => `action-${nextActionId.current++}`)
+  // Stable keys for React reconciliation (avoid index-based keys, which would
+  // migrate row-local state onto a neighbour after delete). Using state lets
+  // the render-time sync below queue an update through React rather than
+  // mutating a ref during render.
+  const [actionKeys, setActionKeys] = useState<string[]>(() =>
+    actions.map((_, i) => `action-${i}`)
   )
-
-  // Sync if actions changed externally (e.g., loading a saved rule)
-  if (actionKeysRef.current.length !== actions.length) {
-    actionKeysRef.current = actions.map(() => `action-${nextActionId.current++}`)
+  const [nextActionId, setNextActionId] = useState(actions.length)
+  if (actionKeys.length !== actions.length) {
+    let counter = nextActionId
+    setActionKeys(actions.map(() => `action-${counter++}`))
+    setNextActionId(counter)
   }
-  /* eslint-enable react-hooks/refs */
 
   const handleAddAction = () => {
-    actionKeysRef.current.push(`action-${nextActionId.current++}`)
+    setActionKeys([...actionKeys, `action-${nextActionId}`])
+    setNextActionId(nextActionId + 1)
     onChange([...actions, { type: 'alarm_trigger' }])
   }
 
@@ -835,7 +923,7 @@ export function ActionsEditor({ actions, onChange, disabled = false }: ActionsEd
   }
 
   const handleRemoveAction = (index: number) => {
-    actionKeysRef.current.splice(index, 1)
+    setActionKeys(actionKeys.filter((_, i) => i !== index))
     const newActions = actions.filter((_, i) => i !== index)
     onChange(newActions)
   }
@@ -859,10 +947,9 @@ export function ActionsEditor({ actions, onChange, disabled = false }: ActionsEd
           </div>
         ) : (
           <div className="space-y-2">
-            {/* eslint-disable react-hooks/refs */}
             {actions.map((action, index) => (
               <ActionRow
-                key={actionKeysRef.current[index]}
+                key={actionKeys[index]}
                 action={action}
                 index={index}
                 onUpdate={(updated) => handleUpdateAction(index, updated)}
@@ -870,9 +957,9 @@ export function ActionsEditor({ actions, onChange, disabled = false }: ActionsEd
                 disabled={disabled}
                 canRemove={actions.length > 1}
                 availableActionTypes={availableActionTypes}
+                entityOptions={entityOptions}
               />
             ))}
-            {/* eslint-enable react-hooks/refs */}
           </div>
         )}
 

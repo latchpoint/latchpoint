@@ -6,7 +6,12 @@
 import { useState, useCallback, useMemo } from 'react'
 import type { RuleGroupType } from 'react-querybuilder'
 import type { Rule, Entity } from '@/types/rules'
-import type { ActionNode, RuleDefinition, WhenNode } from '@/types/ruleDefinition'
+import type {
+  ActionNode,
+  HaCallServiceAction,
+  RuleDefinition,
+  WhenNode,
+} from '@/types/ruleDefinition'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
@@ -19,6 +24,51 @@ import { ActionsEditor } from './ActionsEditor'
 import { alarmDslToRqbWithFor, rqbToAlarmDsl, createEmptyQuery } from './converters'
 import type { RuleSeed } from './cloneRule'
 import { useRuleStopGroupsQuery } from '@/hooks/useRulesQueries'
+
+// Strip whitespace-only entity ids from a ha_call_service action and drop the
+// target wrapper entirely if the result is empty. Runs at save time so the user
+// can keep half-filled rows while editing without leaking them to the wire.
+function cleanHaCallService(a: HaCallServiceAction): HaCallServiceAction {
+  const ids = a.target?.entityIds
+  // Advanced JSON mode lets the user hand-type non-string entries (numbers,
+  // null, objects). Trim strings (dropping ones that are empty after trim);
+  // pass non-strings through unchanged so the backend's schema validator can
+  // flag them instead of us silently swallowing them on the wire.
+  const cleaned = Array.isArray(ids)
+    ? ids.flatMap((id) => {
+        if (typeof id !== 'string') return [id]
+        const trimmed = id.trim()
+        return trimmed ? [trimmed] : []
+      })
+    : []
+  if (cleaned.length > 0) {
+    return {
+      ...a,
+      // Cast at the wire boundary: non-strings are intentionally preserved so
+      // backend schema validation surfaces the error to the user.
+      target: { ...a.target, entityIds: cleaned as NonNullable<HaCallServiceAction['target']>['entityIds'] },
+    }
+  }
+  // Drop the target wrapper but preserve every other field so future shape
+  // additions don't get silently stripped.
+  const rest = { ...a }
+  delete rest.target
+  return rest
+}
+
+function cleanThen(then: unknown): ActionNode[] {
+  // Advanced JSON mode lets users hand-type `definition.then`, so the runtime
+  // shape may not match ActionNode[]. Pass non-arrays and non-object entries
+  // through unchanged so the backend can return its schema error instead of
+  // us throwing TypeError on .map() or property access.
+  if (!Array.isArray(then)) return then as ActionNode[]
+  return then.map((a) => {
+    if (a && typeof a === 'object' && (a as { type?: unknown }).type === 'ha_call_service') {
+      return cleanHaCallService(a as HaCallServiceAction)
+    }
+    return a as ActionNode
+  })
+}
 
 interface RuleBuilderProps {
   rule?: Rule | null
@@ -210,6 +260,11 @@ export function RuleBuilder({
         }
       }
 
+      const cleanedDefinition: RuleDefinition = {
+        ...definition,
+        then: cleanThen(definition.then),
+      }
+
       onSave({
         name: name.trim() || 'Untitled Rule',
         enabled,
@@ -217,7 +272,7 @@ export function RuleBuilder({
         stopProcessing: stopProcessing && hasStopGroup,
         stopGroup: trimmedStopGroup,
         schemaVersion: 1,
-        definition,
+        definition: cleanedDefinition,
         cooldownSeconds: cooldownSeconds ? parseInt(cooldownSeconds, 10) : null,
       })
     },
@@ -423,7 +478,12 @@ export function RuleBuilder({
           </Card>
 
           {/* Actions (THEN) */}
-          <ActionsEditor actions={actions} onChange={setActions} disabled={isSaving} />
+          <ActionsEditor
+            actions={actions}
+            onChange={setActions}
+            entities={entities}
+            disabled={isSaving}
+          />
         </>
       )}
 
