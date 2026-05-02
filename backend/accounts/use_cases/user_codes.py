@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from django.contrib.auth.hashers import make_password
 
+from accounts.hashers import UserCodeArgon2Hasher
 from accounts.models import User, UserCode, UserCodeAllowedState
+
+USER_CODE_HASHER = UserCodeArgon2Hasher.algorithm
 
 DEFAULT_CODE_ALLOWED_STATES = [
     UserCodeAllowedState.AlarmState.ARMED_HOME,
@@ -30,7 +33,7 @@ def create_user_code(
     raw_code = (raw_code or "").strip()
     code = UserCode.objects.create(
         user=user,
-        code_hash=make_password(raw_code),
+        code_hash=make_password(raw_code, hasher=USER_CODE_HASHER),
         label=label or "",
         code_type=code_type,
         pin_length=len(raw_code),
@@ -57,7 +60,7 @@ def update_user_code(
     """Update a user code and its allowed states."""
     if "code" in changes and changes.get("code"):
         raw_code = str(changes.get("code") or "").strip()
-        code.code_hash = make_password(raw_code)
+        code.code_hash = make_password(raw_code, hasher=USER_CODE_HASHER)
         code.pin_length = len(raw_code)
 
     if "label" in changes:

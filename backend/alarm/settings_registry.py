@@ -360,9 +360,14 @@ ALARM_PROFILE_SETTINGS: list[SettingDefinition] = [
                 },
                 "client_id": {
                     "type": "string",
-                    "title": "Client ID",
+                    "title": "Client ID prefix",
                     "default": "latchpoint-alarm",
-                    "description": "MQTT client identifier (must be unique per broker)",
+                    "description": (
+                        "Prefix for the MQTT client identifier; a per-process random suffix is "
+                        "appended automatically so multiple Latchpoint processes never collide on "
+                        "the broker. Keep ≤16 bytes (UTF-8) — equivalent to ≤16 ASCII characters — "
+                        "to stay within MQTT 3.1's 23-byte limit after the 7-byte suffix is added."
+                    ),
                 },
                 "keepalive_seconds": {
                     "type": "integer",

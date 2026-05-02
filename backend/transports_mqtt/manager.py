@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import secrets
 import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -39,8 +40,8 @@ def _format_connect_error(*, rc_int: int, settings: "MqttConnectionSettings | No
     if rc_int == 2:
         client_id = (settings.get("client_id") or "").strip()
         if client_id:
-            return f"{message} Try a different client_id."
-        return f"{message} Set a unique client_id."
+            return f"{message} Try a different client_id prefix."
+        return f"{message} Set a client_id prefix."
     if rc_int == 3:
         return f"{message} Verify host/port and broker availability."
 
@@ -159,6 +160,21 @@ class MqttConnectionManager:
         self._subscriptions: dict[str, dict[str, Any]] = {}
         self._on_connect_hooks: list[callable] = []
         self._logger = logging.getLogger(__name__)
+        # Per-process random suffix appended to the configured client_id when
+        # paho clients are built. Two processes that share the configured
+        # `client_id` (e.g. daphne + a diagnostic script that imported the
+        # Django app and ran AppConfig.ready()) would otherwise both connect
+        # as the same identity and the broker would knock them off each other
+        # in a tight loop. Stable within a process, so reconnects/settings
+        # changes don't churn the broker's view of the live client.
+        #
+        # Sized at 3 bytes (6 hex chars) so the default composed client_id
+        # `latchpoint-alarm-XXXXXX` lands at exactly 23 bytes — the MQTT 3.1
+        # spec maximum (the spec measures bytes, not characters). paho-mqtt
+        # 2.0+ defaults to MQTT 3.1.1 which raises this to 65535, but staying
+        # inside the 3.1 limit keeps us safe against any stricter brokers a
+        # user might point at.
+        self._client_id_suffix = secrets.token_hex(3)
 
     @staticmethod
     def _topic_matches(*, topic_filter: str, topic: str) -> bool:
@@ -233,7 +249,11 @@ class MqttConnectionManager:
         connected_evt = threading.Event()
         result: dict[str, Any] = {"rc": None, "error": None}
 
-        client = self._build_client(mqtt=mqtt, settings=settings)
+        # A fresh suffix per test guarantees the throwaway client never knocks
+        # the live persistent client off the broker, even when called from the
+        # same process. Sized to match `_client_id_suffix` so the composed ID
+        # stays within MQTT 3.1's 23-byte limit.
+        client = self._build_client(mqtt=mqtt, settings=settings, client_id_suffix=secrets.token_hex(3))
 
         def on_connect(_client, _userdata, _flags, rc, _properties=None):
             """Capture connect return code and release the waiter."""
@@ -367,14 +387,28 @@ class MqttConnectionManager:
         except Exception:
             return None
 
-    @staticmethod
-    def _build_client(*, mqtt, settings: MqttConnectionSettings):
-        """Create and configure a paho client from settings (auth/TLS/client_id)."""
-        client_id = str(settings.get("client_id") or "latchpoint-alarm")
-        try:
-            client = mqtt.Client(client_id=client_id)
-        except TypeError:
-            client = mqtt.Client()
+    def _build_client(self, *, mqtt, settings: MqttConnectionSettings, client_id_suffix: str | None = None):
+        """
+        Create and configure a paho client from settings (auth/TLS/client_id).
+
+        The configured `client_id` is treated as a prefix; a per-process
+        random suffix is appended so independent processes can never collide
+        on the same MQTT identity. Callers (e.g. `test_connection`) may pass
+        an override suffix to ensure their throwaway client never collides
+        with the live one.
+
+        paho-mqtt 2.x+ is required (see `paho-mqtt>=2.0` in pyproject.toml);
+        the `client_id=` kwarg call is supported across that range, so no
+        compat fallback is needed.
+        """
+        # Strip whitespace so a configured `   ` prefix collapses to the default
+        # rather than producing a `   -XXXXXX` client_id that brokers reject with
+        # a confusing rc=2 — `_format_connect_error` already strips before deciding
+        # whether to suggest changing the prefix, so the two paths must agree.
+        base_client_id = str(settings.get("client_id") or "").strip() or "latchpoint-alarm"
+        suffix = client_id_suffix or self._client_id_suffix
+        client_id = f"{base_client_id}-{suffix}"
+        client = mqtt.Client(client_id=client_id)
 
         username = settings.get("username") or ""
         password = settings.get("password") or ""

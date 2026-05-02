@@ -67,7 +67,12 @@ def build_discovery_payload(*, entity_name: str, code_arm_required: bool) -> dic
     Notes:
     - We publish our app states directly (they already match HA alarm states).
     - We publish commands as JSON: {"action": "<payload>", "code": "<code>"}.
-      `{{ value }}` is the selected payload (payload_arm_away, payload_disarm, etc).
+      For `alarm_control_panel.mqtt`, HA exposes the variables `action` and
+      `code` to `command_template` — `value` is NOT in scope here (that's the
+      `lock.mqtt` template). Using `{{ value }}` would render the literal
+      string "None", which is what the parser would then fail to recognize
+      as an action. See HA docs:
+      https://www.home-assistant.io/integrations/alarm_control_panel.mqtt/#command_template
     - `code: "REMOTE_CODE"` is HA's sentinel for "validate remotely" — it makes
       HA expose `code_format = NUMBER` so the Lovelace card renders a numeric
       keypad, while skipping HA-side comparison. The typed code is forwarded
@@ -77,7 +82,7 @@ def build_discovery_payload(*, entity_name: str, code_arm_required: bool) -> dic
       implements; the HA default also advertises `arm_custom_bypass` and
       `trigger`, neither of which we wire up.
     """
-    command_template = json.dumps({"action": "{{ value }}", "code": "{{ code }}"})
+    command_template = json.dumps({"action": "{{ action }}", "code": "{{ code }}"})
     return {
         "name": entity_name,
         "unique_id": OBJECT_ID,
@@ -177,6 +182,14 @@ def publish_error(*, action: str, error: str) -> None:
 def _handle_command_payload(*, payload: str) -> tuple[str, str | None]:
     """
     Returns (action, code).
+
+    An empty `code` field is normalized to None. HA's MQTT alarm panel renders
+    the command template with `code = code or ""`, so when the user arms
+    without typing a PIN the broker payload looks like
+    `{"action": "ARM_HOME", "code": ""}` — semantically "no code", not "the
+    empty-string code". Downstream handlers test this with truthiness, so
+    collapsing "" -> None at the parser boundary keeps both branches
+    consistent and stops `raw_code is not None` from firing on empties.
     """
     payload = (payload or "").strip()
     if not payload:
@@ -191,7 +204,7 @@ def _handle_command_payload(*, payload: str) -> tuple[str, str | None]:
     action = str(data.get("action") or "").strip().upper()
     code = data.get("code")
     code_str = str(code).strip() if code is not None else None
-    return action, code_str
+    return action, code_str or None
 
 
 _ACTION_TO_STATE = {

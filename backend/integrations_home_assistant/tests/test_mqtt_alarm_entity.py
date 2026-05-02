@@ -4,7 +4,7 @@ import json
 
 from django.test import SimpleTestCase
 
-from integrations_home_assistant.mqtt_alarm_entity import build_discovery_payload
+from integrations_home_assistant.mqtt_alarm_entity import _handle_command_payload, build_discovery_payload
 
 
 class BuildDiscoveryPayloadTests(SimpleTestCase):
@@ -36,12 +36,18 @@ class BuildDiscoveryPayloadTests(SimpleTestCase):
         self.assertIs(self._payload(code_arm_required=True)["code_arm_required"], True)
         self.assertIs(self._payload(code_arm_required=False)["code_arm_required"], False)
 
-    def test_command_template_is_valid_json_with_action_and_code_placeholders(self):
-        """Regression guard: the typed code must flow through `{{ code }}` for server-side validation."""
+    def test_command_template_uses_ha_documented_action_and_code_variables(self):
+        """
+        Regression guard: HA's `alarm_control_panel.mqtt` exposes only `action`
+        and `code` to `command_template` (NOT `value`, which is `lock.mqtt`'s
+        scope). Rendering `{{ value }}` would emit the literal "None" and the
+        action would fail to dispatch. See:
+        https://www.home-assistant.io/integrations/alarm_control_panel.mqtt/#command_template
+        """
         payload = self._payload()
         template = payload["command_template"]
         parsed = json.loads(template)
-        self.assertEqual(parsed, {"action": "{{ value }}", "code": "{{ code }}"})
+        self.assertEqual(parsed, {"action": "{{ action }}", "code": "{{ code }}"})
 
     def test_entity_name_is_passed_through(self):
         payload = self._payload(entity_name="Front Door Alarm")
@@ -55,3 +61,63 @@ class BuildDiscoveryPayloadTests(SimpleTestCase):
         self.assertEqual(payload["payload_arm_away"], "ARM_AWAY")
         self.assertEqual(payload["payload_arm_night"], "ARM_NIGHT")
         self.assertEqual(payload["payload_arm_vacation"], "ARM_VACATION")
+
+    def test_rendered_command_payload_has_real_action_not_literal_none(self):
+        """
+        Simulated render check against HA's documented variable scope.
+
+        Captures the empirical failure mode that motivated this test class:
+        when the template referenced `{{ value }}` (undefined for
+        `alarm_control_panel.mqtt`), Jinja rendered it as the literal string
+        "None" and the broker payload looked like
+        `{"action": "None", "code": "1996"}`, which `_ACTION_TO_STATE` then
+        rejected as "Unknown action.".
+
+        Uses Django's template engine (always available) as a stand-in for
+        Jinja2; both substitute `{{ var }}` identically when the variables
+        are defined.
+        """
+        from django.template import Context, Template
+
+        payload = self._payload()
+        rendered = Template(payload["command_template"]).render(Context({"action": "ARM_AWAY", "code": "1234"}))
+        parsed = json.loads(rendered)
+        self.assertEqual(parsed, {"action": "ARM_AWAY", "code": "1234"})
+
+
+class HandleCommandPayloadTests(SimpleTestCase):
+    """
+    Parser-level guards for `_handle_command_payload`.
+
+    HA's MQTT alarm panel renders the command template with `code = code or ""`
+    (see `homeassistant/components/mqtt/alarm_control_panel.py`). When the user
+    arms or disarms without typing a PIN, the broker payload is therefore
+    `{"action": "...", "code": ""}` — the field is present but empty.
+
+    The handler downstream uses truthiness to detect "no code" in some places
+    (`if not raw_code:`) and `is not None` in others (the arm path's
+    `code_required = ... or raw_code is not None`). To keep both branches
+    consistent, the parser collapses an empty string to None at the boundary.
+    Without that, arming with `code_arm_required=False` was rejected with
+    "Code required." because `"" is not None` is True.
+    """
+
+    def test_empty_string_code_is_normalized_to_none(self):
+        action, code = _handle_command_payload(payload='{"action": "ARM_HOME", "code": ""}')
+        self.assertEqual(action, "ARM_HOME")
+        self.assertIsNone(code)
+
+    def test_whitespace_only_code_is_normalized_to_none(self):
+        action, code = _handle_command_payload(payload='{"action": "DISARM", "code": "   "}')
+        self.assertEqual(action, "DISARM")
+        self.assertIsNone(code)
+
+    def test_missing_code_field_is_none(self):
+        action, code = _handle_command_payload(payload='{"action": "ARM_AWAY"}')
+        self.assertEqual(action, "ARM_AWAY")
+        self.assertIsNone(code)
+
+    def test_real_code_is_preserved(self):
+        action, code = _handle_command_payload(payload='{"action": "DISARM", "code": "1234"}')
+        self.assertEqual(action, "DISARM")
+        self.assertEqual(code, "1234")
