@@ -182,6 +182,14 @@ def publish_error(*, action: str, error: str) -> None:
 def _handle_command_payload(*, payload: str) -> tuple[str, str | None]:
     """
     Returns (action, code).
+
+    An empty `code` field is normalized to None. HA's MQTT alarm panel renders
+    the command template with `code = code or ""`, so when the user arms
+    without typing a PIN the broker payload looks like
+    `{"action": "ARM_HOME", "code": ""}` — semantically "no code", not "the
+    empty-string code". Downstream handlers test this with truthiness, so
+    collapsing "" -> None at the parser boundary keeps both branches
+    consistent and stops `raw_code is not None` from firing on empties.
     """
     payload = (payload or "").strip()
     if not payload:
@@ -196,7 +204,7 @@ def _handle_command_payload(*, payload: str) -> tuple[str, str | None]:
     action = str(data.get("action") or "").strip().upper()
     code = data.get("code")
     code_str = str(code).strip() if code is not None else None
-    return action, code_str
+    return action, code_str or None
 
 
 _ACTION_TO_STATE = {
