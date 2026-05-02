@@ -2,20 +2,28 @@
 /**
  * Latchpoint screenshot tour driver.
  *
+ * Default target: the frontend-only demo bundle (ADR-0089). The demo's MSW
+ * handlers return a logged-in admin user from /api/users/me/ regardless of
+ * session state, so no real login is required — the harness just navigates
+ * and shoots. Set DEMO=false to fall back to the legacy backend-driven flow
+ * (POST /api/auth/login/ then route mocks for integration health endpoints).
+ *
  * - Reads manifest.json (declarative shot list with global mocks).
- * - Logs into the local dev stack via /api/auth/login/.
- * - For each shot: applies mocks via page.route(), sets theme via localStorage,
- *   navigates, waits for network-idle, screenshots full page.
+ * - For each shot: optionally logs in, applies route mocks, sets theme via
+ *   localStorage, navigates, waits for network-idle, screenshots full page.
  * - Writes PNGs to docs/screenshots/<name>-<theme>-<viewport>.png.
  *
- * Usage:
+ * Usage (demo target — default):
+ *   # In another shell: cd frontend && npm run dev:demo  (serves on :5427)
  *   cd scripts/screenshots
  *   npm install
- *   npx playwright install chromium
- *   node take-shots.mjs              # capture every shot in the manifest
- *   FRONTEND=http://localhost:5427 BACKEND=http://localhost:8000 \
- *   EMAIL=admin@testhome.local PASSWORD=adminpass node take-shots.mjs
+ *   npx playwright install chromium     # one-time browser download
+ *   node take-shots.mjs                 # capture every shot in the manifest
  *   node take-shots.mjs dashboard rules-list   # only named shots
+ *
+ * Usage (legacy backend target):
+ *   DEMO=false FRONTEND=http://localhost:5427 BACKEND=http://localhost:8000 \
+ *   EMAIL=admin@testhome.local PASSWORD=adminpass node take-shots.mjs
  */
 
 import { chromium } from 'playwright'
@@ -28,11 +36,12 @@ const __dirname = path.dirname(__filename)
 const REPO_ROOT = path.resolve(__dirname, '..', '..')
 const OUT_DIR = path.join(REPO_ROOT, 'docs', 'screenshots')
 
+// DEMO=true (default) targets the in-browser MSW demo — no backend, no real
+// auth, no broker mocks needed (the demo's MSW handlers already serve a
+// "connected" state). DEMO=false falls back to the legacy flow that logs in
+// against a real Django backend and overlays integration-health mocks.
+const DEMO = process.env.DEMO !== 'false'
 const FRONTEND = process.env.FRONTEND ?? 'http://localhost:5427'
-// In dev compose, the backend listens on a docker-internal port and Vite
-// proxies /api through the frontend. Default to the frontend URL so the
-// harness works against `docker compose up` out of the box; override
-// BACKEND when targeting an exposed backend directly.
 const BACKEND = process.env.BACKEND ?? FRONTEND
 const EMAIL = process.env.EMAIL ?? 'admin@testhome.local'
 const PASSWORD = process.env.PASSWORD ?? 'adminpass'
@@ -114,11 +123,17 @@ async function captureShot({ browser, manifest, shot, theme, viewportName }) {
 
   const context = await browser.newContext({ viewport, deviceScaleFactor: 2 })
   await primeTheme(context, theme)
-  if (!shot.skipLogin) {
+  // Demo mode pre-authenticates via MSW, so skip the API-level login step.
+  // Route mocks are also unnecessary in demo mode (MSW already returns the
+  // connected state for every integration), but applying them is harmless —
+  // Playwright route handlers take precedence over MSW for the same URL.
+  if (!DEMO && !shot.skipLogin) {
     await loginContext(context)
   }
   const page = await context.newPage()
-  await applyMocks(page, manifest.globalMocks)
+  if (!DEMO) {
+    await applyMocks(page, manifest.globalMocks)
+  }
 
   const url = new URL(shot.route, FRONTEND).toString()
   await page.goto(url, { waitUntil: 'networkidle', timeout: 30_000 }).catch((err) => {

@@ -244,10 +244,10 @@ u.set_password('adminpass'); u.is_staff = True; u.is_superuser = True; u.is_acti
 
 ### Try the demo (frontend-only)
 
-> **Status:** planned per [ADR-0089](docs/adr/0089-frontend-only-demo-mode.md);
-> not yet implemented. Once shipped, the commands below will run the entire UI
-> in your browser with no backend, no database, and no Docker — every page
-> populated with hand-crafted fixture data, every mutation in-memory only.
+The entire UI runs in your browser with no backend, no database, and no
+Docker — every page populated with hand-crafted fixture data, every mutation
+in-memory only. Architecture is documented in
+[ADR-0089](docs/adr/0089-frontend-only-demo-mode.md).
 
 ```bash
 cd frontend
@@ -258,10 +258,8 @@ npm run build:demo          # outputs dist-demo/, deployable anywhere static
 ```
 
 Hard refresh resets all state to the initial fixtures — no changes are saved.
-The demo replaces the older backend `seed_test_home --demo` showcase seed,
-which will be removed when ADR-0089 is implemented. Until then, the screenshot
-tour in [`scripts/screenshots/`](scripts/screenshots/README.md) still drives a
-real backend.
+A GitHub Actions workflow auto-deploys the bundle to GitHub Pages on every
+published release.
 
 ## Production setup
 
@@ -331,9 +329,10 @@ cd frontend && npx vitest run        # frontend suite
 
 ### Generating screenshots
 
-See [`scripts/screenshots/README.md`](scripts/screenshots/README.md). The harness
-intercepts integration `/status/` endpoints with mock responses so the
-"connected" UI renders without standing up real brokers.
+The Playwright harness in [`scripts/screenshots/`](scripts/screenshots/README.md)
+captures every page in `docs/screenshots/`. Default target is the frontend-only
+demo (no backend required) — start `npm run dev:demo` in `frontend/`, then run
+the harness.
 
 ## Project structure
 
@@ -362,7 +361,7 @@ frontend/src/
   components/ui/             # shared Radix-based primitives
 
 docs/adr/                    # 79 architecture decision records
-docs/screenshots/            # README screenshots (see scripts/screenshots/)
+docs/screenshots/            # README screenshots (captured by scripts/screenshots/)
 schema/                      # SQL + seed_entities.json
 scripts/                     # docker-*.sh helpers, screenshot harness
 ```

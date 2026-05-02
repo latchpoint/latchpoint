@@ -129,7 +129,7 @@ Maintain both: backend seed for screenshots/dev, frontend demo for the public. *
 - **Feature drift.** Every new page or endpoint requires a matching MSW handler and fixture, or the demo regresses. Mitigation: the demo CI build runs on every PR and surfaces missing handlers as 404s + console errors during a headless smoke run; reviewers should treat "demo broken" as a release blocker for showcase-relevant changes.
 - **Some flows can only "look real."** Real OAuth, real Pushbullet sends, real Z-Wave inclusion, real notification delivery — the demo shows the form and a "demo mode: this would call the backend" toast on submit. Acceptable; it still demonstrates the UX and the validation rules.
 - **WebSocket script curation.** A useful demo needs hand-tuned timelines (initial state → motion event @ 30s → optional escalation), not just stubbed connect/disconnect. More work than a no-op stub. Mitigation: ship one curated 60-second loop on first cut; expand later.
-- **Loss of the backend `--demo` dataset for screenshot generation.** The current Playwright harness (`scripts/screenshots/take-shots.mjs`) depends on `seed_test_home --demo` populating Postgres. After removal, the harness either gets retargeted at the demo bundle (cleaner — deterministic, no Docker, no auth flake) or is removed if redundant with on-demand exploration of the live demo URL. Tracked as a Todo on this ADR; not in scope to decide here. Note: the already-committed PNGs under `docs/screenshots/*.png` are a separate artifact and stay regardless.
+- **Screenshot harness retargeting.** The Playwright harness (`scripts/screenshots/take-shots.mjs`) previously depended on `seed_test_home --demo` populating Postgres; in PR #47 it was retargeted at the demo bundle via a `DEMO=true` (default) env flag. The legacy backend-driven flow is preserved behind `DEMO=false`. The already-committed PNGs under `docs/screenshots/*.png` stay; future regen will run against the demo.
 - **Reset surprises.** Visitors who don't notice the banner may make several edits, refresh, and lose them. Mitigation: banner is sticky and always visible; "Reset" is the only button on it.
 
 ## Implementation Plan
@@ -201,11 +201,11 @@ Mirror the `WebSocketManager` interface from `frontend/src/services/websocket.ts
 - MSW handler for `POST /api/auth/login/` accepts the seeded credentials and returns a `LoginResponse` envelope shaped per `frontend/src/types/user.ts:27`.
 - Demo build sets initial form values for the login page to `admin@demo.latchpoint.app` / `demo` and renders a hint card under the form. Implemented behind a `DEMO_MODE` check on the login page itself (not a page swap).
 
-### 7. Remove the backend `--demo` seed
+### 7. Remove the backend `--demo` seed (done in PR #47)
 
-- Strip the `--demo` flag and its demo-specific seed paths from `backend/alarm/management/commands/seed_test_home.py`. Non-demo paths (used by `CLAUDE.md`'s "quick test login" recipe) stay.
-- Update `README.md`'s screenshot-tour section to reference the new demo URL instead of `seed_test_home --demo`.
-- Leave `scripts/screenshots/` intact for now; its fate is a follow-up Todo.
+- Strip the `--demo` flag and its demo-specific seed paths from `backend/alarm/management/commands/seed_test_home.py`. Non-demo paths (used by `CLAUDE.md`'s "quick test login" recipe) stay. **Status:** done via revert of commit `6a9f1e4` in PR #47.
+- Update `README.md`'s screenshot-tour section to reference the new demo URL instead of `seed_test_home --demo`. **Status:** done in PR #47.
+- Retarget `scripts/screenshots/` at the demo bundle. **Status:** done in PR #47 — the harness now defaults to the demo via `DEMO=true`; legacy backend flow preserved behind `DEMO=false`.
 
 ### 8. Build and CI
 
@@ -270,5 +270,5 @@ Mirror the `WebSocketManager` interface from `frontend/src/services/websocket.ts
 
 - Decide on hosting target (GitHub Pages vs Vercel vs Netlify vs custom subdomain). Separate decision; not blocking the ADR.
 - Decide whether to expose role-switching in the demo banner (admin / resident / guest) for richer showcase, or keep it implicit at first.
-- Decide the fate of the Playwright harness (`scripts/screenshots/`): retarget at the demo bundle (deterministic, no Docker, no auth flake) or remove it entirely if redundant. Note that the already-committed PNGs under `docs/screenshots/*.png` are a separate artifact and stay regardless.
+- Regenerate `docs/screenshots/*.png` from the demo bundle once the scripted WS timeline (per §5) is in place, so dynamic states (arming countdown, triggered, motion event) can be captured deterministically. The harness itself is now retargeted at the demo (see Implementation Plan §7).
 - Open a tracking issue for the implementation work; link it from this ADR once filed.
