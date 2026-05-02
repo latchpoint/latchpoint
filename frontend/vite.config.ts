@@ -32,36 +32,49 @@ const apiProxyTarget =
   (isRunningInDocker() ? 'http://127.0.0.1:8000' : 'http://localhost:5427')
 
 // https://vite.dev/config/
-export default defineConfig({
-  plugins: [react(), tailwindcss()],
-  define: {
-    __APP_VERSION__: JSON.stringify(getProjectVersion()),
-    __APP_GIT_HASH__: JSON.stringify(process.env.GIT_COMMIT_SHORT || ''),
-    __APP_REPO__: JSON.stringify(process.env.BUILD_REPO || ''),
-  },
-  resolve: {
-    alias: {
-      '@': path.resolve(__dirname, './src'),
+export default defineConfig(({ mode }) => {
+  const isDemo = mode === 'demo'
+  // For GitHub Pages: VITE_BASE_URL=/latchpoint/ at build time produces
+  // asset paths under /latchpoint/. For local LAN serving, leave it unset
+  // so paths are relative to /.
+  const base = process.env.VITE_BASE_URL || '/'
+
+  return {
+    base,
+    plugins: [react(), tailwindcss()],
+    define: {
+      __APP_VERSION__: JSON.stringify(getProjectVersion()),
+      __APP_GIT_HASH__: JSON.stringify(process.env.GIT_COMMIT_SHORT || ''),
+      __APP_REPO__: JSON.stringify(process.env.BUILD_REPO || ''),
     },
-  },
-  test: {
-    environment: 'jsdom',
-    setupFiles: ['./src/test/setup.ts'],
-    include: ['src/**/*.test.{ts,tsx}'],
-    clearMocks: true,
-    restoreMocks: true,
-  },
-  server: {
-    port: 3000,
-    proxy: {
-      '/api': {
-        target: apiProxyTarget,
-        changeOrigin: true,
-      },
-      '/ws': {
-        target: toWebSocketTarget(apiProxyTarget),
-        ws: true,
+    resolve: {
+      alias: {
+        '@': path.resolve(__dirname, './src'),
       },
     },
-  },
+    test: {
+      environment: 'jsdom',
+      setupFiles: ['./src/test/setup.ts'],
+      include: ['src/**/*.test.{ts,tsx}'],
+      clearMocks: true,
+      restoreMocks: true,
+    },
+    build: isDemo ? { outDir: 'dist-demo' } : undefined,
+    server: {
+      port: 3000,
+      // Demo mode talks to MSW in-browser, so no backend proxy is needed.
+      proxy: isDemo
+        ? undefined
+        : {
+            '/api': {
+              target: apiProxyTarget,
+              changeOrigin: true,
+            },
+            '/ws': {
+              target: toWebSocketTarget(apiProxyTarget),
+              ws: true,
+            },
+          },
+    },
+  }
 })

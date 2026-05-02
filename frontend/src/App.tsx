@@ -2,6 +2,8 @@ import { lazy, Suspense } from 'react'
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { ONE_MINUTE_MS, Routes as AppRoutes } from '@/lib/constants'
+import { DEMO_MODE } from '@/demo'
+import { DemoBanner } from '@/demo/DemoBanner'
 import { AppShell, ProtectedRoute, SetupGate } from '@/components/layout'
 import { AppErrorBoundary } from '@/components/providers/AppErrorBoundary'
 import { ThemeProvider } from '@/components/providers/ThemeProvider'
@@ -144,11 +146,13 @@ function AppContent() {
 }
 
 function App() {
+  const basename = import.meta.env.BASE_URL.replace(/\/$/, '') || undefined
   return (
     <QueryClientProvider client={queryClient}>
-      <BrowserRouter>
+      <BrowserRouter basename={basename}>
         <ThemeProvider>
           <AppErrorBoundary>
+            {DEMO_MODE && <DemoBanner />}
             <LayoutBootstrap />
             <AppContent />
             <ModalProvider />
