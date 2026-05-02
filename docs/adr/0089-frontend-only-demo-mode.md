@@ -58,15 +58,35 @@ The demo build:
 
 2. **Stubs `wsManager`** with a scripted emitter that mutates the same in-memory stores and pushes deltas the way Channels would. Countdowns animate, "armed → triggered" transitions happen on a script, and the dashboard feels alive.
 
-3. **Hand-crafted TS fixtures** under `frontend/src/demo/fixtures/` — one file per domain (alarm, codes, doorCodes, rules, sensors, events, integrations, panels, scheduler, notifications, users). Plain TS arrays. No codegen, no build-time backend dependency, no coupling to backend model shape.
+3. **Hand-crafted TS fixtures** under `frontend/src/demo/fixtures/` — one file per domain (alarm, codes, doorCodes, rules, sensors, events, integrations, panels, scheduler, notifications, users, haEntities, zwaveDevices, zigbeeDevices, frigateCameras, frigateDetections). Plain TS arrays. No codegen, no build-time backend dependency, no coupling to backend model shape. **Concrete inventory targets** (the demo is "showcase fiction" — these are minimums for credible variety, not maximums):
 
-4. **In-memory mutable stores** under `frontend/src/demo/stores/` — keyed by ID, mutated by MSW handlers. Implemented as module-level `let` bindings; a hard refresh re-executes the bundle and re-initializes from fixtures, satisfying the "no persistence" requirement automatically.
+   | Domain | Target | Notes |
+   |---|---|---|
+   | Users | 4 | admin, resident, guest, service — covers RBAC variety |
+   | User codes | 6 | one of each access type (permanent / temporary / one-time / service) plus 2 with per-state restrictions |
+   | Door codes | 5 | permanent, time-window, day-of-week-restricted, one-time (post-burn), max-use-limited |
+   | Sensors | 10 | door×3, window×2, motion×2, glass-break, smoke, water-leak — varied state mix |
+   | Rules | 12 | spread across all kinds (trigger / disarm / arm / suppress / escalate), at least one using stop-processing groups (ADR-0084), one using template variables (ADR-0088), one using HA Call Service action |
+   | Notification providers | 6 | one of each handler type (Pushbullet, Discord, Slack, Webhook, Home Assistant) plus a duplicate to surface ADR-0080's multi-provider flow |
+   | Control panels | 1 | Ring Keypad v2 with full action mapping populated |
+   | Settings profiles | 3 | Default (active), Vacation, Sleep — exercises profile-switching |
+   | Alarm events | 50+ | spanning the past week; mix of state changes, triggers, code uses, integration events |
+   | Scheduler tasks | 5 | mixed success/failure history to surface backoff UI |
+   | Home Assistant entities | 30+ | across `light`, `switch`, `sensor`, `climate`, `lock`, `cover`, `binary_sensor`, `media_player` domains |
+   | Z-Wave devices | 8 | 2 locks, 2 motion sensors, 2 multilevel switches, 1 smoke detector, 1 controller |
+   | Zigbee devices | 8 | 3 bulbs, 2 contact sensors, 1 motion, 1 button, 1 plug |
+   | Frigate cameras | 4 | front_door, backyard, driveway, garage — each with named zones |
+   | Frigate detections | 20+ | mix of person, car, package, dog across cameras and zones |
 
-5. **A sticky "Demo mode" banner** with a **Reset** button (`window.location.reload()`) and copy explaining nothing is saved.
+4. **All integrations boot in "connected" state.** Every integration health endpoint (`/api/alarm/home-assistant/status/`, `/api/alarm/mqtt/status/`, `/api/alarm/zwavejs/status/`, `/api/alarm/frigate/status/`, `/api/alarm/zigbee2mqtt/status/`) returns a healthy response with synthetic-but-plausible telemetry: last-heartbeat within the last few seconds, entity / device counts matching the fixture inventory above, message-rate and uptime metrics. Status cards on the dashboard and settings tabs show green badges out of the box; "Test Connection" buttons return success after a brief simulated delay. A visitor must never see "Disconnected" or "Unknown" for an integration unless they explicitly trigger it (a Todo: a hidden "chaos" button to demo the disconnected UI).
 
-6. **Auto-prefilled login** — the real login screen renders, but the email and password fields are pre-filled with seeded credentials and a hint card explains the demo. Showing the login screen is part of the showcase, and prefilled credentials preserve the click-through experience.
+5. **In-memory mutable stores** under `frontend/src/demo/stores/` — keyed by ID, mutated by MSW handlers. Implemented as module-level `let` bindings; a hard refresh re-executes the bundle and re-initializes from fixtures, satisfying the "no persistence" requirement automatically.
 
-7. **Backend `--demo` removal** — strip the `--demo` flag and its demo-specific seed paths from `backend/alarm/management/commands/seed_test_home.py`. Update `README.md`'s screenshot-tour section to point at the new demo URL instead.
+6. **A sticky "Demo mode" banner** with a **Reset** button (`window.location.reload()`) and copy explaining nothing is saved.
+
+7. **Auto-prefilled login** — the real login screen renders, but the email and password fields are pre-filled with seeded credentials and a hint card explains the demo. Showing the login screen is part of the showcase, and prefilled credentials preserve the click-through experience.
+
+8. **Backend `--demo` removal** — strip the `--demo` flag and its demo-specific seed paths from `backend/alarm/management/commands/seed_test_home.py`. Update `README.md`'s screenshot-tour section to point at the new demo URL instead.
 
 ## Alternatives Considered
 
@@ -124,17 +144,22 @@ Maintain both: backend seed for screenshots/dev, frontend demo for the public. *
 ```
 frontend/src/demo/
 ├── fixtures/              # one TS file per domain
-│   ├── alarm.ts
-│   ├── codes.ts
-│   ├── doorCodes.ts
-│   ├── rules.ts
-│   ├── sensors.ts
-│   ├── events.ts
-│   ├── integrations.ts
-│   ├── panels.ts
-│   ├── scheduler.ts
-│   ├── notifications.ts
-│   └── users.ts
+│   ├── alarm.ts            # alarm states + 3 settings profiles
+│   ├── codes.ts            # 6 user codes across all access types
+│   ├── doorCodes.ts        # 5 door codes with mixed restrictions
+│   ├── rules.ts            # 12 rules across all kinds
+│   ├── sensors.ts          # 10 sensors across types
+│   ├── events.ts           # 50+ events spanning past week
+│   ├── integrationHealth.ts # connected + telemetry for all 5 integrations
+│   ├── haEntities.ts       # 30+ HA entities across domains
+│   ├── zwaveDevices.ts     # 8 Z-Wave devices including locks
+│   ├── zigbeeDevices.ts    # 8 Zigbee devices
+│   ├── frigateCameras.ts   # 4 cameras with zones
+│   ├── frigateDetections.ts # 20+ detections
+│   ├── panels.ts           # Ring Keypad v2 with mapping
+│   ├── scheduler.ts        # 5 tasks with mixed history
+│   ├── notifications.ts    # 6 providers (one per type + duplicate)
+│   └── users.ts            # 4 users covering RBAC variety
 ├── stores/                # mutable in-memory stores; export reset() per store
 ├── handlers/              # MSW REST handlers, one file per domain
 ├── ws/scriptedWs.ts       # fake WebSocketManager
@@ -161,6 +186,7 @@ Conditionally render `<DemoBanner />` at the app root (above `<RouterProvider>`)
 - Reuse handler conventions from `frontend/src/test/msw/handlers.ts:3-10` (already serves CSRF for tests).
 - **Must include a `GET /api/auth/csrf/` handler** that sets the `csrftoken` cookie. `ApiClient.fetchCsrfToken()` (`frontend/src/services/api.ts:82`) calls this on first mutation; without it the app hangs at the first action.
 - Each handler imports its in-memory store and mutates it; reads return current store state.
+- **Integration health endpoints (`/api/alarm/{home-assistant,mqtt,zwavejs,frigate,zigbee2mqtt}/status/` and matching `/test-connection/` POSTs) must return success with seeded telemetry by default.** Each handler reads from a shared `integrationHealth` store seeded as connected at boot, so dashboard cards and settings tabs show green badges on first paint without any visitor action. Test-connection POSTs return success after a 300–800ms simulated delay so the loading UI is exercised.
 
 ### 5. WebSocket stub (`frontend/src/demo/ws/scriptedWs.ts`)
 
@@ -203,7 +229,26 @@ Mirror the `WebSocketManager` interface from `frontend/src/services/websocket.ts
   - **Core pages** — Dashboard (`/`), Rules (`/rules`), Rules Test sandbox (`/rules/test`), Codes (`/codes`), Door Codes (`/door-codes`), Events (`/events`), Control Panels (`/control-panels`), Scheduler (`/scheduler`)
   - **Debug** — Entities (`/debug/entities`), Logs (`/debug/logs`)
   - **Settings tabs** — alarm, notifications, home-assistant, mqtt, frigate, zwavejs. The `/settings/zigbee2mqtt` route redirects to `/settings/mqtt` (`App.tsx:132`) and inherits coverage automatically.
-- A visitor can: arm the system, disarm the system, add a user code, edit a user code, delete a user code, add a door code, edit a rule, run a rule through the Rules Test sandbox against fake entity state, send a test notification (stubbed toast), tag entities, switch alarm settings profiles, and edit any settings tab — and every change is reflected in the UI immediately.
+- **Every interactive control on every page is exercisable end-to-end** — not just navigable. The demo is a "playground", not a screenshot tour. Specifically, a visitor can complete the following flows, and every change is reflected in the UI immediately:
+
+  | Page | Flows that must work in demo |
+  |---|---|
+  | Dashboard | Arm (away / home / night / vacation); cancel a pending arm during countdown; disarm with a seeded PIN; observe a scripted motion event triggering the alarm; acknowledge a triggered alarm |
+  | Rules | Create a rule from scratch via the drag-drop QueryBuilder; edit; duplicate (per ADR-0085); delete; toggle enabled; reorder priority; assign to a stop-processing group (ADR-0084); use template variables in a notification message (ADR-0088); use the HA Call Service action with the entity picker |
+  | Rules Test | Pick a seeded rule; set fake entity state via the form; run the simulation; see trigger / no-trigger result with action chain output |
+  | Codes | Create a 4–8 digit user code; pick access type (permanent / temporary / one-time / service); set per-state restrictions; edit; delete; toggle PIN visibility |
+  | Door Codes | Create a door code with time windows / day-of-week / max-uses; assign to a seeded lock; view the code-events audit trail; toggle visibility (per ADR-0083) |
+  | Events | Filter by type / severity / time range; paginate; open a detail modal |
+  | Control Panels | View the seeded Ring Keypad v2; edit its action mapping; trigger a simulated key press to see the resulting alarm state change |
+  | Scheduler | View task list with next-run times; toggle a task enabled / disabled; view failure history with backoff metadata |
+  | Settings — Alarm | Switch the active settings profile (Default / Vacation / Sleep); edit profile fields; create a new profile; delete a non-active profile |
+  | Settings — Notifications | Full provider CRUD (create / edit / delete) for each handler type; "Send Test" returns a stubbed success toast; encrypted fields render masked then editable, demonstrating the ADR-0079 flow |
+  | Settings — HA / MQTT / Z-Wave / Frigate | Edit connection fields; "Test Connection" returns success after a simulated delay; entity / device / camera lists populate from the fixture inventory |
+  | Debug — Entities | Browse all seeded entities across HA / Z-Wave / Zigbee; tag and untag entities; live state badges update from the scripted WS |
+  | Debug — Logs | Stream synthetic log lines; filter by severity |
+  | Setup wizard | Replay the wizard via the demo banner link; advance through MQTT, Z-Wave, and sensor-import steps with fake "Test Connection" success at each |
+
+- **All integrations show as connected with populated device inventories on first paint** — Home Assistant, MQTT, Z-Wave JS, Zigbee2MQTT, and Frigate status cards display green badges, recent heartbeats, and the device / entity / camera counts from the fixture inventory. A visitor never sees "Disconnected" or "Unknown" without taking a deliberate action (e.g. a hidden chaos button, if one is added later).
 - A hard refresh (`Cmd+R` / `Ctrl+R`) returns the app to its initial fixture state. The demo build does not enable any TanStack Query persistor.
 - A sticky "Demo mode — nothing is saved" banner is visible on every page; its **Reset** button forces a reload.
 - `npm run build:demo` produces a `dist-demo/` static bundle servable from any static host with no server-side dependencies.
