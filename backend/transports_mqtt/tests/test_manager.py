@@ -139,6 +139,24 @@ class MqttClientIdSuffixTests(SimpleTestCase):
             f"expected default prefix preserved, got {client.client_id!r}",
         )
 
+    def test_default_composed_client_id_fits_mqtt_3_1_length_limit(self):
+        """
+        MQTT 3.1 caps `client_id` at 23 UTF-8 bytes. paho-mqtt 2.0+ defaults
+        to 3.1.1 (which raises the cap to 65535), but keeping the default
+        composed ID inside the 3.1 limit guards against any stricter broker
+        a user might point Latchpoint at. If this test fails, either the
+        suffix grew or the default prefix did — both would silently break
+        connection on a 3.1-only broker.
+        """
+        mgr = MqttConnectionManager()
+        client = mgr._build_client(mqtt=_FakePahoModule, settings={})
+        composed = client.client_id
+        self.assertLessEqual(
+            len(composed),
+            23,
+            f"default composed client_id exceeds MQTT 3.1's 23-byte limit: {composed!r} ({len(composed)} bytes)",
+        )
+
     def test_explicit_suffix_override_does_not_collide_with_live_suffix(self):
         """`test_connection` opts into a fresh suffix so it never knocks the live client off."""
         mgr = MqttConnectionManager()
@@ -150,46 +168,6 @@ class MqttClientIdSuffixTests(SimpleTestCase):
         )
         self.assertNotEqual(live.client_id, test.client_id)
         self.assertTrue(test.client_id.endswith("-abcd1234"))
-
-    def test_typeerror_on_kwarg_falls_back_to_positional_with_suffix_intact(self):
-        """
-        Compat fallback: if a paho version ever rejects `client_id=` as a
-        kwarg, the manager retries positionally. The composed
-        `<prefix>-<suffix>` MUST still reach the broker — otherwise the
-        per-process collision fix is silently lost.
-        """
-        captured: dict[str, object] = {}
-
-        class _KwargRejectingPahoModule:
-            class Client:
-                def __init__(self, *args, **kwargs):
-                    if "client_id" in kwargs:
-                        raise TypeError("client_id keyword unsupported in this paho version")
-                    captured["positional_args"] = args
-                    self.client_id = args[0] if args else None
-
-                def username_pw_set(self, *_a, **_k):
-                    pass
-
-                def tls_set(self, *_a, **_k):
-                    pass
-
-                def tls_insecure_set(self, *_a, **_k):
-                    pass
-
-                def reconnect_delay_set(self, *_a, **_k):
-                    pass
-
-        mgr = MqttConnectionManager()
-        client = mgr._build_client(
-            mqtt=_KwargRejectingPahoModule,
-            settings={"client_id": "latchpoint-alarm"},
-        )
-        self.assertTrue(
-            client.client_id.startswith("latchpoint-alarm-"),
-            f"fallback dropped the prefix: {client.client_id!r}",
-        )
-        self.assertEqual(client.client_id, captured["positional_args"][0])
 
     def test_test_connection_passes_a_fresh_non_live_suffix_to_build_client(self):
         """

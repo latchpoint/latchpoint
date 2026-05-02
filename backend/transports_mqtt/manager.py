@@ -40,8 +40,8 @@ def _format_connect_error(*, rc_int: int, settings: "MqttConnectionSettings | No
     if rc_int == 2:
         client_id = (settings.get("client_id") or "").strip()
         if client_id:
-            return f"{message} Try a different client_id."
-        return f"{message} Set a unique client_id."
+            return f"{message} Try a different client_id prefix."
+        return f"{message} Set a client_id prefix."
     if rc_int == 3:
         return f"{message} Verify host/port and broker availability."
 
@@ -167,7 +167,13 @@ class MqttConnectionManager:
         # as the same identity and the broker would knock them off each other
         # in a tight loop. Stable within a process, so reconnects/settings
         # changes don't churn the broker's view of the live client.
-        self._client_id_suffix = secrets.token_hex(4)
+        #
+        # Sized at 3 bytes (6 hex chars) so the default composed client_id
+        # `latchpoint-alarm-XXXXXX` lands at exactly 23 characters — the
+        # MQTT 3.1 spec maximum. paho-mqtt 2.0+ defaults to MQTT 3.1.1
+        # which raises this to 65535, but staying inside the 3.1 limit
+        # keeps us safe against any stricter brokers a user might point at.
+        self._client_id_suffix = secrets.token_hex(3)
 
     @staticmethod
     def _topic_matches(*, topic_filter: str, topic: str) -> bool:
@@ -244,8 +250,9 @@ class MqttConnectionManager:
 
         # A fresh suffix per test guarantees the throwaway client never knocks
         # the live persistent client off the broker, even when called from the
-        # same process.
-        client = self._build_client(mqtt=mqtt, settings=settings, client_id_suffix=secrets.token_hex(4))
+        # same process. Sized to match `_client_id_suffix` so the composed ID
+        # stays within MQTT 3.1's 23-byte limit.
+        client = self._build_client(mqtt=mqtt, settings=settings, client_id_suffix=secrets.token_hex(3))
 
         def on_connect(_client, _userdata, _flags, rc, _properties=None):
             """Capture connect return code and release the waiter."""
@@ -388,14 +395,15 @@ class MqttConnectionManager:
         on the same MQTT identity. Callers (e.g. `test_connection`) may pass
         an override suffix to ensure their throwaway client never collides
         with the live one.
+
+        paho-mqtt >=2.0 is pinned (see pyproject.toml); the `client_id=`
+        kwarg call is supported across that range, so no compat fallback
+        is needed.
         """
         base_client_id = str(settings.get("client_id") or "latchpoint-alarm")
         suffix = client_id_suffix or self._client_id_suffix
         client_id = f"{base_client_id}-{suffix}"
-        try:
-            client = mqtt.Client(client_id=client_id)
-        except TypeError:
-            client = mqtt.Client(client_id)
+        client = mqtt.Client(client_id=client_id)
 
         username = settings.get("username") or ""
         password = settings.get("password") or ""
