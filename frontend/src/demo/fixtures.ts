@@ -53,29 +53,61 @@ export const demoUsers = [
 
 export type DemoUser = (typeof demoUsers)[number]
 
+/**
+ * Snake_case form of `AlarmStateSnapshot` from `frontend/src/types/alarm.ts`.
+ * After ApiClient.transformKeysDeep (snake_case → camelCase) the UI receives
+ * `currentState`, `enteredAt`, `settingsProfile`, etc.
+ */
 export const demoAlarmState = {
-  state: 'disarmed',
+  id: 1,
+  current_state: 'disarmed',
   previous_state: 'armed_away',
-  state_changed_at: '2026-05-02T08:30:00Z',
-  pending_state: null,
-  pending_seconds_remaining: 0,
-  active_profile_id: 1,
-  active_profile_name: 'Default',
-  triggered_by: null,
-  triggered_at: null,
+  settings_profile: 1,
+  entered_at: '2026-05-02T08:30:00Z',
+  exit_at: null,
+  last_transition_reason: 'user_disarm',
+  last_transition_by: 'user-admin',
+  target_armed_state: null,
+  timing_snapshot: { delay_time: 30, arming_time: 0, trigger_time: 0 },
 }
 
+/**
+ * Snake_case form of the flat `AlarmSettingsProfile` shape from
+ * `frontend/src/types/alarm.ts` — the `getSettings()` service handles both
+ * the flat and nested entries formats; the demo serves the flat one.
+ */
 export const demoAlarmSettings = {
-  entry_delay_seconds: 30,
-  exit_delay_seconds: 60,
-  auto_arm_enabled: false,
-  pin_required_for_disarm: true,
+  id: 1,
+  name: 'Default',
+  is_active: true,
+  delay_time: 30,
+  trigger_time: 180,
+  disarm_after_trigger: false,
+  code_arm_required: true,
+  available_arming_states: ['armed_home', 'armed_away', 'armed_night'],
+  state_overrides: {},
+  audio_visual_settings: {
+    beep_enabled: true,
+    countdown_display_enabled: true,
+    color_coding_enabled: true,
+  },
+  sensor_behavior: {
+    warn_on_open_sensors: true,
+    auto_bypass_enabled: false,
+    force_arm_enabled: true,
+  },
+  created_at: '2026-01-01T00:00:00Z',
+  updated_at: '2026-04-01T00:00:00Z',
 }
 
+/**
+ * Profiles list — snake_case form of `AlarmSettingsProfileMeta` from
+ * `frontend/src/types/settings.ts` (id, name, isActive, createdAt, updatedAt).
+ */
 export const demoAlarmProfiles = [
-  { id: 1, name: 'Default', is_active: true, entry_delay_seconds: 30, exit_delay_seconds: 60 },
-  { id: 2, name: 'Vacation', is_active: false, entry_delay_seconds: 5, exit_delay_seconds: 10 },
-  { id: 3, name: 'Sleep', is_active: false, entry_delay_seconds: 45, exit_delay_seconds: 30 },
+  { id: 1, name: 'Default', is_active: true, created_at: '2026-01-01T00:00:00Z', updated_at: '2026-04-01T00:00:00Z' },
+  { id: 2, name: 'Vacation', is_active: false, created_at: '2026-01-15T00:00:00Z', updated_at: '2026-03-15T00:00:00Z' },
+  { id: 3, name: 'Sleep', is_active: false, created_at: '2026-02-01T00:00:00Z', updated_at: '2026-02-01T00:00:00Z' },
 ]
 
 /**

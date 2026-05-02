@@ -23,10 +23,10 @@ const ADMIN = demoUsers[0]
 
 export const handlers = [
   // ── Auth ────────────────────────────────────────────────────────────────
-  http.get('/api/auth/csrf/', () => {
-    document.cookie = 'csrftoken=demo-csrf-token; path=/'
-    return ok(null)
-  }),
+  // The CSRF cookie is primed once at startup in `initDemoMode()` (page
+  // context). Handlers run in the Service Worker context where `document`
+  // is undefined, so we must not write the cookie here.
+  http.get('/api/auth/csrf/', () => ok(null)),
 
   http.post('/api/auth/login/', async () => {
     await delay(200)
@@ -58,27 +58,68 @@ export const handlers = [
   ),
 
   // ── System ──────────────────────────────────────────────────────────────
-  http.get('/api/system/time/', () => ok({ now: new Date().toISOString() })),
+  // Shape mirrors `ServerTime` from `frontend/src/services/system.ts`
+  // (snake_case here → camelCase after ApiClient.transformKeysDeep).
+  http.get('/api/system/time/', () => {
+    const now = new Date()
+    return ok({
+      timestamp: now.toISOString(),
+      timezone: 'UTC',
+      epoch_ms: now.getTime(),
+      formatted: now.toISOString().replace('T', ' ').replace(/\.\d+Z$/, ' UTC'),
+    })
+  }),
   http.get('/api/system-config/', () => ok([])),
 
   // ── Alarm core ──────────────────────────────────────────────────────────
+  // Shapes mirror `AlarmStateSnapshot` and `ArmRequest` from
+  // `frontend/src/types/alarm.ts`. The body arrives snake_case because
+  // ApiClient transforms outgoing request bodies (api.ts:135) before MSW
+  // intercepts them — so `targetState` becomes `target_state` on the wire.
   http.get('/api/alarm/state/', () => ok(stores.alarmState)),
   http.post('/api/alarm/arm/', async ({ request }) => {
-    const body = (await request.json().catch(() => ({}))) as { mode?: string }
-    const target = body.mode ? `armed_${body.mode}` : 'armed_away'
-    stores.alarmState = { ...stores.alarmState, state: target, state_changed_at: new Date().toISOString() }
+    const body = (await request.json().catch(() => ({}))) as { target_state?: string }
+    const target = body.target_state ?? 'armed_away'
+    stores.alarmState = {
+      ...stores.alarmState,
+      previous_state: stores.alarmState.current_state,
+      current_state: target,
+      target_armed_state: target,
+      entered_at: new Date().toISOString(),
+      last_transition_reason: 'user_arm',
+    }
     return ok(stores.alarmState)
   }),
   http.post('/api/alarm/disarm/', () => {
-    stores.alarmState = { ...stores.alarmState, state: 'disarmed', state_changed_at: new Date().toISOString() }
+    stores.alarmState = {
+      ...stores.alarmState,
+      previous_state: stores.alarmState.current_state,
+      current_state: 'disarmed',
+      target_armed_state: null,
+      entered_at: new Date().toISOString(),
+      last_transition_reason: 'user_disarm',
+    }
     return ok(stores.alarmState)
   }),
   http.post('/api/alarm/cancel-arming/', () => {
-    stores.alarmState = { ...stores.alarmState, state: 'disarmed', state_changed_at: new Date().toISOString() }
+    stores.alarmState = {
+      ...stores.alarmState,
+      previous_state: stores.alarmState.current_state,
+      current_state: 'disarmed',
+      target_armed_state: null,
+      entered_at: new Date().toISOString(),
+      last_transition_reason: 'user_cancel_arming',
+    }
     return ok(stores.alarmState)
   }),
   http.post('/api/alarm/trigger/', () => {
-    stores.alarmState = { ...stores.alarmState, state: 'triggered', state_changed_at: new Date().toISOString() }
+    stores.alarmState = {
+      ...stores.alarmState,
+      previous_state: stores.alarmState.current_state,
+      current_state: 'triggered',
+      entered_at: new Date().toISOString(),
+      last_transition_reason: 'manual_trigger',
+    }
     return ok(stores.alarmState)
   }),
 
@@ -331,18 +372,47 @@ export const handlers = [
   }),
 
   // ── Integration: HA MQTT alarm entity ───────────────────────────────────
+  // Shapes mirror `HomeAssistantMqttAlarmEntitySettings`,
+  // `HomeAssistantMqttAlarmEntityStatusResponse`, and the publishDiscovery
+  // `{ ok: boolean }` return from `frontend/src/services/integrations.ts`.
   http.get('/api/alarm/integrations/home-assistant/mqtt-alarm-entity/', () =>
-    ok({ enabled: true, code_required: false, command_topic: 'latchpoint/alarm/set' }),
+    ok({
+      enabled: true,
+      entity_name: 'Latchpoint Demo Alarm',
+      also_rename_in_home_assistant: true,
+      ha_entity_id: 'alarm_control_panel.latchpoint_demo_alarm',
+    }),
   ),
-  http.patch('/api/alarm/integrations/home-assistant/mqtt-alarm-entity/', async () => {
+  http.patch('/api/alarm/integrations/home-assistant/mqtt-alarm-entity/', async ({ request }) => {
     await delay(300)
-    return ok({ enabled: true, code_required: false, command_topic: 'latchpoint/alarm/set' })
+    const body = (await request.json().catch(() => ({}))) as Record<string, unknown>
+    return ok({
+      enabled: true,
+      entity_name: 'Latchpoint Demo Alarm',
+      also_rename_in_home_assistant: true,
+      ha_entity_id: 'alarm_control_panel.latchpoint_demo_alarm',
+      ...body,
+    })
   }),
   http.get('/api/alarm/integrations/home-assistant/mqtt-alarm-entity/status/', () =>
-    ok({ published: true, last_publish_at: new Date().toISOString() }),
+    ok({
+      settings: {
+        enabled: true,
+        entity_name: 'Latchpoint Demo Alarm',
+        also_rename_in_home_assistant: true,
+        ha_entity_id: 'alarm_control_panel.latchpoint_demo_alarm',
+      },
+      status: {
+        last_discovery_publish_at: new Date(Date.now() - 6 * 3600_000).toISOString(),
+        last_state_publish_at: new Date(Date.now() - 30 * 60_000).toISOString(),
+        last_availability_publish_at: new Date(Date.now() - 30 * 60_000).toISOString(),
+        last_error_at: null,
+        last_error: null,
+      },
+    }),
   ),
   http.post('/api/alarm/integrations/home-assistant/mqtt-alarm-entity/publish-discovery/', () =>
-    ok({ published: true }),
+    ok({ ok: true }),
   ),
 
   // ── Integration: Z-Wave JS ──────────────────────────────────────────────

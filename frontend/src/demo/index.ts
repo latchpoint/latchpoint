@@ -18,6 +18,11 @@ export async function initDemoMode(): Promise<void> {
   if (started) return
   started = true
 
+  // Prime the CSRF cookie in the page context — MSW handlers run in the
+  // Service Worker context where `document` is undefined, so `document.cookie`
+  // assignment must happen here, not in a handler.
+  document.cookie = 'csrftoken=demo-csrf-token; path=/'
+
   stubWebSocket()
 
   const worker = setupWorker(...handlers)
