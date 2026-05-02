@@ -78,40 +78,77 @@ export const demoAlarmProfiles = [
   { id: 3, name: 'Sleep', is_active: false, entry_delay_seconds: 45, exit_delay_seconds: 30 },
 ]
 
+/**
+ * Integration health snapshots, shaped to match the actual UI-side TypeScript
+ * contracts (see `frontend/src/services/homeAssistant.ts`,
+ * `frontend/src/types/mqtt.ts`, `frontend/src/types/zwavejs.ts`,
+ * `frontend/src/types/frigate.ts`, `frontend/src/types/zigbee2mqtt.ts`).
+ *
+ * Keys are snake_case here because `ApiClient.transformKeysDeep`
+ * (`frontend/src/services/api.ts:21`) converts to camelCase before reaching
+ * React. Fields the strict `*Status` interfaces don't declare are dropped —
+ * extra fields would be silently lost anyway.
+ *
+ * `frigate.mqtt` and `zigbee2mqtt.mqtt` are nested `MqttStatus` snapshots
+ * per the type definitions; reuse the same payload as the top-level mqtt.
+ */
+const demoMqttStatusPayload = {
+  configured: true,
+  enabled: true,
+  connected: true,
+  last_connect_at: new Date(Date.now() - 4 * 3600_000).toISOString(),
+  last_disconnect_at: null,
+  last_error: null,
+}
+
 export const demoIntegrationHealth = {
   home_assistant: {
-    connected: true,
-    last_heartbeat: new Date().toISOString(),
-    entity_count: 32,
-    version: '2026.4.2',
-    url: 'http://homeassistant.demo.local:8123',
+    configured: true,
+    reachable: true,
+    base_url: 'http://homeassistant.demo.local:8123',
+    error: null,
   },
-  mqtt: {
-    connected: true,
-    broker: 'mqtt://broker.demo.local:1883',
-    last_message_at: new Date().toISOString(),
-    messages_per_minute: 47,
-    tls_enabled: true,
-  },
+  mqtt: { ...demoMqttStatusPayload },
   zwavejs: {
+    configured: true,
+    enabled: true,
     connected: true,
-    controller_node_id: 1,
-    device_count: 8,
-    ws_url: 'ws://zwavejs.demo.local:3000',
-    last_event_at: new Date().toISOString(),
+    home_id: 0xc0ffee,
+    last_connect_at: new Date(Date.now() - 2 * 3600_000).toISOString(),
+    last_disconnect_at: null,
+    last_error: null,
   },
   zigbee2mqtt: {
-    connected: true,
-    device_count: 8,
-    last_event_at: new Date().toISOString(),
+    enabled: true,
     base_topic: 'zigbee2mqtt',
+    connected: true,
+    mqtt: { ...demoMqttStatusPayload },
+    sync: {
+      last_sync_at: new Date(Date.now() - 30 * 60_000).toISOString(),
+      last_device_count: 8,
+      last_error: null,
+    },
+    run_rules_on_event: false,
+    run_rules_debounce_seconds: 30,
+    run_rules_max_per_minute: 10,
+    run_rules_kinds: [],
   },
   frigate: {
-    connected: true,
-    camera_count: 4,
-    last_detection_at: new Date(Date.now() - 12 * 60_000).toISOString(),
-    url: 'http://frigate.demo.local:5000',
-    version: '0.14.1',
+    enabled: true,
+    events_topic: 'frigate/events',
+    retention_seconds: 30 * 24 * 3600,
+    available: true,
+    mqtt: { ...demoMqttStatusPayload },
+    ingest: {
+      last_ingest_at: new Date(Date.now() - 12 * 60_000).toISOString(),
+      last_error: null,
+    },
+    rules_run: {
+      last_rules_run_at: new Date(Date.now() - 5 * 60_000).toISOString(),
+      triggered: 14,
+      skipped_debounce: 3,
+      skipped_rate_limit: 0,
+    },
   },
 }
 

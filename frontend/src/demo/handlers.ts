@@ -267,13 +267,25 @@ export const handlers = [
   http.post('/api/notifications/pushbullet/validate-token/', () => ok({ valid: true })),
 
   // ── Integration: Home Assistant ─────────────────────────────────────────
+  // Settings/status shapes mirror `HomeAssistantStatus` and
+  // `HomeAssistantConnectionSettings` from `frontend/src/services/homeAssistant.ts`.
   http.get('/api/alarm/home-assistant/status/', () => ok(stores.integrationHealth.home_assistant)),
   http.get('/api/alarm/home-assistant/settings/', () =>
-    ok({ url: 'http://homeassistant.demo.local:8123', token: 'enc:v1:demo-ha-token-masked' }),
+    ok({
+      enabled: true,
+      base_url: 'http://homeassistant.demo.local:8123',
+      connect_timeout_seconds: 10,
+      has_token: true,
+    }),
   ),
   http.patch('/api/alarm/home-assistant/settings/', async () => {
     await delay(300)
-    return ok({ url: 'http://homeassistant.demo.local:8123', token: 'enc:v1:demo-ha-token-masked' })
+    return ok({
+      enabled: true,
+      base_url: 'http://homeassistant.demo.local:8123',
+      connect_timeout_seconds: 10,
+      has_token: true,
+    })
   }),
   http.get('/api/alarm/home-assistant/entities/', () => ok(stores.haEntities)),
   http.get('/api/alarm/home-assistant/notify-services/', () =>
@@ -281,13 +293,37 @@ export const handlers = [
   ),
 
   // ── Integration: MQTT ───────────────────────────────────────────────────
+  // Status/settings shapes mirror `MqttStatus` and `MqttSettings` from
+  // `frontend/src/types/mqtt.ts`.
   http.get('/api/alarm/mqtt/status/', () => ok(stores.integrationHealth.mqtt)),
   http.get('/api/alarm/mqtt/settings/', () =>
-    ok({ host: 'broker.demo.local', port: 1883, username: 'latchpoint', password: 'enc:v1:demo-mqtt-password-masked', tls_enabled: true }),
+    ok({
+      enabled: true,
+      host: 'broker.demo.local',
+      port: 8883,
+      username: 'latchpoint',
+      use_tls: true,
+      tls_insecure: false,
+      client_id: 'latchpoint-demo',
+      keepalive_seconds: 60,
+      connect_timeout_seconds: 10,
+      has_password: true,
+    }),
   ),
   http.patch('/api/alarm/mqtt/settings/', async () => {
     await delay(300)
-    return ok({ host: 'broker.demo.local', port: 1883, username: 'latchpoint', password: 'enc:v1:demo-mqtt-password-masked', tls_enabled: true })
+    return ok({
+      enabled: true,
+      host: 'broker.demo.local',
+      port: 8883,
+      username: 'latchpoint',
+      use_tls: true,
+      tls_insecure: false,
+      client_id: 'latchpoint-demo',
+      keepalive_seconds: 60,
+      connect_timeout_seconds: 10,
+      has_password: true,
+    })
   }),
   http.post('/api/alarm/mqtt/test/', async () => {
     await delay(600)
@@ -310,14 +346,30 @@ export const handlers = [
   ),
 
   // ── Integration: Z-Wave JS ──────────────────────────────────────────────
+  // Status/settings shapes mirror `ZwavejsStatus` and `ZwavejsSettings` from
+  // `frontend/src/types/zwavejs.ts`.
   http.get('/api/alarm/zwavejs/status/', () => ok(stores.integrationHealth.zwavejs)),
   http.get('/api/alarm/zwavejs/nodes/', () => ok(stores.zwaveNodes, { total: stores.zwaveNodes.length })),
   http.get('/api/alarm/zwavejs/settings/', () =>
-    ok({ ws_url: 'ws://zwavejs.demo.local:3000', auto_sync: true }),
+    ok({
+      enabled: true,
+      ws_url: 'ws://zwavejs.demo.local:3000',
+      connect_timeout_seconds: 10,
+      reconnect_min_seconds: 5,
+      reconnect_max_seconds: 60,
+      has_api_token: false,
+    }),
   ),
   http.patch('/api/alarm/zwavejs/settings/', async () => {
     await delay(300)
-    return ok({ ws_url: 'ws://zwavejs.demo.local:3000', auto_sync: true })
+    return ok({
+      enabled: true,
+      ws_url: 'ws://zwavejs.demo.local:3000',
+      connect_timeout_seconds: 10,
+      reconnect_min_seconds: 5,
+      reconnect_max_seconds: 60,
+      has_api_token: false,
+    })
   }),
   http.post('/api/alarm/zwavejs/test/', async () => {
     await delay(500)
@@ -329,13 +381,34 @@ export const handlers = [
   }),
 
   // ── Integration: Zigbee2MQTT ────────────────────────────────────────────
+  // Status/settings shapes mirror `Zigbee2mqttStatus` and `Zigbee2mqttSettings`
+  // from `frontend/src/types/zigbee2mqtt.ts`. Note: `Zigbee2mqttStatus` nests a
+  // `MqttStatus` under `mqtt` — the fixture includes it.
   http.get('/api/alarm/integrations/zigbee2mqtt/status/', () => ok(stores.integrationHealth.zigbee2mqtt)),
   http.get('/api/alarm/integrations/zigbee2mqtt/settings/', () =>
-    ok({ base_topic: 'zigbee2mqtt', auto_sync: true }),
+    ok({
+      enabled: true,
+      base_topic: 'zigbee2mqtt',
+      allowlist: [],
+      denylist: [],
+      run_rules_on_event: false,
+      run_rules_debounce_seconds: 30,
+      run_rules_max_per_minute: 10,
+      run_rules_kinds: [],
+    }),
   ),
   http.patch('/api/alarm/integrations/zigbee2mqtt/settings/', async () => {
     await delay(300)
-    return ok({ base_topic: 'zigbee2mqtt', auto_sync: true })
+    return ok({
+      enabled: true,
+      base_topic: 'zigbee2mqtt',
+      allowlist: [],
+      denylist: [],
+      run_rules_on_event: false,
+      run_rules_debounce_seconds: 30,
+      run_rules_max_per_minute: 10,
+      run_rules_kinds: [],
+    })
   }),
   http.get('/api/alarm/integrations/zigbee2mqtt/devices/', () =>
     ok(stores.zigbeeDevices, { total: stores.zigbeeDevices.length }),
@@ -346,13 +419,46 @@ export const handlers = [
   }),
 
   // ── Integration: Frigate ────────────────────────────────────────────────
+  // Status/settings shapes mirror `FrigateStatus` and `FrigateSettings` from
+  // `frontend/src/types/frigate.ts`. Note: `FrigateStatus` nests a `MqttStatus`
+  // under `mqtt` — the fixture includes it.
   http.get('/api/alarm/integrations/frigate/status/', () => ok(stores.integrationHealth.frigate)),
   http.get('/api/alarm/integrations/frigate/settings/', () =>
-    ok({ url: 'http://frigate.demo.local:5000', mqtt_topic_prefix: 'frigate' }),
+    ok({
+      enabled: true,
+      events_topic: 'frigate/events',
+      retention_seconds: 30 * 24 * 3600,
+      run_rules_on_event: true,
+      run_rules_debounce_seconds: 30,
+      run_rules_max_per_minute: 10,
+      run_rules_kinds: ['person', 'car'],
+      known_cameras: stores.frigateCameras.map((c) => (c as { name: string }).name),
+      known_zones_by_camera: Object.fromEntries(
+        stores.frigateCameras.map((c) => [
+          (c as { name: string }).name,
+          (c as { zones: string[] }).zones,
+        ]),
+      ),
+    }),
   ),
   http.patch('/api/alarm/integrations/frigate/settings/', async () => {
     await delay(300)
-    return ok({ url: 'http://frigate.demo.local:5000', mqtt_topic_prefix: 'frigate' })
+    return ok({
+      enabled: true,
+      events_topic: 'frigate/events',
+      retention_seconds: 30 * 24 * 3600,
+      run_rules_on_event: true,
+      run_rules_debounce_seconds: 30,
+      run_rules_max_per_minute: 10,
+      run_rules_kinds: ['person', 'car'],
+      known_cameras: stores.frigateCameras.map((c) => (c as { name: string }).name),
+      known_zones_by_camera: Object.fromEntries(
+        stores.frigateCameras.map((c) => [
+          (c as { name: string }).name,
+          (c as { zones: string[] }).zones,
+        ]),
+      ),
+    })
   }),
   http.get('/api/alarm/integrations/frigate/options/', () =>
     ok({ cameras: stores.frigateCameras }),

@@ -61,7 +61,7 @@ function stubWebSocket(): void {
         this.dispatchEvent(ev)
       })
     }
-    send(_data: unknown): void { /* no-op */ }
+    send(): void { /* no-op — demo stub never transmits */ }
     close(): void {
       this.readyState = StubSocket.CLOSED
       const ev = new CloseEvent('close')

@@ -78,8 +78,8 @@
   "shots": [
     { "name": "dashboard", "route": "/", "themes": ["dark", "light"], "viewports": ["desktop", "mobile"] },
     { "name": "rules-list", "route": "/rules", "themes": ["dark"], "viewports": ["desktop"] },
-    { "name": "rules-test", "route": "/rules-test", "themes": ["dark"], "viewports": ["desktop"] },
-    { "name": "codes", "route": "/codes", "themes": ["dark", "light"], "viewports": ["desktop"] },
+    { "name": "rules-test", "route": "/rules/test", "themes": ["dark"], "viewports": ["desktop"] },
+    { "name": "codes", "route": "/alarm-codes", "themes": ["dark", "light"], "viewports": ["desktop"] },
     { "name": "door-codes", "route": "/door-codes", "themes": ["dark"], "viewports": ["desktop", "mobile"] },
     { "name": "events", "route": "/events", "themes": ["dark"], "viewports": ["desktop", "mobile"] },
     { "name": "control-panels", "route": "/control-panels", "themes": ["dark"], "viewports": ["desktop"] },
