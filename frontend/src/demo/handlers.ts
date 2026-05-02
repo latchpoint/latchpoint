@@ -70,6 +70,29 @@ export const handlers = [
     })
   }),
   http.get('/api/system-config/', () => ok([])),
+  // The demo doesn't seed system-config rows (the GET above returns []), so a
+  // visitor saving from SystemSettingsCard hits this PATCH with an unknown key.
+  // Synthesize a `SystemConfigRow` (snake-case here → camelCase via
+  // ApiClient.transformKeysDeep) so `useUpdateSystemConfig.onSuccess` sees a
+  // row with `key`/`value` instead of crashing on `null`.
+  http.patch('/api/system-config/:key/', async ({ params, request }) => {
+    const key = String(params.key)
+    const body = (await request.json().catch(() => ({}))) as {
+      value?: unknown
+      description?: string
+    }
+    const now = new Date().toISOString()
+    return ok({
+      key,
+      name: key,
+      value_type: 'string',
+      value: body.value ?? null,
+      description: body.description ?? '',
+      modified_by_id: null,
+      created_at: now,
+      updated_at: now,
+    })
+  }),
 
   // ── Alarm core ──────────────────────────────────────────────────────────
   // Shapes mirror `AlarmStateSnapshot` and `ArmRequest` from
@@ -131,6 +154,33 @@ export const handlers = [
   }),
   http.get('/api/alarm/settings/registry/', () => ok(demoSettingsRegistry)),
   http.get('/api/alarm/settings/profiles/', () => ok(stores.alarmProfiles, { total: stores.alarmProfiles.length })),
+  http.post('/api/alarm/settings/profiles/', async ({ request }) => {
+    const body = (await request.json().catch(() => ({}))) as { name?: string }
+    const now = new Date().toISOString()
+    const created = {
+      id: nextDemoId(),
+      name: body.name ?? 'New Profile',
+      is_active: false,
+      created_at: now,
+      updated_at: now,
+    }
+    stores.alarmProfiles = [...stores.alarmProfiles, created]
+    return ok(created)
+  }),
+  http.patch('/api/alarm/settings/profiles/:id/', async ({ params, request }) => {
+    const id = Number(params.id)
+    const body = (await request.json().catch(() => ({}))) as Record<string, unknown>
+    const now = new Date().toISOString()
+    stores.alarmProfiles = stores.alarmProfiles.map((p) =>
+      p.id === id ? { ...p, ...body, updated_at: now } : p,
+    )
+    return ok(stores.alarmProfiles.find((p) => p.id === id) ?? null)
+  }),
+  http.delete('/api/alarm/settings/profiles/:id/', ({ params }) => {
+    const id = Number(params.id)
+    stores.alarmProfiles = stores.alarmProfiles.filter((p) => p.id !== id)
+    return ok(null)
+  }),
   http.post('/api/alarm/settings/profiles/:id/activate/', ({ params }) => {
     const id = Number(params.id)
     stores.alarmProfiles = stores.alarmProfiles.map((p) => ({ ...p, is_active: p.id === id }))
@@ -218,6 +268,28 @@ export const handlers = [
       { entity_id: 'lock.back_door', friendly_name: 'Back Door Lock', max_codes: 30 },
     ]),
   ),
+  // Shape mirrors `LockConfigSyncResult` from `frontend/src/types/doorCode.ts`.
+  // `useSyncLockConfigMutation.onSuccess` reads `data.dryRun` so the
+  // `dry_run` field must be present on the wire.
+  http.post('/api/locks/:lockEntityId/sync-config/', async ({ params, request }) => {
+    const lockEntityId = String(params.lockEntityId)
+    const url = new URL(request.url)
+    const dryRun = url.searchParams.get('dry_run') === 'true'
+    await delay(400)
+    return ok({
+      lock_entity_id: lockEntityId,
+      node_id: 7,
+      created: 0,
+      updated: 0,
+      unchanged: 2,
+      skipped: 0,
+      deactivated: 0,
+      errors: 0,
+      timestamp: new Date().toISOString(),
+      slots: [],
+      dry_run: dryRun,
+    })
+  }),
 
   // ── Events ──────────────────────────────────────────────────────────────
   http.get('/api/events/', ({ request }) => {
@@ -234,12 +306,15 @@ export const handlers = [
       has_previous: page > 1,
     })
   }),
-  http.post('/api/events/:id/acknowledge/', ({ params }) => {
+  // `alarmService.acknowledgeEvent` issues PATCH (`backend/services/alarm.ts`).
+  // Returning the updated event lets the Events UI paint the acknowledged
+  // state without a refetch round-trip.
+  http.patch('/api/events/:id/acknowledge/', ({ params }) => {
     const id = Number(params.id)
     stores.events = stores.events.map((e) =>
       e.id === id ? { ...e, acknowledged_at: new Date().toISOString() } : e,
     )
-    return ok(null)
+    return ok(stores.events.find((e) => e.id === id) ?? null)
   }),
 
   // ── Control panels ──────────────────────────────────────────────────────

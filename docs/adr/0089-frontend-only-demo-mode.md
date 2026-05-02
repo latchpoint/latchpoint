@@ -84,7 +84,7 @@ The demo build:
 
 6. **A sticky "Demo mode" banner** with a **Reset** button (`window.location.reload()`) and copy explaining nothing is saved.
 
-7. **Auto-prefilled login** — the real login screen renders, but the email and password fields are pre-filled with seeded credentials and a hint card explains the demo. Showing the login screen is part of the showcase, and prefilled credentials preserve the click-through experience.
+7. **Auto-authenticate** — the demo's MSW `GET /api/users/me/` returns the seeded admin user unconditionally, so visitors land directly on `/` (the dashboard) on first paint. Showing the login screen as the default landing was considered (Alternative §5) but rejected in implementation: the auto-auth path keeps the click-through to a single hop, matches what `scripts/screenshots/take-shots.mjs` already assumes (the harness does not log in when `DEMO=true`), and avoids a hop visitors who came from a marketing link don't expect. The login screen remains accessible at `/login` for visitors who navigate there directly or hit logout, and prefills the seeded credentials there so the explicit click-through is still exercisable.
 
 8. **Backend `--demo` removal** — strip the `--demo` flag and its demo-specific seed paths from `backend/alarm/management/commands/seed_test_home.py`. Update `README.md`'s screenshot-tour section to point at the new demo URL instead.
 
@@ -200,6 +200,7 @@ Mirror the `WebSocketManager` interface from `frontend/src/services/websocket.ts
 
 - MSW handler for `POST /api/auth/login/` accepts the seeded credentials and returns a `LoginResponse` envelope shaped per `frontend/src/types/user.ts:27`.
 - Demo build sets initial form values for the login page to `admin@demo.latchpoint.app` / `demo` and renders a hint card under the form. Implemented behind a `DEMO_MODE` check on the login page itself (not a page swap).
+- Visitors land on `/` directly via auto-auth (per Decision §7); the login screen is opt-in, reachable by navigating to `/login` or via logout.
 
 ### 7. Remove the backend `--demo` seed (done in PR #47)
 
@@ -221,8 +222,8 @@ Mirror the `WebSocketManager` interface from `frontend/src/services/websocket.ts
 
 ## Acceptance Criteria
 
-- `VITE_DEMO_MODE=true npm run dev` boots the app with no backend running and lands on `/login` with prefilled credentials.
-- Logging in with the seeded credentials reaches `/` with a populated dashboard within one second of click. The 2FA screen renders if a visitor toggles it on the demo user, but submission shows a "demo mode" toast (no real TOTP backend).
+- `VITE_DEMO_MODE=true npm run dev` boots the app with no backend running and lands on `/` (auto-authenticated as the demo admin per Decision §7) with a populated dashboard within one second of first paint. `/login` remains accessible for explicit click-through and prefills the seeded credentials when visited.
+- Logging in via the prefilled credentials at `/login` returns to `/` with the same populated dashboard. The 2FA screen renders if a visitor toggles it on the demo user, but submission shows a "demo mode" toast (no real TOTP backend).
 - Every navigable route in `frontend/src/App.tsx:108-134` renders with seeded data:
   - **Auth + onboarding** — Login (`/login`), Onboarding (`/onboarding`)
   - **Setup wizard** — `/setup`, `/setup/mqtt`, `/setup/zwavejs`, `/setup/import-sensors`. The demo user lands already onboarded by default; a "Replay setup wizard" link in the demo banner walks visitors through the wizard against fake integration health.

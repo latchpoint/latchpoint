@@ -136,9 +136,10 @@ async function captureShot({ browser, manifest, shot, theme, viewportName }) {
   }
 
   const url = new URL(shot.route, FRONTEND).toString()
-  await page.goto(url, { waitUntil: 'networkidle', timeout: 30_000 }).catch((err) => {
-    log(`networkidle timeout for ${url}: ${err.message}`)
-  })
+  // Let navigation timeouts propagate to the per-shot try/catch in main() so a
+  // timed-out page is reported as FAILED instead of silently writing a blank
+  // PNG and exiting 0.
+  await page.goto(url, { waitUntil: 'networkidle', timeout: 30_000 })
 
   // Auth-gated TanStack Query reads can prime with undefined or stale values
   // when the status query fires before the auth-session query resolves on
