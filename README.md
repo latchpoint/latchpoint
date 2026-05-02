@@ -242,21 +242,26 @@ u.set_password('adminpass'); u.is_staff = True; u.is_superuser = True; u.is_acti
 | Email | `admin@testhome.local` |
 | Password | `adminpass` |
 
-### Populate a full demo dataset
+### Try the demo (frontend-only)
 
-The `seed_test_home --demo` command destructively populates a realistic
-showcase dataset (4 users, varied alarm + door codes, 5 notification
-providers, a Ring Keypad v2 control panel, 8 rules across all rule kinds, a
-week of alarm event history, Frigate detections, and entity tags) without
-needing a live Home Assistant connection:
+> **Status:** planned per [ADR-0089](docs/adr/0089-frontend-only-demo-mode.md);
+> not yet implemented. Once shipped, the commands below will run the entire UI
+> in your browser with no backend, no database, and no Docker — every page
+> populated with hand-crafted fixture data, every mutation in-memory only.
 
 ```bash
-docker compose exec -T -w /app/backend backend \
-  python manage.py seed_test_home --demo
+cd frontend
+npm install
+npm run dev:demo            # local browser tour at http://localhost:5427
+# or build a static bundle for hosting:
+npm run build:demo          # outputs dist-demo/, deployable anywhere static
 ```
 
-This is the same seed used by the screenshot tour in
-[`scripts/screenshots/`](scripts/screenshots/README.md).
+Hard refresh resets all state to the initial fixtures — no changes are saved.
+The demo replaces the older backend `seed_test_home --demo` showcase seed,
+which will be removed when ADR-0089 is implemented. Until then, the screenshot
+tour in [`scripts/screenshots/`](scripts/screenshots/README.md) still drives a
+real backend.
 
 ## Production setup
 

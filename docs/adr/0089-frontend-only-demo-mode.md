@@ -183,7 +183,9 @@ Mirror the `WebSocketManager` interface from `frontend/src/services/websocket.ts
 
 ### 8. Build and CI
 
-- Add `npm run build:demo` to `frontend/package.json`: `vite build --mode demo --outDir dist-demo`.
+- Add two scripts to `frontend/package.json`:
+  - `npm run dev:demo` → `vite --mode demo` (local browser tour, no backend running).
+  - `npm run build:demo` → `vite build --mode demo --outDir dist-demo` (static bundle for hosting).
 - Add a CI job that runs `npm run build:demo` on every PR and uploads the bundle as an artifact. No deploy from this ADR.
 
 ### 9. Documentation
@@ -194,9 +196,14 @@ Mirror the `WebSocketManager` interface from `frontend/src/services/websocket.ts
 ## Acceptance Criteria
 
 - `VITE_DEMO_MODE=true npm run dev` boots the app with no backend running and lands on `/login` with prefilled credentials.
-- Logging in with the seeded credentials reaches `/` with a populated dashboard within one second of click.
-- Every navigable route renders with seeded data: Dashboard, Rules, Codes, Door Codes, Control Panels, Settings (alarm / Home Assistant / MQTT / Z-Wave JS / Frigate / Notifications), Events, Scheduler, Onboarding.
-- A visitor can: arm the system, disarm the system, add a user code, edit a user code, delete a user code, edit a rule, send a test notification (stubbed toast), edit settings — and every change is reflected in the UI immediately.
+- Logging in with the seeded credentials reaches `/` with a populated dashboard within one second of click. The 2FA screen renders if a visitor toggles it on the demo user, but submission shows a "demo mode" toast (no real TOTP backend).
+- Every navigable route in `frontend/src/App.tsx:108-134` renders with seeded data:
+  - **Auth + onboarding** — Login (`/login`), Onboarding (`/onboarding`)
+  - **Setup wizard** — `/setup`, `/setup/mqtt`, `/setup/zwavejs`, `/setup/import-sensors`. The demo user lands already onboarded by default; a "Replay setup wizard" link in the demo banner walks visitors through the wizard against fake integration health.
+  - **Core pages** — Dashboard (`/`), Rules (`/rules`), Rules Test sandbox (`/rules/test`), Codes (`/codes`), Door Codes (`/door-codes`), Events (`/events`), Control Panels (`/control-panels`), Scheduler (`/scheduler`)
+  - **Debug** — Entities (`/debug/entities`), Logs (`/debug/logs`)
+  - **Settings tabs** — alarm, notifications, home-assistant, mqtt, frigate, zwavejs. The `/settings/zigbee2mqtt` route redirects to `/settings/mqtt` (`App.tsx:132`) and inherits coverage automatically.
+- A visitor can: arm the system, disarm the system, add a user code, edit a user code, delete a user code, add a door code, edit a rule, run a rule through the Rules Test sandbox against fake entity state, send a test notification (stubbed toast), tag entities, switch alarm settings profiles, and edit any settings tab — and every change is reflected in the UI immediately.
 - A hard refresh (`Cmd+R` / `Ctrl+R`) returns the app to its initial fixture state. The demo build does not enable any TanStack Query persistor.
 - A sticky "Demo mode — nothing is saved" banner is visible on every page; its **Reset** button forces a reload.
 - `npm run build:demo` produces a `dist-demo/` static bundle servable from any static host with no server-side dependencies.
