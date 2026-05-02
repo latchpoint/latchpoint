@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from unittest.mock import patch
+
 from django.test import SimpleTestCase
 
 from transports_mqtt.manager import MqttConnectionManager, _format_connect_error
@@ -110,8 +112,11 @@ class MqttClientIdSuffixTests(SimpleTestCase):
     """
 
     def test_two_managers_produce_distinct_client_ids(self):
-        a = MqttConnectionManager()
-        b = MqttConnectionManager()
+        # Patch the suffix RNG to deterministic values so the assertion can never
+        # flake on a 24-bit collision in CI.
+        with patch("transports_mqtt.manager.secrets.token_hex", side_effect=["aaaaaa", "bbbbbb"]):
+            a = MqttConnectionManager()
+            b = MqttConnectionManager()
         client_a = a._build_client(mqtt=_FakePahoModule, settings={"client_id": "latchpoint-alarm"})
         client_b = b._build_client(mqtt=_FakePahoModule, settings={"client_id": "latchpoint-alarm"})
         self.assertNotEqual(client_a.client_id, client_b.client_id)
