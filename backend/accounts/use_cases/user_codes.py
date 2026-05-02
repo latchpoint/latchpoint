@@ -30,7 +30,7 @@ def create_user_code(
     raw_code = (raw_code or "").strip()
     code = UserCode.objects.create(
         user=user,
-        code_hash=make_password(raw_code),
+        code_hash=make_password(raw_code, hasher="argon2-pin"),
         label=label or "",
         code_type=code_type,
         pin_length=len(raw_code),
@@ -57,7 +57,7 @@ def update_user_code(
     """Update a user code and its allowed states."""
     if "code" in changes and changes.get("code"):
         raw_code = str(changes.get("code") or "").strip()
-        code.code_hash = make_password(raw_code)
+        code.code_hash = make_password(raw_code, hasher="argon2-pin")
         code.pin_length = len(raw_code)
 
     if "label" in changes:
