@@ -169,10 +169,11 @@ class MqttConnectionManager:
         # changes don't churn the broker's view of the live client.
         #
         # Sized at 3 bytes (6 hex chars) so the default composed client_id
-        # `latchpoint-alarm-XXXXXX` lands at exactly 23 characters — the
-        # MQTT 3.1 spec maximum. paho-mqtt 2.0+ defaults to MQTT 3.1.1
-        # which raises this to 65535, but staying inside the 3.1 limit
-        # keeps us safe against any stricter brokers a user might point at.
+        # `latchpoint-alarm-XXXXXX` lands at exactly 23 bytes — the MQTT 3.1
+        # spec maximum (the spec measures bytes, not characters). paho-mqtt
+        # 2.0+ defaults to MQTT 3.1.1 which raises this to 65535, but staying
+        # inside the 3.1 limit keeps us safe against any stricter brokers a
+        # user might point at.
         self._client_id_suffix = secrets.token_hex(3)
 
     @staticmethod
@@ -396,11 +397,15 @@ class MqttConnectionManager:
         an override suffix to ensure their throwaway client never collides
         with the live one.
 
-        paho-mqtt >=2.0 is pinned (see pyproject.toml); the `client_id=`
-        kwarg call is supported across that range, so no compat fallback
-        is needed.
+        paho-mqtt 2.x+ is required (see `paho-mqtt>=2.0` in pyproject.toml);
+        the `client_id=` kwarg call is supported across that range, so no
+        compat fallback is needed.
         """
-        base_client_id = str(settings.get("client_id") or "latchpoint-alarm")
+        # Strip whitespace so a configured `   ` prefix collapses to the default
+        # rather than producing a `   -XXXXXX` client_id that brokers reject with
+        # a confusing rc=2 — `_format_connect_error` already strips before deciding
+        # whether to suggest changing the prefix, so the two paths must agree.
+        base_client_id = str(settings.get("client_id") or "").strip() or "latchpoint-alarm"
         suffix = client_id_suffix or self._client_id_suffix
         client_id = f"{base_client_id}-{suffix}"
         client = mqtt.Client(client_id=client_id)

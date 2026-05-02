@@ -144,6 +144,20 @@ class MqttClientIdSuffixTests(SimpleTestCase):
             f"expected default prefix preserved, got {client.client_id!r}",
         )
 
+    def test_whitespace_only_configured_client_id_falls_back_to_default(self):
+        """
+        A whitespace-only `client_id` would otherwise produce a `   -XXXXXX`
+        client_id that brokers reject with rc=2. `_format_connect_error`
+        already strips before deciding whether the prefix is "set", so
+        `_build_client` must agree — strip and fall back to the default.
+        """
+        mgr = MqttConnectionManager()
+        client = mgr._build_client(mqtt=_FakePahoModule, settings={"client_id": "   "})
+        self.assertTrue(
+            client.client_id.startswith("latchpoint-alarm-"),
+            f"expected default prefix after stripping whitespace, got {client.client_id!r}",
+        )
+
     def test_default_composed_client_id_fits_mqtt_3_1_length_limit(self):
         """
         MQTT 3.1 caps `client_id` at 23 UTF-8 bytes. paho-mqtt 2.0+ defaults
@@ -156,10 +170,11 @@ class MqttClientIdSuffixTests(SimpleTestCase):
         mgr = MqttConnectionManager()
         client = mgr._build_client(mqtt=_FakePahoModule, settings={})
         composed = client.client_id
+        composed_bytes = len(composed.encode("utf-8"))
         self.assertLessEqual(
-            len(composed),
+            composed_bytes,
             23,
-            f"default composed client_id exceeds MQTT 3.1's 23-byte limit: {composed!r} ({len(composed)} bytes)",
+            f"default composed client_id exceeds MQTT 3.1's 23-byte limit: {composed!r} ({composed_bytes} bytes)",
         )
 
     def test_explicit_suffix_override_does_not_collide_with_live_suffix(self):
