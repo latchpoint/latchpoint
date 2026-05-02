@@ -1,0 +1,14 @@
+{
+  "name": "latchpoint-screenshots",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Playwright-based screenshot tour for the Latchpoint dashboard. Drives the local dev stack and writes PNGs to docs/screenshots/.",
+  "scripts": {
+    "shoot": "node take-shots.mjs",
+    "install-browser": "playwright install chromium"
+  },
+  "dependencies": {
+    "playwright": "1.48.2"
+  }
+}
