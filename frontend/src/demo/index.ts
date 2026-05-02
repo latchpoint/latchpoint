@@ -10,7 +10,7 @@
 import { setupWorker } from 'msw/browser'
 import { handlers } from './handlers'
 
-export const DEMO_MODE = import.meta.env.VITE_DEMO_MODE === 'true'
+export { DEMO_MODE } from './flag'
 
 let started = false
 

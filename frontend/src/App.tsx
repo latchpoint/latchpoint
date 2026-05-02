@@ -2,8 +2,11 @@ import { lazy, Suspense } from 'react'
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { ONE_MINUTE_MS, Routes as AppRoutes } from '@/lib/constants'
-import { DEMO_MODE } from '@/demo'
-import { DemoBanner } from '@/demo/DemoBanner'
+import { DEMO_MODE } from '@/demo/flag'
+
+const DemoBanner = lazy(() =>
+  import('@/demo/DemoBanner').then((m) => ({ default: m.DemoBanner })),
+)
 import { AppShell, ProtectedRoute, SetupGate } from '@/components/layout'
 import { AppErrorBoundary } from '@/components/providers/AppErrorBoundary'
 import { ThemeProvider } from '@/components/providers/ThemeProvider'
@@ -152,7 +155,11 @@ function App() {
       <BrowserRouter basename={basename}>
         <ThemeProvider>
           <AppErrorBoundary>
-            {DEMO_MODE && <DemoBanner />}
+            {DEMO_MODE && (
+              <Suspense fallback={null}>
+                <DemoBanner />
+              </Suspense>
+            )}
             <LayoutBootstrap />
             <AppContent />
             <ModalProvider />

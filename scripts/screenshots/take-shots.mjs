@@ -168,6 +168,7 @@ async function main() {
   await ensureOutDir()
   const manifest = await loadManifest()
   const browser = await chromium.launch({ headless: true })
+  let failureCount = 0
 
   try {
     const filteredShots = ONLY.length
@@ -187,6 +188,7 @@ async function main() {
           try {
             await captureShot({ browser, manifest, shot, theme, viewportName })
           } catch (err) {
+            failureCount += 1
             log(`FAILED ${shot.name} (${theme}/${viewportName}): ${err.message}`)
           }
         }
@@ -194,6 +196,11 @@ async function main() {
     }
   } finally {
     await browser.close()
+  }
+
+  if (failureCount > 0) {
+    log(`${failureCount} shot(s) failed`)
+    process.exitCode = 1
   }
 }
 

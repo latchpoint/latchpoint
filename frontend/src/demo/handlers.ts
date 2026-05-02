@@ -8,8 +8,9 @@
  *
  * MVP scope (per ADR-0089): every boot-critical endpoint returns realistic
  * data; CRUD lists are seeded; mutations modify in-memory stores; everything
- * else falls through to a catchall that returns `{data: null}` so unknown
- * endpoints don't crash the app. Expand specificity as needed.
+ * else falls through to a catchall that returns `{data: []}` for GET (so
+ * list-shaped consumers don't crash on `.map`/`.length`) and `{data: null}`
+ * for other methods. Expand specificity as needed.
  */
 
 import { http, HttpResponse, delay } from 'msw'
@@ -623,9 +624,10 @@ export const handlers = [
   ),
 
   // ── Catchall ────────────────────────────────────────────────────────────
-  // Returns an empty success envelope for any other /api/* request so the app
-  // never sees an unhandled-network error in demo mode. Add a specific handler
-  // above when a page needs real data.
+  // Returns a success envelope for any other /api/* request so the app never
+  // sees an unhandled-network error in demo mode: GET → `{data: []}` (safe for
+  // list-shaped consumers), other methods → `{data: null}`. Add a specific
+  // handler above when a page needs real data.
   http.all('/api/*', ({ request }) => {
     if (request.method === 'GET') return ok([])
     return ok(null)
