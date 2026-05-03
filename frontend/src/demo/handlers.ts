@@ -48,6 +48,7 @@ export const handlers = [
   http.get('/api/users/', () => ok(demoUsers, { total: demoUsers.length })),
 
   // ── Onboarding / setup gate ─────────────────────────────────────────────
+  http.get('/api/onboarding/', () => ok({ onboarding_required: false })),
   http.get('/api/onboarding/setup-status/', () =>
     ok({
       onboarding_required: false,
