@@ -203,7 +203,7 @@ export const handlers = [
   http.get('/api/alarm/rules/', () => ok(stores.rules, { total: stores.rules.length })),
   http.post('/api/alarm/rules/', async ({ request }) => {
     const body = (await request.json().catch(() => ({}))) as Record<string, unknown>
-    const created = { id: nextDemoId(), priority: 50, is_enabled: true, kind: 'trigger', cooldown_seconds: 0, definition: { when: {}, then: [] }, ...body, created_at: new Date().toISOString() }
+    const created = { id: nextDemoId(), priority: 50, enabled: true, kind: 'trigger', stop_processing: false, stop_group: null, schema_version: 1, cooldown_seconds: 0, entity_ids: [], definition: { when: {}, then: [] }, created_by: 'user-admin', ...body, created_at: new Date().toISOString(), updated_at: new Date().toISOString() }
     stores.rules = [...stores.rules, created]
     return ok(created)
   }),

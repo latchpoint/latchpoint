@@ -214,15 +214,262 @@ export const demoDoorCodes = [
   { id: 5, label: 'Spare Key', lock_entity_id: 'lock.back_door', slot: 2, code_type: 'permanent', is_active: true, days_of_week: [0,1,2,3,4,5,6], usage_count: 0, max_uses: 5, created_at: '2026-03-01T00:00:00Z' },
 ]
 
+/**
+ * Demo rules. Snake_case keys per the file convention; ApiClient.transformKeysDeep
+ * camelCases everything (including inside `definition`) before reaching React.
+ *
+ * The Django field for the on/off flag is `enabled` (not `is_enabled`) — RulesPage
+ * reads `rule.enabled` directly, so writing `is_enabled` here would arrive as
+ * `isEnabled` and the sidebar would show "Disabled" for every rule.
+ *
+ * Inside `definition.when`, condition nodes use the backend DSL: `entity_id`,
+ * `within_seconds`, `min_confidence_pct`, `on_unavailable`. The frontend
+ * converter (`features/rules/queryBuilder/converters.ts`) reads either snake_
+ * or camelCase shape via fallbacks, so post-transform values still resolve.
+ *
+ * Coverage by design: each rule exercises a different condition or action
+ * combination — alarm_state_in, entity_state, time_in_range, the `for` wrapper,
+ * frigate_person_detected, multi-action `then`, stop_group + stop_processing.
+ */
 export const demoRules = [
-  { id: 1, name: 'Front Door Open While Armed Away', description: 'Trigger alarm if front door opens while armed away', kind: 'trigger', priority: 100, is_enabled: true, stop_group: null, cooldown_seconds: 0, definition: { when: { combinator: 'and', rules: [] }, then: [{ type: 'send_notification' }] }, created_at: '2026-01-10T00:00:00Z' },
-  { id: 2, name: 'Glass Break = Immediate Trigger', description: 'No entry delay for glass break events', kind: 'trigger', priority: 90, is_enabled: true, stop_group: 'critical', cooldown_seconds: 0, definition: { when: {}, then: [] }, created_at: '2026-01-12T00:00:00Z' },
-  { id: 3, name: 'Smoke Detected', description: 'Notify everyone on smoke', kind: 'escalate', priority: 95, is_enabled: true, stop_group: 'critical', cooldown_seconds: 60, definition: { when: {}, then: [] }, created_at: '2026-01-15T00:00:00Z' },
-  { id: 4, name: 'Auto-Arm at 11 PM', description: 'Switch to armed_night every night at 23:00', kind: 'arm', priority: 50, is_enabled: true, stop_group: null, cooldown_seconds: 0, definition: { when: {}, then: [] }, created_at: '2026-02-01T00:00:00Z' },
-  { id: 5, name: 'Disarm on Guest Code', description: 'Auto-disarm if guest code used', kind: 'disarm', priority: 60, is_enabled: true, stop_group: null, cooldown_seconds: 0, definition: { when: {}, then: [] }, created_at: '2026-02-10T00:00:00Z' },
-  { id: 6, name: 'Suppress Backyard Motion at Night', description: 'Pet causes false positives', kind: 'suppress', priority: 40, is_enabled: true, stop_group: null, cooldown_seconds: 0, definition: { when: {}, then: [] }, created_at: '2026-03-01T00:00:00Z' },
-  { id: 7, name: 'Discord on Triggered', description: 'Notify Discord channel on any trigger', kind: 'trigger', priority: 30, is_enabled: true, stop_group: null, cooldown_seconds: 30, definition: { when: {}, then: [] }, created_at: '2026-03-15T00:00:00Z' },
-  { id: 8, name: 'Service Code = Limited Hours', description: 'Reject service codes outside 9am-5pm', kind: 'suppress', priority: 70, is_enabled: false, stop_group: null, cooldown_seconds: 0, definition: { when: {}, then: [] }, created_at: '2026-04-01T00:00:00Z' },
+  {
+    id: 1,
+    name: 'Front Door Open While Armed Away',
+    description: 'Trigger alarm if front door opens while armed away',
+    kind: 'trigger',
+    enabled: true,
+    priority: 100,
+    stop_processing: false,
+    stop_group: null,
+    schema_version: 1,
+    cooldown_seconds: 0,
+    entity_ids: ['binary_sensor.front_door'],
+    definition: {
+      when: {
+        op: 'all',
+        children: [
+          { op: 'alarm_state_in', states: ['armed_away'] },
+          { op: 'entity_state', entity_id: 'binary_sensor.front_door', equals: 'on', source: 'home_assistant' },
+        ],
+      },
+      then: [
+        { type: 'alarm_trigger' },
+        { type: 'send_notification', provider_id: 'provider-pushbullet', message: 'Front door opened while armed away', title: 'Latchpoint Alarm' },
+      ],
+    },
+    created_by: 'user-admin',
+    created_at: '2026-01-10T00:00:00Z',
+    updated_at: '2026-04-15T12:00:00Z',
+  },
+  {
+    id: 2,
+    name: 'Glass Break = Immediate Trigger',
+    description: 'No entry delay for glass break events',
+    kind: 'trigger',
+    enabled: true,
+    priority: 90,
+    stop_processing: true,
+    stop_group: 'critical',
+    schema_version: 1,
+    cooldown_seconds: 0,
+    entity_ids: ['binary_sensor.glass_break'],
+    definition: {
+      when: {
+        op: 'all',
+        children: [
+          { op: 'entity_state', entity_id: 'binary_sensor.glass_break', equals: 'on', source: 'home_assistant' },
+        ],
+      },
+      then: [
+        { type: 'alarm_trigger' },
+        { type: 'send_notification', provider_id: 'provider-discord', message: 'Glass break detected — alarm triggered', title: 'CRITICAL' },
+      ],
+    },
+    created_by: 'user-admin',
+    created_at: '2026-01-12T00:00:00Z',
+    updated_at: '2026-03-20T08:30:00Z',
+  },
+  {
+    id: 3,
+    name: 'Smoke Detected',
+    description: 'Notify everyone on smoke',
+    kind: 'escalate',
+    enabled: true,
+    priority: 95,
+    stop_processing: true,
+    stop_group: 'critical',
+    schema_version: 1,
+    cooldown_seconds: 60,
+    entity_ids: ['binary_sensor.kitchen_smoke'],
+    definition: {
+      when: {
+        op: 'all',
+        children: [
+          { op: 'entity_state', entity_id: 'binary_sensor.kitchen_smoke', equals: 'on', source: 'home_assistant' },
+        ],
+      },
+      then: [
+        { type: 'alarm_trigger' },
+        { type: 'send_notification', provider_id: 'provider-pushbullet', message: 'Smoke detected in kitchen', title: 'Smoke Alarm' },
+        { type: 'send_notification', provider_id: 'provider-discord', message: 'Smoke detected in kitchen', title: 'Smoke Alarm' },
+        { type: 'ha_call_service', action: 'light.turn_on', target: { entity_ids: ['light.kitchen', 'light.living_room'] }, data: { brightness_pct: 100, color_name: 'red' } },
+      ],
+    },
+    created_by: 'user-admin',
+    created_at: '2026-01-15T00:00:00Z',
+    updated_at: '2026-04-01T18:00:00Z',
+  },
+  {
+    id: 4,
+    name: 'Auto-Arm at 11 PM',
+    description: 'Switch to armed_night every night at 23:00',
+    kind: 'arm',
+    enabled: true,
+    priority: 50,
+    stop_processing: false,
+    stop_group: null,
+    schema_version: 1,
+    cooldown_seconds: 0,
+    entity_ids: [],
+    definition: {
+      when: {
+        op: 'all',
+        children: [
+          { op: 'alarm_state_in', states: ['disarmed'] },
+          { op: 'time_in_range', start: '23:00', end: '23:05' },
+        ],
+      },
+      then: [
+        { type: 'alarm_arm', mode: 'armed_night' },
+      ],
+    },
+    created_by: 'user-admin',
+    created_at: '2026-02-01T00:00:00Z',
+    updated_at: '2026-04-10T09:15:00Z',
+  },
+  {
+    id: 5,
+    name: 'Smart Unlock Disarms',
+    description: 'Auto-disarm when the front door lock is unlocked while armed',
+    kind: 'disarm',
+    enabled: true,
+    priority: 60,
+    stop_processing: false,
+    stop_group: null,
+    schema_version: 1,
+    cooldown_seconds: 0,
+    entity_ids: ['lock.front_door'],
+    definition: {
+      when: {
+        op: 'all',
+        children: [
+          { op: 'alarm_state_in', states: ['pending', 'armed_home', 'armed_night'] },
+          { op: 'entity_state', entity_id: 'lock.front_door', equals: 'unlocked', source: 'home_assistant' },
+        ],
+      },
+      then: [
+        { type: 'alarm_disarm' },
+      ],
+    },
+    created_by: 'user-resident',
+    created_at: '2026-02-10T00:00:00Z',
+    updated_at: '2026-04-22T11:00:00Z',
+  },
+  {
+    id: 6,
+    name: 'Suppress Backyard Motion at Night',
+    description: 'Pet causes false positives — only notify after motion sustained 5s',
+    kind: 'suppress',
+    enabled: true,
+    priority: 40,
+    stop_processing: true,
+    stop_group: 'motion-night',
+    schema_version: 1,
+    cooldown_seconds: 0,
+    entity_ids: ['binary_sensor.backyard_motion'],
+    definition: {
+      when: {
+        op: 'for',
+        seconds: 5,
+        child: {
+          op: 'all',
+          children: [
+            { op: 'entity_state', entity_id: 'binary_sensor.backyard_motion', equals: 'on', source: 'home_assistant' },
+            { op: 'time_in_range', start: '22:00', end: '06:00' },
+          ],
+        },
+      },
+      then: [
+        { type: 'send_notification', provider_id: 'provider-pushbullet', message: 'Backyard motion sustained 5s overnight', title: 'Backyard motion' },
+      ],
+    },
+    created_by: 'user-resident',
+    created_at: '2026-03-01T00:00:00Z',
+    updated_at: '2026-04-28T22:30:00Z',
+  },
+  {
+    id: 7,
+    name: 'Discord on Person at Front',
+    description: 'Notify Discord when Frigate sees a person near the front entrance',
+    kind: 'trigger',
+    enabled: true,
+    priority: 30,
+    stop_processing: false,
+    stop_group: null,
+    schema_version: 1,
+    cooldown_seconds: 30,
+    entity_ids: [],
+    definition: {
+      when: {
+        op: 'all',
+        children: [
+          {
+            op: 'frigate_person_detected',
+            cameras: ['front_door', 'driveway'],
+            zones: ['walkway', 'driveway'],
+            within_seconds: 10,
+            min_confidence_pct: 85,
+            aggregation: 'max',
+            on_unavailable: 'treat_as_no_match',
+          },
+        ],
+      },
+      then: [
+        { type: 'send_notification', provider_id: 'provider-discord', message: 'Person detected at front entrance', title: 'Camera alert' },
+      ],
+    },
+    created_by: 'user-admin',
+    created_at: '2026-03-15T00:00:00Z',
+    updated_at: '2026-04-30T07:45:00Z',
+  },
+  {
+    id: 8,
+    name: 'Service Code = Limited Hours',
+    description: 'Notify Slack when activity happens outside 9am-5pm',
+    kind: 'suppress',
+    enabled: false,
+    priority: 70,
+    stop_processing: false,
+    stop_group: null,
+    schema_version: 1,
+    cooldown_seconds: 0,
+    entity_ids: [],
+    definition: {
+      when: {
+        op: 'all',
+        children: [
+          { op: 'time_in_range', start: '17:00', end: '09:00' },
+          { op: 'alarm_state_in', states: ['disarmed'] },
+        ],
+      },
+      then: [
+        { type: 'send_notification', provider_id: 'provider-slack', message: 'After-hours service activity', title: 'After-hours alert' },
+      ],
+    },
+    created_by: 'user-admin',
+    created_at: '2026-04-01T00:00:00Z',
+    updated_at: '2026-04-12T14:00:00Z',
+  },
 ]
 
 export const demoEvents = Array.from({ length: 50 }, (_, i) => {
