@@ -4,9 +4,12 @@
  */
 import type { ValueEditorProps } from 'react-querybuilder'
 import type { FrigatePersonValue, ValueEditorContext } from '../types'
+import { HelpTip } from '@/components/ui/help-tip'
 import { Input } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
 import { cn } from '@/lib/utils'
+
+const HELP_TIP_CLASS = 'h-5 w-5 [&_svg]:h-3.5 [&_svg]:w-3.5'
 
 interface FrigateValueEditorProps extends ValueEditorProps {
   context?: ValueEditorContext
@@ -57,7 +60,13 @@ export function FrigateValueEditor({
     <div className="space-y-3 rounded-md border bg-muted/30 p-3">
       {/* Cameras */}
       <div className="space-y-1">
-        <label className="text-xs font-medium text-muted-foreground">Cameras</label>
+        <div className="flex items-center gap-1">
+          <label className="text-xs font-medium text-muted-foreground">Cameras</label>
+          <HelpTip
+            className={HELP_TIP_CLASS}
+            content="Frigate cameras whose person events should be evaluated. If none are discovered yet, type names comma-separated."
+          />
+        </div>
         <div className="flex flex-wrap gap-1.5">
           {availableCameras.length === 0 ? (
             <Input
@@ -99,9 +108,15 @@ export function FrigateValueEditor({
       {/* Zones (optional) */}
       {availableZones.length > 0 && (
         <div className="space-y-1">
-          <label className="text-xs font-medium text-muted-foreground">
-            Zones (optional)
-          </label>
+          <div className="flex items-center gap-1">
+            <label className="text-xs font-medium text-muted-foreground">
+              Zones (optional)
+            </label>
+            <HelpTip
+              className={HELP_TIP_CLASS}
+              content="Only count detections that occurred inside one of these zones. Leave empty to match any zone on the selected cameras."
+            />
+          </div>
           <div className="flex flex-wrap gap-1.5">
             {availableZones.map((zone) => (
               <button
@@ -126,9 +141,15 @@ export function FrigateValueEditor({
       {/* Thresholds row */}
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
         <div className="space-y-1">
-          <label className="text-xs font-medium text-muted-foreground">
-            Within (sec)
-          </label>
+          <div className="flex items-center gap-1">
+            <label className="text-xs font-medium text-muted-foreground">
+              Within (sec)
+            </label>
+            <HelpTip
+              className={HELP_TIP_CLASS}
+              content="Backward-looking window. The rule looks for any qualifying person detection in the past N seconds at the moment it evaluates."
+            />
+          </div>
           <Input
             type="number"
             min={1}
@@ -143,9 +164,15 @@ export function FrigateValueEditor({
         </div>
 
         <div className="space-y-1">
-          <label className="text-xs font-medium text-muted-foreground">
-            Min confidence %
-          </label>
+          <div className="flex items-center gap-1">
+            <label className="text-xs font-medium text-muted-foreground">
+              Min confidence %
+            </label>
+            <HelpTip
+              className={HELP_TIP_CLASS}
+              content="Minimum confidence score (0–100) a detection must reach to count as a match."
+            />
+          </div>
           <Input
             type="number"
             min={0}
@@ -160,9 +187,15 @@ export function FrigateValueEditor({
         </div>
 
         <div className="space-y-1">
-          <label className="text-xs font-medium text-muted-foreground">
-            Aggregation
-          </label>
+          <div className="flex items-center gap-1">
+            <label className="text-xs font-medium text-muted-foreground">
+              Aggregation
+            </label>
+            <HelpTip
+              className={HELP_TIP_CLASS}
+              content="How to collapse multiple detections in the window into one score. Max = highest score; Latest = most recent detection's score; Percentile = the Nth-percentile score across the window."
+            />
+          </div>
           <Select
             value={currentValue.aggregation}
             onChange={(e) =>
@@ -181,9 +214,15 @@ export function FrigateValueEditor({
 
         {currentValue.aggregation === 'percentile' && (
           <div className="space-y-1">
-            <label className="text-xs font-medium text-muted-foreground">
-              Percentile
-            </label>
+            <div className="flex items-center gap-1">
+              <label className="text-xs font-medium text-muted-foreground">
+                Percentile
+              </label>
+              <HelpTip
+                className={HELP_TIP_CLASS}
+                content="Which percentile (1–100) to take when Aggregation is set to Percentile. 90 means 'beat the 90th-percentile detection'."
+              />
+            </div>
             <Input
               type="number"
               min={1}
@@ -201,9 +240,15 @@ export function FrigateValueEditor({
 
       {/* On unavailable */}
       <div className="space-y-1">
-        <label className="text-xs font-medium text-muted-foreground">
-          If Frigate unavailable
-        </label>
+        <div className="flex items-center gap-1">
+          <label className="text-xs font-medium text-muted-foreground">
+            If Frigate unavailable
+          </label>
+          <HelpTip
+            className={HELP_TIP_CLASS}
+            content="Fallback when Frigate hasn't reported recent events or is offline. 'Treat as no match' is fail-safe; 'Treat as match' will trigger the rule anyway."
+          />
+        </div>
         <Select
           value={currentValue.onUnavailable}
           onChange={(e) =>
