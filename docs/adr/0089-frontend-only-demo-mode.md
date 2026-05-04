@@ -1,7 +1,7 @@
 # ADR-0089: Frontend-Only Demo Mode
 
-**Status:** Accepted
-**Date:** 2026-05-02
+**Status:** Implemented
+**Date:** 2026-05-02 (proposed) / 2026-05-04 (implemented)
 **Author:** Leonardo Merza
 
 ## Context
@@ -106,9 +106,9 @@ Replace `frontend/src/services/api.ts:312` (`export const api = new ApiClient(..
 
 Bundle Django + a SQLite WASM build into the page. **Rejected** — bundle size in the tens of MB, slow boot, doesn't solve the integrations problem (still no MQTT broker / Z-Wave dongle / HA instance), and undermines the "frontend only, dead simple" goal.
 
-### 5. Skip login entirely (auto-authenticate)
+### 5. Skip login entirely with no fallback (full auto-authenticate)
 
-Drop visitors directly on `/` with a fake session. **Considered, rejected as default** — the login screen is part of the product surface. Prefilled credentials and a hint card give visitors the click-through experience without making them type a password.
+Drop visitors directly on `/` with a fake session and *no* path back to the login screen. **Rejected** — the login screen is part of the product surface and prospective users (especially evaluators reviewing security UX) expect to see it. The accepted variant (Decision §7) auto-authenticates as the landing default *and* keeps `/login` reachable for explicit click-through and via logout, with the seeded credentials prefilled there. That gives the 30-second-evaluation flow without hiding a major page.
 
 ### 6. Keep the backend `--demo` seed as a parallel showcase
 

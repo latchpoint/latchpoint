@@ -22,6 +22,10 @@ const ok = <T,>(data: T, meta?: Record<string, unknown>) =>
 
 const ADMIN = demoUsers[0]
 
+// Module-level auth flag so logout actually surfaces the login screen.
+// Default `true` matches ADR-0089 §7's auto-auth landing.
+let authenticated = true
+
 export const handlers = [
   // ── Auth ────────────────────────────────────────────────────────────────
   // The CSRF cookie is primed once at startup in `initDemoMode()` (page
@@ -31,6 +35,7 @@ export const handlers = [
 
   http.post('/api/auth/login/', async () => {
     await delay(200)
+    authenticated = true
     return ok({
       user: ADMIN,
       access_token: 'demo-access-token',
@@ -39,12 +44,22 @@ export const handlers = [
     })
   }),
 
-  http.post('/api/auth/logout/', () => ok(null)),
+  http.post('/api/auth/logout/', () => {
+    authenticated = false
+    return ok(null)
+  }),
   http.post('/api/auth/2fa/verify/', () => ok({ verified: true })),
   http.post('/api/auth/validate-code/', () => ok({ valid: true, user: ADMIN })),
 
   // ── Users ───────────────────────────────────────────────────────────────
-  http.get('/api/users/me/', () => ok(ADMIN)),
+  // Returns 401 when logged-out so `useAuth` flips `isAuthenticated` false and
+  // ProtectedRoute redirects to `/login`. Without this, query invalidation
+  // after logout silently re-authenticates and the visitor stays on `/`.
+  http.get('/api/users/me/', () =>
+    authenticated
+      ? ok(ADMIN)
+      : HttpResponse.json({ detail: 'Not authenticated' }, { status: 401 }),
+  ),
   http.get('/api/users/', () => ok(demoUsers, { total: demoUsers.length })),
 
   // ── Onboarding / setup gate ─────────────────────────────────────────────
@@ -308,7 +323,7 @@ export const handlers = [
       has_previous: page > 1,
     })
   }),
-  // `alarmService.acknowledgeEvent` issues PATCH (`backend/services/alarm.ts`).
+  // `alarmService.acknowledgeEvent` issues PATCH (`frontend/src/services/alarm.ts`).
   // Returning the updated event lets the Events UI paint the acknowledged
   // state without a refetch round-trip.
   http.patch('/api/events/:id/acknowledge/', ({ params }) => {

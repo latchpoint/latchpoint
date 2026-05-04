@@ -27,7 +27,10 @@ export async function initDemoMode(): Promise<void> {
 
   const worker = setupWorker(...handlers)
   await worker.start({
-    onUnhandledRequest: 'warn',
+    // The catchall handler covers all `/api/*`; everything else (static
+    // assets, source-map fetches, Vite HMR pings) is real traffic that we
+    // want to bypass without flooding the console.
+    onUnhandledRequest: 'bypass',
     serviceWorker: {
       url: `${import.meta.env.BASE_URL}mockServiceWorker.js`,
     },

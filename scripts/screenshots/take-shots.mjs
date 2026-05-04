@@ -124,9 +124,10 @@ async function captureShot({ browser, manifest, shot, theme, viewportName }) {
   const context = await browser.newContext({ viewport, deviceScaleFactor: 2 })
   await primeTheme(context, theme)
   // Demo mode pre-authenticates via MSW, so skip the API-level login step.
-  // Route mocks are also unnecessary in demo mode (MSW already returns the
-  // connected state for every integration), but applying them is harmless —
-  // Playwright route handlers take precedence over MSW for the same URL.
+  // Route mocks are also skipped in demo — MSW handlers already return a
+  // connected state for every integration, so Playwright route mocks would
+  // be redundant. The legacy backend-driven flow (DEMO=false) still needs
+  // both: a real login and the integration-health route mocks below.
   if (!DEMO && !shot.skipLogin) {
     await loginContext(context)
   }
