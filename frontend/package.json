@@ -7,7 +7,7 @@
     "dev": "vite",
     "dev:demo": "VITE_DEMO_MODE=true vite --mode demo --host 0.0.0.0",
     "build": "tsc -b && vite build",
-    "build:demo": "VITE_DEMO_MODE=true tsc -b && VITE_DEMO_MODE=true vite build --mode demo",
+    "build:demo": "tsc -b && VITE_DEMO_MODE=true vite build --mode demo",
     "preview:demo": "vite preview --mode demo --host 0.0.0.0",
     "lint": "eslint .",
     "preview": "vite preview",

@@ -1,6 +1,6 @@
 # ADR-0089: Frontend-Only Demo Mode
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-05-02
 **Author:** Leonardo Merza
 
@@ -82,7 +82,7 @@ The demo build:
 
 5. **In-memory mutable stores** under `frontend/src/demo/stores/` — keyed by ID, mutated by MSW handlers. Implemented as module-level `let` bindings; a hard refresh re-executes the bundle and re-initializes from fixtures, satisfying the "no persistence" requirement automatically.
 
-6. **A sticky "Demo mode" banner** with a **Reset** button (`window.location.reload()`) and copy explaining nothing is saved.
+6. **No demo banner.** An earlier draft of this ADR proposed a sticky "Demo mode — nothing is saved" banner with a Reset button. Dropped on implementation: it visually contaminates every screenshot, eats vertical space on the dashboard, and the "hard refresh resets state" property is already documented in the README's `npm run dev:demo` section. Visitors who want a reset use their browser's refresh button.
 
 7. **Auto-authenticate** — the demo's MSW `GET /api/users/me/` returns the seeded admin user unconditionally, so visitors land directly on `/` (the dashboard) on first paint. Showing the login screen as the default landing was considered (Alternative §5) but rejected in implementation: the auto-auth path keeps the click-through to a single hop, matches what `scripts/screenshots/take-shots.mjs` already assumes (the harness does not log in when `DEMO=true`), and avoids a hop visitors who came from a marketing link don't expect. The login screen remains accessible at `/login` for visitors who navigate there directly or hit logout, and prefills the seeded credentials there so the explicit click-through is still exercisable.
 
@@ -130,7 +130,7 @@ Maintain both: backend seed for screenshots/dev, frontend demo for the public. *
 - **Some flows can only "look real."** Real OAuth, real Pushbullet sends, real Z-Wave inclusion, real notification delivery — the demo shows the form and a "demo mode: this would call the backend" toast on submit. Acceptable; it still demonstrates the UX and the validation rules.
 - **WebSocket script curation.** A useful demo needs hand-tuned timelines (initial state → motion event @ 30s → optional escalation), not just stubbed connect/disconnect. More work than a no-op stub. Mitigation: ship one curated 60-second loop on first cut; expand later.
 - **Screenshot harness retargeting.** The Playwright harness (`scripts/screenshots/take-shots.mjs`) previously depended on `seed_test_home --demo` populating Postgres; in PR #47 it was retargeted at the demo bundle via a `DEMO=true` (default) env flag. The legacy backend-driven flow is preserved behind `DEMO=false`. The already-committed PNGs under `docs/screenshots/*.png` stay; future regen will run against the demo.
-- **Reset surprises.** Visitors who don't notice the banner may make several edits, refresh, and lose them. Mitigation: banner is sticky and always visible; "Reset" is the only button on it.
+- **Reset surprises.** Without an in-app banner, visitors who don't read the README may make several edits, refresh, and be surprised that everything resets. Mitigation: documented in the README's "Try the demo" section; the screenshot tour is the primary entry path anyway, so most visitors aren't expected to mutate state.
 
 ## Implementation Plan
 
@@ -163,7 +163,6 @@ frontend/src/demo/
 ├── stores/                # mutable in-memory stores; export reset() per store
 ├── handlers/              # MSW REST handlers, one file per domain
 ├── ws/scriptedWs.ts       # fake WebSocketManager
-├── banner/DemoBanner.tsx  # sticky banner with Reset button
 ├── README.md              # maintenance contract
 └── index.ts               # initDemoMode() boot entry point
 ```
@@ -177,8 +176,6 @@ if (DEMO_MODE) {
   await (await import('./demo')).initDemoMode()
 }
 ```
-
-Conditionally render `<DemoBanner />` at the app root (above `<RouterProvider>`).
 
 ### 4. MSW browser worker
 
@@ -226,7 +223,7 @@ Mirror the `WebSocketManager` interface from `frontend/src/services/websocket.ts
 - Logging in via the prefilled credentials at `/login` returns to `/` with the same populated dashboard. The 2FA screen renders if a visitor toggles it on the demo user, but submission shows a "demo mode" toast (no real TOTP backend).
 - Every navigable route in `frontend/src/App.tsx:108-134` renders with seeded data:
   - **Auth + onboarding** — Login (`/login`), Onboarding (`/onboarding`)
-  - **Setup wizard** — `/setup`, `/setup/mqtt`, `/setup/zwavejs`, `/setup/import-sensors`. The demo user lands already onboarded by default; a "Replay setup wizard" link in the demo banner walks visitors through the wizard against fake integration health.
+  - **Setup wizard** — `/setup`, `/setup/mqtt`, `/setup/zwavejs`, `/setup/import-sensors`. The demo user lands already onboarded by default; visitors can navigate to the setup routes directly to walk through the wizard against fake integration health.
   - **Core pages** — Dashboard (`/`), Rules (`/rules`), Rules Test sandbox (`/rules/test`), Codes (`/codes`), Door Codes (`/door-codes`), Events (`/events`), Control Panels (`/control-panels`), Scheduler (`/scheduler`)
   - **Debug** — Entities (`/debug/entities`), Logs (`/debug/logs`)
   - **Settings tabs** — alarm, notifications, home-assistant, mqtt, frigate, zwavejs. The `/settings/zigbee2mqtt` route redirects to `/settings/mqtt` (`App.tsx:132`) and inherits coverage automatically.
@@ -247,11 +244,10 @@ Mirror the `WebSocketManager` interface from `frontend/src/services/websocket.ts
   | Settings — HA / MQTT / Z-Wave / Frigate | Edit connection fields; "Test Connection" returns success after a simulated delay; entity / device / camera lists populate from the fixture inventory |
   | Debug — Entities | Browse all seeded entities across HA / Z-Wave / Zigbee; tag and untag entities; live state badges update from the scripted WS |
   | Debug — Logs | Stream synthetic log lines; filter by severity |
-  | Setup wizard | Replay the wizard via the demo banner link; advance through MQTT, Z-Wave, and sensor-import steps with fake "Test Connection" success at each |
+  | Setup wizard | Navigate to `/setup` and advance through MQTT, Z-Wave, and sensor-import steps with fake "Test Connection" success at each |
 
 - **All integrations show as connected with populated device inventories on first paint** — Home Assistant, MQTT, Z-Wave JS, Zigbee2MQTT, and Frigate status cards display green badges, recent heartbeats, and the device / entity / camera counts from the fixture inventory. A visitor never sees "Disconnected" or "Unknown" without taking a deliberate action (e.g. a hidden chaos button, if one is added later).
 - A hard refresh (`Cmd+R` / `Ctrl+R`) returns the app to its initial fixture state. The demo build does not enable any TanStack Query persistor.
-- A sticky "Demo mode — nothing is saved" banner is visible on every page; its **Reset** button forces a reload.
 - `npm run build:demo` produces a `dist-demo/` static bundle servable from any static host with no server-side dependencies.
 - `python manage.py seed_test_home --demo` no longer exists; `python manage.py seed_test_home` (without `--demo`) still works for the dev-login recipe in `CLAUDE.md`.
 
@@ -270,6 +266,6 @@ Mirror the `WebSocketManager` interface from `frontend/src/services/websocket.ts
 ## Todos
 
 - Decide on hosting target (GitHub Pages vs Vercel vs Netlify vs custom subdomain). Separate decision; not blocking the ADR.
-- Decide whether to expose role-switching in the demo banner (admin / resident / guest) for richer showcase, or keep it implicit at first.
+- Decide whether to expose role-switching (admin / resident / guest) somewhere in the UI for a richer showcase, or keep it implicit.
 - Regenerate `docs/screenshots/*.png` from the demo bundle once the scripted WS timeline (per §5) is in place, so dynamic states (arming countdown, triggered, motion event) can be captured deterministically. The harness itself is now retargeted at the demo (see Implementation Plan §7).
 - Open a tracking issue for the implementation work; link it from this ADR once filed.

@@ -369,11 +369,65 @@ export const handlers = [
   }),
   http.get('/api/notifications/provider-types/', () =>
     ok([
-      { handler_type: 'pushbullet', label: 'Pushbullet', config_schema: { fields: [] } },
-      { handler_type: 'discord', label: 'Discord Webhook', config_schema: { fields: [] } },
-      { handler_type: 'slack', label: 'Slack Webhook', config_schema: { fields: [] } },
-      { handler_type: 'webhook', label: 'Generic Webhook', config_schema: { fields: [] } },
-      { handler_type: 'home_assistant', label: 'Home Assistant', config_schema: { fields: [] } },
+      {
+        provider_type: 'pushbullet',
+        display_name: 'Pushbullet',
+        encrypted_fields: ['access_token'],
+        config_schema: {
+          type: 'object',
+          required: ['access_token'],
+          properties: {
+            access_token: { type: 'string', title: 'Access Token', secret: true, description: 'Get from pushbullet.com → Settings → Access Tokens' },
+            target_type: { type: 'string', title: 'Default Target', enum: ['all', 'device', 'email', 'channel'], default: 'all' },
+          },
+        },
+      },
+      {
+        provider_type: 'discord',
+        display_name: 'Discord Webhook',
+        encrypted_fields: [],
+        config_schema: {
+          type: 'object',
+          required: ['webhook_url'],
+          properties: {
+            webhook_url: { type: 'string', title: 'Webhook URL', description: 'Right-click channel → Edit Channel → Integrations → Webhooks' },
+            username: { type: 'string', title: 'Bot Username', description: 'Override the webhook\'s default username' },
+          },
+        },
+      },
+      {
+        provider_type: 'slack',
+        display_name: 'Slack Webhook',
+        encrypted_fields: ['bot_token'],
+        config_schema: {
+          type: 'object',
+          required: ['bot_token', 'default_channel'],
+          properties: {
+            bot_token: { type: 'string', title: 'Bot Token', secret: true, description: 'Slack Bot token (starts with xoxb-)' },
+            default_channel: { type: 'string', title: 'Default Channel', description: 'Slack channel ID (e.g., C0123456789)' },
+          },
+        },
+      },
+      {
+        provider_type: 'webhook',
+        display_name: 'Generic Webhook',
+        encrypted_fields: [],
+        config_schema: {
+          type: 'object',
+          required: ['url', 'method'],
+          properties: {
+            url: { type: 'string', title: 'Webhook URL', format: 'uri', description: 'The endpoint URL to send notifications to' },
+            method: { type: 'string', title: 'HTTP Method', enum: ['POST', 'PUT'], default: 'POST' },
+            content_type: { type: 'string', title: 'Content Type', enum: ['application/json', 'application/x-www-form-urlencoded'], default: 'application/json' },
+          },
+        },
+      },
+      {
+        provider_type: 'home_assistant',
+        display_name: 'Home Assistant',
+        encrypted_fields: [],
+        config_schema: { type: 'object', properties: {} },
+      },
     ]),
   ),
   http.get('/api/notifications/pushbullet/devices/', () =>

@@ -33,7 +33,6 @@ export async function initDemoMode(): Promise<void> {
     },
   })
 
-
   console.info('%c[demo-mode] MSW worker started, WebSocket stubbed', 'color:#f59e0b;font-weight:bold')
 }
 

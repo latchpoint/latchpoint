@@ -564,9 +564,90 @@ export const demoHaEntities = [
 ]
 
 export const demoSettingsRegistry = [
-  { key: 'mqtt', label: 'MQTT', description: 'Broker connection', config_schema: { fields: [] }, encrypted_fields: ['password'] },
-  { key: 'home_assistant', label: 'Home Assistant', description: 'HA REST + WS', config_schema: { fields: [] }, encrypted_fields: ['token'] },
-  { key: 'zwavejs', label: 'Z-Wave JS', description: 'WS bridge', config_schema: { fields: [] }, encrypted_fields: [] },
-  { key: 'frigate', label: 'Frigate', description: 'NVR + detection', config_schema: { fields: [] }, encrypted_fields: [] },
-  { key: 'zigbee2mqtt', label: 'Zigbee2MQTT', description: 'Bridge over MQTT', config_schema: { fields: [] }, encrypted_fields: [] },
+  {
+    key: 'mqtt',
+    name: 'MQTT',
+    description: 'MQTT broker connection and operational settings.',
+    encrypted_fields: ['password'],
+    config_schema: {
+      type: 'object',
+      properties: {
+        enabled: { type: 'boolean', title: 'Enabled' },
+        host: { type: 'string', title: 'Host', description: 'MQTT broker hostname or IP address' },
+        port: { type: 'integer', title: 'Port', minimum: 1, maximum: 65535 },
+        username: { type: 'string', title: 'Username' },
+        password: { type: 'string', title: 'Password', secret: true },
+        use_tls: { type: 'boolean', title: 'Use TLS' },
+        tls_insecure: { type: 'boolean', title: 'TLS Insecure (skip verify)' },
+        client_id: { type: 'string', title: 'Client ID prefix' },
+        keepalive_seconds: { type: 'integer', title: 'Keepalive (seconds)', minimum: 5, maximum: 3600 },
+        connect_timeout_seconds: { type: 'integer', title: 'Connect Timeout (seconds)', minimum: 1, maximum: 30 },
+        reconnect_min_seconds: { type: 'integer', title: 'Reconnect Min (seconds)', minimum: 1, maximum: 60 },
+        reconnect_max_seconds: { type: 'integer', title: 'Reconnect Max (seconds)', minimum: 5, maximum: 300 },
+      },
+    },
+  },
+  {
+    key: 'home_assistant',
+    name: 'Home Assistant',
+    description: 'Home Assistant connection and operational settings.',
+    encrypted_fields: ['token'],
+    config_schema: {
+      type: 'object',
+      properties: {
+        enabled: { type: 'boolean', title: 'Enabled' },
+        base_url: { type: 'string', title: 'Base URL', format: 'url', description: 'Home Assistant instance URL' },
+        token: { type: 'string', title: 'Long-Lived Access Token', secret: true, description: 'Generate at Profile > Security > Long-lived access tokens' },
+        connect_timeout_seconds: { type: 'number', title: 'Connect Timeout (seconds)', minimum: 1, maximum: 30 },
+        request_timeout_seconds: { type: 'number', title: 'Request Timeout (seconds)', minimum: 1, maximum: 60 },
+      },
+    },
+  },
+  {
+    key: 'zwavejs',
+    name: 'Z-Wave JS',
+    description: 'Z-Wave JS WebSocket connection and operational settings.',
+    encrypted_fields: ['api_token'],
+    config_schema: {
+      type: 'object',
+      properties: {
+        enabled: { type: 'boolean', title: 'Enabled' },
+        ws_url: { type: 'string', title: 'WebSocket URL', format: 'uri', description: 'Z-Wave JS Server WebSocket URL' },
+        api_token: { type: 'string', title: 'API Token', secret: true },
+        connect_timeout_seconds: { type: 'integer', title: 'Connect Timeout (seconds)', minimum: 1, maximum: 30 },
+        reconnect_min_seconds: { type: 'integer', title: 'Reconnect Min (seconds)', minimum: 1, maximum: 60 },
+        reconnect_max_seconds: { type: 'integer', title: 'Reconnect Max (seconds)', minimum: 5, maximum: 300 },
+        request_timeout_seconds: { type: 'integer', title: 'Request Timeout (seconds)', minimum: 1, maximum: 60 },
+      },
+    },
+  },
+  {
+    key: 'frigate',
+    name: 'Frigate',
+    description: 'Frigate integration settings (MQTT events ingest for rules conditions).',
+    encrypted_fields: [],
+    config_schema: {
+      type: 'object',
+      properties: {
+        enabled: { type: 'boolean', title: 'Enabled' },
+        events_topic: { type: 'string', title: 'Events Topic', description: 'MQTT topic for Frigate detection events' },
+        retention_seconds: { type: 'integer', title: 'Retention (seconds)', minimum: 0, description: 'How long to keep Frigate events before pruning' },
+      },
+    },
+  },
+  {
+    key: 'zigbee2mqtt',
+    name: 'Zigbee2MQTT',
+    description: 'Zigbee2MQTT integration settings (inventory sync and ingest).',
+    encrypted_fields: [],
+    config_schema: {
+      type: 'object',
+      properties: {
+        enabled: { type: 'boolean', title: 'Enabled' },
+        base_topic: { type: 'string', title: 'Base Topic', description: 'MQTT base topic for Zigbee2MQTT' },
+        allowlist: { type: 'array', title: 'Allowlist', items: { type: 'string' }, description: 'Only sync these friendly names (empty = sync all)' },
+        denylist: { type: 'array', title: 'Denylist', items: { type: 'string' }, description: 'Exclude these friendly names from sync' },
+      },
+    },
+  },
 ]
