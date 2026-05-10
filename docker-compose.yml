@@ -8,6 +8,8 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-alarm}
     volumes:
       - ./volumes/db/:/var/lib/postgresql/data
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
 
   backend:
     build:
@@ -23,6 +25,8 @@ services:
       - db
     volumes:
       - .:/app
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
 
   frontend:
     image: node:20-slim
@@ -37,3 +41,5 @@ services:
     volumes:
       - .:/app
       - /app/frontend/node_modules  # Anonymous volume for node_modules
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
