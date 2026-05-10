@@ -5,7 +5,10 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:demo": "VITE_DEMO_MODE=true vite --mode demo --host 0.0.0.0 --port 5427",
     "build": "tsc -b && vite build",
+    "build:demo": "tsc -b && VITE_DEMO_MODE=true vite build --mode demo",
+    "preview:demo": "vite preview --mode demo --host 0.0.0.0",
     "lint": "eslint .",
     "preview": "vite preview",
     "test": "vitest run",
@@ -64,5 +67,10 @@
     "typescript-eslint": "^8.46.4",
     "vite": "^7.2.4",
     "vitest": "^3.2.4"
+  },
+  "msw": {
+    "workerDirectory": [
+      "public"
+    ]
   }
 }

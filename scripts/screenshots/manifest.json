@@ -1,0 +1,95 @@
+{
+  "_comment": "Declarative manifest for the Latchpoint screenshot tour. Each shot resolves into one PNG per theme x viewport combination, written to docs/screenshots/<name>-<theme>-<viewport>.png. globalMocks is applied to every page (Playwright route(...) before navigation).",
+  "viewports": {
+    "desktop": { "width": 1440, "height": 900 },
+    "tablet": { "width": 820, "height": 1180 },
+    "mobile": { "width": 390, "height": 844 }
+  },
+  "globalMocks": [
+    {
+      "_why": "HA status endpoint probes the live HA server. We override so the dashboard shows 'Connected'.",
+      "url": "**/api/alarm/home-assistant/status/",
+      "body": {
+        "configured": true,
+        "reachable": true,
+        "base_url": "http://homeassistant.demo.local:8123",
+        "error": null
+      }
+    },
+    {
+      "_why": "MQTT status checks a real broker socket. Force connected.",
+      "url": "**/api/alarm/mqtt/status/",
+      "body": {
+        "configured": true,
+        "enabled": true,
+        "connected": true,
+        "last_connect_at": "2026-05-02T08:00:00Z",
+        "last_disconnect_at": null,
+        "last_error": null
+      }
+    },
+    {
+      "_why": "Z-Wave JS status checks a real WebSocket. Force connected.",
+      "url": "**/api/alarm/zwavejs/status/",
+      "body": {
+        "configured": true,
+        "enabled": true,
+        "connected": true,
+        "home_id": 4271828182,
+        "last_connect_at": "2026-05-02T08:00:00Z",
+        "last_disconnect_at": null,
+        "last_error": null
+      }
+    },
+    {
+      "_why": "Frigate integration status — fake healthy.",
+      "url": "**/api/alarm/integrations/frigate/status/",
+      "body": {
+        "configured": true,
+        "enabled": true,
+        "connected": true,
+        "last_event_at": "2026-05-02T07:50:00Z",
+        "last_error": null
+      }
+    },
+    {
+      "_why": "Zigbee2MQTT bridge status — fake healthy.",
+      "url": "**/api/alarm/integrations/zigbee2mqtt/status/",
+      "body": {
+        "configured": true,
+        "enabled": true,
+        "mqtt_connected": true,
+        "bridge_online": true,
+        "device_count": 14,
+        "last_error": null
+      }
+    },
+    {
+      "_why": "HA MQTT alarm entity discovery status — fake healthy.",
+      "url": "**/api/alarm/integrations/home-assistant/mqtt-alarm-entity/status/",
+      "body": {
+        "configured": true,
+        "published": true,
+        "last_published_at": "2026-05-02T08:00:00Z",
+        "last_error": null
+      }
+    }
+  ],
+  "shots": [
+    { "name": "dashboard", "route": "/", "themes": ["dark", "light"], "viewports": ["desktop", "mobile"] },
+    { "name": "rules-list", "route": "/rules", "themes": ["dark"], "viewports": ["desktop"] },
+    { "name": "rules-test", "route": "/rules/test", "themes": ["dark"], "viewports": ["desktop"] },
+    { "name": "codes", "route": "/alarm-codes", "themes": ["dark", "light"], "viewports": ["desktop"] },
+    { "name": "door-codes", "route": "/door-codes", "themes": ["dark"], "viewports": ["desktop", "mobile"] },
+    { "name": "events", "route": "/events", "themes": ["dark"], "viewports": ["desktop", "mobile"] },
+    { "name": "control-panels", "route": "/control-panels", "themes": ["dark"], "viewports": ["desktop"] },
+    { "name": "scheduler", "route": "/scheduler", "themes": ["dark"], "viewports": ["desktop"] },
+    { "name": "settings-alarm", "route": "/settings/alarm", "themes": ["dark", "light"], "viewports": ["desktop"] },
+    { "name": "settings-notifications", "route": "/settings/notifications", "themes": ["dark"], "viewports": ["desktop"] },
+    { "name": "settings-home-assistant", "route": "/settings/home-assistant", "themes": ["dark"], "viewports": ["desktop"] },
+    { "name": "settings-mqtt", "route": "/settings/mqtt", "themes": ["dark"], "viewports": ["desktop"] },
+    { "name": "settings-zwavejs", "route": "/settings/zwavejs", "themes": ["dark"], "viewports": ["desktop"] },
+    { "name": "settings-frigate", "route": "/settings/frigate", "themes": ["dark"], "viewports": ["desktop"] },
+    { "name": "login", "route": "/login", "themes": ["dark", "light"], "viewports": ["desktop", "mobile"], "skipLogin": true }
+  ]
+}

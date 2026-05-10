@@ -144,9 +144,10 @@ function AppContent() {
 }
 
 function App() {
+  const basename = import.meta.env.BASE_URL.replace(/\/$/, '') || undefined
   return (
     <QueryClientProvider client={queryClient}>
-      <BrowserRouter>
+      <BrowserRouter basename={basename}>
         <ThemeProvider>
           <AppErrorBoundary>
             <LayoutBootstrap />
