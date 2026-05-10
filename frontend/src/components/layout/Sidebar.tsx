@@ -25,13 +25,13 @@ export function Sidebar() {
       <div className="flex items-center justify-between h-16 px-4 border-b border-border">
         {!sidebarCollapsed && (
           <Link to={Routes.HOME} className="flex items-center gap-2">
-            <img src="/latchpoint_brand.png" alt="Latchpoint" className="h-8 w-8 object-contain" />
+            <img src={`${import.meta.env.BASE_URL}latchpoint_brand.png`} alt="Latchpoint" className="h-8 w-8 object-contain" />
             <span className="font-semibold text-lg">Latchpoint</span>
           </Link>
         )}
         {sidebarCollapsed && (
           <Link to={Routes.HOME} className="mx-auto">
-            <img src="/latchpoint_brand.png" alt="Latchpoint" className="h-8 w-8 object-contain" />
+            <img src={`${import.meta.env.BASE_URL}latchpoint_brand.png`} alt="Latchpoint" className="h-8 w-8 object-contain" />
           </Link>
         )}
       </div>
