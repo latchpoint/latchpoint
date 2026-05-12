@@ -46,6 +46,16 @@ class _FakeAlarmServices:
         if self._fail:
             raise RuntimeError("trigger boom")
 
+    def trigger_with_delay(self, *, delay_seconds: int, user=None, reason: str = ""):
+        self.calls.append(("trigger_with_delay", delay_seconds, user, reason))
+        if self._fail:
+            raise RuntimeError("trigger_with_delay boom")
+        snap = MagicMock()
+        from alarm.models import AlarmState
+
+        snap.current_state = AlarmState.PENDING
+        return snap
+
     def get_current_snapshot(self, *, process_timers: bool):
         return None  # not used by individual handlers
 
@@ -164,12 +174,48 @@ class AlarmTriggerHandlerTests(TestCase):
         result, error = alarm_trigger_execute({"type": "alarm_trigger"}, ctx)
         self.assertTrue(result["ok"])
         self.assertIsNone(error)
+        self.assertEqual([c[0] for c in ctx.alarm_services.calls], ["trigger"])
 
     def test_exception_path(self):
         ctx = _make_ctx(fail=True)
         result, error = alarm_trigger_execute({"type": "alarm_trigger"}, ctx)
         self.assertFalse(result["ok"])
         self.assertIn("trigger boom", error)
+
+    def test_positive_delay_routes_through_trigger_with_delay(self):
+        # Under the revised ADR-0091, delaySeconds routes the alarm into
+        # PENDING via the state machine instead of enqueuing a PendingAction.
+        ctx = _make_ctx()
+        result, error = alarm_trigger_execute({"type": "alarm_trigger", "delay_seconds": 15}, ctx)
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["deferred"])
+        self.assertEqual(result["delay_seconds"], 15)
+        self.assertIsNone(error)
+        # Did NOT invoke the immediate trigger path:
+        self.assertEqual([c[0] for c in ctx.alarm_services.calls], ["trigger_with_delay"])
+        self.assertEqual(ctx.alarm_services.calls[0][1], 15)
+
+    def test_negative_delay_falls_through_to_immediate(self):
+        ctx = _make_ctx()
+        result, _ = alarm_trigger_execute({"type": "alarm_trigger", "delay_seconds": -5}, ctx)
+        self.assertTrue(result["ok"])
+        self.assertNotIn("deferred", result)
+        self.assertEqual([c[0] for c in ctx.alarm_services.calls], ["trigger"])
+
+    def test_bool_delay_falls_through_to_immediate(self):
+        # bool subclasses int; handler must reject it before treating as a delay.
+        ctx = _make_ctx()
+        result, _ = alarm_trigger_execute({"type": "alarm_trigger", "delay_seconds": True}, ctx)
+        self.assertTrue(result["ok"])
+        self.assertNotIn("deferred", result)
+        self.assertEqual([c[0] for c in ctx.alarm_services.calls], ["trigger"])
+
+    def test_trigger_with_delay_exception_returns_error(self):
+        ctx = _make_ctx(fail=True)
+        result, error = alarm_trigger_execute({"type": "alarm_trigger", "delay_seconds": 10}, ctx)
+        self.assertFalse(result["ok"])
+        self.assertTrue(result["deferred"])
+        self.assertIn("trigger_with_delay boom", error)
 
 
 # ── ha_call_service ──────────────────────────────────────────────────────────

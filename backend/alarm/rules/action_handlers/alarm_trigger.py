@@ -4,7 +4,6 @@ import logging
 from typing import Any
 
 from alarm.rules.action_handlers import ActionContext, register
-from alarm.rules.pending_actions import enqueue_pending_action
 
 logger = logging.getLogger(__name__)
 
@@ -24,26 +23,28 @@ def execute(action: dict[str, Any], ctx: ActionContext) -> tuple[dict[str, Any],
 
     if delay_seconds > 0:
         try:
-            pa = enqueue_pending_action(
-                rule=ctx.rule,
-                action_index=ctx.action_index,
-                action_payload=action,
+            snapshot = ctx.alarm_services.trigger_with_delay(
                 delay_seconds=delay_seconds,
-                ctx=ctx,
+                user=ctx.actor_user,
+                reason=f"rule:{ctx.rule.id}:delay={delay_seconds}s",
             )
             return (
                 {
                     "ok": True,
                     "type": "alarm_trigger",
                     "deferred": True,
-                    "pending_action_id": pa.id,
-                    "fire_at": pa.fire_at.isoformat(),
                     "delay_seconds": delay_seconds,
+                    "state_after": snapshot.current_state,
                 },
                 None,
             )
         except Exception as exc:
-            logger.warning("alarm_trigger enqueue failed for rule %s: %s", ctx.rule.id, exc, exc_info=True)
+            logger.warning(
+                "alarm_trigger trigger_with_delay failed for rule %s: %s",
+                ctx.rule.id,
+                exc,
+                exc_info=True,
+            )
             return (
                 {"ok": False, "type": "alarm_trigger", "deferred": True, "error": str(exc)},
                 str(exc),

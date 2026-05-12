@@ -1,6 +1,6 @@
-# ADR-0091: Rule Action Entry Delay via Unified PendingAction Queue
+# ADR-0091: Rule Action Entry Delay (Hybrid: PENDING state for alarm_trigger, PendingAction queue for send_notification)
 
-**Status:** Implemented
+**Status:** Revised — Implemented (hybrid model after stakeholder review; see [Revision (2026-05-12)](#revision-2026-05-12))
 **Date:** 2026-05-12
 **Author:** Leonardo Merza
 
@@ -159,9 +159,11 @@ Cancel button.
 
 ## Decision
 
-**Chosen Option: Option 4 — Unified `PendingAction` queue.**
+**Originally chosen: Option 4 — Unified `PendingAction` queue.** Revised
+to a hybrid (Option 1 for `alarm_trigger` + Option 4 for `send_notification`)
+after stakeholder review. See [Revision (2026-05-12)](#revision-2026-05-12).
 
-Reasoning:
+Reasoning for the original Option 4 choice:
 - The feature has to solve `send_notification` delays as well, and those
   have no PENDING-state analogue. A unified primitive avoids two parallel
   mechanisms.
@@ -173,6 +175,53 @@ Reasoning:
 - The UX shift (countdown on a separate card) is honest about what's
   happening: the alarm isn't in PENDING for entry-delay reasons, it's
   staying armed while a rule's action waits in a queue.
+
+## Revision (2026-05-12)
+
+After a hands-on review comparing the implementation to the Ring Keypad's
+entry-delay UX, the stakeholder direction shifted to a **hybrid model**:
+
+- **`alarm_trigger` follows Option 1** — when `delay_seconds > 0`, the action
+  routes the alarm through the state machine's existing `PENDING` state via a
+  new `trigger_with_delay()` helper. The countdown lives on the main alarm-state
+  card (re-using the established UX from the `is_entry_point` sensor flow).
+  No `PendingAction` row is created for `alarm_trigger`.
+- **`send_notification` keeps Option 4** — it still enqueues a `PendingAction`,
+  since there's no state-machine analogue for "notification waiting".
+- **Ring-panel cancel semantics** — the WHEN-condition-false cancellation hook
+  (`rules_engine.py:225-238`) is removed. Closing the door / WHEN flipping false
+  no longer cancels a queued or pending action. Only **disarm** or an **explicit
+  operator cancel** (manual API call for `send_notification` rows; disarm for
+  `alarm_trigger`) aborts a deferred action. This matches commercial alarm-panel
+  behavior and avoids the home-lab exploit window where an intruder could close
+  the door after tripping it.
+
+Free win: `timer_expired()` already advances lazily on every snapshot read
+(`transitions.py:218-221`), and `broadcast_system_status` (`alarm/tasks.py:245`,
+`Every(seconds=2)`) reads state every tick. Rule-driven PENDING inherits this
+mechanism for free — no new scheduler task needed on the `alarm_trigger` side.
+
+**Multi-state precedence for delayed `alarm_trigger`:**
+
+| Starting state | Behavior |
+|---|---|
+| ARMED_HOME / ARMED_AWAY / ARMED_NIGHT / ARMED_VACATION | Enter PENDING with `exit_at = now + delay_seconds`. The main case. |
+| DISARMED | No-op + log. A rule firing from disarmed must not coerce PENDING. |
+| ARMING | No-op. Don't interrupt arming. |
+| PENDING | No-op. Don't shorten or extend an existing countdown (first-countdown-wins). |
+| TRIGGERED | No-op. Already triggered. |
+
+**Cooldown anchor:** the rule's `cooldown_seconds` is keyed at PENDING-entry
+(dispatch moment), not at TRIGGERED-entry. Avoids dispatch pile-up during the
+wait and matches `alarm_trigger`'s existing immediate-path cooldown semantics.
+
+**Sec-1 hardening dissolves.** The original Option 4 manual-cancel-with-code
+gate (`POST /api/alarm/pending-actions/<id>/cancel/` requiring a disarm code for
+`alarm_trigger` rows) becomes unreachable — no `alarm_trigger` PendingAction
+rows are created. The code-required branch is removed from
+`backend/alarm/views/pending_actions.py`; cancellation of an in-flight
+`alarm_trigger` is now indistinguishable from a normal disarm, which is the
+correct primitive for that security boundary.
 
 ## Consequences
 
@@ -190,43 +239,32 @@ Reasoning:
 
 ### Negative
 
-- **Cancellation requires events.** WHEN-false cancellation is event-driven
-  — the rules engine runs only on dispatcher batches (sensor events, alarm
-  state changes), not on a time tick. A rule whose WHEN flips false purely
-  because of a `time_in_range` condition (no other event) won't cancel its
-  queued action until something else triggers `run_rules()`. Most rules
-  trip on sensor events that themselves trigger re-evaluation on close, so
-  this should rarely matter; we'll document it and revisit if a user
-  reports a concrete miss.
-- **No PENDING countdown on the alarm card for rule-driven trigger delays.**
-  Users used to commercial alarm-panel countdown displays might find this
-  surprising. The Pending Actions card on the dashboard is the
-  substitute.
+- **Two delay mechanisms instead of one.** `alarm_trigger` uses the state
+  machine; `send_notification` uses the queue. Future delayed action types must
+  pick a side — most should pick the queue (which is the more general
+  primitive) unless they have a natural state-machine analogue.
 - **`bool` validation gotcha.** Python's `bool` is a subclass of `int`,
   so validators must reject `delay_seconds: true` with an explicit
   `isinstance(value, bool)` check before the `isinstance(value, int)`
   check. This is captured in the schema validator and dedicated tests but
   worth documenting for any future int-valued schema field.
-- **Cooldown semantics.** The rules engine's existing `cooldown_seconds`
-  fires when an action is dispatched. For delayed actions, that dispatch
-  is the **enqueue** moment, not the fire moment. This is the right choice
-  (otherwise queued actions could pile up faster than they fire), but it
-  means a rule with a 5-minute cooldown that queues a 4-minute-delayed
-  trigger will be cooldown-locked for the duration of the wait + the
-  cooldown.
+- **Cooldown semantics for `send_notification`.** The rules engine's existing
+  `cooldown_seconds` fires when an action is dispatched. For delayed
+  notifications, that dispatch is the **enqueue** moment, not the fire moment.
+  This is the right choice (otherwise queued actions could pile up faster than
+  they fire), but it means a rule with a 5-minute cooldown that queues a
+  4-minute-delayed notification will be cooldown-locked for the duration of the
+  wait + the cooldown.
 
 ### Security Considerations
 
-- **Manual cancel of `alarm_trigger` requires a disarm code.** Cancelling a
-  queued `alarm_trigger` PendingAction is functionally equivalent to disarming
-  the alarm — it prevents the trigger from firing. To preserve the
-  disarm-requires-code security property, `POST /api/alarm/pending-actions/<id>/cancel/`
-  validates a `code` in the request body when the target row's
-  `action_payload.type == "alarm_trigger"`. The same `validate_user_code()`
-  helper used by `disarm_alarm()` is reused, so the failure modes (missing
-  code → 400 `validation_error`; invalid code → 401 `unauthorized`) match the
-  rest of the system. Other action types (`send_notification`) cancel without
-  a code — they are not security-critical.
+- **Cancelling an in-flight `alarm_trigger` requires a disarm.** Under the
+  revised model, an `alarm_trigger` with `delay_seconds > 0` puts the alarm
+  into PENDING; the only way to stop the impending TRIGGERED transition is to
+  call the existing `disarm` endpoint, which already enforces the user-code
+  requirement. There is no separate cancel-with-code path for `alarm_trigger`
+  because no `PendingAction` row is created for it — the security boundary is
+  the standard disarm flow.
 - **`fire_result` is API-visible.** When a handler raises, the persisted
   `fire_result["error"]` stores only the exception class name (e.g.,
   `"handler_exception"` + `"exception_class": "OperationalError"`), not the
@@ -250,21 +288,30 @@ Reasoning:
 
 ### New backend pieces
 
-- **Model**: `PendingAction` (`backend/alarm/models.py`) with
-  `rule` FK, `action_index`, `action_payload` (JSON snapshot), `delay_seconds`,
-  `fire_at`, `status` (scheduled/fired/cancelled/failed), `cancel_reason`,
-  `armed_state_at_schedule`, plus `fired_at`, `fire_result`, `actor_user`,
-  `created_at`, `updated_at`. Indexes on `(status, fire_at)` and
-  `(rule, status)`. Migration `0019_pendingaction.py`.
+- **State-machine helper**: `trigger_with_delay(delay_seconds, user, reason)`
+  in `backend/alarm/state_machine/transitions.py`. Guards on
+  `current_state in ARMED_STATES` (no-ops otherwise) and calls the existing
+  `transition()` helper with `state_to=PENDING` and
+  `exit_at = now + delay_seconds`. Lazy `timer_expired()` (driven by
+  `get_current_snapshot(process_timers=True)` and the long-running 2s
+  `broadcast_system_status` task) advances PENDING → TRIGGERED.
+- **AlarmServices protocol**: extended with `trigger_with_delay(...)` in
+  `backend/alarm/rules/action_handlers/__init__.py`.
+- **Model**: `PendingAction` (`backend/alarm/models.py`) — unchanged from the
+  original Option 4 design; still used for `send_notification` rows. Migration
+  `0019_pendingaction.py`. `WHEN_FALSE` enum member dropped.
 - **Enqueue helper**: `enqueue_pending_action()` in
   `backend/alarm/rules/pending_actions.py`. Captures
-  `armed_state_at_schedule` from the current snapshot.
+  `armed_state_at_schedule` from the current snapshot. Helper
+  `cancel_for_rules_when_false()` was deleted along with its only caller.
 - **Handler changes**:
   - `backend/alarm/rules/action_handlers/alarm_trigger.py`: branches on
-    `delay_seconds`. Result dict on enqueue includes `deferred: True`,
-    `pending_action_id`, `fire_at`, `delay_seconds`.
-  - `backend/alarm/rules/action_handlers/send_notification.py`: same
-    pattern.
+    `delay_seconds`. When positive, calls
+    `ctx.alarm_services.trigger_with_delay(...)` — no `PendingAction` row is
+    created. Result dict includes `deferred: True`, `delay_seconds`,
+    `state_after`.
+  - `backend/alarm/rules/action_handlers/send_notification.py`: unchanged
+    queue-enqueue pattern.
 - **ActionContext.action_index**: new defaulted field on the frozen
   `ActionContext` dataclass. `action_executor.py` uses
   `dataclasses.replace(ctx, action_index=idx)` per iteration so the
@@ -281,24 +328,26 @@ Reasoning:
   auto-cancelled with `cancel_reason='stale_after_restart'`.
 - **Cancellation hooks** (`backend/alarm/receivers.py`):
   - `alarm_state_change_committed → DISARMED`: cancels every `scheduled`
-    row whose `armed_state_at_schedule` was armed.
+    row whose `armed_state_at_schedule` was armed. Also implicitly aborts
+    any `alarm_trigger`-driven PENDING via the state machine itself.
   - `Rule.pre_delete`: cancels every scheduled row for the rule.
   - `Rule.post_save` with `enabled=False`: cancels every scheduled row for
     the rule.
-- **Rules engine WHEN-false hook** (`backend/alarm/rules_engine.py:225-231`):
-  inside the existing transition-to-not-matched block, calls
-  `cancel_for_rule(rule.id, reason=WHEN_FALSE)`. Event-driven only —
-  see the Consequences section about time-only conditions.
+- **Rules engine WHEN-false hook**: **removed** (was at
+  `backend/alarm/rules_engine.py:225-238` in the original Option 4 design).
+  The `last_when_matched`/`last_when_transition_at` bookkeeping at the same
+  site is preserved — only the `cancel_for_rule(..., WHEN_FALSE)` call is
+  gone.
 - **API** (`backend/alarm/views/pending_actions.py`):
   - `GET /api/alarm/pending-actions/?status=scheduled&limit=N`: list. `status`
     is validated against `PendingActionStatus.choices` + `"all"`; unknown
     values return 400. `limit` is clamped to `[1, 500]` (negative values would
     otherwise hit Django's slice and 500).
-  - `POST /api/alarm/pending-actions/<id>/cancel/`: manual cancel. Requires
-    a valid disarm `code` in the request body when the target action is
-    `alarm_trigger` (see Security Considerations). 404s route through the
-    domain `NotFoundError` → `custom_exception_handler` so the response uses
-    the ADR-0025 envelope.
+  - `POST /api/alarm/pending-actions/<id>/cancel/`: manual cancel. No code
+    required (the sec-1 `alarm_trigger`-requires-code branch was dropped along
+    with the `alarm_trigger` queue path). 404s route through the domain
+    `NotFoundError` → `custom_exception_handler` so the response uses the
+    ADR-0025 envelope.
 
 ### New frontend pieces
 
@@ -326,17 +375,24 @@ Reasoning:
 
 ### Tests
 
+- Backend `backend/alarm/tests/test_transitions.py` — `TriggerWithDelayTests`:
+  - Enters PENDING from each armed state with correct `exit_at`.
+  - No-op from DISARMED / ARMING / PENDING / TRIGGERED.
+  - `timer_expired()` advances PENDING → TRIGGERED.
+  - Disarm during the wait returns to DISARMED.
+- Backend `backend/alarm/tests/test_action_handlers.py` —
+  `AlarmTriggerHandlerTests`: positive delay routes through
+  `trigger_with_delay`; negative / bool fall through to immediate trigger;
+  exception path is captured.
 - Backend `backend/alarm/tests/test_pending_actions.py`:
-  - Enqueue paths for both action types (delay > 0 enqueues, delay 0 /
-    missing executes immediately, bool/negative treated as zero,
-    `armed_state_at_schedule` captured from snapshot).
+  - `send_notification` enqueue paths.
   - Fire-due scheduler task: due rows fired, future rows untouched,
     terminal rows ignored, stale rows auto-cancelled, unsupported types
     marked failed.
   - Cancellation: disarm cancels armed scheduled rows but leaves disarmed
     rows alone; rule deletion CASCADEs; rule disable cancels; rule enable
-    leaves alone; rules-engine WHEN-flips-false cancels; manual API cancel
-    works.
+    leaves alone; manual API cancel works; **WHEN flipping false does NOT
+    cancel** (Ring-panel-semantic regression guard).
   - API: list returns `data`-wrapped envelope, default filters to
     `scheduled`, `status=all` returns everything, cancel endpoint flips
     status, cancel of terminal row returns 404.

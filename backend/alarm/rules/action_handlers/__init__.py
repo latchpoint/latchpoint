@@ -39,6 +39,11 @@ class AlarmServices(Protocol):
 
         ...
 
+    def trigger_with_delay(self, *, delay_seconds: int, user=None, reason: str = ""):
+        """Enter PENDING for delay_seconds. No-op if not in an armed-ready state."""
+
+        ...
+
 
 @dataclass(frozen=True)
 class ActionContext:

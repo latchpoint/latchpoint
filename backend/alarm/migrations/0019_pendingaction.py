@@ -23,7 +23,7 @@ class Migration(migrations.Migration):
                 ('scheduled_at', models.DateTimeField(auto_now_add=True, db_index=True)),
                 ('fire_at', models.DateTimeField(db_index=True)),
                 ('status', models.CharField(choices=[('scheduled', 'Scheduled'), ('fired', 'Fired'), ('cancelled', 'Cancelled'), ('failed', 'Failed')], db_index=True, default='scheduled', max_length=16)),
-                ('cancel_reason', models.CharField(blank=True, choices=[('disarm', 'Alarm disarmed'), ('when_false', 'Rule WHEN condition no longer matched'), ('manual', 'Manual operator cancel'), ('rule_deleted', 'Rule was deleted or disabled'), ('stale_after_restart', 'Backend was down past the stale threshold')], default='', max_length=32)),
+                ('cancel_reason', models.CharField(blank=True, choices=[('disarm', 'Alarm disarmed'), ('manual', 'Manual operator cancel'), ('rule_deleted', 'Rule was deleted or disabled'), ('stale_after_restart', 'Backend was down past the stale threshold')], default='', max_length=32)),
                 ('fired_at', models.DateTimeField(blank=True, null=True)),
                 ('fire_result', models.JSONField(blank=True, help_text='What the handler returned (success result, error message, etc.)', null=True)),
                 ('armed_state_at_schedule', models.CharField(choices=[('disarmed', 'Disarmed'), ('arming', 'Arming'), ('armed_home', 'Armed home'), ('armed_away', 'Armed away'), ('armed_night', 'Armed night'), ('armed_vacation', 'Armed vacation'), ('pending', 'Pending'), ('triggered', 'Triggered')], help_text='Alarm state at enqueue time; used to scope disarm cancellation', max_length=32)),

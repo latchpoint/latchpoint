@@ -248,3 +248,29 @@ def trigger(*, user=None, reason: str = "trigger") -> AlarmStateSnapshot:
         exit_at=exit_at,
         update_previous=False,
     )
+
+
+@transaction.atomic
+def trigger_with_delay(*, delay_seconds: int, user=None, reason: str = "rule_entry_delay") -> AlarmStateSnapshot:
+    """Enter PENDING for delay_seconds. No-op if not in an armed-ready state.
+
+    Used by rule-driven entry-delay (ADR-0091 revised). The alarm advances
+    PENDING → TRIGGERED via timer_expired() on the next snapshot read.
+    """
+    snapshot = get_snapshot_for_update()
+    if snapshot.current_state not in ARMED_STATES:
+        return snapshot
+
+    now = timezone.now()
+    set_previous_armed_state(snapshot)
+    snapshot.save(update_fields=["previous_state"])
+
+    return transition(
+        snapshot=snapshot,
+        state_to=AlarmState.PENDING,
+        now=now,
+        user=user,
+        reason=reason,
+        exit_at=now + timedelta(seconds=delay_seconds),
+        update_previous=False,
+    )

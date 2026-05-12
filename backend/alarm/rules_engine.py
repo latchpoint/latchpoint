@@ -228,14 +228,6 @@ def run_rules(
                 runtime.last_when_matched = False
                 runtime.last_when_transition_at = now
                 runtime.save(update_fields=["last_when_matched", "last_when_transition_at", "updated_at"])
-                # ADR-0091: cancel any queued PendingActions for this rule. WHEN-false
-                # cancellation is event-driven (runs only when run_rules is invoked),
-                # so a rule whose WHEN flips because of a pure time condition without
-                # any other event won't cancel until the next event fires.
-                from alarm.models import PendingActionCancelReason
-                from alarm.rules.pending_actions import cancel_for_rule
-
-                cancel_for_rule(rule.id, reason=PendingActionCancelReason.WHEN_FALSE)
             continue
 
         runtime = repos.ensure_runtime(rule)

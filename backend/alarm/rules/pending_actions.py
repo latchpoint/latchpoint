@@ -9,7 +9,7 @@ from __future__ import annotations
 import copy
 import logging
 from datetime import timedelta
-from typing import TYPE_CHECKING, Iterable
+from typing import TYPE_CHECKING
 
 from django.db import transaction
 from django.utils import timezone
@@ -103,22 +103,6 @@ def cancel_for_rule(rule_id: int, *, reason: str = PendingActionCancelReason.RUL
     """Cancel all scheduled pending actions for a given rule."""
     qs = PendingAction.objects.filter(rule_id=rule_id, status=PendingActionStatus.SCHEDULED)
     return cancel_pending_actions(queryset=qs, reason=reason)
-
-
-def cancel_for_rules_when_false(rule_ids: Iterable[int]) -> int:
-    """Cancel pending actions for rules whose WHEN condition no longer matches.
-
-    Called from the rules engine after WHEN re-evaluation finds rules that
-    have pending actions but no longer match.
-    """
-    ids = list(rule_ids)
-    if not ids:
-        return 0
-    qs = PendingAction.objects.filter(
-        rule_id__in=ids,
-        status=PendingActionStatus.SCHEDULED,
-    )
-    return cancel_pending_actions(queryset=qs, reason=PendingActionCancelReason.WHEN_FALSE)
 
 
 def cancel_by_id(pending_action_id: int) -> bool:

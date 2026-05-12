@@ -12,8 +12,6 @@ from rest_framework.views import APIView
 from alarm.models import PendingAction, PendingActionStatus
 from alarm.rules.pending_actions import cancel_by_id
 from alarm.serializers import PendingActionSerializer
-from alarm.state_machine.errors import InvalidCodeError
-from alarm.use_cases.alarm_actions import CodeRequired, InvalidCode, validate_user_code
 from config.domain_exceptions import NotFoundError, ValidationError
 
 _ALLOWED_STATUS_VALUES = {s.value for s in PendingActionStatus} | {"all"}
@@ -47,11 +45,9 @@ class PendingActionsListView(APIView):
 class PendingActionCancelView(APIView):
     """Manually cancel a queued action.
 
-    For ``alarm_trigger`` pending actions, cancellation is functionally
-    equivalent to disarming the alarm — it prevents the trigger from firing.
-    To match the disarm-requires-code security gate, a valid user code is
-    required in the request body when the target action is ``alarm_trigger``.
-    Other action types (e.g., ``send_notification``) do not require a code.
+    Only ``send_notification`` rows live in the PendingAction queue under
+    ADR-0091 (revised). ``alarm_trigger`` delays are handled by the state
+    machine's PENDING state — to cancel one, disarm the alarm.
     """
 
     def post(self, request, pending_action_id: int):
@@ -61,15 +57,6 @@ class PendingActionCancelView(APIView):
             raise NotFoundError("Pending action not found.") from exc
         if pa.status != PendingActionStatus.SCHEDULED:
             raise NotFoundError("Pending action is already in a terminal state.")
-
-        if (pa.action_payload or {}).get("type") == "alarm_trigger":
-            raw_code = request.data.get("code") if isinstance(request.data, dict) else None
-            if not raw_code:
-                raise CodeRequired("Code is required to cancel an alarm_trigger pending action.")
-            try:
-                validate_user_code(user=request.user, raw_code=raw_code)
-            except InvalidCodeError as exc:
-                raise InvalidCode(str(exc) or "Invalid code.") from exc
 
         if not cancel_by_id(pending_action_id):
             raise NotFoundError("Pending action is already in a terminal state.")

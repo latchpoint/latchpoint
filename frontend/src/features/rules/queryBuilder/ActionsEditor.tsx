@@ -353,7 +353,7 @@ function AlarmTriggerFields({
         Entry delay (seconds){' '}
         <HelpTip
           className="ml-1"
-          content="While waiting, the alarm stays armed; the trigger sits in the Pending Actions queue. Disarm, the rule's WHEN condition flipping, or manual cancel will abort the trigger. 0 or empty triggers immediately."
+          content="The alarm enters its Pending state with a countdown for this many seconds, then triggers unless disarmed. Only a disarm aborts the trigger — closing the door or the WHEN condition flipping false will NOT cancel it. 0 or empty triggers immediately."
         />
       </label>
       <Input

@@ -117,9 +117,10 @@ export interface AlarmDisarmAction {
  * Alarm trigger action
  *
  * `delaySeconds` (optional, 0-600) is an entry-delay grace window: the alarm
- * stays in its current armed state and the trigger waits in the PendingAction
- * queue (ADR-0091). Disarm, the rule's WHEN condition flipping false, or a
- * manual cancel will abort it. Omit or 0 to trigger immediately.
+ * enters its PENDING state for that many seconds, then transitions to TRIGGERED
+ * unless the user disarms first (ADR-0091, revised). Closing the door / WHEN
+ * flipping false will NOT cancel — Ring-panel semantic. Omit or 0 triggers
+ * immediately.
  */
 export interface AlarmTriggerAction {
   type: 'alarm_trigger'
@@ -183,8 +184,9 @@ export interface Zigbee2mqttLightAction {
  * Send notification action using notification providers
  *
  * `delaySeconds` (optional, 0-600): queue the notification via the PendingAction
- * queue (ADR-0091). The send is aborted if the alarm is disarmed, the rule's
- * WHEN condition flips false, or the operator manually cancels.
+ * queue (ADR-0091, revised). The send is aborted only if the alarm is disarmed
+ * or the operator manually cancels from the Pending Actions card; WHEN flipping
+ * false does not cancel.
  */
 export interface SendNotificationAction {
   type: 'send_notification'

@@ -493,7 +493,6 @@ class PendingActionStatus(models.TextChoices):
 
 class PendingActionCancelReason(models.TextChoices):
     DISARM = "disarm", "Alarm disarmed"
-    WHEN_FALSE = "when_false", "Rule WHEN condition no longer matched"
     MANUAL = "manual", "Manual operator cancel"
     RULE_DELETED = "rule_deleted", "Rule was deleted or disabled"
     STALE_AFTER_RESTART = "stale_after_restart", "Backend was down past the stale threshold"
