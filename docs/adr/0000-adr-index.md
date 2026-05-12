@@ -106,7 +106,7 @@ This document tracks all Architecture Decision Records (ADRs) and their implemen
 | [0087](0087-integration-settings-save-refresh-banner-feedback.md) | Banner Feedback for Integration Settings Save and Refresh | **Implemented** |
 | [0088](0088-rule-message-template-variables.md) | Template Variables in Rule Notification Action Messages | **Implemented** |
 | [0089](0089-frontend-only-demo-mode.md) | Frontend-Only Demo Mode | **Implemented** |
-| [0090](0090-container-timezone-env-var.md) | Container Timezone via TZ Env Var | **Proposed** |
+| [0090](0090-container-timezone-env-var.md) | Container Timezone via TZ Env Var | **Implemented** |
 
 ---
 
@@ -114,10 +114,10 @@ This document tracks all Architecture Decision Records (ADRs) and their implemen
 
 | Status | Count |
 |--------|-------|
-| **Implemented** | 65 |
+| **Implemented** | 66 |
 | **Partially Implemented** | 0 |
 | **Accepted** | 1 |
-| **Proposed** | 9 |
+| **Proposed** | 8 |
 | **Superseded** | 14 |
 | **Total** | 89 |
 
@@ -125,4 +125,4 @@ Note: **Superseded** includes entries marked as "Superseded by …" in the table
 
 ---
 
-*Last updated: 2026-05-11* (ADR 0090 proposed: container timezone via TZ env var; backfilled missing 0089 entry)
+*Last updated: 2026-05-12* (ADR 0090 flipped to Implemented: container timezone via TZ env var)
