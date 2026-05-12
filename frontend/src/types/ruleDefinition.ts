@@ -117,8 +117,9 @@ export interface AlarmDisarmAction {
  * Alarm trigger action
  *
  * `delaySeconds` (optional, 0-600) is an entry-delay grace window: the alarm
- * enters PENDING for that long and only transitions to TRIGGERED when the timer
- * expires. A disarm during the window cancels. Omit or 0 to trigger immediately.
+ * stays in its current armed state and the trigger waits in the PendingAction
+ * queue (ADR-0091). Disarm, the rule's WHEN condition flipping false, or a
+ * manual cancel will abort it. Omit or 0 to trigger immediately.
  */
 export interface AlarmTriggerAction {
   type: 'alarm_trigger'

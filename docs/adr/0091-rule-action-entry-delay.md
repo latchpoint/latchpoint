@@ -1,6 +1,6 @@
 # ADR-0091: Rule Action Entry Delay via Unified PendingAction Queue
 
-**Status:** Proposed
+**Status:** Implemented
 **Date:** 2026-05-12
 **Author:** Leonardo Merza
 
@@ -215,6 +215,25 @@ Reasoning:
   trigger will be cooldown-locked for the duration of the wait + the
   cooldown.
 
+### Security Considerations
+
+- **Manual cancel of `alarm_trigger` requires a disarm code.** Cancelling a
+  queued `alarm_trigger` PendingAction is functionally equivalent to disarming
+  the alarm — it prevents the trigger from firing. To preserve the
+  disarm-requires-code security property, `POST /api/alarm/pending-actions/<id>/cancel/`
+  validates a `code` in the request body when the target row's
+  `action_payload.type == "alarm_trigger"`. The same `validate_user_code()`
+  helper used by `disarm_alarm()` is reused, so the failure modes (missing
+  code → 400 `validation_error`; invalid code → 401 `unauthorized`) match the
+  rest of the system. Other action types (`send_notification`) cancel without
+  a code — they are not security-critical.
+- **`fire_result` is API-visible.** When a handler raises, the persisted
+  `fire_result["error"]` stores only the exception class name (e.g.,
+  `"handler_exception"` + `"exception_class": "OperationalError"`), not the
+  raw `str(exc)`. The full traceback stays in logs (`logger.warning` with
+  `exc_info=True`). This avoids leaking internal hostnames / connection
+  strings through the authenticated list endpoint.
+
 ### Neutral / Out of Scope
 
 - Per-state delay overrides (e.g., different grace for `armed_home` vs.
@@ -271,8 +290,15 @@ Reasoning:
   `cancel_for_rule(rule.id, reason=WHEN_FALSE)`. Event-driven only —
   see the Consequences section about time-only conditions.
 - **API** (`backend/alarm/views/pending_actions.py`):
-  - `GET /api/alarm/pending-actions/?status=scheduled&limit=N`: list.
-  - `POST /api/alarm/pending-actions/<id>/cancel/`: manual cancel.
+  - `GET /api/alarm/pending-actions/?status=scheduled&limit=N`: list. `status`
+    is validated against `PendingActionStatus.choices` + `"all"`; unknown
+    values return 400. `limit` is clamped to `[1, 500]` (negative values would
+    otherwise hit Django's slice and 500).
+  - `POST /api/alarm/pending-actions/<id>/cancel/`: manual cancel. Requires
+    a valid disarm `code` in the request body when the target action is
+    `alarm_trigger` (see Security Considerations). 404s route through the
+    domain `NotFoundError` → `custom_exception_handler` so the response uses
+    the ADR-0025 envelope.
 
 ### New frontend pieces
 

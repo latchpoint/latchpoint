@@ -389,7 +389,11 @@ def _fire_one_pending_action(pa: PendingAction) -> None:
     except Exception as exc:
         logger.warning("PendingAction %d handler raised: %s", pa.id, exc, exc_info=True)
         pa.status = PendingActionStatus.FAILED
-        pa.fire_result = {"error": str(exc), "exception": True}
+        # The raw exception message can carry internal hostnames / connection
+        # strings (e.g., DB or MQTT errors) and the list endpoint returns
+        # fire_result to any authenticated user. Persist only the exception
+        # class for the API surface; the full message + traceback are in logs.
+        pa.fire_result = {"error": "handler_exception", "exception_class": type(exc).__name__}
         pa.fired_at = now
         pa.save(update_fields=["status", "fire_result", "fired_at", "updated_at"])
 

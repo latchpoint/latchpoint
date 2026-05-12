@@ -14,12 +14,13 @@ from datetime import timedelta
 from unittest.mock import MagicMock, patch
 from uuid import uuid4
 
+from django.contrib.auth.hashers import make_password
 from django.test import TestCase
 from django.urls import reverse
 from django.utils import timezone
 from rest_framework.test import APIClient
 
-from accounts.models import User
+from accounts.models import User, UserCode
 from alarm.models import (
     AlarmSettingsProfile,
     AlarmState,
@@ -413,15 +414,28 @@ class PendingActionsApiTests(TestCase):
     def setUp(self):
         _seed_profile()
         self.user = User.objects.create_user(email="api@example.com", password="pass")
+        self.code = UserCode.objects.create(
+            user=self.user,
+            code_hash=make_password("1234"),
+            label="Test Code",
+            code_type=UserCode.CodeType.PERMANENT,
+            pin_length=4,
+            is_active=True,
+        )
         self.rule = _make_rule()
         self.client = APIClient()
         self.client.force_authenticate(self.user)
 
-    def _enqueue(self, *, status=PendingActionStatus.SCHEDULED) -> PendingAction:
+    def _enqueue(
+        self,
+        *,
+        status=PendingActionStatus.SCHEDULED,
+        payload=None,
+    ) -> PendingAction:
         return PendingAction.objects.create(
             rule=self.rule,
             action_index=0,
-            action_payload={"type": "alarm_trigger", "delay_seconds": 15},
+            action_payload=payload or {"type": "alarm_trigger", "delay_seconds": 15},
             delay_seconds=15,
             fire_at=timezone.now() + timedelta(seconds=15),
             status=status,
@@ -444,9 +458,26 @@ class PendingActionsApiTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(len(response.json()["data"]), 2)
 
-    def test_cancel_endpoint_transitions_to_cancelled(self):
+    def test_list_rejects_unknown_status_filter(self):
+        response = self.client.get(reverse("alarm-pending-actions"), {"status": "bogus"})
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("error", response.json())
+
+    def test_list_clamps_negative_limit(self):
+        # Pre-fix: negative limit hit Django's slice and 500'd. Post-fix: clamped to 1.
+        self._enqueue()
+        self._enqueue()
+        response = self.client.get(reverse("alarm-pending-actions"), {"limit": "-5"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.json()["data"]), 1)
+
+    def test_cancel_alarm_trigger_with_valid_code_transitions_to_cancelled(self):
         pa = self._enqueue()
-        response = self.client.post(reverse("alarm-pending-action-cancel", args=[pa.id]))
+        response = self.client.post(
+            reverse("alarm-pending-action-cancel", args=[pa.id]),
+            data={"code": "1234"},
+            format="json",
+        )
         self.assertEqual(response.status_code, 200)
         body = response.json()["data"]
         self.assertEqual(body["status"], PendingActionStatus.CANCELLED)
@@ -454,7 +485,49 @@ class PendingActionsApiTests(TestCase):
         pa.refresh_from_db()
         self.assertEqual(pa.status, PendingActionStatus.CANCELLED)
 
-    def test_cancel_endpoint_returns_404_if_already_terminal(self):
-        pa = self._enqueue(status=PendingActionStatus.FIRED)
+    def test_cancel_alarm_trigger_requires_code(self):
+        pa = self._enqueue()
         response = self.client.post(reverse("alarm-pending-action-cancel", args=[pa.id]))
+        self.assertEqual(response.status_code, 400)
+        body = response.json()
+        self.assertIn("error", body)
+        pa.refresh_from_db()
+        self.assertEqual(pa.status, PendingActionStatus.SCHEDULED)
+
+    def test_cancel_alarm_trigger_rejects_invalid_code(self):
+        pa = self._enqueue()
+        response = self.client.post(
+            reverse("alarm-pending-action-cancel", args=[pa.id]),
+            data={"code": "9999"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 401)
+        pa.refresh_from_db()
+        self.assertEqual(pa.status, PendingActionStatus.SCHEDULED)
+
+    def test_cancel_send_notification_does_not_require_code(self):
+        pa = self._enqueue(
+            payload={
+                "type": "send_notification",
+                "provider_id": str(uuid4()),
+                "message": "hi",
+                "delay_seconds": 30,
+            }
+        )
+        response = self.client.post(reverse("alarm-pending-action-cancel", args=[pa.id]))
+        self.assertEqual(response.status_code, 200)
+        pa.refresh_from_db()
+        self.assertEqual(pa.status, PendingActionStatus.CANCELLED)
+
+    def test_cancel_endpoint_returns_envelope_404_if_already_terminal(self):
+        pa = self._enqueue(status=PendingActionStatus.FIRED)
+        response = self.client.post(
+            reverse("alarm-pending-action-cancel", args=[pa.id]),
+            data={"code": "1234"},
+            format="json",
+        )
         self.assertEqual(response.status_code, 404)
+        # ADR-0025: error payload must use the {"error": {...}} envelope.
+        body = response.json()
+        self.assertIn("error", body)
+        self.assertEqual(body["error"]["status"], "not_found")
