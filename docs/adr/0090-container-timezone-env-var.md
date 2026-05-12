@@ -54,8 +54,7 @@ The production base image (`python:3.12-slim`, `Dockerfile:23`) does **not** ins
 2. **Install `tzdata` in the runtime base stage of `Dockerfile`** so the IANA database is present regardless of host filesystem layout.
 3. **Django's `TIME_ZONE` reads from `TZ`** (`backend/config/settings.py`), so users only set one knob.
 4. **Remove the host bind-mounts** for `/etc/localtime` and `/etc/timezone` from both compose files (the lines added in `d06451f`).
-5. **Propagate `TZ` to every container, including `db`.** Postgres's log timestamps and SQL `now()` must move in lockstep with the backend; a divergence makes log correlation actively misleading.
-6. **Force Postgres timezone at every start via `command: ["postgres", "-c", "timezone=${TZ:-UTC}"]`.** Postgres only honors `TZ` during the *initdb* of a fresh data directory; once `postgresql.conf` is written, subsequent `TZ` changes are ignored. The `-c` command-line override forces the server timezone every start regardless of cluster age, so a user who initialized the cluster under UTC can flip `TZ=America/Chicago` in `.env` and see the change after `docker compose restart db` — no `ALTER SYSTEM` dance required.
+5. **Propagate `TZ` to backend (and dev frontend) only; leave Postgres on UTC.** Django runs with `USE_TZ = True` (`backend/config/settings.py:122`), so the ORM stores all datetimes in UTC regardless of Postgres's session timezone. The API serializes ISO-8601 with offset (e.g. `2026-05-11T20:30:00-05:00`) and the browser localizes via `toLocaleString()` (`frontend/src/features/events/utils/dateTime.ts`). No display path goes through Postgres TZ. Keeping the storage layer canonical (UTC) matches the standard "store UTC, display local" pattern; backups and replicas don't carry timezone surprises.
 
 ## Alternatives Considered
 
@@ -78,10 +77,10 @@ Cons: Defeats the entire point — every user's timezone would have to be a diff
 
 ### Positive
 
-- One env var, one source of truth.
+- One env var, one source of truth for the *application* layer (backend libc + Django).
 - Image is portable across host OSes and cloud environments.
-- Postgres, libc, and Django agree on what time it is — log correlation across `docker compose logs db backend` actually works.
 - CI can simulate any timezone by setting `TZ` in the test env.
+- Storage layer (Postgres) stays canonical UTC; backups and replicas are timezone-agnostic.
 
 ### Negative / Risks
 
@@ -90,21 +89,21 @@ Cons: Defeats the entire point — every user's timezone would have to be a diff
 | Users with existing `TIME_ZONE=` in their `.env` get silently ignored after the upgrade. | Call out in release notes; the change is to a single line in `.env.example` so the diff is obvious during upgrade review. Default `UTC` matches prior default behavior, so users who never set it see no change. |
 | `tzdata` package adds ~3 MB to the image. | Negligible relative to the existing image size; tzdata is the standard solution. |
 | Removing the bind-mount on a host that previously relied on it (without setting `TZ`) silently regresses the container to UTC. | Default is UTC anyway; the regression is only visible if the user *previously* relied on the host bind-mount instead of `TIME_ZONE` to localize. The migration note in the release should call out "set `TZ=` in `.env` if you previously relied on the host timezone." |
-| Postgres only honors `TZ` at initdb; existing clusters keep the original `postgresql.conf` timezone. | Force the server timezone every start via `command: ["postgres", "-c", "timezone=${TZ:-UTC}"]` in both compose files (decision item 6). Verified: an existing UTC cluster correctly reports `America/Chicago` after restart with `TZ=America/Chicago` in `.env`. |
+| `docker compose logs db backend` interleaves UTC (Postgres) and local-time (backend) timestamps. | Accepted trade-off. Mental-math the offset, or filter to one service at a time. The cleanliness of "storage layer is timezone-agnostic" outweighs the log-correlation friction. |
 
 ### Neutral
 
 - `TZ` is a libc-honored variable. `django-environ`'s `env.str("TZ", ...)` simply reads `os.environ["TZ"]`; no special handling, no collision.
 - The setting registry remains the single source of truth for *integration* configuration. `TZ` stays an env var because it must affect libc before Django is even imported, which the registry can't influence.
+- **Postgres stays on UTC by design.** With `USE_TZ=True`, all ORM datetimes are stored in UTC regardless of session timezone; `SHOW TIME ZONE` only changes how `now()` and `to_char()` *display*. The API emits ISO-8601 with offset and the browser localizes via `toLocaleString()`. If a future operator wants Postgres logs in local time for ergonomics, they can add `command: ["postgres", "-c", "timezone=${TZ:-UTC}"]` to their override compose; the default ships UTC.
 
 ## Implementation Plan
 
 1. Add `tzdata` to the `apt-get install` list in `Dockerfile`'s runtime base stage.
 2. In both compose files, remove the `/etc/localtime` and `/etc/timezone` bind-mounts from every service.
-3. In compose files, ensure `TZ` reaches every service: backend/app inherit via `env_file: .env` (already configured); add an explicit `environment: TZ: ${TZ:-UTC}` block to `db` and dev `frontend`.
-3a. Add `command: ["postgres", "-c", "timezone=${TZ:-UTC}"]` to the `db` service in both compose files so the server timezone is forced on every start (existing clusters' `postgresql.conf` would otherwise pin it).
+3. In compose files, ensure `TZ` reaches the application services: backend/app inherit via `env_file: .env` (already configured); add an explicit `environment: TZ: ${TZ:-UTC}` block to the dev `frontend` service. The `db` service is intentionally left alone — Postgres stays on UTC.
 4. Change `backend/config/settings.py:120` from `env.str("TIME_ZONE", default="UTC")` to `env.str("TZ", default="UTC")`.
-5. Replace `# TIME_ZONE=UTC` in `.env.example` with `# TZ=UTC  # IANA timezone, e.g. America/Chicago. Drives POSIX libc, Postgres, and Django TIME_ZONE.`
+5. Replace `# TIME_ZONE=UTC` in `.env.example` with `# TZ=UTC  # IANA timezone, e.g. America/Chicago. Drives POSIX libc and Django TIME_ZONE.`
 6. Update `docs/ONBOARDING.md` references from `TIME_ZONE` to `TZ`.
 7. Add a brief Timezone note to `README.md`.
 
@@ -116,7 +115,7 @@ Cons: Defeats the entire point — every user's timezone would have to be a diff
 - [ ] AC-4: With `TZ=America/Chicago` in `.env`:
   - `settings.TIME_ZONE == "America/Chicago"`,
   - `docker compose exec backend date` reports CST/CDT,
-  - `docker compose exec db psql -U alarm -d alarm_db -c "SHOW TIME ZONE;"` returns `America/Chicago` (or an alias like `US/Central`).
+  - `docker compose exec db psql -U alarm -d alarm_db -c "SHOW TIME ZONE;"` returns `Etc/UTC` — by design; the storage layer is timezone-agnostic under `USE_TZ=True`.
 - [ ] AC-5: `grep -RE "/etc/localtime|/etc/timezone" docker-compose*.yml` returns nothing.
 - [ ] AC-6: `./scripts/docker-test.sh` passes (in particular the `scheduler` app — DailyAt depends on `timezone.localtime`).
 - [ ] AC-7: `uvx ruff check backend/` and `uvx ruff format --check backend/` clean.
