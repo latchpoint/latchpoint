@@ -55,6 +55,7 @@ The production base image (`python:3.12-slim`, `Dockerfile:23`) does **not** ins
 3. **Django's `TIME_ZONE` reads from `TZ`** (`backend/config/settings.py`), so users only set one knob.
 4. **Remove the host bind-mounts** for `/etc/localtime` and `/etc/timezone` from both compose files (the lines added in `d06451f`).
 5. **Propagate `TZ` to every container, including `db`.** Postgres's log timestamps and SQL `now()` must move in lockstep with the backend; a divergence makes log correlation actively misleading.
+6. **Force Postgres timezone at every start via `command: ["postgres", "-c", "timezone=${TZ:-UTC}"]`.** Postgres only honors `TZ` during the *initdb* of a fresh data directory; once `postgresql.conf` is written, subsequent `TZ` changes are ignored. The `-c` command-line override forces the server timezone every start regardless of cluster age, so a user who initialized the cluster under UTC can flip `TZ=America/Chicago` in `.env` and see the change after `docker compose restart db` — no `ALTER SYSTEM` dance required.
 
 ## Alternatives Considered
 
@@ -89,6 +90,7 @@ Cons: Defeats the entire point — every user's timezone would have to be a diff
 | Users with existing `TIME_ZONE=` in their `.env` get silently ignored after the upgrade. | Call out in release notes; the change is to a single line in `.env.example` so the diff is obvious during upgrade review. Default `UTC` matches prior default behavior, so users who never set it see no change. |
 | `tzdata` package adds ~3 MB to the image. | Negligible relative to the existing image size; tzdata is the standard solution. |
 | Removing the bind-mount on a host that previously relied on it (without setting `TZ`) silently regresses the container to UTC. | Default is UTC anyway; the regression is only visible if the user *previously* relied on the host bind-mount instead of `TIME_ZONE` to localize. The migration note in the release should call out "set `TZ=` in `.env` if you previously relied on the host timezone." |
+| Postgres only honors `TZ` at initdb; existing clusters keep the original `postgresql.conf` timezone. | Force the server timezone every start via `command: ["postgres", "-c", "timezone=${TZ:-UTC}"]` in both compose files (decision item 6). Verified: an existing UTC cluster correctly reports `America/Chicago` after restart with `TZ=America/Chicago` in `.env`. |
 
 ### Neutral
 
@@ -100,6 +102,7 @@ Cons: Defeats the entire point — every user's timezone would have to be a diff
 1. Add `tzdata` to the `apt-get install` list in `Dockerfile`'s runtime base stage.
 2. In both compose files, remove the `/etc/localtime` and `/etc/timezone` bind-mounts from every service.
 3. In compose files, ensure `TZ` reaches every service: backend/app inherit via `env_file: .env` (already configured); add an explicit `environment: TZ: ${TZ:-UTC}` block to `db` and dev `frontend`.
+3a. Add `command: ["postgres", "-c", "timezone=${TZ:-UTC}"]` to the `db` service in both compose files so the server timezone is forced on every start (existing clusters' `postgresql.conf` would otherwise pin it).
 4. Change `backend/config/settings.py:120` from `env.str("TIME_ZONE", default="UTC")` to `env.str("TZ", default="UTC")`.
 5. Replace `# TIME_ZONE=UTC` in `.env.example` with `# TZ=UTC  # IANA timezone, e.g. America/Chicago. Drives POSIX libc, Postgres, and Django TIME_ZONE.`
 6. Update `docs/ONBOARDING.md` references from `TIME_ZONE` to `TZ`.

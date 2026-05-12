@@ -274,6 +274,16 @@ Tags include `latest` (default branch), `sha-...` (commit), and git tag
 versions. See [`.env.example`](.env.example) for environment variables and
 inline notes on generating `SETTINGS_ENCRYPTION_KEY`.
 
+### Timezone
+
+Set `TZ` in `.env` to an IANA timezone name (e.g. `TZ=America/Chicago`).
+This single variable drives POSIX libc inside the containers, Postgres
+(`SHOW TIME ZONE`), and Django's `TIME_ZONE` setting (which in turn drives
+the scheduler, rule conditions, and the `{{now}}` template variable). When
+unset, everything defaults to UTC. The image carries `tzdata`, so no host
+bind-mounts of `/etc/localtime` or `/etc/timezone` are needed — see
+[ADR-0090](docs/adr/0090-container-timezone-env-var.md).
+
 A reference compose file:
 
 ```yaml

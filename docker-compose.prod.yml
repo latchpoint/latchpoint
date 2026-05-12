@@ -6,10 +6,13 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-alarm_db}
       POSTGRES_USER: ${POSTGRES_USER:-alarm}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-alarm}
+      TZ: ${TZ:-UTC}
+    # Force server timezone every start. Without this, Postgres only honors
+    # `TZ` at initdb; existing clusters keep their original postgresql.conf
+    # timezone setting (ADR-0090).
+    command: ["postgres", "-c", "timezone=${TZ:-UTC}"]
     volumes:
       - db_data:/var/lib/postgresql/data
-      - /etc/localtime:/etc/localtime:ro
-      - /etc/timezone:/etc/timezone:ro
 
   app:
     image: ghcr.io/ljmerza/latchpoint:main
@@ -20,9 +23,6 @@ services:
       - "5427:80"
     depends_on:
       - db
-    volumes:
-      - /etc/localtime:/etc/localtime:ro
-      - /etc/timezone:/etc/timezone:ro
 
 volumes:
   db_data:
