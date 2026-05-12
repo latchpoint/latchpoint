@@ -45,6 +45,8 @@ ACTION_TYPES = frozenset(
 
 ZIGBEE2MQTT_ON_OFF = ("on", "off")
 
+ALARM_TRIGGER_MAX_DELAY_SECONDS = 600
+
 
 def validate_action(action: Any, schema_version: int = 1) -> list[str]:
     """
@@ -73,8 +75,17 @@ def validate_action(action: Any, schema_version: int = 1) -> list[str]:
 
 
 def _validate_alarm_trigger(action: dict[str, Any]) -> list[str]:
-    """alarm_trigger requires no additional fields."""
-    return []
+    """alarm_trigger accepts an optional 'delay_seconds' grace window."""
+    errors: list[str] = []
+    if "delay_seconds" in action:
+        delay = action["delay_seconds"]
+        if isinstance(delay, bool) or not isinstance(delay, int):
+            errors.append("alarm_trigger 'delay_seconds' must be an integer if provided")
+        elif delay < 0:
+            errors.append("alarm_trigger 'delay_seconds' must be >= 0")
+        elif delay > ALARM_TRIGGER_MAX_DELAY_SECONDS:
+            errors.append(f"alarm_trigger 'delay_seconds' must be <= {ALARM_TRIGGER_MAX_DELAY_SECONDS}")
+    return errors
 
 
 def _validate_alarm_disarm(action: dict[str, Any]) -> list[str]:
@@ -212,6 +223,15 @@ def _validate_send_notification(action: dict[str, Any]) -> list[str]:
     if data is not None and not isinstance(data, dict):
         errors.append("send_notification 'data' must be an object if provided")
 
+    if "delay_seconds" in action:
+        delay = action["delay_seconds"]
+        if isinstance(delay, bool) or not isinstance(delay, int):
+            errors.append("send_notification 'delay_seconds' must be an integer if provided")
+        elif delay < 0:
+            errors.append("send_notification 'delay_seconds' must be >= 0")
+        elif delay > ALARM_TRIGGER_MAX_DELAY_SECONDS:
+            errors.append(f"send_notification 'delay_seconds' must be <= {ALARM_TRIGGER_MAX_DELAY_SECONDS}")
+
     return errors
 
 
@@ -237,6 +257,17 @@ def get_action_schemas() -> dict[str, dict[str, Any]]:
             "type": "object",
             "properties": {
                 "type": {"const": "alarm_trigger"},
+                "delay_seconds": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": ALARM_TRIGGER_MAX_DELAY_SECONDS,
+                    "description": (
+                        "Optional entry-delay grace window in seconds before the alarm "
+                        "transitions to TRIGGERED. 0 (or omitted) triggers immediately. "
+                        "While in the grace window the alarm is in PENDING and a disarm "
+                        "cancels the trigger."
+                    ),
+                },
             },
             "required": ["type"],
             "admin_only": False,
@@ -334,6 +365,15 @@ def get_action_schemas() -> dict[str, dict[str, Any]]:
                 "message": {"type": "string", "description": "Notification message body"},
                 "title": {"type": "string", "description": "Optional notification title"},
                 "data": {"type": "object", "description": "Optional provider-specific data"},
+                "delay_seconds": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": ALARM_TRIGGER_MAX_DELAY_SECONDS,
+                    "description": (
+                        "Optional delay (seconds) before sending. The notification is queued; "
+                        "disarm, WHEN-condition flipping, or manual cancel will abort it."
+                    ),
+                },
             },
             "required": ["type", "provider_id", "message"],
             "admin_only": False,

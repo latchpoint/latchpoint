@@ -152,4 +152,214 @@ describe('ActionsEditor', () => {
     expect(screen.getByText('light.kitchen')).toBeInTheDocument()
     expect(screen.queryByText('zwave.dimmer')).toBeNull()
   })
+
+  // ── alarm_trigger entry-delay (ADR-0091) ─────────────────────────────────
+
+  it('shows a "delay Ns" badge for alarm_trigger with a non-zero delaySeconds', async () => {
+    const { ActionsEditor } = await import('./ActionsEditor')
+    renderWithProviders(
+      <ActionsEditor
+        actions={[{ type: 'alarm_trigger', delaySeconds: 15 }]}
+        onChange={vi.fn()}
+        entities={[]}
+      />
+    )
+    expect(screen.getByText(/^delay 15s$/i)).toBeInTheDocument()
+  })
+
+  it('auto-expands the entry-delay panel when delaySeconds > 0', async () => {
+    const { ActionsEditor } = await import('./ActionsEditor')
+    renderWithProviders(
+      <ActionsEditor
+        actions={[{ type: 'alarm_trigger', delaySeconds: 15 }]}
+        onChange={vi.fn()}
+        entities={[]}
+      />
+    )
+    // The Entry delay label only renders when the panel is expanded.
+    expect(screen.getByText(/^entry delay \(seconds\)/i)).toBeInTheDocument()
+    const input = screen.getByPlaceholderText(/trigger immediately/i) as HTMLInputElement
+    expect(input.value).toBe('15')
+  })
+
+  it('emits delaySeconds when the user types a positive value', async () => {
+    const { ActionsEditor } = await import('./ActionsEditor')
+    const onChange = vi.fn()
+    renderWithProviders(
+      <ActionsEditor
+        actions={[{ type: 'alarm_trigger', delaySeconds: 5 }]}
+        onChange={onChange}
+        entities={[]}
+      />
+    )
+    const input = screen.getByPlaceholderText(/trigger immediately/i)
+    fireEvent.change(input, { target: { value: '30' } })
+    expect(onChange).toHaveBeenLastCalledWith([
+      { type: 'alarm_trigger', delaySeconds: 30 },
+    ])
+  })
+
+  it('strips delaySeconds when the user clears the input', async () => {
+    const { ActionsEditor } = await import('./ActionsEditor')
+    const onChange = vi.fn()
+    renderWithProviders(
+      <ActionsEditor
+        actions={[{ type: 'alarm_trigger', delaySeconds: 15 }]}
+        onChange={onChange}
+        entities={[]}
+      />
+    )
+    const input = screen.getByPlaceholderText(/trigger immediately/i)
+    fireEvent.change(input, { target: { value: '' } })
+    expect(onChange).toHaveBeenLastCalledWith([{ type: 'alarm_trigger' }])
+  })
+
+  it('strips delaySeconds when the user types 0', async () => {
+    const { ActionsEditor } = await import('./ActionsEditor')
+    const onChange = vi.fn()
+    renderWithProviders(
+      <ActionsEditor
+        actions={[{ type: 'alarm_trigger', delaySeconds: 15 }]}
+        onChange={onChange}
+        entities={[]}
+      />
+    )
+    const input = screen.getByPlaceholderText(/trigger immediately/i)
+    fireEvent.change(input, { target: { value: '0' } })
+    expect(onChange).toHaveBeenLastCalledWith([{ type: 'alarm_trigger' }])
+  })
+
+  it('rejects delaySeconds above 600 with an inline error and does not emit', async () => {
+    const { ActionsEditor } = await import('./ActionsEditor')
+    const onChange = vi.fn()
+    renderWithProviders(
+      <ActionsEditor
+        actions={[{ type: 'alarm_trigger', delaySeconds: 15 }]}
+        onChange={onChange}
+        entities={[]}
+      />
+    )
+    onChange.mockClear() // ignore any initial render side effects
+    const input = screen.getByPlaceholderText(/trigger immediately/i)
+    fireEvent.change(input, { target: { value: '700' } })
+    expect(screen.getByText(/must be ≤ 600 seconds/i)).toBeInTheDocument()
+    expect(onChange).not.toHaveBeenCalled()
+  })
+
+  it('rejects negative delaySeconds with an inline error and does not emit', async () => {
+    const { ActionsEditor } = await import('./ActionsEditor')
+    const onChange = vi.fn()
+    renderWithProviders(
+      <ActionsEditor
+        actions={[{ type: 'alarm_trigger', delaySeconds: 15 }]}
+        onChange={onChange}
+        entities={[]}
+      />
+    )
+    onChange.mockClear()
+    const input = screen.getByPlaceholderText(/trigger immediately/i)
+    fireEvent.change(input, { target: { value: '-5' } })
+    expect(screen.getByText(/whole number/i)).toBeInTheDocument()
+    expect(onChange).not.toHaveBeenCalled()
+  })
+
+  // ── send_notification delay (ADR-0091) ───────────────────────────────────
+
+  it('shows a "delay Ns" badge for send_notification with a non-zero delaySeconds', async () => {
+    const { ActionsEditor } = await import('./ActionsEditor')
+    renderWithProviders(
+      <ActionsEditor
+        actions={[
+          {
+            type: 'send_notification',
+            providerId: 'home_assistant',
+            message: 'hi',
+            delaySeconds: 30,
+          },
+        ]}
+        onChange={vi.fn()}
+        entities={[]}
+      />
+    )
+    expect(screen.getByText(/^delay 30s$/i)).toBeInTheDocument()
+  })
+
+  it('emits delaySeconds when the user types a positive value into the send_notification delay input', async () => {
+    const { ActionsEditor } = await import('./ActionsEditor')
+    const onChange = vi.fn()
+    renderWithProviders(
+      <ActionsEditor
+        actions={[
+          {
+            type: 'send_notification',
+            providerId: 'home_assistant',
+            message: 'hi',
+          },
+        ]}
+        onChange={onChange}
+        entities={[]}
+      />
+    )
+    const input = screen.getByPlaceholderText(/send immediately/i)
+    fireEvent.change(input, { target: { value: '45' } })
+    expect(onChange).toHaveBeenLastCalledWith([
+      expect.objectContaining({
+        type: 'send_notification',
+        providerId: 'home_assistant',
+        message: 'hi',
+        delaySeconds: 45,
+      }),
+    ])
+  })
+
+  it('strips delaySeconds when the user clears the send_notification delay input', async () => {
+    const { ActionsEditor } = await import('./ActionsEditor')
+    const onChange = vi.fn()
+    renderWithProviders(
+      <ActionsEditor
+        actions={[
+          {
+            type: 'send_notification',
+            providerId: 'home_assistant',
+            message: 'hi',
+            delaySeconds: 30,
+          },
+        ]}
+        onChange={onChange}
+        entities={[]}
+      />
+    )
+    const input = screen.getByPlaceholderText(/send immediately/i)
+    fireEvent.change(input, { target: { value: '' } })
+    const lastCall = onChange.mock.calls.at(-1)?.[0] as Array<Record<string, unknown>>
+    expect(lastCall[0]).toEqual({
+      type: 'send_notification',
+      providerId: 'home_assistant',
+      message: 'hi',
+    })
+  })
+
+  it('rejects send_notification delaySeconds above 600 with an inline error', async () => {
+    const { ActionsEditor } = await import('./ActionsEditor')
+    const onChange = vi.fn()
+    renderWithProviders(
+      <ActionsEditor
+        actions={[
+          {
+            type: 'send_notification',
+            providerId: 'home_assistant',
+            message: 'hi',
+            delaySeconds: 30,
+          },
+        ]}
+        onChange={onChange}
+        entities={[]}
+      />
+    )
+    onChange.mockClear()
+    const input = screen.getByPlaceholderText(/send immediately/i)
+    fireEvent.change(input, { target: { value: '900' } })
+    expect(screen.getByText(/must be ≤ 600 seconds/i)).toBeInTheDocument()
+    expect(onChange).not.toHaveBeenCalled()
+  })
 })

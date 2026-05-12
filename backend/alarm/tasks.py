@@ -2,16 +2,30 @@
 
 from __future__ import annotations
 
+import copy
 import logging
 from datetime import timedelta
 
+from django.db import transaction
 from django.utils import timezone
 
-from alarm.models import AlarmEvent, Entity, RuleActionLog, RuleEntityRef
+from alarm.models import (
+    AlarmEvent,
+    Entity,
+    PendingAction,
+    PendingActionCancelReason,
+    PendingActionStatus,
+    RuleActionLog,
+    RuleEntityRef,
+)
 from alarm.system_config_utils import get_int_system_config_value
 from scheduler import DailyAt, Every, register
 
 logger = logging.getLogger(__name__)
+
+# How far past fire_at a PendingAction can be before it's auto-cancelled.
+# Catches "backend was down for hours, don't fire stale notifications" (ADR-0091).
+PENDING_ACTION_STALE_THRESHOLD_SECONDS = 60
 
 
 def _is_home_assistant_active() -> bool:
@@ -319,3 +333,131 @@ def cleanup_orphan_rule_entity_refs() -> int:
         logger.info("Cleaned up %d orphan RuleEntityRef rows", count)
 
     return count
+
+
+def _fire_one_pending_action(pa: PendingAction) -> None:
+    """Dispatch a single pending action through the handler registry.
+
+    Marks the row ``fired`` (or ``failed``) with the handler's result. Called
+    from inside a per-row ``select_for_update`` block so concurrent ticks
+    can't double-fire.
+    """
+    from alarm.gateways.home_assistant import default_home_assistant_gateway
+    from alarm.gateways.zigbee2mqtt import default_zigbee2mqtt_gateway
+    from alarm.gateways.zwavejs import default_zwavejs_gateway
+    from alarm.rules.action_handlers import ActionContext, get_handler
+    from alarm.rules.template_render import TriggerContext
+    from alarm.state_machine import transitions as _transitions_module
+
+    # Strip delay_seconds from the dispatched payload — otherwise the handler
+    # would re-enqueue instead of executing.
+    payload = copy.deepcopy(pa.action_payload)
+    if isinstance(payload, dict):
+        payload.pop("delay_seconds", None)
+
+    action_type = payload.get("type") if isinstance(payload, dict) else None
+    handler = get_handler(action_type) if isinstance(action_type, str) else None
+    now = timezone.now()
+
+    if handler is None:
+        pa.status = PendingActionStatus.FAILED
+        pa.fire_result = {"error": "unsupported_action", "type": str(action_type)}
+        pa.fired_at = now
+        pa.save(update_fields=["status", "fire_result", "fired_at", "updated_at"])
+        return
+
+    ctx = ActionContext(
+        rule=pa.rule,
+        actor_user=pa.actor_user,
+        alarm_services=_transitions_module,
+        ha=default_home_assistant_gateway,
+        zwavejs=default_zwavejs_gateway,
+        zigbee2mqtt=default_zigbee2mqtt_gateway,
+        triggers=TriggerContext.empty(now),
+        action_index=pa.action_index,
+    )
+
+    try:
+        result, error = handler(payload, ctx)
+        pa.fire_result = result
+        pa.fired_at = now
+        if error is None and result.get("ok", False):
+            pa.status = PendingActionStatus.FIRED
+        else:
+            pa.status = PendingActionStatus.FAILED
+        pa.save(update_fields=["status", "fire_result", "fired_at", "updated_at"])
+    except Exception as exc:
+        logger.warning("PendingAction %d handler raised: %s", pa.id, exc, exc_info=True)
+        pa.status = PendingActionStatus.FAILED
+        pa.fire_result = {"error": str(exc), "exception": True}
+        pa.fired_at = now
+        pa.save(update_fields=["status", "fire_result", "fired_at", "updated_at"])
+
+
+@register(
+    "fire_due_pending_actions",
+    schedule=Every(seconds=2),
+    description="Fires queued rule actions whose delay has elapsed (ADR-0091).",
+)
+def fire_due_pending_actions() -> dict:
+    """Pick up PendingAction rows whose ``fire_at`` has passed and dispatch them.
+
+    Rows past the stale threshold are auto-cancelled instead of fired — keeps
+    a long backend outage from suddenly emitting hours-old notifications.
+
+    Returns ``{"fired": N, "failed": N, "stale_cancelled": N}``.
+    """
+    now = timezone.now()
+    stale_cutoff = now - timedelta(seconds=PENDING_ACTION_STALE_THRESHOLD_SECONDS)
+
+    # Auto-cancel rows that are too old to be useful (post-outage protection).
+    stale_cancelled = PendingAction.objects.filter(
+        status=PendingActionStatus.SCHEDULED,
+        fire_at__lt=stale_cutoff,
+    ).update(
+        status=PendingActionStatus.CANCELLED,
+        cancel_reason=PendingActionCancelReason.STALE_AFTER_RESTART,
+        updated_at=now,
+    )
+
+    fired = 0
+    failed = 0
+
+    # Pick up due rows. Cap the batch so a backlog doesn't block the tick.
+    due_ids = list(
+        PendingAction.objects.filter(
+            status=PendingActionStatus.SCHEDULED,
+            fire_at__lte=now,
+        )
+        .order_by("fire_at", "id")
+        .values_list("id", flat=True)[:50]
+    )
+
+    for pa_id in due_ids:
+        with transaction.atomic():
+            try:
+                pa = (
+                    PendingAction.objects.select_for_update(skip_locked=True)
+                    .filter(id=pa_id, status=PendingActionStatus.SCHEDULED)
+                    .first()
+                )
+            except Exception as exc:
+                logger.warning("Could not lock PendingAction %d: %s", pa_id, exc)
+                continue
+            if pa is None:
+                continue  # Already fired/cancelled by a concurrent worker or signal.
+            _fire_one_pending_action(pa)
+            if pa.status == PendingActionStatus.FIRED:
+                fired += 1
+            elif pa.status == PendingActionStatus.FAILED:
+                failed += 1
+
+    if fired or failed or stale_cancelled:
+        logger.info(
+            "PendingAction tick: fired=%d failed=%d stale_cancelled=%d",
+            fired,
+            failed,
+            stale_cancelled,
+        )
+
+    return {"fired": fired, "failed": failed, "stale_cancelled": stale_cancelled}

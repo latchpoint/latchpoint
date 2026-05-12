@@ -27,6 +27,8 @@ export const apiEndpoints = {
     settingsProfiles: '/api/alarm/settings/profiles/',
     settingsProfile: (id: number) => `/api/alarm/settings/profiles/${id}/`,
     activateSettingsProfile: (id: number) => `/api/alarm/settings/profiles/${id}/activate/`,
+    pendingActions: '/api/alarm/pending-actions/',
+    cancelPendingAction: (id: number) => `/api/alarm/pending-actions/${id}/cancel/`,
   },
   events: {
     all: '/api/events/',

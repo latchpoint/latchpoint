@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any
 
 from alarm.gateways.home_assistant import HomeAssistantGateway, default_home_assistant_gateway
@@ -43,7 +44,7 @@ def execute_actions(
         triggers=triggers if triggers is not None else TriggerContext.empty(now),
     )
 
-    for action in actions:
+    for idx, action in enumerate(actions):
         if not isinstance(action, dict):
             action_results.append({"ok": False, "error": "invalid_action"})
             continue
@@ -54,7 +55,7 @@ def execute_actions(
             action_results.append({"ok": False, "type": str(action_type), "error": "unsupported_action"})
             continue
 
-        result, error = handler(action, ctx)
+        result, error = handler(action, replace(ctx, action_index=idx))
         action_results.append(result)
         if error is not None:
             error_messages.append(error)

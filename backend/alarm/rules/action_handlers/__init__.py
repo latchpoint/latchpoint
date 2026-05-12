@@ -51,6 +51,7 @@ class ActionContext:
     zwavejs: ZwavejsGateway
     zigbee2mqtt: Zigbee2mqttGateway
     triggers: TriggerContext
+    action_index: int = 0  # Position of this action in rule.definition.then (for PendingAction tracking)
 
 
 ActionHandler = Callable[[dict[str, Any], ActionContext], tuple[dict[str, Any], str | None]]

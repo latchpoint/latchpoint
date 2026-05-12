@@ -1,5 +1,6 @@
 import { useQueryClient } from '@tanstack/react-query'
 import { AlarmPanel } from '@/components/alarm'
+import { PendingActionsCard } from '@/components/dashboard/PendingActionsCard'
 import { SystemStatusCard } from '@/components/dashboard/SystemStatusCard'
 import { Page } from '@/components/layout'
 import { FeatureErrorBoundary } from '@/components/providers/FeatureErrorBoundary'
@@ -23,6 +24,9 @@ export function DashboardPage() {
           </FeatureErrorBoundary>
         </div>
         <div className="space-y-6">
+          <FeatureErrorBoundary feature="Pending Actions" variant="inline">
+            <PendingActionsCard />
+          </FeatureErrorBoundary>
           <FeatureErrorBoundary feature="System Status" variant="inline">
             <SystemStatusCard />
           </FeatureErrorBoundary>

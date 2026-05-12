@@ -16,6 +16,7 @@ from .mqtt import (
     MqttConnectionSettingsSerializer,
     MqttTestConnectionSerializer,
 )
+from .pending_actions import PendingActionSerializer
 from .rules import RuleSerializer, RuleUpsertSerializer
 from .sensors import SensorCreateSerializer, SensorSerializer, SensorUpdateSerializer
 from .system_config import SystemConfigCreateSerializer, SystemConfigSerializer, SystemConfigUpdateSerializer
@@ -34,6 +35,7 @@ __all__ = [
     "AlarmStateSnapshotSerializer",
     "EntitySerializer",
     "HomeAssistantConnectionSettingsSerializer",
+    "PendingActionSerializer",
     "RuleSerializer",
     "RuleUpsertSerializer",
     "SensorCreateSerializer",

@@ -39,4 +39,11 @@ urlpatterns = [
     path("dispatcher/status/", views.DispatcherStatusView.as_view(), name="dispatcher-status"),
     path("dispatcher/config/", views.DispatcherConfigView.as_view(), name="dispatcher-config"),
     path("dispatcher/suspended-rules/", views.SuspendedRulesView.as_view(), name="dispatcher-suspended-rules"),
+    # Pending actions queue (ADR-0091)
+    path("pending-actions/", views.PendingActionsListView.as_view(), name="alarm-pending-actions"),
+    path(
+        "pending-actions/<int:pending_action_id>/cancel/",
+        views.PendingActionCancelView.as_view(),
+        name="alarm-pending-action-cancel",
+    ),
 ]
