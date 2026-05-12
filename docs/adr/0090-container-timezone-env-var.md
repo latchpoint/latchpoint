@@ -1,6 +1,6 @@
 # ADR-0090: Container Timezone via `TZ` Env Var
 
-**Status:** Proposed
+**Status:** Implemented
 **Date:** 2026-05-11
 **Author:** Leonardo Merza
 
@@ -109,16 +109,16 @@ Cons: Defeats the entire point — every user's timezone would have to be a diff
 
 ## Acceptance Criteria
 
-- [ ] AC-1: `docker compose build backend` succeeds with `tzdata` installed.
-- [ ] AC-2: `docker compose run --rm backend python -c "import zoneinfo; zoneinfo.ZoneInfo('America/Chicago')"` does not raise.
-- [ ] AC-3: With no `TZ` line in `.env`, `settings.TIME_ZONE == "UTC"` and `docker compose exec backend date` reports UTC.
-- [ ] AC-4: With `TZ=America/Chicago` in `.env`:
+- [x] AC-1: `docker compose build backend` succeeds with `tzdata` installed.
+- [x] AC-2: `docker compose run --rm backend python -c "import zoneinfo; zoneinfo.ZoneInfo('America/Chicago')"` does not raise.
+- [x] AC-3: With no `TZ` line in `.env`, `settings.TIME_ZONE == "UTC"` and `docker compose exec backend date` reports UTC.
+- [x] AC-4: With `TZ=America/Chicago` in `.env`:
   - `settings.TIME_ZONE == "America/Chicago"`,
   - `docker compose exec backend date` reports CST/CDT,
   - `docker compose exec db psql -U alarm -d alarm_db -c "SHOW TIME ZONE;"` returns `Etc/UTC` — by design; the storage layer is timezone-agnostic under `USE_TZ=True`.
-- [ ] AC-5: `grep -RE "/etc/localtime|/etc/timezone" docker-compose*.yml` returns nothing.
-- [ ] AC-6: `./scripts/docker-test.sh` passes (in particular the `scheduler` app — DailyAt depends on `timezone.localtime`).
-- [ ] AC-7: `uvx ruff check backend/` and `uvx ruff format --check backend/` clean.
+- [x] AC-5: `grep -RE "/etc/localtime|/etc/timezone" docker-compose*.yml` returns nothing.
+- [x] AC-6: `./scripts/docker-test.sh` passes (in particular the `scheduler` app — DailyAt depends on `timezone.localtime`).
+- [x] AC-7: `uvx ruff check backend/` and `uvx ruff format --check backend/` clean.
 
 ## Related ADRs
 
@@ -139,5 +139,4 @@ Cons: Defeats the entire point — every user's timezone would have to be a diff
 
 ## Todos
 
-- After implementation, flip Status to **Implemented** and update the ADR index.
 - Consider exposing the effective TZ on the `/api/system/status/` endpoint (already exposes `now()`); not required by this ADR.
