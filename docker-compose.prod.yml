@@ -8,8 +8,6 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-alarm}
     volumes:
       - db_data:/var/lib/postgresql/data
-      - /etc/localtime:/etc/localtime:ro
-      - /etc/timezone:/etc/timezone:ro
 
   app:
     image: ghcr.io/ljmerza/latchpoint:main
@@ -20,9 +18,6 @@ services:
       - "5427:80"
     depends_on:
       - db
-    volumes:
-      - /etc/localtime:/etc/localtime:ro
-      - /etc/timezone:/etc/timezone:ro
 
 volumes:
   db_data:

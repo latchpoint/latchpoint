@@ -56,10 +56,10 @@ The frontend redirects authenticated users to the setup wizard when minimum “H
 
 - Allowed only when no users and no alarm system exist; otherwise returns `409`.
 - Creates a superuser + assigns the `admin` role.
-- Creates the alarm system record with `home_name` and `TIME_ZONE` from env.
+- Creates the alarm system record with `home_name` and Django `TIME_ZONE` (which reads the `TZ` env var) from env.
 - Ensures a default active alarm settings profile exists.
 - Bootstraps the alarm state snapshot.
 
 ## Configuration
 
-- `TIME_ZONE` in `.env` drives onboarding timezone defaults.
+- `TZ` in `.env` drives onboarding timezone defaults (IANA name, e.g. `America/Chicago`; defaults to `UTC`). See [ADR-0090](adr/0090-container-timezone-env-var.md).

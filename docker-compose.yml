@@ -8,8 +8,6 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-alarm}
     volumes:
       - ./volumes/db/:/var/lib/postgresql/data
-      - /etc/localtime:/etc/localtime:ro
-      - /etc/timezone:/etc/timezone:ro
 
   backend:
     build:
@@ -25,13 +23,12 @@ services:
       - db
     volumes:
       - .:/app
-      - /etc/localtime:/etc/localtime:ro
-      - /etc/timezone:/etc/timezone:ro
 
   frontend:
     image: node:20-slim
     environment:
       VITE_API_PROXY_TARGET: ${VITE_API_PROXY_TARGET:-http://backend:8000}
+      TZ: ${TZ:-UTC}
     working_dir: /app/frontend
     command: sh -lc "if [ -d node_modules ]; then find node_modules -mindepth 1 -maxdepth 1 -exec rm -rf {} +; fi && npm ci && npm run dev -- --host 0.0.0.0 --port 3000"
     ports:
@@ -41,5 +38,3 @@ services:
     volumes:
       - .:/app
       - /app/frontend/node_modules  # Anonymous volume for node_modules
-      - /etc/localtime:/etc/localtime:ro
-      - /etc/timezone:/etc/timezone:ro

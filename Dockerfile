@@ -28,6 +28,8 @@ ENV PYTHONUNBUFFERED=1
 WORKDIR /app
 
 # Install system dependencies including gosu for privilege dropping
+# tzdata: ships the IANA database so the container honors `TZ` without
+# depending on host /etc/localtime / /etc/timezone bind-mounts (ADR-0090).
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         build-essential \
@@ -36,6 +38,7 @@ RUN apt-get update && \
         nginx \
         curl \
         gosu \
+        tzdata \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Python dependencies

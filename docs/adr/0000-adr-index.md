@@ -105,6 +105,8 @@ This document tracks all Architecture Decision Records (ADRs) and their implemen
 | [0086](0086-ha-entity-equals-editable-dropdown.md) | Domain-Aware Editable Dropdown for HA Entity `equals` Values | **Proposed** |
 | [0087](0087-integration-settings-save-refresh-banner-feedback.md) | Banner Feedback for Integration Settings Save and Refresh | **Implemented** |
 | [0088](0088-rule-message-template-variables.md) | Template Variables in Rule Notification Action Messages | **Implemented** |
+| [0089](0089-frontend-only-demo-mode.md) | Frontend-Only Demo Mode | **Implemented** |
+| [0090](0090-container-timezone-env-var.md) | Container Timezone via TZ Env Var | **Proposed** |
 
 ---
 
@@ -112,15 +114,15 @@ This document tracks all Architecture Decision Records (ADRs) and their implemen
 
 | Status | Count |
 |--------|-------|
-| **Implemented** | 64 |
+| **Implemented** | 65 |
 | **Partially Implemented** | 0 |
 | **Accepted** | 1 |
-| **Proposed** | 8 |
+| **Proposed** | 9 |
 | **Superseded** | 14 |
-| **Total** | 87 |
+| **Total** | 89 |
 
 Note: **Superseded** includes entries marked as "Superseded by …" in the table above.
 
 ---
 
-*Last updated: 2026-05-01* (ADR 0088 flipped to Implemented: template variables in rule notification messages)
+*Last updated: 2026-05-11* (ADR 0090 proposed: container timezone via TZ env var; backfilled missing 0089 entry)
