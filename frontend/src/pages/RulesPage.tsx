@@ -32,7 +32,7 @@ const EMPTY_ENTITIES: Entity[] = []
 
 export function RulesPage() {
   const queryClient = useQueryClient()
-  const [searchParams] = useSearchParams()
+  const [searchParams, setSearchParams] = useSearchParams()
   const editId = searchParams.get('edit')
 
   // Notice and error state for inline display
@@ -85,14 +85,21 @@ export function RulesPage() {
           payload,
         })
         setNotice(result.notice)
-        setSelectedRuleId(null)
+        setSelectedRuleId(result.data.id)
         setSeed(null)
-        setBuilderNonce((n) => n + 1)
+        setSearchParams(
+          (prev) => {
+            const next = new URLSearchParams(prev)
+            next.set('edit', String(result.data.id))
+            return next
+          },
+          { replace: true },
+        )
       } catch (err) {
         setError(getErrorMessage(err) || 'Failed to save rule')
       }
     },
-    [saveMutation, selectedRuleId]
+    [saveMutation, selectedRuleId, setSearchParams]
   )
 
   const handleDelete = useCallback(async () => {

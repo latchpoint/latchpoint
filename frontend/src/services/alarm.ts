@@ -10,6 +10,8 @@ import type {
   AlarmSettingsProfileMeta,
   PaginatedResponse,
   PaginationParams,
+  PendingAction,
+  PendingActionStatusType,
 } from '@/types'
 
 export const alarmService = {
@@ -123,6 +125,15 @@ export const alarmService = {
 
   async acknowledgeEvent(id: number): Promise<AlarmEvent> {
     return api.patch<AlarmEvent>(apiEndpoints.events.acknowledge(id), {})
+  },
+
+  // Pending actions (ADR-0091)
+  async getPendingActions(params?: { status?: PendingActionStatusType | 'all'; limit?: number }): Promise<PendingAction[]> {
+    return api.get<PendingAction[]>(apiEndpoints.alarm.pendingActions, params)
+  },
+
+  async cancelPendingAction(id: number): Promise<PendingAction> {
+    return api.post<PendingAction>(apiEndpoints.alarm.cancelPendingAction(id))
   },
 }
 

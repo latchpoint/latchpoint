@@ -482,3 +482,81 @@ class SystemConfig(models.Model):
     def __str__(self) -> str:  # pragma: no cover - simple representation
         """Return a stable identifier for logs/admin lists."""
         return self.key
+
+
+class PendingActionStatus(models.TextChoices):
+    SCHEDULED = "scheduled", "Scheduled"
+    FIRED = "fired", "Fired"
+    CANCELLED = "cancelled", "Cancelled"
+    FAILED = "failed", "Failed"
+
+
+class PendingActionCancelReason(models.TextChoices):
+    DISARM = "disarm", "Alarm disarmed"
+    MANUAL = "manual", "Manual operator cancel"
+    RULE_DELETED = "rule_deleted", "Rule was deleted or disabled"
+    STALE_AFTER_RESTART = "stale_after_restart", "Backend was down past the stale threshold"
+
+
+class PendingAction(models.Model):
+    """A rule action that has been queued to fire after a delay (ADR-0091).
+
+    Created when a rule action with ``delay_seconds > 0`` is dispatched. A
+    scheduler task fires due rows; signal receivers + the rules engine flip
+    rows to ``cancelled`` when disarm / WHEN-false / manual / rule-delete
+    happens. The handler executes from the queue worker, not from the
+    enqueueing pass, so the rule's evaluation thread is never blocked.
+    """
+
+    rule = models.ForeignKey("Rule", on_delete=models.CASCADE, related_name="pending_actions")
+    action_index = models.IntegerField(
+        help_text="Position of the action in the rule's definition.then list",
+    )
+    action_payload = models.JSONField(
+        help_text="Immutable snapshot of the action JSON at enqueue time",
+    )
+    delay_seconds = models.IntegerField()
+    scheduled_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    fire_at = models.DateTimeField(db_index=True)
+    status = models.CharField(
+        max_length=16,
+        choices=PendingActionStatus.choices,
+        default=PendingActionStatus.SCHEDULED,
+        db_index=True,
+    )
+    cancel_reason = models.CharField(
+        max_length=32,
+        choices=PendingActionCancelReason.choices,
+        blank=True,
+        default="",
+    )
+    fired_at = models.DateTimeField(null=True, blank=True)
+    fire_result = models.JSONField(
+        null=True,
+        blank=True,
+        help_text="What the handler returned (success result, error message, etc.)",
+    )
+    armed_state_at_schedule = models.CharField(
+        max_length=32,
+        choices=AlarmState.choices,
+        help_text="Alarm state at enqueue time; used to scope disarm cancellation",
+    )
+    actor_user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="pending_actions",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-fire_at", "-id"]
+        indexes = [
+            models.Index(fields=["status", "fire_at"]),
+            models.Index(fields=["rule", "status"]),
+        ]
+
+    def __str__(self) -> str:  # pragma: no cover - simple representation
+        return f"PendingAction({self.id}, rule={self.rule_id}, status={self.status}, fire_at={self.fire_at})"

@@ -6,6 +6,13 @@
 import { isRecord } from '@/lib/typeGuards'
 import type { WhenOperator, AlarmArmMode } from '@/lib/typeGuards'
 
+/**
+ * Maximum allowed value for `delaySeconds` on action types that support an
+ * entry-delay / queue-delay (ADR-0091). Mirrors the backend constant in
+ * `backend/alarm/rules/action_schemas.py::ALARM_TRIGGER_MAX_DELAY_SECONDS`.
+ */
+export const ALARM_TRIGGER_MAX_DELAY_SECONDS = 600
+
 // ============================================================================
 // When Condition Nodes
 // ============================================================================
@@ -108,9 +115,16 @@ export interface AlarmDisarmAction {
 
 /**
  * Alarm trigger action
+ *
+ * `delaySeconds` (optional, 0-600) is an entry-delay grace window: the alarm
+ * enters its PENDING state for that many seconds, then transitions to TRIGGERED
+ * unless the user disarms first (ADR-0091, revised). Closing the door / WHEN
+ * flipping false will NOT cancel — Ring-panel semantic. Omit or 0 triggers
+ * immediately.
  */
 export interface AlarmTriggerAction {
   type: 'alarm_trigger'
+  delaySeconds?: number
 }
 
 /**
@@ -168,6 +182,11 @@ export interface Zigbee2mqttLightAction {
 
 /**
  * Send notification action using notification providers
+ *
+ * `delaySeconds` (optional, 0-600): queue the notification via the PendingAction
+ * queue (ADR-0091, revised). The send is aborted only if the alarm is disarmed
+ * or the operator manually cancels from the Pending Actions card; WHEN flipping
+ * false does not cancel.
  */
 export interface SendNotificationAction {
   type: 'send_notification'
@@ -175,6 +194,7 @@ export interface SendNotificationAction {
   message: string
   title?: string
   data?: Record<string, unknown>
+  delaySeconds?: number
 }
 
 /**
@@ -320,7 +340,19 @@ export function isAlarmDisarmAction(action: unknown): action is AlarmDisarmActio
  * Check if action is AlarmTriggerAction
  */
 export function isAlarmTriggerAction(action: unknown): action is AlarmTriggerAction {
-  return isRecord(action) && action.type === 'alarm_trigger'
+  if (!isRecord(action) || action.type !== 'alarm_trigger') return false
+  if ('delaySeconds' in action) {
+    const ds = action.delaySeconds
+    if (
+      typeof ds !== 'number' ||
+      !Number.isInteger(ds) ||
+      ds < 0 ||
+      ds > ALARM_TRIGGER_MAX_DELAY_SECONDS
+    ) {
+      return false
+    }
+  }
+  return true
 }
 
 /**
@@ -408,6 +440,12 @@ export function isSendNotificationAction(action: unknown): action is SendNotific
   if (typeof action.message !== 'string') return false
   if ('title' in action && action.title !== undefined && typeof action.title !== 'string') return false
   if ('data' in action && action.data !== undefined && !isRecord(action.data)) return false
+  if ('delaySeconds' in action) {
+    const ds = action.delaySeconds
+    if (typeof ds !== 'number' || !Number.isInteger(ds) || ds < 0 || ds > ALARM_TRIGGER_MAX_DELAY_SECONDS) {
+      return false
+    }
+  }
   return true
 }
 

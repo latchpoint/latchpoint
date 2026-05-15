@@ -27,6 +27,91 @@ class ValidateActionTests(TestCase):
         errors = validate_action({"type": "alarm_trigger"})
         self.assertEqual(errors, [])
 
+    def test_valid_alarm_trigger_with_delay(self):
+        errors = validate_action({"type": "alarm_trigger", "delay_seconds": 15})
+        self.assertEqual(errors, [])
+
+    def test_valid_alarm_trigger_with_zero_delay(self):
+        errors = validate_action({"type": "alarm_trigger", "delay_seconds": 0})
+        self.assertEqual(errors, [])
+
+    def test_alarm_trigger_rejects_negative_delay(self):
+        errors = validate_action({"type": "alarm_trigger", "delay_seconds": -1})
+        self.assertTrue(any(">= 0" in e for e in errors))
+
+    def test_alarm_trigger_rejects_delay_above_max(self):
+        errors = validate_action({"type": "alarm_trigger", "delay_seconds": 601})
+        self.assertTrue(any("<= 600" in e for e in errors))
+
+    def test_alarm_trigger_rejects_non_integer_delay(self):
+        errors = validate_action({"type": "alarm_trigger", "delay_seconds": 15.5})
+        self.assertTrue(any("integer" in e for e in errors))
+
+    def test_alarm_trigger_rejects_string_delay(self):
+        errors = validate_action({"type": "alarm_trigger", "delay_seconds": "15"})
+        self.assertTrue(any("integer" in e for e in errors))
+
+    def test_alarm_trigger_rejects_boolean_delay(self):
+        # bool is a subclass of int in Python; the validator must reject it.
+        errors = validate_action({"type": "alarm_trigger", "delay_seconds": True})
+        self.assertTrue(any("integer" in e for e in errors))
+
+    def test_valid_send_notification_with_delay(self):
+        errors = validate_action(
+            {
+                "type": "send_notification",
+                "provider_id": "p1",
+                "message": "hi",
+                "delay_seconds": 30,
+            }
+        )
+        self.assertEqual(errors, [])
+
+    def test_send_notification_rejects_negative_delay(self):
+        errors = validate_action(
+            {
+                "type": "send_notification",
+                "provider_id": "p1",
+                "message": "hi",
+                "delay_seconds": -1,
+            }
+        )
+        self.assertTrue(any(">= 0" in e for e in errors))
+
+    def test_send_notification_rejects_delay_above_max(self):
+        errors = validate_action(
+            {
+                "type": "send_notification",
+                "provider_id": "p1",
+                "message": "hi",
+                "delay_seconds": 601,
+            }
+        )
+        self.assertTrue(any("<= 600" in e for e in errors))
+
+    def test_send_notification_rejects_non_integer_delay(self):
+        errors = validate_action(
+            {
+                "type": "send_notification",
+                "provider_id": "p1",
+                "message": "hi",
+                "delay_seconds": 15.5,
+            }
+        )
+        self.assertTrue(any("integer" in e for e in errors))
+
+    def test_send_notification_rejects_boolean_delay(self):
+        # bool is a subclass of int in Python; the validator must reject it.
+        errors = validate_action(
+            {
+                "type": "send_notification",
+                "provider_id": "p1",
+                "message": "hi",
+                "delay_seconds": True,
+            }
+        )
+        self.assertTrue(any("integer" in e for e in errors))
+
     def test_valid_alarm_disarm(self):
         errors = validate_action({"type": "alarm_disarm"})
         self.assertEqual(errors, [])

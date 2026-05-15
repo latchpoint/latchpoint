@@ -84,6 +84,35 @@ export interface AlarmEvent {
   metadata: Record<string, unknown>
 }
 
+// PendingAction queue (ADR-0091)
+export type PendingActionStatusType = 'scheduled' | 'fired' | 'cancelled' | 'failed'
+export type PendingActionCancelReasonType =
+  | ''
+  | 'disarm'
+  | 'when_false'
+  | 'manual'
+  | 'rule_deleted'
+  | 'stale_after_restart'
+
+export interface PendingAction {
+  id: number
+  ruleId: number
+  ruleName: string
+  actionIndex: number
+  actionPayload: Record<string, unknown>
+  delaySeconds: number
+  scheduledAt: string
+  fireAt: string
+  status: PendingActionStatusType
+  cancelReason: PendingActionCancelReasonType
+  firedAt: string | null
+  fireResult: Record<string, unknown> | null
+  armedStateAtSchedule: AlarmStateType
+  actorUserEmail: string | null
+  createdAt: string
+  updatedAt: string
+}
+
 // Arm/Disarm Request
 export interface ArmRequest {
   targetState: AlarmStateType

@@ -39,6 +39,11 @@ class AlarmServices(Protocol):
 
         ...
 
+    def trigger_with_delay(self, *, delay_seconds: int, user=None, reason: str = ""):
+        """Enter PENDING for delay_seconds. No-op if not in an armed-ready state."""
+
+        ...
+
 
 @dataclass(frozen=True)
 class ActionContext:
@@ -51,6 +56,7 @@ class ActionContext:
     zwavejs: ZwavejsGateway
     zigbee2mqtt: Zigbee2mqttGateway
     triggers: TriggerContext
+    action_index: int = 0  # Position of this action in rule.definition.then (for PendingAction tracking)
 
 
 ActionHandler = Callable[[dict[str, Any], ActionContext], tuple[dict[str, Any], str | None]]

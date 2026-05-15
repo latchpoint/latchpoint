@@ -2,12 +2,14 @@
  * Actions editor for the rule builder
  * Provides a simple interface for selecting actions to execute when rule fires
  */
-import type {
-  ActionNode,
-  HaCallServiceAction,
-  ZwavejsSetValueAction,
-  SendNotificationAction,
-  Zigbee2mqttSetValueAction,
+import {
+  ALARM_TRIGGER_MAX_DELAY_SECONDS,
+  type ActionNode,
+  type AlarmTriggerAction,
+  type HaCallServiceAction,
+  type ZwavejsSetValueAction,
+  type SendNotificationAction,
+  type Zigbee2mqttSetValueAction,
 } from '@/types/ruleDefinition'
 import type { Entity } from '@/types/rules'
 import { Button } from '@/components/ui/button'
@@ -68,6 +70,7 @@ function ActionRow({ action, onUpdate, onRemove, disabled, canRemove, availableA
 
   // Check if this action type has expandable details
   const hasDetails =
+    actionType === 'alarm_trigger' ||
     actionType === 'ha_call_service' ||
     actionType === 'zwavejs_set_value' ||
     actionType === 'zigbee2mqtt_set_value' ||
@@ -76,8 +79,9 @@ function ActionRow({ action, onUpdate, onRemove, disabled, canRemove, availableA
   const [expanded, setExpanded] = useState(hasDetails)
 
   const handleTypeChange = (newType: string) => {
-    // Determine if the new action type has expandable details
+    // Determine if the new action type has expandable details that auto-expand
     const newTypeHasDetails =
+      newType === 'alarm_trigger' ||
       newType === 'ha_call_service' ||
       newType === 'zwavejs_set_value' ||
       newType === 'zigbee2mqtt_set_value' ||
@@ -158,6 +162,13 @@ function ActionRow({ action, onUpdate, onRemove, disabled, canRemove, availableA
           ))}
         </Select>
 
+        {/* Quick summary for alarm_trigger: show "delay Ns" if set */}
+        {actionType === 'alarm_trigger' && ((action as AlarmTriggerAction).delaySeconds ?? 0) > 0 && (
+          <span className="text-sm text-muted-foreground">
+            delay {(action as AlarmTriggerAction).delaySeconds}s
+          </span>
+        )}
+
         {/* Mode selector for alarm_arm */}
         {actionType === 'alarm_arm' && (
           <>
@@ -186,6 +197,11 @@ function ActionRow({ action, onUpdate, onRemove, disabled, canRemove, availableA
         {/* Quick summary for send_notification actions */}
         {actionType === 'send_notification' && (
           <SendNotificationSummary action={action as SendNotificationAction} />
+        )}
+        {actionType === 'send_notification' && ((action as SendNotificationAction).delaySeconds ?? 0) > 0 && (
+          <span className="text-sm text-muted-foreground">
+            delay {(action as SendNotificationAction).delaySeconds}s
+          </span>
         )}
 
         {/* Quick summary for HA call service */}
@@ -237,6 +253,15 @@ function ActionRow({ action, onUpdate, onRemove, disabled, canRemove, availableA
         </div>
       </div>
 
+      {/* Expanded details for alarm_trigger: entry-delay grace window */}
+      {expanded && actionType === 'alarm_trigger' && (
+        <AlarmTriggerFields
+          action={action as AlarmTriggerAction}
+          onUpdate={onUpdate}
+          disabled={disabled}
+        />
+      )}
+
       {/* Expanded details for send_notification actions */}
       {expanded && actionType === 'send_notification' && (
         <SendNotificationFields
@@ -273,6 +298,71 @@ function ActionRow({ action, onUpdate, onRemove, disabled, canRemove, availableA
           disabled={disabled}
         />
       )}
+    </div>
+  )
+}
+
+/**
+ * Fields for alarm_trigger action — exposes the optional entry-delay grace window.
+ */
+function AlarmTriggerFields({
+  action,
+  onUpdate,
+  disabled,
+}: {
+  action: AlarmTriggerAction
+  onUpdate: (action: ActionNode) => void
+  disabled?: boolean
+}) {
+  const delay = action.delaySeconds ?? 0
+  const [text, setText] = useState<string>(delay > 0 ? String(delay) : '')
+  const [error, setError] = useState<string | null>(null)
+
+  const handleChange = (next: string) => {
+    setText(next)
+    if (next === '') {
+      setError(null)
+      onUpdate({ type: 'alarm_trigger' })
+      return
+    }
+    const parsed = Number(next)
+    if (!Number.isInteger(parsed) || parsed < 0) {
+      setError('Must be a whole number ≥ 0')
+      return
+    }
+    if (parsed > ALARM_TRIGGER_MAX_DELAY_SECONDS) {
+      setError(`Must be ≤ ${ALARM_TRIGGER_MAX_DELAY_SECONDS} seconds`)
+      return
+    }
+    setError(null)
+    if (parsed === 0) {
+      onUpdate({ type: 'alarm_trigger' })
+    } else {
+      onUpdate({ type: 'alarm_trigger', delaySeconds: parsed })
+    }
+  }
+
+  return (
+    <div className="border-t p-3 space-y-1">
+      <label className="text-xs text-muted-foreground">
+        Entry delay (seconds){' '}
+        <HelpTip
+          className="ml-1"
+          content="The alarm enters its Pending state with a countdown for this many seconds, then triggers unless disarmed. Only a disarm aborts the trigger — closing the door or the WHEN condition flipping false will NOT cancel it. 0 or empty triggers immediately."
+        />
+      </label>
+      <Input
+        type="number"
+        min={0}
+        max={ALARM_TRIGGER_MAX_DELAY_SECONDS}
+        step={1}
+        value={text}
+        onChange={(e) => handleChange(e.target.value)}
+        placeholder="0 = trigger immediately"
+        disabled={disabled}
+        className="max-w-[180px]"
+      />
+      {error && <p className="text-xs text-destructive">{error}</p>}
     </div>
   )
 }
@@ -575,6 +665,81 @@ function SendNotificationFields({
       <NotificationMessageField action={action} onUpdate={onUpdate} disabled={disabled} />
 
       <NotificationTitleField action={action} onUpdate={onUpdate} disabled={disabled} />
+
+      <NotificationDelayField action={action} onUpdate={onUpdate} disabled={disabled} />
+    </div>
+  )
+}
+
+
+function withoutDelay(action: SendNotificationAction): SendNotificationAction {
+  const copy: SendNotificationAction = { ...action }
+  delete copy.delaySeconds
+  return copy
+}
+
+/**
+ * Delay-seconds input for send_notification (ADR-0091). Mirrors AlarmTriggerFields'
+ * validation: integer 0..600. 0 / empty strips the field.
+ */
+function NotificationDelayField({
+  action,
+  onUpdate,
+  disabled,
+}: {
+  action: SendNotificationAction
+  onUpdate: (action: ActionNode) => void
+  disabled?: boolean
+}) {
+  const current = action.delaySeconds ?? 0
+  const [text, setText] = useState<string>(current > 0 ? String(current) : '')
+  const [error, setError] = useState<string | null>(null)
+
+  const handleChange = (next: string) => {
+    setText(next)
+    if (next === '') {
+      setError(null)
+      onUpdate(withoutDelay(action))
+      return
+    }
+    const parsed = Number(next)
+    if (!Number.isInteger(parsed) || parsed < 0) {
+      setError('Must be a whole number ≥ 0')
+      return
+    }
+    if (parsed > ALARM_TRIGGER_MAX_DELAY_SECONDS) {
+      setError(`Must be ≤ ${ALARM_TRIGGER_MAX_DELAY_SECONDS} seconds`)
+      return
+    }
+    setError(null)
+    if (parsed === 0) {
+      onUpdate(withoutDelay(action))
+    } else {
+      onUpdate({ ...action, delaySeconds: parsed })
+    }
+  }
+
+  return (
+    <div className="space-y-1">
+      <label className="text-xs text-muted-foreground">
+        Delay (seconds, optional){' '}
+        <HelpTip
+          className="ml-1"
+          content="Optional delay before sending. The notification is queued and visible on the Pending Actions card; disarm, the rule's WHEN flipping, or manual cancel will abort it."
+        />
+      </label>
+      <Input
+        type="number"
+        min={0}
+        max={ALARM_TRIGGER_MAX_DELAY_SECONDS}
+        step={1}
+        value={text}
+        onChange={(e) => handleChange(e.target.value)}
+        placeholder="0 = send immediately"
+        disabled={disabled}
+        className="max-w-[180px]"
+      />
+      {error && <p className="text-xs text-destructive">{error}</p>}
     </div>
   )
 }

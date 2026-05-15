@@ -1,4 +1,4 @@
-import { useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { alarmService, sensorsService } from '@/services'
 import { queryKeys } from '@/types'
 import { useAuthSessionQuery } from '@/hooks/useAuthQueries'
@@ -41,5 +41,27 @@ export function useRecentEventsQuery(limit = DEFAULT_RECENT_EVENTS_LIMIT) {
     queryKey: queryKeys.events.recent,
     queryFn: () => alarmService.getRecentEvents(limit),
     enabled: isAuthenticated,
+  })
+}
+
+// ADR-0091: PendingAction queue
+export function usePendingActionsQuery() {
+  const session = useAuthSessionQuery()
+  const isAuthenticated = session.data?.isAuthenticated ?? false
+  return useQuery({
+    queryKey: queryKeys.alarm.pendingActions,
+    queryFn: () => alarmService.getPendingActions({ status: 'scheduled' }),
+    enabled: isAuthenticated,
+    refetchInterval: 2000,
+  })
+}
+
+export function useCancelPendingActionMutation() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (id: number) => alarmService.cancelPendingAction(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.alarm.pendingActions })
+    },
   })
 }

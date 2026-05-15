@@ -5,6 +5,7 @@ from .debug_logs import DebugLogsView
 from .dispatcher import DispatcherConfigView, DispatcherStatusView, SuspendedRulesView
 from .entities import EntitiesView, EntitySyncView
 from .events import AlarmEventsView
+from .pending_actions import PendingActionCancelView, PendingActionsListView
 from .rules import (
     RuleDetailView,
     RuleRunView,
@@ -38,6 +39,8 @@ __all__ = [
     "DisarmAlarmView",
     "EntitiesView",
     "EntitySyncView",
+    "PendingActionCancelView",
+    "PendingActionsListView",
     "RuleDetailView",
     "RuleRunView",
     "RuleSimulateView",

@@ -4,11 +4,16 @@ import logging
 import threading
 from datetime import timedelta
 
+from django.db.models.signals import post_save, pre_delete
 from django.dispatch import receiver
 from django.utils import timezone
 
-from alarm.models import AlarmEvent, AlarmEventType
-from alarm.signals import integration_status_changed, integration_status_observed
+from alarm.models import AlarmEvent, AlarmEventType, AlarmState, Rule
+from alarm.signals import (
+    alarm_state_change_committed,
+    integration_status_changed,
+    integration_status_observed,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -125,3 +130,45 @@ def log_prolonged_outage(
         },
     )
     _tracker.set_event_emitted(integration)
+
+
+# ── PendingAction cancellation (ADR-0091) ───────────────────────────────────
+#
+# The `cancel_for_*` helpers below are imported lazily inside each receiver:
+# `alarm.rules.pending_actions` imports from `alarm.models`, and this module is
+# imported at app-ready time via `apps.py`. Keeping the import local avoids the
+# import-time cycle while keeping the receivers cheap once the modules are
+# already cached.
+
+
+@receiver(alarm_state_change_committed)
+def cancel_pending_actions_on_disarm(sender, *, state_to: str, **kwargs) -> None:
+    """Cancel queued rule actions when the alarm is disarmed.
+
+    Only rows that were scheduled while the alarm was armed get cancelled —
+    a rule that runs in disarmed state and schedules its own delayed action
+    shouldn't be cancelled by the very disarm that scheduled it.
+    """
+    if state_to != AlarmState.DISARMED:
+        return
+    from alarm.rules.pending_actions import cancel_for_disarm  # see header note
+
+    cancel_for_disarm()
+
+
+@receiver(pre_delete, sender=Rule)
+def cancel_pending_actions_on_rule_delete(sender, instance: Rule, **kwargs) -> None:
+    """Cancel queued actions for a rule that's being deleted."""
+    from alarm.rules.pending_actions import cancel_for_rule  # see header note
+
+    cancel_for_rule(instance.id)
+
+
+@receiver(post_save, sender=Rule)
+def cancel_pending_actions_on_rule_disable(sender, instance: Rule, created: bool, **kwargs) -> None:
+    """Cancel queued actions for a rule that just got disabled."""
+    if created or instance.enabled:
+        return
+    from alarm.rules.pending_actions import cancel_for_rule  # see header note
+
+    cancel_for_rule(instance.id)
