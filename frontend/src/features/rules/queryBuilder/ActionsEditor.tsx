@@ -76,17 +76,12 @@ function ActionRow({ action, onUpdate, onRemove, disabled, canRemove, availableA
     actionType === 'zigbee2mqtt_set_value' ||
     actionType === 'send_notification'
 
-  // alarm_trigger has details but defaults collapsed (no delay = default behavior);
-  // expand only when there's already a non-zero delay set.
-  const initiallyExpanded =
-    actionType === 'alarm_trigger'
-      ? ((action as AlarmTriggerAction).delaySeconds ?? 0) > 0
-      : hasDetails
-  const [expanded, setExpanded] = useState(initiallyExpanded)
+  const [expanded, setExpanded] = useState(hasDetails)
 
   const handleTypeChange = (newType: string) => {
     // Determine if the new action type has expandable details that auto-expand
     const newTypeHasDetails =
+      newType === 'alarm_trigger' ||
       newType === 'ha_call_service' ||
       newType === 'zwavejs_set_value' ||
       newType === 'zigbee2mqtt_set_value' ||

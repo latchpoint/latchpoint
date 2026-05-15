@@ -167,19 +167,35 @@ describe('ActionsEditor', () => {
     expect(screen.getByText(/^delay 15s$/i)).toBeInTheDocument()
   })
 
-  it('auto-expands the entry-delay panel when delaySeconds > 0', async () => {
+  it('renders the entry-delay panel for alarm_trigger by default (no delay set)', async () => {
     const { ActionsEditor } = await import('./ActionsEditor')
     renderWithProviders(
       <ActionsEditor
-        actions={[{ type: 'alarm_trigger', delaySeconds: 15 }]}
+        actions={[{ type: 'alarm_trigger' }]}
         onChange={vi.fn()}
         entities={[]}
       />
     )
-    // The Entry delay label only renders when the panel is expanded.
+    // Entry-delay panel is now always expanded on initial render, even with no
+    // delaySeconds set — improves discoverability of the entry-delay feature.
     expect(screen.getByText(/^entry delay \(seconds\)/i)).toBeInTheDocument()
     const input = screen.getByPlaceholderText(/trigger immediately/i) as HTMLInputElement
-    expect(input.value).toBe('15')
+    expect(input.value).toBe('')
+  })
+
+  it('expands the entry-delay panel when switching the action type to alarm_trigger', async () => {
+    const { ActionsEditor } = await import('./ActionsEditor')
+    // ActionsEditor is controlled — the test harness must apply onChange so the
+    // selected action type round-trips back into the component.
+    function Harness() {
+      const [actions, setActions] = React.useState<ActionNode[]>([{ type: 'alarm_disarm' }])
+      return <ActionsEditor actions={actions} onChange={setActions} entities={[]} />
+    }
+    renderWithProviders(<Harness />)
+    // alarm_disarm has no expandable details, so the panel is absent.
+    expect(screen.queryByText(/^entry delay \(seconds\)/i)).toBeNull()
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'alarm_trigger' } })
+    expect(screen.getByText(/^entry delay \(seconds\)/i)).toBeInTheDocument()
   })
 
   it('emits delaySeconds when the user types a positive value', async () => {
