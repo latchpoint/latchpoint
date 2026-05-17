@@ -5,6 +5,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { formatDaysMask } from '@/features/codes/utils/daysOfWeek'
 import { DoorCodeEditContainer } from '@/features/doorCodes/components/DoorCodeEditContainer'
+import { DoorCodePushStatusBadge } from '@/features/doorCodes/components/DoorCodePushStatusBadge'
 
 type Props = {
   code: DoorCode
@@ -16,10 +17,12 @@ type Props = {
   locksError: unknown
   isSaving: boolean
   isDeleting: boolean
+  isRetryingPush: boolean
   onBeginEdit: () => void
   onCloseEdit: () => void
   onUpdate: (id: number, req: UpdateDoorCodeRequest) => Promise<unknown>
   onDelete: (id: number, reauthPassword: string) => Promise<unknown>
+  onRetryPush: (id: number) => Promise<unknown>
 }
 
 function LockBadges({ lockEntityIds, lockNameByEntityId }: { lockEntityIds: string[]; lockNameByEntityId: Map<string, string> }) {
@@ -45,10 +48,12 @@ export function DoorCodeCard({
   locksError,
   isSaving,
   isDeleting,
+  isRetryingPush,
   onBeginEdit,
   onCloseEdit,
   onUpdate,
   onDelete,
+  onRetryPush,
 }: Props) {
   const [pinVisible, setPinVisible] = useState(false)
 
@@ -101,6 +106,15 @@ export function DoorCodeCard({
             {code.lastUsedLock ? ` • Lock: ${lockNameByEntityId.get(code.lastUsedLock) || code.lastUsedLock}` : ''}
           </div>
           <LockBadges lockEntityIds={code.lockEntityIds || []} lockNameByEntityId={lockNameByEntityId} />
+          <div className="mt-2">
+            <DoorCodePushStatusBadge
+              code={code}
+              lockNameByEntityId={lockNameByEntityId}
+              canRetry={canManage}
+              isRetrying={isRetryingPush}
+              onRetry={() => onRetryPush(code.id)}
+            />
+          </div>
         </div>
 
         {canManage ? (

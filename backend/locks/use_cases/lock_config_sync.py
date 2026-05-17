@@ -660,7 +660,9 @@ def sync_lock_config(
     node_id = _resolve_lock_node_id(lock_entity_id=lock_entity_id)
     logger.info("Starting lock config sync for %s (node %d)", lock_entity_id, node_id)
 
-    lock_key = f"lock_config_sync:{lock_entity_id}"
+    # Shared key with the push path (ADR 0092) so push and pull serialize against
+    # each other on the same physical lock.
+    lock_key = f"lock_sync:{lock_entity_id}"
     acquired, lock_id = _try_acquire_sync_lock(lock_key=lock_key)
     if not acquired:
         logger.info("Sync already in progress for %s, rejecting", lock_entity_id)

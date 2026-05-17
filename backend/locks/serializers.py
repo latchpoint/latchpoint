@@ -23,6 +23,7 @@ class DoorCodeSerializer(serializers.ModelSerializer):
     pin = serializers.SerializerMethodField()
     lock_assignments = serializers.SerializerMethodField()
     lock_entity_ids = serializers.SerializerMethodField()
+    lock_slot_assignments = serializers.SerializerMethodField()
 
     class Meta:
         model = DoorCode
@@ -47,6 +48,10 @@ class DoorCodeSerializer(serializers.ModelSerializer):
             "last_used_lock",
             "lock_assignments",
             "lock_entity_ids",
+            "lock_slot_assignments",
+            "push_state",
+            "last_push_attempt_at",
+            "last_push_error",
             "created_at",
             "updated_at",
         )
@@ -89,6 +94,19 @@ class DoorCodeSerializer(serializers.ModelSerializer):
         if "lock_assignments" not in prefetched:
             raise RuntimeError("DoorCode.lock_assignments must be prefetched for serialization.")
         return sorted({assignment.lock_entity_id for assignment in obj.lock_assignments.all()})
+
+    def get_lock_slot_assignments(self, obj: DoorCode) -> list[dict]:
+        """Return per-lock slot programming state for the UI push-status badge (ADR 0092)."""
+        prefetched = getattr(obj, "_prefetched_objects_cache", {}) or {}
+        if "lock_assignments" not in prefetched:
+            raise RuntimeError("DoorCode.lock_assignments must be prefetched for serialization.")
+        return [
+            {
+                "lock_entity_id": assignment.lock_entity_id,
+                "slot_index": assignment.slot_index,
+            }
+            for assignment in obj.lock_assignments.all()
+        ]
 
 
 class DoorCodeCreateSerializer(serializers.Serializer):

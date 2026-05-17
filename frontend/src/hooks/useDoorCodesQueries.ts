@@ -44,6 +44,16 @@ export function useDeleteDoorCodeMutation(targetUserId: string) {
   })
 }
 
+export function useRetryDoorCodePushMutation(targetUserId: string) {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (id: number) => doorCodesService.retryPush(id),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.doorCodes.byUser(targetUserId) })
+    },
+  })
+}
+
 export function useSyncLockConfigMutation() {
   const queryClient = useQueryClient()
   return useMutation({

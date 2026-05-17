@@ -7,6 +7,7 @@ import {
   useCreateDoorCodeMutation,
   useDeleteDoorCodeMutation,
   useDoorCodesQuery,
+  useRetryDoorCodePushMutation,
   useUpdateDoorCodeMutation,
 } from '@/hooks/useDoorCodesQueries'
 import { UserRole } from '@/lib/constants'
@@ -49,6 +50,7 @@ export function DoorCodesPage() {
   const createMutation = useCreateDoorCodeMutation(targetUserId)
   const updateMutation = useUpdateDoorCodeMutation(targetUserId)
   const deleteMutation = useDeleteDoorCodeMutation(targetUserId)
+  const retryPushMutation = useRetryDoorCodePushMutation(targetUserId)
 
   const selectedUserDisplay = (() => {
     if (!isAdmin) return user?.displayName || ''
@@ -144,10 +146,12 @@ export function DoorCodesPage() {
             locksError={entitiesQuery.isError ? entitiesQuery.error : null}
             isSaving={updateMutation.isPending}
             isDeleting={deleteMutation.isPending}
+            isRetryingPush={retryPushMutation.isPending && retryPushMutation.variables === code.id}
             onBeginEdit={() => setEditingCodeId(code.id)}
             onCloseEdit={() => setEditingCodeId(null)}
             onUpdate={(id, req) => updateMutation.mutateAsync({ id, req })}
             onDelete={(id, reauthPassword) => deleteMutation.mutateAsync({ id, reauthPassword })}
+            onRetryPush={(id) => retryPushMutation.mutateAsync(id)}
           />
         ))}
       </SectionCard>
