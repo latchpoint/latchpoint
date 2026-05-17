@@ -317,11 +317,15 @@ def push_door_code_to_lock(
         )
 
         try:
+            # Z-Wave JS CC 99 set signature is (userId, userIdStatus, userCode).
+            # userIdStatus = 1 means "Occupied" (the code is active on the lock).
+            # The server validator rejects 2-arg calls; passing only [slot, pin]
+            # makes the PIN land where userIdStatus is expected.
             zwavejs.invoke_cc_api(
                 node_id=node_id,
                 command_class=CC_USER_CODE,
                 method_name="set",
-                args=[slot_index, pin],
+                args=[slot_index, 1, pin],
                 timeout_seconds=timeout_seconds,
             )
             weekdays_pushed = _push_daily_repeating_schedule(

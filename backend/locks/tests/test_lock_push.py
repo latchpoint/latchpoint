@@ -123,7 +123,8 @@ class PushDoorCodeToLockTests(EncryptionTestMixin, TestCase):
         self.assertEqual(result.slot_index, 2)
         set_calls = [c for c in gateway.invoke_calls if c["method_name"] == "set" and c["command_class"] == 99]
         self.assertEqual(len(set_calls), 1)
-        self.assertEqual(set_calls[0]["args"], [2, "1234"])
+        # Z-Wave JS CC 99 set: (userId, userIdStatus=1 "Occupied", userCode)
+        self.assertEqual(set_calls[0]["args"], [2, 1, "1234"])
 
         # Assignment + push state updated.
         assignment = DoorCodeLockAssignment.objects.get(door_code=code)
@@ -312,8 +313,8 @@ class PushDoorCodeToLockTests(EncryptionTestMixin, TestCase):
         """ADR 0092 §7: PIN bytes must never reach DEBUG logs."""
         from integrations_zwavejs.manager import _redact_cc_api_args_for_log
 
-        redacted = _redact_cc_api_args_for_log(command_class=99, method_name="set", args=[3, "9876"])
-        self.assertEqual(redacted, [3, "***"])
+        redacted = _redact_cc_api_args_for_log(command_class=99, method_name="set", args=[3, 1, "9876"])
+        self.assertEqual(redacted, [3, 1, "***"])
 
         # Other CC/method combos pass through unchanged.
         unchanged = _redact_cc_api_args_for_log(
@@ -352,8 +353,9 @@ class DoorCodeCreatePushIntegrationTests(EncryptionTestMixin, TestCase):
         set_calls = [c for c in gateway.invoke_calls if c["method_name"] == "set" and c["command_class"] == 99]
         self.assertEqual(len(set_calls), 1)
         self.assertEqual(set_calls[0]["args"][0], 1)
-        # PIN reached the gateway args (the redaction is log-only).
-        self.assertEqual(set_calls[0]["args"][1], "2468")
+        # userIdStatus=1 ("Occupied") and PIN reach the gateway args.
+        self.assertEqual(set_calls[0]["args"][1], 1)
+        self.assertEqual(set_calls[0]["args"][2], "2468")
 
         code.refresh_from_db()
         self.assertEqual(code.push_state, DoorCode.PushState.PUSHED)

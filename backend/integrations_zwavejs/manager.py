@@ -101,16 +101,17 @@ def _redact_cc_api_args_for_log(
 ) -> list | None:
     """Return a copy of ``args`` safe for DEBUG logging.
 
-    CC 99 User Code ``set`` passes ``[slot, pin]``; the PIN must never reach logs.
-    Any other call shape is logged as-is. Always returns a new list so the caller
-    sees an inert object even if it later mutates ``args``.
+    CC 99 User Code ``set`` passes ``[userId, userIdStatus, userCode]``; the
+    PIN (``userCode``, index 2) must never reach logs. Any other call shape is
+    logged as-is. Always returns a new list so the caller sees an inert object
+    even if it later mutates ``args``.
     """
     if not args:
         return args
     if command_class == CC_USER_CODE and method_name == "set":
         redacted: list[Any] = list(args)
-        if len(redacted) >= 2:
-            redacted[1] = "***"
+        if len(redacted) >= 3:
+            redacted[2] = "***"
         return redacted
     return args
 
