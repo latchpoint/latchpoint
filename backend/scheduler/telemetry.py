@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import os
-import socket
 import traceback
 from dataclasses import asdict, is_dataclass
 from typing import Any
@@ -17,6 +15,10 @@ from .registry import ScheduledTask
 
 _CACHED_INSTANCE_ID: str | None = None
 
+# Single-instance deployments share one bucket; multi-instance operators
+# override via SCHEDULER_INSTANCE_ID. See ADR-0093.
+_DEFAULT_INSTANCE_ID = "default"
+
 
 def get_instance_id() -> str:
     global _CACHED_INSTANCE_ID
@@ -28,9 +30,7 @@ def get_instance_id() -> str:
         _CACHED_INSTANCE_ID = override.strip()
         return _CACHED_INSTANCE_ID
 
-    hostname = socket.gethostname()
-    pid = os.getpid()
-    _CACHED_INSTANCE_ID = f"{hostname}:{pid}"
+    _CACHED_INSTANCE_ID = _DEFAULT_INSTANCE_ID
     return _CACHED_INSTANCE_ID
 
 
