@@ -7,7 +7,9 @@ from datetime import time
 from unittest.mock import patch
 
 from django.test import TestCase
+from django.urls import reverse
 from integrations_zwavejs.manager import ZwavejsNotConfigured
+from rest_framework.test import APITestCase
 
 from accounts.models import User
 from alarm.crypto import SettingsEncryption
@@ -447,3 +449,69 @@ class PushPendingSchedulerTaskTests(EncryptionTestMixin, TestCase):
             .first()
         )
         self.assertIsNotNone(cap_event)
+
+
+class DoorCodePushRetryViewTests(EncryptionTestMixin, APITestCase):
+    """HTTP-level tests for POST /api/door-codes/<id>/push/ (ADR 0092)."""
+
+    LOCK_ENTITY_ID = "lock.front_door"
+
+    def setUp(self):
+        self.admin = User.objects.create_superuser(email="admin@example.com", password="pass")
+        self.user = User.objects.create_user(email="user@example.com", password="pass")
+        Entity.objects.create(
+            entity_id=self.LOCK_ENTITY_ID,
+            domain="lock",
+            name="Front Door",
+            attributes={"zwavejs": {"node_id": 7}},
+            source="home_assistant",
+        )
+        self.code = DoorCode.objects.create(
+            user=self.user,
+            encrypted_pin=SettingsEncryption.get().encrypt("4321"),
+            pin_length=4,
+            code_type=DoorCode.CodeType.PERMANENT,
+            is_active=True,
+            push_state=DoorCode.PushState.PENDING,
+        )
+        DoorCodeLockAssignment.objects.create(door_code=self.code, lock_entity_id=self.LOCK_ENTITY_ID)
+
+    def test_admin_retry_returns_200_and_omits_pin(self):
+        gateway = FakeGateway(usersNumber=3, slot_status={1: 0, 2: 0, 3: 0})
+        self.client.force_authenticate(self.admin)
+        url = reverse("door-code-push", args=[self.code.id])
+
+        with patch("locks.views.door_codes.default_zwavejs_gateway", gateway):
+            response = self.client.post(url)
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()["data"]
+        # sa-1: plaintext PIN must NOT be returned by the retry endpoint.
+        self.assertNotIn("pin", payload)
+        # But the push-status fields the UI needs ARE present.
+        self.assertEqual(payload["push_state"], DoorCode.PushState.PUSHED)
+        self.assertIn("last_push_error", payload)
+        self.assertIn("lock_slot_assignments", payload)
+
+    def test_non_admin_user_gets_403(self):
+        self.client.force_authenticate(self.user)
+        url = reverse("door-code-push", args=[self.code.id])
+
+        response = self.client.post(url)
+
+        self.assertEqual(response.status_code, 403)
+
+    def test_unauthenticated_gets_401_or_403(self):
+        url = reverse("door-code-push", args=[self.code.id])
+
+        response = self.client.post(url)
+
+        self.assertIn(response.status_code, (401, 403))
+
+    def test_unknown_code_id_returns_404(self):
+        self.client.force_authenticate(self.admin)
+        url = reverse("door-code-push", args=[999_999])
+
+        response = self.client.post(url)
+
+        self.assertEqual(response.status_code, 404)

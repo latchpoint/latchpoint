@@ -11,6 +11,7 @@ from locks.models import DoorCode
 from locks.permissions import IsAdminOrSelf, IsAdminRole
 from locks.serializers import (
     DoorCodeCreateSerializer,
+    DoorCodePushSerializer,
     DoorCodeSerializer,
     DoorCodeUpdateSerializer,
 )
@@ -128,4 +129,6 @@ class DoorCodePushRetryView(APIView):
             actor_user=request.user,
             zwavejs=default_zwavejs_gateway,
         )
-        return Response(DoorCodeSerializer(code).data, status=status.HTTP_200_OK)
+        # Narrow serializer that omits the plaintext PIN — the retry response only
+        # needs push_state / last_push_error / slot assignments.
+        return Response(DoorCodePushSerializer(code).data, status=status.HTTP_200_OK)

@@ -61,7 +61,7 @@ def cleanup_door_code_events() -> int:
     schedule=Every(seconds=300),
     failure_backoff_base_seconds=60,
     failure_backoff_max_seconds=3600,
-    description="Re-attempt programming pending door codes onto physical locks (ADR 0092).",
+    description="Re-attempt programming pending door codes onto physical locks.",
 )
 def push_pending_door_codes() -> int:
     """Iterate over pending door codes with unassigned slots and retry the push.

@@ -109,6 +109,14 @@ class DoorCodeSerializer(serializers.ModelSerializer):
         ]
 
 
+class DoorCodePushSerializer(DoorCodeSerializer):
+    class Meta(DoorCodeSerializer.Meta):
+        fields = tuple(f for f in DoorCodeSerializer.Meta.fields if f != "pin")
+
+    def get_pin(self, obj: DoorCode) -> None:  # pragma: no cover - field removed via Meta.fields
+        return None
+
+
 class DoorCodeCreateSerializer(serializers.Serializer):
     reauth_password = serializers.CharField(write_only=True)
     code = serializers.CharField(write_only=True)

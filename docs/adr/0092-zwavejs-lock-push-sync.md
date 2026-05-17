@@ -53,7 +53,7 @@ Steps:
 1. Resolve `node_id` via `_resolve_lock_node_id()` (reused from `lock_config_sync.py:628`).
 2. Decrypt PIN via `SettingsEncryption.get().decrypt(door_code.encrypted_pin)`. Plaintext never leaves the function.
 3. Enumerate `userIdStatus` per slot using the same pattern as `sync_lock_config` (`lock_config_sync.py:710-771`). Pick the **lowest slot where `_parse_user_code_status() == (False, None)`** (Available). Raise `LockSlotsFull` if none.
-4. Acquire the per-lock advisory lock (`_try_acquire_sync_lock(lock_key=f"lock_push:{lock_entity_id}")`) to serialize concurrent pushes.
+4. Acquire the per-lock advisory lock (`_try_acquire_sync_lock(lock_key=f"lock_sync:{lock_entity_id}")`) to serialize concurrent pushes. The key is intentionally **shared with `lock_config_sync` (pull-sync)** so push and pull mutex against each other — preventing slot-allocation races where pull-sync is mid-enumeration while push-sync is claiming a new slot on the same lock.
 5. Call `zwavejs.invoke_cc_api(node_id, command_class=CC_USER_CODE, method_name="set", args=[slot, pin])`.
 6. If the code has schedule fields (`days_of_week` AND `window_start` AND `window_end`):
    - Compute `(durationHour, durationMinute)` from start/end.
