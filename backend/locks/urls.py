@@ -15,4 +15,5 @@ urlpatterns = [
     ),
     path("door-codes/", views.DoorCodesView.as_view(), name="door-codes"),
     path("door-codes/<int:code_id>/", views.DoorCodeDetailView.as_view(), name="door-code-detail"),
+    path("door-codes/<int:code_id>/push/", views.DoorCodePushRetryView.as_view(), name="door-code-push"),
 ]

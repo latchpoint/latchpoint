@@ -93,6 +93,29 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _redact_cc_api_args_for_log(
+    *,
+    command_class: int,
+    method_name: str,
+    args: list | None,
+) -> list | None:
+    """Return a copy of ``args`` safe for DEBUG logging.
+
+    CC 99 User Code ``set`` passes ``[userId, userIdStatus, userCode]``; the
+    PIN (``userCode``, index 2) must never reach logs. Any other call shape is
+    logged as-is. Always returns a new list so the caller sees an inert object
+    even if it later mutates ``args``.
+    """
+    if not args:
+        return args
+    if command_class == CC_USER_CODE and method_name == "set":
+        redacted: list[Any] = list(args)
+        if len(redacted) >= 3:
+            redacted[2] = "***"
+        return redacted
+    return args
+
+
 def _is_configured(settings_obj: ZwavejsConnectionSettings) -> bool:
     """Return True if required connection settings are present and syntactically valid."""
     ws_url = (settings_obj.get("ws_url") or "").strip()
@@ -550,7 +573,7 @@ class ZwavejsConnectionManager:
             node_id,
             command_class,
             method_name,
-            args,
+            _redact_cc_api_args_for_log(command_class=command_class, method_name=method_name, args=args),
         )
         return self._run_coro(
             self._async_invoke_cc_api(

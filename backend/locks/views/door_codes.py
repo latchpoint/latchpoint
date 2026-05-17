@@ -11,6 +11,7 @@ from locks.models import DoorCode
 from locks.permissions import IsAdminOrSelf, IsAdminRole
 from locks.serializers import (
     DoorCodeCreateSerializer,
+    DoorCodePushSerializer,
     DoorCodeSerializer,
     DoorCodeUpdateSerializer,
 )
@@ -62,6 +63,7 @@ class DoorCodesView(APIView):
             max_uses=validated.get("max_uses"),
             lock_entity_ids=validated.get("lock_entity_ids"),
             actor_user=request.user,
+            zwavejs=default_zwavejs_gateway,
         )
         code = DoorCode.objects.select_related("user").prefetch_related("lock_assignments").get(id=code.id)
         return Response(DoorCodeSerializer(code).data, status=status.HTTP_201_CREATED)
@@ -97,7 +99,12 @@ class DoorCodeDetailView(ObjectPermissionMixin, APIView):
         changes = dict(serializer.validated_data)
         changes.pop("reauth_password", None)
 
-        code = door_codes_uc.update_door_code(code=code, changes=changes, actor_user=request.user)
+        code = door_codes_uc.update_door_code(
+            code=code,
+            changes=changes,
+            actor_user=request.user,
+            zwavejs=default_zwavejs_gateway,
+        )
         code = DoorCode.objects.select_related("user").prefetch_related("lock_assignments").get(id=code.id)
         return Response(DoorCodeSerializer(code).data, status=status.HTTP_200_OK)
 
@@ -109,3 +116,19 @@ class DoorCodeDetailView(ObjectPermissionMixin, APIView):
 
         door_codes_uc.delete_door_code(code=code, actor_user=request.user, zwavejs=default_zwavejs_gateway)
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class DoorCodePushRetryView(APIView):
+    permission_classes = [IsAuthenticated, IsAdminRole]
+
+    def post(self, request, code_id: int):
+        """Retry pushing a door code onto its assigned locks (admin-only, ADR 0092)."""
+        code = door_codes_uc.get_door_code_for_admin_update(actor_user=request.user, code_id=code_id)
+        code = door_codes_uc.retry_push_door_code(
+            code=code,
+            actor_user=request.user,
+            zwavejs=default_zwavejs_gateway,
+        )
+        # Narrow serializer that omits the plaintext PIN — the retry response only
+        # needs push_state / last_push_error / slot assignments.
+        return Response(DoorCodePushSerializer(code).data, status=status.HTTP_200_OK)

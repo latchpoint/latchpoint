@@ -37,6 +37,10 @@ def register(
     enabled: bool = True,
     description: str | None = None,
     enabled_when: EnabledWhenPredicate | None = None,
+    failure_backoff_base_seconds: int = 0,
+    failure_backoff_max_seconds: int = 0,
+    failure_suspend_after: int = 0,
+    failure_suspend_seconds: int = 0,
 ) -> Callable[[Callable[[], None]], Callable[[], None]]:
     """Decorator to register a scheduled task.
 
@@ -44,6 +48,10 @@ def register(
         @register("cleanup_old_events", schedule=DailyAt(hour=3, minute=0))
         def cleanup_old_events() -> int:
             ...
+
+    The `failure_*` kwargs declare the default retry policy at the call site.
+    SCHEDULER_TASK_OVERRIDES still wins when present, so operators retain the
+    final say from Django settings.
     """
 
     def decorator(func: Callable[[], None]) -> Callable[[], None]:
@@ -70,10 +78,18 @@ def register(
         if max_runtime_seconds is not None:
             max_runtime_seconds = int(max_runtime_seconds)
 
-        failure_backoff_base_seconds = int(override.get("failure_backoff_base_seconds") or 0)
-        failure_backoff_max_seconds = int(override.get("failure_backoff_max_seconds") or 0)
-        failure_suspend_after = int(override.get("failure_suspend_after") or 0)
-        failure_suspend_seconds = int(override.get("failure_suspend_seconds") or 0)
+        def _resolve_failure(key: str, default: int) -> int:
+            value = override.get(key)
+            return int(value) if value is not None else int(default)
+
+        resolved_failure_backoff_base_seconds = _resolve_failure(
+            "failure_backoff_base_seconds", failure_backoff_base_seconds
+        )
+        resolved_failure_backoff_max_seconds = _resolve_failure(
+            "failure_backoff_max_seconds", failure_backoff_max_seconds
+        )
+        resolved_failure_suspend_after = _resolve_failure("failure_suspend_after", failure_suspend_after)
+        resolved_failure_suspend_seconds = _resolve_failure("failure_suspend_seconds", failure_suspend_seconds)
 
         _tasks[name] = ScheduledTask(
             name=name,
@@ -83,10 +99,10 @@ def register(
             description=resolved_description,
             enabled_when=enabled_when,
             max_runtime_seconds=max_runtime_seconds,
-            failure_backoff_base_seconds=failure_backoff_base_seconds,
-            failure_backoff_max_seconds=failure_backoff_max_seconds,
-            failure_suspend_after=failure_suspend_after,
-            failure_suspend_seconds=failure_suspend_seconds,
+            failure_backoff_base_seconds=resolved_failure_backoff_base_seconds,
+            failure_backoff_max_seconds=resolved_failure_backoff_max_seconds,
+            failure_suspend_after=resolved_failure_suspend_after,
+            failure_suspend_seconds=resolved_failure_suspend_seconds,
         )
         return func
 

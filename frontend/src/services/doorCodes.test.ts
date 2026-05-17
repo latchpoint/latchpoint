@@ -31,4 +31,11 @@ describe('doorCodes', () => {
     await doorCodesService.deleteDoorCode(2, { reauthPassword: 'pw' })
     expect(apiMock.delete).toHaveBeenCalledWith(apiEndpoints.doorCodes.detail(2), { reauthPassword: 'pw' })
   })
+
+  it('retryPush hits the push endpoint with POST and empty body', async () => {
+    apiMock.post.mockResolvedValue({ id: 7, pushState: 'pushed' })
+    const result = await doorCodesService.retryPush(7)
+    expect(apiMock.post).toHaveBeenCalledWith(apiEndpoints.doorCodes.push(7), {})
+    expect(result).toEqual({ id: 7, pushState: 'pushed' })
+  })
 })

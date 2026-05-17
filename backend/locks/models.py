@@ -20,6 +20,11 @@ class DoorCode(models.Model):
         ONE_TIME = "one_time", "One-time"
         SERVICE = "service", "Service"
 
+    class PushState(models.TextChoices):
+        PENDING = "pending", "Pending"
+        PUSHED = "pushed", "Pushed"
+        FAILED = "failed", "Failed"
+
     id = models.BigAutoField(primary_key=True)
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="door_codes")
     source = models.CharField(max_length=16, choices=Source.choices, default=Source.MANUAL)
@@ -41,6 +46,14 @@ class DoorCode(models.Model):
     window_end = models.TimeField(null=True, blank=True)
     last_used_at = models.DateTimeField(null=True, blank=True)
     last_used_lock = models.CharField(max_length=255, blank=True)
+    push_state = models.CharField(
+        max_length=16,
+        choices=PushState.choices,
+        default=PushState.PENDING,
+    )
+    push_attempt_count = models.PositiveIntegerField(default=0)
+    last_push_attempt_at = models.DateTimeField(null=True, blank=True)
+    last_push_error = models.CharField(max_length=500, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

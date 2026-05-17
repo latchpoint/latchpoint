@@ -1,9 +1,15 @@
 export type DoorCodeType = 'permanent' | 'temporary' | 'one_time' | 'service'
 export type DoorCodeSource = 'manual' | 'synced'
+export type DoorCodePushState = 'pending' | 'pushed' | 'failed'
 
 export interface DoorCodeLockAssignment {
   id: number
   lockEntityId: string
+}
+
+export interface DoorCodeLockSlotAssignment {
+  lockEntityId: string
+  slotIndex: number | null
 }
 
 export interface DoorCode {
@@ -27,6 +33,10 @@ export interface DoorCode {
   lastUsedLock: string | null
   lockAssignments: DoorCodeLockAssignment[]
   lockEntityIds: string[]
+  lockSlotAssignments: DoorCodeLockSlotAssignment[]
+  pushState: DoorCodePushState
+  lastPushAttemptAt: string | null
+  lastPushError: string
   createdAt: string
   updatedAt: string
 }

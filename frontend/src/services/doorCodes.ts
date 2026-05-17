@@ -22,6 +22,10 @@ export const doorCodesService = {
   async deleteDoorCode(id: number, req: { reauthPassword: string }): Promise<void> {
     return api.delete(apiEndpoints.doorCodes.detail(id), req)
   },
+
+  async retryPush(id: number): Promise<DoorCode> {
+    return api.post<DoorCode>(apiEndpoints.doorCodes.push(id), {})
+  },
 }
 
 export default doorCodesService

@@ -501,6 +501,16 @@ SYSTEM_CONFIG_SETTINGS: list[SettingDefinition] = [
         description="How long to keep door code audit events before pruning (<= 0 disables cleanup).",
     ),
     SettingDefinition(
+        key="door_codes.push_max_attempts",
+        name="Door code push max attempts",
+        value_type=SystemConfigValueType.INTEGER,
+        default=24,
+        description=(
+            "Consecutive scheduler-retry attempts before a pending door-code push is marked failed. "
+            "With the default backoff (60s base, 3600s cap) 24 attempts covers ~2 hours."
+        ),
+    ),
+    SettingDefinition(
         key="rule_logs.retention_days",
         name="Rule log retention (days)",
         value_type=SystemConfigValueType.INTEGER,

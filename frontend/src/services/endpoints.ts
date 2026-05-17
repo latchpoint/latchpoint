@@ -57,6 +57,7 @@ export const apiEndpoints = {
   doorCodes: {
     all: '/api/door-codes/',
     detail: (id: number) => `/api/door-codes/${id}/`,
+    push: (id: number) => `/api/door-codes/${id}/push/`,
   },
   controlPanels: {
     all: '/api/control-panels/',
