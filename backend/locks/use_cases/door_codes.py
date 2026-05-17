@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import logging
 from typing import TYPE_CHECKING
 
 from django.db import transaction
@@ -12,6 +13,8 @@ from accounts.policies import is_admin
 from alarm.crypto import SettingsEncryption
 from config.domain_exceptions import ForbiddenError, NotFoundError, ValidationError
 from locks.models import DoorCode, DoorCodeEvent, DoorCodeLockAssignment
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from alarm.gateways.zwavejs import ZwavejsGateway
@@ -396,9 +399,19 @@ def _push_to_assigned_locks_best_effort(
             only_unassigned=True,
         )
     except Exception:
-        # _push_to_assigned_locks already records failures on the row; this guards
-        # against e.g. import errors during partial deploys.
-        pass
+        # Unexpected error from the push pipeline. Per-lock failures are recorded
+        # on the row by lock_push itself; this branch only fires for *unhandled*
+        # exception types (import errors during partial deploy, programming bugs,
+        # etc). Log + stamp a generic message so the UI doesn't show "pending"
+        # with no diagnostic.
+        logger.exception("Unhandled error pushing door code id=%s; row left at last persisted state", code.id)
+        try:
+            DoorCode.objects.filter(id=code.id).update(
+                last_push_error="Internal error during push (see backend logs)",
+                last_push_attempt_at=django_timezone.now(),
+            )
+        except Exception:  # pragma: no cover - belt-and-suspenders
+            logger.exception("Failed to stamp last_push_error for door code id=%s", code.id)
 
 
 def retry_push_door_code(

@@ -36,6 +36,12 @@ from locks.use_cases.lock_config_sync import (
     _resolve_lock_node_id,
     _try_acquire_sync_lock,
 )
+from locks.use_cases.lock_config_sync import (
+    InvalidRequest as LockSyncInvalidRequest,
+)
+from locks.use_cases.lock_config_sync import (
+    NotFound as LockSyncNotFound,
+)
 
 if TYPE_CHECKING:
     from alarm.gateways.zwavejs import ZwavejsGateway
@@ -264,7 +270,16 @@ def push_door_code_to_lock(
         ``code_failed`` event is emitted.
     """
     pin = _decrypt_pin_or_raise(door_code)
-    node_id = _resolve_lock_node_id(lock_entity_id=lock_entity_id)
+    try:
+        node_id = _resolve_lock_node_id(lock_entity_id=lock_entity_id)
+    except (LockSyncNotFound, LockSyncInvalidRequest) as exc:
+        # Terminal config issue: the Entity row exists but has no usable Z-Wave JS
+        # node_id (or the entity itself is missing). Operator must sync HA entities
+        # first; retries will just rediscover the same problem. Record + flip the
+        # row to FAILED so the UI surfaces last_push_error instead of stalling on
+        # "pending sync" forever.
+        _record_push_failure(door_code=door_code, error_message=str(exc), terminal=True)
+        raise LockPushFailed(str(exc)) from exc
 
     lock_key = f"lock_sync:{lock_entity_id}"
     acquired, lock_id = _try_acquire_sync_lock(lock_key=lock_key)

@@ -270,6 +270,44 @@ class PushDoorCodeToLockTests(EncryptionTestMixin, TestCase):
         self.assertEqual(failed_events.count(), 1)
         self.assertEqual(failed_events.first().metadata.get("action"), "push")
 
+    def test_lock_without_zwavejs_node_id_records_terminal_failure(self):
+        """Entity exists but has no ``attributes.zwavejs.node_id`` — must not stall at pending."""
+        Entity.objects.filter(entity_id=self.LOCK_ENTITY_ID).update(attributes={})
+        gateway = FakeGateway(usersNumber=3, slot_status={1: 0, 2: 0, 3: 0})
+        code = self._make_code(pin="1234")
+
+        with self.assertRaises(LockPushFailed):
+            push_door_code_to_lock(
+                door_code=code,
+                lock_entity_id=self.LOCK_ENTITY_ID,
+                zwavejs=gateway,
+            )
+
+        # Never reached the gateway — failed at config resolution.
+        self.assertEqual(gateway.invoke_calls, [])
+
+        code.refresh_from_db()
+        self.assertEqual(code.push_state, DoorCode.PushState.FAILED)
+        self.assertIn("Z-Wave JS node", code.last_push_error)
+        self.assertIsNotNone(code.last_push_attempt_at)
+
+    def test_unknown_lock_entity_records_terminal_failure(self):
+        """The lock_entity_id does not exist in Entity — push must terminate, not silently stall."""
+        gateway = FakeGateway(usersNumber=3, slot_status={1: 0, 2: 0, 3: 0})
+        code = self._make_code(pin="1234")
+
+        with self.assertRaises(LockPushFailed):
+            push_door_code_to_lock(
+                door_code=code,
+                lock_entity_id="lock.does_not_exist",
+                zwavejs=gateway,
+            )
+
+        self.assertEqual(gateway.invoke_calls, [])
+        code.refresh_from_db()
+        self.assertEqual(code.push_state, DoorCode.PushState.FAILED)
+        self.assertTrue(code.last_push_error)
+
     def test_pin_redacted_in_invoke_cc_api_debug_log(self):
         """ADR 0092 §7: PIN bytes must never reach DEBUG logs."""
         from integrations_zwavejs.manager import _redact_cc_api_args_for_log
