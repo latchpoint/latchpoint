@@ -14,6 +14,7 @@ at ``push_state="pending"`` for the scheduler to retry.
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, time, timedelta, timezone
 from typing import TYPE_CHECKING
@@ -216,6 +217,26 @@ def _push_daily_repeating_schedule(
     return weekdays_pushed
 
 
+# Mask any run of 4–8 consecutive digits in stored error strings. PINs in this
+# system are 4–8 digits; slot indices (1–99) and node IDs (1–232) are 1–3 digits;
+# HTTP status codes are 3 digits; ZJS home_ids are 10+ digits — so this band
+# masks accidental PIN leaks without scrubbing useful diagnostic numbers.
+_PIN_LIKE_DIGIT_RUN = re.compile(r"(?<!\d)\d{4,8}(?!\d)")
+
+
+def sanitize_push_error_for_storage(message: str | None) -> str:
+    """Return ``message`` with any 4–8-digit run replaced by ``****``.
+
+    Defense-in-depth against a future gateway / exception class that includes
+    user-supplied data in its ``__str__``: keeps PIN material out of
+    ``DoorCode.last_push_error`` and ``DoorCodeEvent.metadata`` even if upstream
+    error messages start carrying it.
+    """
+    if not message:
+        return ""
+    return _PIN_LIKE_DIGIT_RUN.sub("****", str(message))
+
+
 def _record_push_failure(
     *,
     door_code: DoorCode,
@@ -223,8 +244,9 @@ def _record_push_failure(
     terminal: bool,
 ) -> None:
     """Stamp last_push_* + bump push_attempt_count; flip to failed when terminal."""
+    safe_message = sanitize_push_error_for_storage(error_message)
     door_code.last_push_attempt_at = django_timezone.now()
-    door_code.last_push_error = error_message[:500]
+    door_code.last_push_error = safe_message[:500]
     door_code.push_attempt_count = (door_code.push_attempt_count or 0) + 1
     if terminal:
         door_code.push_state = DoorCode.PushState.FAILED
@@ -245,7 +267,7 @@ def _record_push_failure(
             door_code=door_code,
             user=door_code.user,
             event_type=DoorCodeEvent.EventType.CODE_FAILED,
-            metadata={"action": "push", "reason": error_message[:200]},
+            metadata={"action": "push", "reason": safe_message[:200]},
         )
 
 

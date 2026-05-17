@@ -6,8 +6,9 @@ import json
 from datetime import time
 from unittest.mock import patch
 
-from django.test import TestCase
+from django.test import SimpleTestCase, TestCase
 from django.urls import reverse
+from integrations_zwavejs.cc_api_contracts import validate_cc_api_args
 from integrations_zwavejs.manager import ZwavejsNotConfigured
 from rest_framework.test import APITestCase
 
@@ -23,6 +24,7 @@ from locks.use_cases.lock_push import (
     LockSlotsFull,
     LockUnreachable,
     push_door_code_to_lock,
+    sanitize_push_error_for_storage,
 )
 
 
@@ -69,6 +71,11 @@ class FakeGateway:
         args: list | None = None,
         timeout_seconds: float = 10.0,  # noqa: ARG002
     ):
+        # Enforce the CC API contract on every recorded call. If a future change
+        # to lock_push starts sending the wrong arg shape (the kind of bug that
+        # bit prod with CC 99 set), this raises here instead of silently
+        # recording bad args and "passing" the test.
+        validate_cc_api_args(command_class=command_class, method_name=method_name, args=args)
         self.invoke_calls.append(
             {
                 "node_id": node_id,
@@ -489,6 +496,180 @@ class PushPendingSchedulerTaskTests(EncryptionTestMixin, TestCase):
             .first()
         )
         self.assertIsNotNone(cap_event)
+
+
+class LockSlotAssignmentsSerializerTests(EncryptionTestMixin, TestCase):
+    """ADR 0092: DoorCodeSerializer.get_lock_slot_assignments output + prefetch guard."""
+
+    LOCK_ENTITY_ID = "lock.front_door"
+
+    def setUp(self):
+        self.user = User.objects.create_user(email="user@example.com", password="pass")
+        Entity.objects.create(
+            entity_id=self.LOCK_ENTITY_ID,
+            domain="lock",
+            name="Front Door",
+            attributes={"zwavejs": {"node_id": 7}},
+            source="home_assistant",
+        )
+
+    def test_returns_lock_entity_id_and_slot_index_when_prefetched(self):
+        from locks.serializers import DoorCodeSerializer
+
+        code = DoorCode.objects.create(
+            user=self.user,
+            encrypted_pin=SettingsEncryption.get().encrypt("1234"),
+            pin_length=4,
+            code_type=DoorCode.CodeType.PERMANENT,
+            is_active=True,
+        )
+        DoorCodeLockAssignment.objects.create(door_code=code, lock_entity_id=self.LOCK_ENTITY_ID, slot_index=7)
+
+        # Fetch through the queryset path the views use so lock_assignments is prefetched.
+        fetched = DoorCode.objects.prefetch_related("lock_assignments").get(id=code.id)
+        data = DoorCodeSerializer(fetched).data
+
+        self.assertEqual(
+            data["lock_slot_assignments"],
+            [{"lock_entity_id": self.LOCK_ENTITY_ID, "slot_index": 7}],
+        )
+
+    def test_returns_null_slot_index_for_unpushed_assignment(self):
+        from locks.serializers import DoorCodeSerializer
+
+        code = DoorCode.objects.create(
+            user=self.user,
+            encrypted_pin=SettingsEncryption.get().encrypt("1234"),
+            pin_length=4,
+            code_type=DoorCode.CodeType.PERMANENT,
+            is_active=True,
+        )
+        DoorCodeLockAssignment.objects.create(door_code=code, lock_entity_id=self.LOCK_ENTITY_ID, slot_index=None)
+
+        fetched = DoorCode.objects.prefetch_related("lock_assignments").get(id=code.id)
+        data = DoorCodeSerializer(fetched).data
+
+        self.assertEqual(data["lock_slot_assignments"], [{"lock_entity_id": self.LOCK_ENTITY_ID, "slot_index": None}])
+
+    def test_raises_runtime_error_when_lock_assignments_not_prefetched(self):
+        from locks.serializers import DoorCodeSerializer
+
+        code = DoorCode.objects.create(
+            user=self.user,
+            encrypted_pin=SettingsEncryption.get().encrypt("1234"),
+            pin_length=4,
+            code_type=DoorCode.CodeType.PERMANENT,
+            is_active=True,
+        )
+        DoorCodeLockAssignment.objects.create(door_code=code, lock_entity_id=self.LOCK_ENTITY_ID)
+
+        # Fetch WITHOUT prefetch_related — the guard must fire so a forgotten
+        # prefetch becomes loud-test-failure instead of N+1 in prod.
+        bare = DoorCode.objects.get(id=code.id)
+        with self.assertRaises(RuntimeError):
+            _ = DoorCodeSerializer(bare).data
+
+
+class SanitizePushErrorForStorageTests(SimpleTestCase):
+    """Defense-in-depth: digits that look PIN-shaped get masked before storage."""
+
+    def test_masks_4_to_8_digit_runs(self):
+        self.assertEqual(sanitize_push_error_for_storage("PIN was 1234"), "PIN was ****")
+        self.assertEqual(sanitize_push_error_for_storage("rejected code 12345678"), "rejected code ****")
+
+    def test_does_not_mask_short_digit_sequences(self):
+        # slot index 5, node 109, HTTP 404 — all useful diagnostics that must survive.
+        self.assertEqual(sanitize_push_error_for_storage("slot 5 node 109 status 404"), "slot 5 node 109 status 404")
+
+    def test_does_not_mask_runs_longer_than_8(self):
+        # ZJS home_ids are 10+ digits; not PIN-shaped.
+        msg = "home_id 4170970308 unreachable"
+        self.assertEqual(sanitize_push_error_for_storage(msg), msg)
+
+    def test_does_not_mask_digits_inside_longer_numeric_runs(self):
+        # "1234567890" is 10 digits — must not match because the lookarounds
+        # require non-digit boundaries on both sides.
+        msg = "request id 1234567890 timed out"
+        self.assertEqual(sanitize_push_error_for_storage(msg), msg)
+
+    def test_empty_and_none_inputs(self):
+        self.assertEqual(sanitize_push_error_for_storage(""), "")
+        self.assertEqual(sanitize_push_error_for_storage(None), "")
+
+    def test_masks_pin_in_realistic_message(self):
+        msg = 'ZwavejsCommandError: validator rejected userCode "13795"'
+        sanitized = sanitize_push_error_for_storage(msg)
+        self.assertNotIn("13795", sanitized)
+        self.assertIn("****", sanitized)
+
+
+class RetryPushDoorCodeUseCaseTests(EncryptionTestMixin, TestCase):
+    """Direct unit tests for retry_push_door_code (the use case wrapped by the view)."""
+
+    LOCK_ENTITY_ID = "lock.front_door"
+
+    def setUp(self):
+        self.admin = User.objects.create_superuser(email="admin@example.com", password="pass")
+        self.user = User.objects.create_user(email="user@example.com", password="pass")
+        Entity.objects.create(
+            entity_id=self.LOCK_ENTITY_ID,
+            domain="lock",
+            name="Front Door",
+            attributes={"zwavejs": {"node_id": 7}},
+            source="home_assistant",
+        )
+
+    def _make_code(self, *, pin: str = "1234", push_state=DoorCode.PushState.PENDING, **kwargs) -> DoorCode:
+        code = DoorCode.objects.create(
+            user=self.user,
+            encrypted_pin=SettingsEncryption.get().encrypt(pin),
+            pin_length=len(pin),
+            code_type=DoorCode.CodeType.PERMANENT,
+            is_active=True,
+            push_state=push_state,
+            **kwargs,
+        )
+        DoorCodeLockAssignment.objects.create(door_code=code, lock_entity_id=self.LOCK_ENTITY_ID)
+        return code
+
+    def test_retry_pushes_pending_code_and_flips_to_pushed(self):
+        from locks.use_cases.door_codes import retry_push_door_code
+
+        gateway = FakeGateway(usersNumber=3, slot_status={1: 0, 2: 0, 3: 0})
+        code = self._make_code(pin="1234")
+
+        result = retry_push_door_code(code=code, actor_user=self.admin, zwavejs=gateway)
+
+        self.assertEqual(result.push_state, DoorCode.PushState.PUSHED)
+        # CC 99 set was invoked with the 3-arg contract shape.
+        set_calls = [c for c in gateway.invoke_calls if c["method_name"] == "set" and c["command_class"] == 99]
+        self.assertEqual(len(set_calls), 1)
+        self.assertEqual(set_calls[0]["args"][1], 1)  # userIdStatus = "Occupied"
+
+    def test_retry_rearms_failed_codes_to_pending_and_zeros_attempt_count(self):
+        from locks.use_cases.door_codes import retry_push_door_code
+
+        gateway = FakeGateway(usersNumber=3, slot_status={1: 0, 2: 0, 3: 0})
+        # Start the code at FAILED with a non-zero counter — the operator is
+        # saying "yes, try again."
+        code = self._make_code(pin="2222", push_state=DoorCode.PushState.FAILED, push_attempt_count=24)
+
+        result = retry_push_door_code(code=code, actor_user=self.admin, zwavejs=gateway)
+
+        self.assertEqual(result.push_state, DoorCode.PushState.PUSHED)
+        # Counter was zeroed before the push (and stayed zeroed on success).
+        self.assertEqual(result.push_attempt_count, 0)
+
+    def test_retry_requires_admin_actor(self):
+        from locks.use_cases.door_codes import Forbidden, retry_push_door_code
+
+        gateway = FakeGateway(usersNumber=3, slot_status={1: 0, 2: 0, 3: 0})
+        code = self._make_code(pin="3333")
+
+        with self.assertRaises(Forbidden):
+            retry_push_door_code(code=code, actor_user=self.user, zwavejs=gateway)
+        # Confirm we never reached the gateway with a non-admin actor.
+        self.assertEqual(gateway.invoke_calls, [])
 
 
 class DoorCodePushRetryViewTests(EncryptionTestMixin, APITestCase):

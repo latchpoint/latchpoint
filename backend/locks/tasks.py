@@ -106,8 +106,14 @@ def push_pending_door_codes() -> int:
 
         if not successes and failures and max_attempts > 0 and code.push_attempt_count >= max_attempts:
             # Consecutive-failure cap reached — give up and surface to operators.
+            # Sanitize the upstream failure reason in case it ever carries PIN-shaped
+            # digits (today none of the raised exception classes do, but defense
+            # in depth — see sanitize_push_error_for_storage docstring).
+            from locks.use_cases.lock_push import sanitize_push_error_for_storage
+
+            safe_reason = sanitize_push_error_for_storage(failures[0][1])
             code.push_state = DoorCode.PushState.FAILED
-            code.last_push_error = (f"Push gave up after {code.push_attempt_count} attempts: {failures[0][1]}")[:500]
+            code.last_push_error = (f"Push gave up after {code.push_attempt_count} attempts: {safe_reason}")[:500]
             code.save(update_fields=["push_state", "last_push_error", "updated_at"])
             DoorCodeEvent.objects.create(
                 door_code=code,
@@ -117,7 +123,7 @@ def push_pending_door_codes() -> int:
                     "action": "push",
                     "reason": "max_attempts_exceeded",
                     "attempts": code.push_attempt_count,
-                    "last_error": failures[0][1][:200],
+                    "last_error": safe_reason[:200],
                 },
             )
 
