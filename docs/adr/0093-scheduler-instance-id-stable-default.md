@@ -115,6 +115,7 @@ Cons: Destructive schema change (column drop + unique-constraint redefinition). 
 
 - The `instance_id` column, indexes, and unique constraint remain. No schema-level change; the field's domain just collapses to `{"default"}` in single-instance deployments.
 - The `SchedulerStatusView` orphan-tasks branch (`views.py:152-198`) keeps working unchanged — it now sees fewer orphans (zero, ideally, in steady state).
+- Pre-existing `AlarmEvent` rows emitted by `maybe_emit_failure_event` / `maybe_emit_stuck_event` (`telemetry.py:263,279`) carry the *then-current* `hostname:pid` string in their `metadata.instance_id`. The migration does not rewrite that historical metadata — it is not used by any filter or display path, but operators reviewing old events will see the legacy values. Events emitted post-migration carry `"default"`.
 
 ## Implementation Plan
 

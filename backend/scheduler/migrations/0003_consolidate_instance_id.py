@@ -9,6 +9,10 @@ def consolidate_instance_id(apps, schema_editor):
     """
     Collapse pre-existing `(task_name, instance_id)` rows down to one row per
     task and rewrite the instance id to the stable default. See ADR-0093.
+
+    Assumes migrations run before the in-process scheduler starts writing (the
+    Django entrypoint orders it that way). If a future change interleaves the
+    two, this function would race the live writer on `SchedulerTaskHealth`.
     """
     SchedulerTaskHealth = apps.get_model("scheduler", "SchedulerTaskHealth")
     SchedulerTaskRun = apps.get_model("scheduler", "SchedulerTaskRun")

@@ -22,7 +22,6 @@ class GetInstanceIdTests(SimpleTestCase):
 
     @override_settings(SCHEDULER_INSTANCE_ID="")
     def test_returns_default_when_override_is_blank(self) -> None:
-        telemetry_module._CACHED_INSTANCE_ID = None
         self.assertEqual(telemetry_module.get_instance_id(), "default")
 
     @override_settings(SCHEDULER_INSTANCE_ID="replica-2")
