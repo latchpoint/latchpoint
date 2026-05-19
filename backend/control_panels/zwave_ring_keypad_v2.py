@@ -341,6 +341,11 @@ def _sync_device_state(*, device: ControlPanelDevice) -> None:
 def sync_ring_keypad_v2_devices_state() -> None:
     """
     Sync alarm state -> Ring keypad indicators for all enabled Ring v2 devices.
+
+    Per ADR-0094, panels with ``follow_alarm_state=False`` are skipped — they
+    are under explicit rule control via ``control_panel_set_state`` /
+    ``control_panel_trigger``. They re-enter auto-mirror on disarm or via
+    ``control_panel_set_state(state="auto")``.
     """
 
     _maybe_close_old_connections()
@@ -351,6 +356,7 @@ def sync_ring_keypad_v2_devices_state() -> None:
         logger.warning("Failed to get alarm snapshot for Ring Keypad sync", exc_info=True)
     devices = ControlPanelDevice.objects.filter(
         enabled=True,
+        follow_alarm_state=True,
         integration_type=ControlPanelIntegrationType.ZWAVEJS,
         kind=ControlPanelKind.RING_KEYPAD_V2,
     ).only("id", "external_id", "last_error")
@@ -367,6 +373,53 @@ def sync_ring_keypad_v2_devices_state() -> None:
             except Exception:
                 logger.warning("Failed to save device error state", exc_info=True)
             continue
+
+
+# ADR-0094: explicit panel state writers used by control_panel_set_state /
+# control_panel_trigger handlers. These do NOT consult the central alarm
+# snapshot — they drive the keypad indicator directly. Callers must already
+# have flipped ``follow_alarm_state=False`` on the device row.
+
+_PANEL_STATE_TO_INDICATOR = {
+    "disarmed": (_IND_DISARMED, False),
+    "armed_stay": (_IND_ARMED_STAY, False),
+    "armed_away": (_IND_ARMED_AWAY, False),
+    "triggered": (_IND_BURGLAR_ALARM, True),
+}
+
+
+def apply_ring_keypad_v2_panel_state(
+    *,
+    device: ControlPanelDevice,
+    state: str,
+    countdown_seconds: int | None = None,
+) -> None:
+    """Drive a Ring Keypad v2 indicator for an explicit (non-alarm-derived) panel state.
+
+    ``state="pending"`` drives the entry-delay indicator with the supplied
+    ``countdown_seconds`` (defaults to 30 if absent). ``state="triggered"``
+    lights the burglar indicator with volume. ``state="auto"`` is handled by
+    the caller — it re-syncs from the alarm snapshot rather than calling here.
+    """
+    if state == "pending":
+        seconds = countdown_seconds if isinstance(countdown_seconds, int) and countdown_seconds > 0 else 30
+        _apply_ring_keypad_v2_volume(device=device, property_id=_IND_ENTRY_DELAY)
+        _indicator_set(device=device, property_id=_IND_ENTRY_DELAY, property_key=7, value=seconds)
+        return
+    mapping = _PANEL_STATE_TO_INDICATOR.get(state)
+    if mapping is None:
+        return
+    property_id, with_volume = mapping
+    if with_volume:
+        _apply_ring_keypad_v2_volume(device=device, property_id=property_id)
+        _indicator_set(device=device, property_id=property_id, property_key=1, value=1)
+    else:
+        _indicator_set(device=device, property_id=property_id, property_key=1, value=99)
+
+
+def trigger_ring_keypad_v2_panel(*, device: ControlPanelDevice) -> None:
+    """Light the burglar indicator on a single panel (ADR-0094)."""
+    apply_ring_keypad_v2_panel_state(device=device, state="triggered")
 
 
 def handle_zwavejs_ring_keypad_v2_event(msg: dict[str, Any]) -> None:

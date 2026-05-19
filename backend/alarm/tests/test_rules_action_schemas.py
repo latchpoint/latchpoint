@@ -361,6 +361,8 @@ class ActionSchemaMetadataTests(TestCase):
                 "alarm_set_state",
                 "alarm_disarm",
                 "alarm_arm",
+                "control_panel_set_state",
+                "control_panel_trigger",
                 "ha_call_service",
                 "zwavejs_set_value",
                 "zigbee2mqtt_set_value",

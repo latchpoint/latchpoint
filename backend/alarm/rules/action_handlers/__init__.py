@@ -90,6 +90,8 @@ from alarm.rules.action_handlers import (  # noqa: E402, F401
     alarm_disarm,
     alarm_set_state,
     alarm_trigger,
+    control_panel_set_state,
+    control_panel_trigger,
     ha_call_service,
     send_notification,
     zigbee2mqtt_light,

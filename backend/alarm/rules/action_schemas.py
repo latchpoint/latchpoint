@@ -6,6 +6,8 @@ Supports schema_version=1 action types:
 - alarm_set_state: Set the alarm state directly (ADR-0094).
 - alarm_disarm: Disarm the alarm
 - alarm_arm: Arm the alarm with a target mode
+- control_panel_set_state: Drive a specific control panel's indicator (ADR-0094).
+- control_panel_trigger: Light a specific control panel's burglar indicator (ADR-0094).
 - ha_call_service: Call a Home Assistant service
 - zwavejs_set_value: Write a Z-Wave JS value
 - zigbee2mqtt_set_value: Publish a Zigbee2MQTT set payload for an entity
@@ -23,6 +25,7 @@ from typing import Any
 
 ARMED_MODES = ("armed_home", "armed_away", "armed_night", "armed_vacation")
 ALARM_STATES_SET = ("disarmed", "pending", "triggered", *ARMED_MODES)
+PANEL_STATES = ("pending", "disarmed", "armed_stay", "armed_away", "triggered", "auto")
 
 ADMIN_ONLY_ACTION_TYPES = frozenset(
     {
@@ -40,6 +43,8 @@ ACTION_TYPES = frozenset(
         "alarm_set_state",
         "alarm_disarm",
         "alarm_arm",
+        "control_panel_set_state",
+        "control_panel_trigger",
         "ha_call_service",
         "zwavejs_set_value",
         "zigbee2mqtt_set_value",
@@ -264,11 +269,42 @@ def _validate_send_notification(action: dict[str, Any]) -> list[str]:
     return errors
 
 
+def _validate_control_panel_set_state(action: dict[str, Any]) -> list[str]:
+    """control_panel_set_state requires a panel_id (int) and state from PANEL_STATES."""
+    errors: list[str] = []
+    panel_id = action.get("panel_id")
+    if not isinstance(panel_id, int) or isinstance(panel_id, bool) or panel_id <= 0:
+        errors.append("control_panel_set_state requires positive integer 'panel_id'")
+    state = action.get("state")
+    if not isinstance(state, str) or state not in PANEL_STATES:
+        errors.append(f"control_panel_set_state requires 'state' to be one of: {', '.join(PANEL_STATES)}")
+    countdown = action.get("countdown_seconds")
+    if countdown is not None:
+        if isinstance(countdown, bool) or not isinstance(countdown, int):
+            errors.append("control_panel_set_state 'countdown_seconds' must be an integer if provided")
+        elif countdown < 0:
+            errors.append("control_panel_set_state 'countdown_seconds' must be >= 0")
+        elif countdown > ACTION_MAX_DELAY_SECONDS:
+            errors.append(f"control_panel_set_state 'countdown_seconds' must be <= {ACTION_MAX_DELAY_SECONDS}")
+    return errors
+
+
+def _validate_control_panel_trigger(action: dict[str, Any]) -> list[str]:
+    """control_panel_trigger requires a panel_id (int)."""
+    errors: list[str] = []
+    panel_id = action.get("panel_id")
+    if not isinstance(panel_id, int) or isinstance(panel_id, bool) or panel_id <= 0:
+        errors.append("control_panel_trigger requires positive integer 'panel_id'")
+    return errors
+
+
 _VALIDATORS = {
     "alarm_trigger": _validate_alarm_trigger,
     "alarm_set_state": _validate_alarm_set_state,
     "alarm_disarm": _validate_alarm_disarm,
     "alarm_arm": _validate_alarm_arm,
+    "control_panel_set_state": _validate_control_panel_set_state,
+    "control_panel_trigger": _validate_control_panel_trigger,
     "ha_call_service": _validate_ha_call_service,
     "zwavejs_set_value": _validate_zwavejs_set_value,
     "zigbee2mqtt_set_value": _validate_zigbee2mqtt_set_value,
@@ -325,6 +361,51 @@ def get_action_schemas() -> dict[str, dict[str, Any]]:
                 "delay_seconds": _GENERIC_DELAY_PROPERTY,
             },
             "required": ["type", "state"],
+            "admin_only": False,
+        },
+        "control_panel_set_state": {
+            "type": "object",
+            "properties": {
+                "type": {"const": "control_panel_set_state"},
+                "panel_id": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "ControlPanelDevice.id to drive.",
+                },
+                "state": {
+                    "type": "string",
+                    "enum": list(PANEL_STATES),
+                    "description": (
+                        "Indicator to display on the panel. 'auto' returns the panel "
+                        "to following the central alarm state."
+                    ),
+                },
+                "countdown_seconds": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": ACTION_MAX_DELAY_SECONDS,
+                    "description": (
+                        "Optional countdown seconds for indicators that support it "
+                        "(entry-delay / pending). Ignored for other states."
+                    ),
+                },
+                "delay_seconds": _GENERIC_DELAY_PROPERTY,
+            },
+            "required": ["type", "panel_id", "state"],
+            "admin_only": False,
+        },
+        "control_panel_trigger": {
+            "type": "object",
+            "properties": {
+                "type": {"const": "control_panel_trigger"},
+                "panel_id": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "ControlPanelDevice.id to drive.",
+                },
+                "delay_seconds": _GENERIC_DELAY_PROPERTY,
+            },
+            "required": ["type", "panel_id"],
             "admin_only": False,
         },
         "alarm_disarm": {

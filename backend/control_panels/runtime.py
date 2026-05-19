@@ -49,14 +49,24 @@ def initialize() -> None:
     logger.info("Control panels: registered Z-Wave JS event listener.")
 
     try:
+        from alarm.models import AlarmState
         from alarm.signals import alarm_state_change_committed
+        from control_panels.services import resume_auto_all_on_disarm
         from control_panels.zwave_ring_keypad_v2 import sync_ring_keypad_v2_devices_state
     except Exception:
         return
 
     def _on_alarm_state_change(sender, *, state_to: str, **_kwargs) -> None:
-        """Sync keypad indicators after a committed alarm state change."""
+        """Sync keypad indicators after a committed alarm state change.
+
+        Per ADR-0094: on DISARMED, also flip every panel back to
+        ``follow_alarm_state=True`` first so explicit-rule-controlled
+        panels rejoin the auto-mirror. Flag flip happens before the
+        sync call so the sync's queryset filter sees the updated rows.
+        """
         try:
+            if state_to == AlarmState.DISARMED:
+                resume_auto_all_on_disarm()
             sync_ring_keypad_v2_devices_state()
         except Exception:
             return
