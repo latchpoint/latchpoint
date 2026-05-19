@@ -21,7 +21,6 @@ from alarm.models import (
     PendingActionStatus,
     Rule,
 )
-from alarm.state_machine.constants import ARMED_STATES
 
 if TYPE_CHECKING:
     from alarm.rules.action_handlers import ActionContext
@@ -85,17 +84,21 @@ def cancel_pending_actions(
 
 
 def cancel_for_disarm() -> int:
-    """Cancel every pending action that was scheduled while the alarm was armed.
+    """Cancel every pending action that was scheduled while the alarm was non-disarmed.
 
     Intended to be called from a signal receiver when the alarm transitions
     to DISARMED. Rows scheduled while DISARMED are left alone (a rule that
     fires in disarmed state — e.g., a "log disarm event" rule — shouldn't
     be cancelled by the very disarm that scheduled it).
+
+    Note: this filter excludes DISARMED rather than including only ARMED_STATES,
+    because under composable rule actions (ADR-0094) an action can be scheduled
+    while the alarm is in PENDING (the prior action having entered PENDING via
+    ``alarm_set_state``). Such rows must still be cancelled on disarm.
     """
     qs = PendingAction.objects.filter(
         status=PendingActionStatus.SCHEDULED,
-        armed_state_at_schedule__in=list(ARMED_STATES),
-    )
+    ).exclude(armed_state_at_schedule=AlarmState.DISARMED)
     return cancel_pending_actions(queryset=qs, reason=PendingActionCancelReason.DISARM)
 
 

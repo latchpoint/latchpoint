@@ -367,6 +367,7 @@ class ActionSchemaMetadataTests(TestCase):
             ACTION_TYPES,
             {
                 "alarm_trigger",
+                "alarm_set_state",
                 "alarm_disarm",
                 "alarm_arm",
                 "ha_call_service",

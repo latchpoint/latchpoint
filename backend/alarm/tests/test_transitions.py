@@ -7,12 +7,13 @@ from django.utils import timezone
 
 from accounts.models import User
 from alarm.models import AlarmSettingsProfile, AlarmState, AlarmStateSnapshot, Sensor
+from alarm.state_machine.errors import TransitionError
 from alarm.state_machine.transitions import (
     arm,
     disarm,
     sensor_triggered,
+    set_state,
     timer_expired,
-    trigger_with_delay,
 )
 from alarm.tests.settings_test_utils import set_profile_setting, set_profile_settings
 
@@ -148,12 +149,13 @@ class AlarmSnapshotBootstrapTests(TestCase):
         self.assertTrue(AlarmStateSnapshot.objects.exists())
 
 
-class TriggerWithDelayTests(TestCase):
-    """Rule-driven entry-delay (ADR-0091 revised, Option 1 path).
+class SetStateTests(TestCase):
+    """Direct alarm-state setter (ADR-0094 composable primitive).
 
-    Enters PENDING with a caller-supplied delay when the alarm is in an
-    armed state; no-ops from every other state. Disarm during the wait
-    returns to DISARMED. timer_expired() advances PENDING → TRIGGERED.
+    Replaces the legacy ``trigger_with_delay`` API; ``set_state(PENDING)``
+    does NOT auto-advance unless an explicit ``exit_at`` is supplied, and
+    PENDING/TRIGGERED can be entered from any state (the operator wrote
+    the rule).
     """
 
     def setUp(self):
@@ -171,85 +173,63 @@ class TriggerWithDelayTests(TestCase):
         snapshot.refresh_from_db()
         return snapshot
 
-    def test_enters_pending_from_armed_away(self):
+    def test_set_pending_from_armed_does_not_set_exit_at(self):
         self._arm_to(AlarmState.ARMED_AWAY)
-        before = timezone.now()
-        snapshot = trigger_with_delay(delay_seconds=15, user=self.user, reason="rule:1")
+        snapshot = set_state(new_state=AlarmState.PENDING, user=self.user, reason="rule:1")
+        snapshot.refresh_from_db()
+        self.assertEqual(snapshot.current_state, AlarmState.PENDING)
+        # Per ADR-0094: PENDING via set_state is informational and does not
+        # auto-advance via timer_expired().
+        self.assertIsNone(snapshot.exit_at)
+
+    def test_set_pending_with_exit_at_auto_advances(self):
+        self._arm_to(AlarmState.ARMED_AWAY)
+        exit_at = timezone.now() + timedelta(seconds=5)
+        snapshot = set_state(new_state=AlarmState.PENDING, exit_at=exit_at, reason="rule:2")
         snapshot.refresh_from_db()
         self.assertEqual(snapshot.current_state, AlarmState.PENDING)
         self.assertIsNotNone(snapshot.exit_at)
-        # exit_at should land ~15s in the future.
-        delta = (snapshot.exit_at - before).total_seconds()
-        self.assertGreaterEqual(delta, 14)
-        self.assertLessEqual(delta, 17)
-
-    def test_enters_pending_from_armed_home(self):
-        self._arm_to(AlarmState.ARMED_HOME)
-        snapshot = trigger_with_delay(delay_seconds=10)
-        snapshot.refresh_from_db()
-        self.assertEqual(snapshot.current_state, AlarmState.PENDING)
-
-    def test_noop_from_disarmed(self):
-        # Snapshot stays DISARMED — rule firing from disarmed must not
-        # coerce the alarm into PENDING.
-        snapshot = trigger_with_delay(delay_seconds=10)
-        snapshot.refresh_from_db()
-        self.assertEqual(snapshot.current_state, AlarmState.DISARMED)
-        self.assertIsNone(snapshot.exit_at)
-
-    def test_noop_from_pending(self):
-        # An existing PENDING (e.g. from a sensor trip) is not shortened or
-        # extended by a rule's delay — first-countdown-wins.
-        self._arm_to(AlarmState.ARMED_AWAY)
-        sensor = Sensor.objects.create(name="Door", is_active=True, is_entry_point=True)
-        snapshot = sensor_triggered(sensor=sensor)
-        snapshot.refresh_from_db()
-        self.assertEqual(snapshot.current_state, AlarmState.PENDING)
-        original_exit_at = snapshot.exit_at
-
-        snapshot = trigger_with_delay(delay_seconds=5)
-        snapshot.refresh_from_db()
-        self.assertEqual(snapshot.current_state, AlarmState.PENDING)
-        self.assertEqual(snapshot.exit_at, original_exit_at)
-
-    def test_noop_from_triggered(self):
-        self._arm_to(AlarmState.ARMED_AWAY)
-        sensor = Sensor.objects.create(name="Motion", is_active=True, is_entry_point=False)
-        snapshot = sensor_triggered(sensor=sensor)
-        snapshot.refresh_from_db()
-        self.assertEqual(snapshot.current_state, AlarmState.TRIGGERED)
-
-        snapshot = trigger_with_delay(delay_seconds=10)
-        snapshot.refresh_from_db()
-        self.assertEqual(snapshot.current_state, AlarmState.TRIGGERED)
-
-    def test_noop_from_arming(self):
-        set_profile_setting(self.profile, "arming_time", 30)
-        snapshot = arm(target_state=AlarmState.ARMED_AWAY, user=self.user)
-        snapshot.refresh_from_db()
-        self.assertEqual(snapshot.current_state, AlarmState.ARMING)
-
-        snapshot = trigger_with_delay(delay_seconds=10)
-        snapshot.refresh_from_db()
-        self.assertEqual(snapshot.current_state, AlarmState.ARMING)
-
-    def test_timer_expired_advances_pending_to_triggered(self):
-        self._arm_to(AlarmState.ARMED_AWAY)
-        snapshot = trigger_with_delay(delay_seconds=5)
-        snapshot.refresh_from_db()
-        self.assertEqual(snapshot.current_state, AlarmState.PENDING)
-        # Fast-forward by force-setting exit_at into the past, then tick.
         AlarmStateSnapshot.objects.update(exit_at=timezone.now() - timedelta(seconds=1))
         snapshot = timer_expired()
         snapshot.refresh_from_db()
         self.assertEqual(snapshot.current_state, AlarmState.TRIGGERED)
 
-    def test_disarm_during_wait_cancels(self):
-        self._arm_to(AlarmState.ARMED_AWAY)
-        snapshot = trigger_with_delay(delay_seconds=15)
+    def test_set_pending_from_disarmed_is_allowed(self):
+        # Operator wrote the rule. Pre-ADR-0094 trigger_with_delay no-op'd here;
+        # under the new model the state machine accepts the operator's request.
+        snapshot = set_state(new_state=AlarmState.PENDING, reason="rule:disarmed_pending")
         snapshot.refresh_from_db()
         self.assertEqual(snapshot.current_state, AlarmState.PENDING)
 
+    def test_set_triggered_from_disarmed_is_allowed(self):
+        # Previously rejected by trigger(); set_state accepts it.
+        snapshot = set_state(new_state=AlarmState.TRIGGERED, reason="rule:panic")
+        snapshot.refresh_from_db()
+        self.assertEqual(snapshot.current_state, AlarmState.TRIGGERED)
+
+    def test_set_arming_is_rejected(self):
+        with self.assertRaises(TransitionError):
+            set_state(new_state=AlarmState.ARMING, reason="rule:bad")
+
+    def test_set_state_to_current_state_is_idempotent(self):
+        self._arm_to(AlarmState.ARMED_AWAY)
+        snapshot = set_state(new_state=AlarmState.ARMED_AWAY, reason="rule:idempotent")
+        snapshot.refresh_from_db()
+        self.assertEqual(snapshot.current_state, AlarmState.ARMED_AWAY)
+
+    def test_set_disarmed_delegates_to_disarm_cleanup(self):
+        self._arm_to(AlarmState.ARMED_AWAY)
+        # Force a pre-existing target_armed_state to verify cleanup.
+        AlarmStateSnapshot.objects.update(target_armed_state=AlarmState.ARMED_HOME)
+        snapshot = set_state(new_state=AlarmState.DISARMED, user=self.user, reason="rule:disarm")
+        snapshot.refresh_from_db()
+        self.assertEqual(snapshot.current_state, AlarmState.DISARMED)
+        self.assertIsNone(snapshot.target_armed_state)
+        self.assertEqual(snapshot.timing_snapshot, {})
+
+    def test_disarm_during_manual_pending_returns_to_disarmed(self):
+        self._arm_to(AlarmState.ARMED_AWAY)
+        set_state(new_state=AlarmState.PENDING, reason="rule:enter_pending")
         snapshot = disarm(user=self.user)
         snapshot.refresh_from_db()
         self.assertEqual(snapshot.current_state, AlarmState.DISARMED)

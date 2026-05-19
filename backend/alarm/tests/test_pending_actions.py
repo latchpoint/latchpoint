@@ -1,12 +1,11 @@
-"""Tests for the PendingAction queue (ADR-0091, revised).
+"""Tests for the PendingAction queue (ADR-0091, superseded by ADR-0094).
 
-Under the revised design, only ``send_notification`` actions use the
-PendingAction queue. ``alarm_trigger`` delays are handled by the alarm
-state machine (PENDING state) — see ``test_transitions.py`` and
-``test_rules_engine.py`` for that coverage.
+Under ADR-0094 the queue is generic: every rule action with
+``delay_seconds > 0`` is enqueued by the executor. The handlers do not
+manage their own delay branches anymore.
 
 This module covers:
-- ``send_notification`` enqueue path
+- ``send_notification`` enqueue path (via the executor's generic delay handling)
 - Scheduler ``fire_due_pending_actions`` task lifecycle (fire / fail / stale-cancel)
 - Cancellation hooks (disarm signal, rule delete, rule disable, manual API)
 - API list + cancel endpoints
@@ -33,8 +32,8 @@ from alarm.models import (
     PendingActionStatus,
     Rule,
 )
+from alarm.rules.action_executor import execute_actions
 from alarm.rules.action_handlers import ActionContext
-from alarm.rules.action_handlers.send_notification import execute as send_notification_execute
 from alarm.rules.template_render import TriggerContext
 from alarm.state_machine.timing import base_timing
 from alarm.state_machine.transitions import disarm
@@ -65,10 +64,10 @@ class _FakeAlarmServices:
     def trigger(self, *, user=None, reason: str = ""):
         self.calls.append(("trigger", user, reason))
 
-    def trigger_with_delay(self, *, delay_seconds: int, user=None, reason: str = ""):
-        self.calls.append(("trigger_with_delay", delay_seconds, user, reason))
+    def set_state(self, *, new_state, user=None, reason: str = "", exit_at=None, metadata=None):
+        self.calls.append(("set_state", new_state, user, reason))
         snap = MagicMock()
-        snap.current_state = AlarmState.PENDING
+        snap.current_state = new_state
         return snap
 
 
@@ -110,51 +109,77 @@ def _seed_profile(*, delay_time: int = 5) -> AlarmSettingsProfile:
     return profile
 
 
-# ── handler enqueue path: send_notification only ─────────────────────────────
+# ── executor-level enqueue (ADR-0094 §3.3) ───────────────────────────────────
 
 
-class SendNotificationEnqueueTests(TestCase):
+class GenericDelayEnqueueTests(TestCase):
+    """The executor enqueues any action with ``delay_seconds > 0`` through PendingAction."""
+
     def setUp(self):
-        _seed_profile()
+        self.profile = _seed_profile()
+        AlarmStateSnapshot.objects.create(
+            current_state=AlarmState.ARMED_AWAY,
+            settings_profile=self.profile,
+            entered_at=timezone.now(),
+            last_transition_reason="setup",
+            timing_snapshot=base_timing(self.profile).as_dict(),
+        )
         self.rule = _make_rule(name="notify rule")
         self.provider_id = str(uuid4())
 
-    def test_positive_delay_enqueues(self):
-        ctx = _make_ctx(self.rule)
-        action = {
-            "type": "send_notification",
-            "provider_id": self.provider_id,
-            "message": "Heads-up",
-            "delay_seconds": 30,
-        }
-        result, error = send_notification_execute(action, ctx)
-        self.assertTrue(result["ok"])
-        self.assertTrue(result["deferred"])
-        self.assertEqual(result["delay_seconds"], 30)
-        self.assertIsNone(error)
-        pa = PendingAction.objects.get(id=result["pending_action_id"])
-        self.assertEqual(pa.action_payload["delay_seconds"], 30)
-        self.assertEqual(pa.action_payload["provider_id"], self.provider_id)
+    def test_send_notification_with_delay_enqueues(self):
+        actions = [
+            {
+                "type": "send_notification",
+                "provider_id": self.provider_id,
+                "message": "Heads-up",
+                "delay_seconds": 30,
+            }
+        ]
+        result = execute_actions(rule=self.rule, actions=actions, now=timezone.now())
+        action_result = result["actions"][0]
+        self.assertTrue(action_result["ok"])
+        self.assertTrue(action_result["deferred"])
+        self.assertEqual(action_result["delay_seconds"], 30)
+        pa = PendingAction.objects.get(id=action_result["pending_action_id"])
+        self.assertEqual(pa.action_payload["type"], "send_notification")
 
-    def test_no_delay_falls_through_to_normal_dispatch(self):
-        # Without a delay, the existing notification dispatcher path runs. We
-        # patch it so the test stays a pure unit test (no provider config needed).
-        ctx = _make_ctx(self.rule)
+    def test_alarm_trigger_with_delay_enqueues(self):
+        actions = [{"type": "alarm_trigger", "delay_seconds": 15}]
+        result = execute_actions(rule=self.rule, actions=actions, now=timezone.now())
+        action_result = result["actions"][0]
+        self.assertTrue(action_result["ok"])
+        self.assertTrue(action_result["deferred"])
+        pa = PendingAction.objects.get(id=action_result["pending_action_id"])
+        self.assertEqual(pa.action_payload["type"], "alarm_trigger")
+        self.assertEqual(pa.delay_seconds, 15)
+
+    def test_negative_delay_runs_immediately(self):
+        actions = [
+            {
+                "type": "send_notification",
+                "provider_id": self.provider_id,
+                "message": "Heads-up",
+                "delay_seconds": -1,
+            }
+        ]
         with patch("alarm.rules.action_handlers.send_notification.get_notification_dispatcher") as dispatcher:
             dispatcher.return_value.enqueue.return_value = (
                 None,
                 MagicMock(message="no provider", error_code="missing"),
             )
-            result, _ = send_notification_execute(
-                {
-                    "type": "send_notification",
-                    "provider_id": self.provider_id,
-                    "message": "hi",
-                },
-                ctx,
-            )
-        self.assertFalse(result["ok"])
+            result = execute_actions(rule=self.rule, actions=actions, now=timezone.now())
+        action_result = result["actions"][0]
+        self.assertNotIn("deferred", action_result)
         self.assertEqual(PendingAction.objects.count(), 0)
+
+    def test_bool_delay_runs_immediately(self):
+        # bool is an int subclass in Python; the validator must reject it.
+        actions = [{"type": "alarm_trigger", "delay_seconds": True}]
+        with patch("alarm.state_machine.transitions.trigger") as trigger:
+            execute_actions(rule=self.rule, actions=actions, now=timezone.now())
+        self.assertEqual(PendingAction.objects.count(), 0)
+        trigger.assert_called_once()
 
 
 # ── fire-due scheduler task ──────────────────────────────────────────────────

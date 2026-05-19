@@ -335,6 +335,50 @@ def cleanup_orphan_rule_entity_refs() -> int:
     return count
 
 
+def _recover_alarm_from_stale_pending_action(stale_ids: list[int]) -> None:
+    """Recover the alarm from a stuck PENDING after stale-cancelled alarm_trigger rows.
+
+    ADR-0094 §3.6: if the backend was down past the stale threshold while the
+    alarm was in PENDING with a queued trigger, the queued trigger has just
+    been cancelled. The snapshot would otherwise sit in PENDING with no
+    scheduled follow-up. Step the alarm back to its previous armed state.
+
+    Best-effort: any failure is logged and swallowed so the scheduler tick
+    keeps making progress.
+    """
+    try:
+        from alarm.models import AlarmState
+        from alarm.state_machine.constants import ARMED_STATES
+        from alarm.state_machine.transitions import get_current_snapshot, set_state
+    except Exception:
+        logger.warning("stale-cancel recovery imports failed", exc_info=True)
+        return
+
+    try:
+        snapshot = get_current_snapshot(process_timers=False)
+    except Exception:
+        logger.warning("stale-cancel recovery snapshot read failed", exc_info=True)
+        return
+
+    if snapshot.current_state != AlarmState.PENDING:
+        return
+
+    target = snapshot.previous_state if snapshot.previous_state in ARMED_STATES else AlarmState.DISARMED
+    try:
+        set_state(
+            new_state=target,
+            reason="pending_action_stale_recovery",
+            metadata={"stale_pending_action_ids": stale_ids},
+        )
+        logger.info(
+            "Recovered alarm from stale PENDING to %s (stale ids=%s)",
+            target,
+            stale_ids,
+        )
+    except Exception:
+        logger.warning("stale-cancel recovery set_state failed", exc_info=True)
+
+
 def _fire_one_pending_action(pa: PendingAction) -> None:
     """Dispatch a single pending action through the handler registry.
 
@@ -414,6 +458,18 @@ def fire_due_pending_actions() -> dict:
     now = timezone.now()
     stale_cutoff = now - timedelta(seconds=PENDING_ACTION_STALE_THRESHOLD_SECONDS)
 
+    # ADR-0094: capture stale-cancel candidates BEFORE the bulk update so we can
+    # recover the alarm state for any cancelled alarm_trigger payloads — a
+    # restart-during-PENDING scenario otherwise leaves the snapshot stuck in
+    # PENDING with no scheduled follow-up.
+    stale_alarm_trigger_rule_ids = list(
+        PendingAction.objects.filter(
+            status=PendingActionStatus.SCHEDULED,
+            fire_at__lt=stale_cutoff,
+            action_payload__type="alarm_trigger",
+        ).values_list("id", flat=True)
+    )
+
     # Auto-cancel rows that are too old to be useful (post-outage protection).
     stale_cancelled = PendingAction.objects.filter(
         status=PendingActionStatus.SCHEDULED,
@@ -423,6 +479,9 @@ def fire_due_pending_actions() -> dict:
         cancel_reason=PendingActionCancelReason.STALE_AFTER_RESTART,
         updated_at=now,
     )
+
+    if stale_alarm_trigger_rule_ids:
+        _recover_alarm_from_stale_pending_action(stale_alarm_trigger_rule_ids)
 
     fired = 0
     failed = 0

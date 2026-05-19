@@ -12,7 +12,7 @@ from .errors import TransitionError
 from .events import record_sensor_event
 from .settings import get_active_settings_profile, get_setting_bool
 from .snapshot_store import get_snapshot_for_update, set_previous_armed_state, transition
-from .timing import resolve_timing, timing_from_snapshot
+from .timing import base_timing, resolve_timing, timing_from_snapshot
 
 
 @transaction.atomic
@@ -251,26 +251,63 @@ def trigger(*, user=None, reason: str = "trigger") -> AlarmStateSnapshot:
 
 
 @transaction.atomic
-def trigger_with_delay(*, delay_seconds: int, user=None, reason: str = "rule_entry_delay") -> AlarmStateSnapshot:
-    """Enter PENDING for delay_seconds. No-op if not in an armed-ready state.
+def set_state(
+    *,
+    new_state: str,
+    user=None,
+    reason: str = "set_state",
+    exit_at=None,
+    metadata: dict | None = None,
+) -> AlarmStateSnapshot:
+    """Set the alarm state directly (ADR-0094 composable primitive).
 
-    Used by rule-driven entry-delay (ADR-0091 revised). The alarm advances
-    PENDING → TRIGGERED via timer_expired() on the next snapshot read.
+    Guards (per ADR-0094 §3.2):
+
+    - ``ARMING`` is rejected — the arming flow needs ``target_armed_state``
+      setup that single-shot setters can't provide. Use ``arm()`` instead.
+    - ``DISARMED`` delegates to ``disarm()`` for proper cleanup of
+      ``target_armed_state`` and ``timing_snapshot``.
+    - ``PENDING`` does not auto-advance unless an explicit ``exit_at`` is
+      supplied. Manual PENDING is informational; compose with a delayed
+      ``alarm_trigger`` for entry-delay flows.
+    - Idempotent: a no-op when ``current_state == new_state``.
     """
+    if new_state == AlarmState.ARMING:
+        raise TransitionError("Use arm() — ARMING requires target_armed_state setup")
+    if new_state not in {
+        AlarmState.DISARMED,
+        AlarmState.PENDING,
+        AlarmState.TRIGGERED,
+        *ARMED_STATES,
+    }:
+        raise TransitionError(f"Unknown alarm state: {new_state}")
+
+    if new_state == AlarmState.DISARMED:
+        return disarm(user=user, reason=reason, metadata=metadata)
+
     snapshot = get_snapshot_for_update()
-    if snapshot.current_state not in ARMED_STATES:
+    if snapshot.current_state == new_state:
         return snapshot
 
     now = timezone.now()
+
+    if new_state in ARMED_STATES:
+        profile = get_active_settings_profile()
+        snapshot.settings_profile = profile
+        snapshot.target_armed_state = None
+        snapshot.timing_snapshot = base_timing(profile).as_dict()
+        snapshot.save(update_fields=["settings_profile", "target_armed_state", "timing_snapshot"])
+
     set_previous_armed_state(snapshot)
     snapshot.save(update_fields=["previous_state"])
 
     return transition(
         snapshot=snapshot,
-        state_to=AlarmState.PENDING,
+        state_to=new_state,
         now=now,
         user=user,
         reason=reason,
-        exit_at=now + timedelta(seconds=delay_seconds),
+        exit_at=exit_at,
         update_previous=False,
+        metadata=metadata,
     )
