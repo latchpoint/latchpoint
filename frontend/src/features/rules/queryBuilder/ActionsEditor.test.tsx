@@ -21,6 +21,14 @@ vi.mock('@/hooks/useZigbee2mqtt', () => ({
 vi.mock('@/features/notifications/hooks/useNotificationProviders', () => ({
   useEnabledNotificationProviders: () => ({ data: [] }),
 }))
+// useControlPanelsQuery fans out to useCurrentUserQuery (auth-gated). Stub the
+// hook directly so the MSW layer never sees an unhandled GET /api/users/me/
+// during ActionsEditor tests. Returning an empty list keeps the control-panel
+// action types out of the picker, matching the rest of this file's "HA-only"
+// fixture posture.
+vi.mock('@/hooks/useControlPanels', () => ({
+  useControlPanelsQuery: () => ({ data: [] }),
+}))
 
 function makeEntity(entityId: string, source = 'home_assistant'): Entity {
   return {

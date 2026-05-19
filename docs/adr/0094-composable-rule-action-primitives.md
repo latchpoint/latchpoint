@@ -199,7 +199,7 @@ Adopt **Option F**. The rule-action surface becomes:
 | Handler | Parameters | Effect |
 |---|---|---|
 | `alarm_set_state` | `state` ∈ {`pending`, `triggered`, `disarmed`, `armed_home`, `armed_away`, `armed_night`, `armed_vacation`}, optional `delay_seconds` | Sets the central alarm state directly. `PENDING` does **not** auto-advance (no `exit_at` written). `ARMING` is rejected — use `alarm_arm` for the multi-step arming flow. |
-| `alarm_trigger` (rewritten) | (no params) | Forces `TRIGGERED`. **Rejects** `delay_seconds` at validation time. To express an entry delay, compose with `alarm_set_state(pending)` and a delayed `alarm_trigger`. |
+| `alarm_trigger` (rewritten) | (no params) | Forces `TRIGGERED`. **Rejects** `delay_seconds` at validation time. To express an entry delay, compose with `alarm_set_state(state='pending')` and a delayed `alarm_set_state(state='triggered')` (§9 decision (a)). |
 | `control_panel_set_state` | `panel_id`, `state` ∈ {`pending`, `disarmed`, `armed_stay`, `armed_away`, `triggered`, `auto`}, optional `countdown_seconds`, optional `delay_seconds` | Drives a specific keypad's Indicator CC. Flips `ControlPanelDevice.follow_alarm_state` to `False`. `state="auto"` flips it back to `True` and re-syncs from the alarm snapshot. |
 | `control_panel_trigger` | `panel_id`, optional `delay_seconds` | Drives the burglar indicator on a specific keypad. Flips `follow_alarm_state=False`. Named symmetrically with `alarm_trigger` so rule authors can pick the right scope at a glance. |
 
@@ -320,9 +320,13 @@ post-restart would leave the alarm stuck in `PENDING` with no further
 scheduled transition.
 
 Mitigation: a new receiver listens for stale cancellations and, if the
-payload `type == "alarm_trigger"`, calls
+payload matches `type == "alarm_set_state"` with `state == "triggered"`
+(i.e. the deferred half of the migrated composition), calls
 `set_state(snapshot.previous_armed_state, reason="pending_action_stale")`
-to recover. Implemented in PR 4 alongside the migration.
+to recover. Keys on `alarm_set_state(triggered)` rather than
+`alarm_trigger` because §9 decision (a) rewrites every delayed trigger
+into the `alarm_set_state(triggered)` shape — `alarm_trigger` payloads
+never carry a delay. Implemented in PR 4 alongside the migration.
 
 ### 3.7 Data migration
 
@@ -333,12 +337,14 @@ place with the pair:
 
 ```json
 {"type": "alarm_set_state", "state": "pending"}
-{"type": "alarm_trigger", "delay_seconds": N}
+{"type": "alarm_set_state", "state": "triggered", "delay_seconds": N}
 ```
 
-The reverse migration collapses the pair back. A post-migration
-assertion test fails the deploy if any `alarm_trigger` action retains
-`delay_seconds`. No seed-data edits required —
+Both halves are `alarm_set_state` so the migration output is valid under
+§9 decision (a) (no `delay_seconds` on `alarm_trigger`). The reverse
+migration collapses the pair back into the legacy single-action form.
+A post-migration assertion test fails the deploy if any `alarm_trigger`
+action retains `delay_seconds`. No seed-data edits required —
 `backend/alarm/management/commands/seed_test_home.py:379,395` already
 uses bare `{"type": "alarm_trigger"}` with no delay.
 
@@ -378,14 +384,15 @@ delay plus eventual trigger" UX now express it as a composition:
   {"type": "control_panel_set_state",
    "panel_id": <each_enabled_panel>, "state": "pending",
    "countdown_seconds": 30},
-  {"type": "alarm_trigger", "delay_seconds": 30}
+  {"type": "alarm_set_state", "state": "triggered", "delay_seconds": 30}
 ]
 ```
 
-The data migration produces the first and third actions automatically;
-operators who want the keypad countdown add the middle action via the
-rule builder. A frontend "Entry Delay Flow" template inserts all three
-by default to keep the common case ergonomic.
+The data migration produces the first and third actions automatically
+(both halves use `alarm_set_state` per §9 decision (a)); operators who
+want the keypad countdown add the middle action via the rule builder.
+A frontend "Entry Delay Flow" template inserts all three by default to
+keep the common case ergonomic.
 
 ## Consequences
 

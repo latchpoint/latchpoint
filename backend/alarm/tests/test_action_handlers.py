@@ -233,6 +233,162 @@ class AlarmSetStateHandlerTests(TestCase):
         self.assertIn("set_state boom", error)
 
 
+# ── control_panel_set_state (ADR-0094) ────────────────────────────────────────
+
+
+class ControlPanelSetStateHandlerTests(TestCase):
+    """Handler delegates to control_panels.services; we patch the service layer
+    so these tests stay free of Z-Wave / DB fixtures (per the import-boundary
+    invariant from ADR-0091, the handler must not reach Z-Wave directly).
+    """
+
+    @patch("alarm.rules.action_handlers.control_panel_set_state.apply_panel_state")
+    def test_happy_path_pending_with_countdown(self, apply_panel_state):
+        from alarm.rules.action_handlers.control_panel_set_state import execute
+
+        ctx = _make_ctx()
+        result, error = execute(
+            {
+                "type": "control_panel_set_state",
+                "panel_id": 7,
+                "state": "pending",
+                "countdown_seconds": 30,
+            },
+            ctx,
+        )
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["panel_id"], 7)
+        self.assertEqual(result["state"], "pending")
+        self.assertIsNone(error)
+        apply_panel_state.assert_called_once_with(panel_id=7, state="pending", countdown_seconds=30)
+
+    @patch("alarm.rules.action_handlers.control_panel_set_state.apply_panel_state")
+    def test_countdown_seconds_dropped_when_not_int(self, apply_panel_state):
+        """``True`` is an ``int`` in Python; the handler must drop it."""
+        from alarm.rules.action_handlers.control_panel_set_state import execute
+
+        ctx = _make_ctx()
+        execute(
+            {
+                "type": "control_panel_set_state",
+                "panel_id": 1,
+                "state": "armed_away",
+                "countdown_seconds": True,
+            },
+            ctx,
+        )
+        apply_panel_state.assert_called_once_with(panel_id=1, state="armed_away", countdown_seconds=None)
+
+    @patch("alarm.rules.action_handlers.control_panel_set_state.resume_auto")
+    @patch("alarm.rules.action_handlers.control_panel_set_state.apply_panel_state")
+    def test_auto_state_routes_to_resume_auto(self, apply_panel_state, resume_auto):
+        from alarm.rules.action_handlers.control_panel_set_state import execute
+
+        ctx = _make_ctx()
+        result, _ = execute(
+            {"type": "control_panel_set_state", "panel_id": 3, "state": "auto"},
+            ctx,
+        )
+        self.assertTrue(result["ok"])
+        resume_auto.assert_called_once_with(panel_id=3)
+        apply_panel_state.assert_not_called()
+
+    def test_invalid_panel_id_rejected(self):
+        from alarm.rules.action_handlers.control_panel_set_state import execute
+
+        ctx = _make_ctx()
+        for bad in (0, -1, True, "nope", None):
+            payload = {"type": "control_panel_set_state", "state": "pending"}
+            if bad is not None:
+                payload["panel_id"] = bad
+            result, error = execute(payload, ctx)
+            self.assertFalse(result["ok"], msg=f"panel_id={bad!r} should be rejected")
+            self.assertEqual(result["error"], "invalid_panel_id")
+            self.assertIsNone(error)
+
+    def test_invalid_state_rejected(self):
+        from alarm.rules.action_handlers.control_panel_set_state import execute
+
+        ctx = _make_ctx()
+        result, error = execute({"type": "control_panel_set_state", "panel_id": 1, "state": "bogus"}, ctx)
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"], "invalid_state")
+        self.assertIsNone(error)
+
+    @patch("alarm.rules.action_handlers.control_panel_set_state.apply_panel_state")
+    def test_panel_not_found_mapped_to_error(self, apply_panel_state):
+        from alarm.rules.action_handlers.control_panel_set_state import execute
+        from control_panels.services import ControlPanelNotFound
+
+        apply_panel_state.side_effect = ControlPanelNotFound("missing")
+        ctx = _make_ctx()
+        result, error = execute({"type": "control_panel_set_state", "panel_id": 99, "state": "armed_away"}, ctx)
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"], "panel_not_found")
+        self.assertEqual(error, "missing")
+
+    @patch("alarm.rules.action_handlers.control_panel_set_state.apply_panel_state")
+    def test_generic_exception_path(self, apply_panel_state):
+        from alarm.rules.action_handlers.control_panel_set_state import execute
+
+        apply_panel_state.side_effect = RuntimeError("indicator write failed")
+        ctx = _make_ctx()
+        result, error = execute({"type": "control_panel_set_state", "panel_id": 1, "state": "triggered"}, ctx)
+        self.assertFalse(result["ok"])
+        self.assertIn("indicator write failed", error)
+
+
+# ── control_panel_trigger (ADR-0094) ──────────────────────────────────────────
+
+
+class ControlPanelTriggerHandlerTests(TestCase):
+    @patch("alarm.rules.action_handlers.control_panel_trigger.trigger_panel")
+    def test_happy_path(self, trigger_panel):
+        from alarm.rules.action_handlers.control_panel_trigger import execute
+
+        ctx = _make_ctx()
+        result, error = execute({"type": "control_panel_trigger", "panel_id": 4}, ctx)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["panel_id"], 4)
+        self.assertIsNone(error)
+        trigger_panel.assert_called_once_with(panel_id=4)
+
+    def test_invalid_panel_id_rejected(self):
+        from alarm.rules.action_handlers.control_panel_trigger import execute
+
+        ctx = _make_ctx()
+        for bad in (0, -2, True, "x", None):
+            payload = {"type": "control_panel_trigger"}
+            if bad is not None:
+                payload["panel_id"] = bad
+            result, error = execute(payload, ctx)
+            self.assertFalse(result["ok"], msg=f"panel_id={bad!r} should be rejected")
+            self.assertEqual(result["error"], "invalid_panel_id")
+            self.assertIsNone(error)
+
+    @patch("alarm.rules.action_handlers.control_panel_trigger.trigger_panel")
+    def test_panel_not_found_mapped_to_error(self, trigger_panel):
+        from alarm.rules.action_handlers.control_panel_trigger import execute
+        from control_panels.services import ControlPanelNotFound
+
+        trigger_panel.side_effect = ControlPanelNotFound("missing")
+        ctx = _make_ctx()
+        result, error = execute({"type": "control_panel_trigger", "panel_id": 99}, ctx)
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"], "panel_not_found")
+        self.assertEqual(error, "missing")
+
+    @patch("alarm.rules.action_handlers.control_panel_trigger.trigger_panel")
+    def test_generic_exception_path(self, trigger_panel):
+        from alarm.rules.action_handlers.control_panel_trigger import execute
+
+        trigger_panel.side_effect = RuntimeError("dispatch failed")
+        ctx = _make_ctx()
+        result, error = execute({"type": "control_panel_trigger", "panel_id": 1}, ctx)
+        self.assertFalse(result["ok"])
+        self.assertIn("dispatch failed", error)
+
+
 # ── ha_call_service ──────────────────────────────────────────────────────────
 
 

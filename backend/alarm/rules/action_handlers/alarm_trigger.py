@@ -11,10 +11,11 @@ logger = logging.getLogger(__name__)
 def execute(action: dict[str, Any], ctx: ActionContext) -> tuple[dict[str, Any], str | None]:
     """Force the alarm into TRIGGERED.
 
-    Per ADR-0094, ``alarm_trigger`` has no embedded delay; to express an
-    entry-delay flow compose with ``alarm_set_state(pending)`` plus a
-    delayed ``alarm_trigger``. The executor handles ``delay_seconds``
-    generically.
+    Per ADR-0094 §9 decision (a), ``alarm_trigger`` rejects
+    ``delay_seconds`` at the validator. To express an entry-delay flow
+    compose with ``alarm_set_state(state='pending')`` plus a delayed
+    ``alarm_set_state(state='triggered')`` — the executor handles
+    ``delay_seconds`` generically on ``alarm_set_state``.
     """
     try:
         ctx.alarm_services.trigger(user=ctx.actor_user, reason=f"rule:{ctx.rule.id}")
