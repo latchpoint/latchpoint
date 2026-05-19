@@ -3,14 +3,19 @@
  * Provides a simple interface for selecting actions to execute when rule fires
  */
 import {
+  ACTION_MAX_DELAY_SECONDS,
   ALARM_TRIGGER_MAX_DELAY_SECONDS,
   type ActionNode,
+  type AlarmSetStateAction,
   type AlarmTriggerAction,
+  type ControlPanelSetStateAction,
+  type ControlPanelTriggerAction,
   type HaCallServiceAction,
   type ZwavejsSetValueAction,
   type SendNotificationAction,
   type Zigbee2mqttSetValueAction,
 } from '@/types/ruleDefinition'
+import { useControlPanelsQuery } from '@/hooks/useControlPanels'
 import type { Entity } from '@/types/rules'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -32,12 +37,34 @@ import type { EntityOption } from './types'
 
 const ACTION_TYPES = [
   { value: 'alarm_trigger', label: 'Trigger Alarm', requiresConfig: null },
+  { value: 'alarm_set_state', label: 'Set Alarm State', requiresConfig: null },
   { value: 'alarm_disarm', label: 'Disarm Alarm', requiresConfig: null },
   { value: 'alarm_arm', label: 'Arm Alarm', requiresConfig: null },
+  { value: 'control_panel_set_state', label: 'Set Panel State', requiresConfig: 'controlPanels' },
+  { value: 'control_panel_trigger', label: 'Trigger Panel', requiresConfig: 'controlPanels' },
   { value: 'send_notification', label: 'Send Notification', requiresConfig: 'notifications' },
   { value: 'ha_call_service', label: 'HA Call Service', requiresConfig: 'ha' },
   { value: 'zwavejs_set_value', label: 'Z-Wave Set Value', requiresConfig: 'zwavejs' },
   { value: 'zigbee2mqtt_set_value', label: 'Zigbee2MQTT Set Value', requiresConfig: 'zigbee2mqtt' },
+] as const
+
+const ALARM_SET_STATE_OPTIONS = [
+  { value: 'pending', label: 'Pending' },
+  { value: 'triggered', label: 'Triggered' },
+  { value: 'disarmed', label: 'Disarmed' },
+  { value: 'armed_home', label: 'Armed Home' },
+  { value: 'armed_away', label: 'Armed Away' },
+  { value: 'armed_night', label: 'Armed Night' },
+  { value: 'armed_vacation', label: 'Armed Vacation' },
+] as const
+
+const PANEL_SET_STATE_OPTIONS = [
+  { value: 'pending', label: 'Pending (entry-delay)' },
+  { value: 'triggered', label: 'Triggered (siren)' },
+  { value: 'disarmed', label: 'Disarmed' },
+  { value: 'armed_stay', label: 'Armed Stay' },
+  { value: 'armed_away', label: 'Armed Away' },
+  { value: 'auto', label: 'Auto (follow alarm state)' },
 ] as const
 
 const ARM_MODES = [
@@ -71,6 +98,9 @@ function ActionRow({ action, onUpdate, onRemove, disabled, canRemove, availableA
   // Check if this action type has expandable details
   const hasDetails =
     actionType === 'alarm_trigger' ||
+    actionType === 'alarm_set_state' ||
+    actionType === 'control_panel_set_state' ||
+    actionType === 'control_panel_trigger' ||
     actionType === 'ha_call_service' ||
     actionType === 'zwavejs_set_value' ||
     actionType === 'zigbee2mqtt_set_value' ||
@@ -82,6 +112,9 @@ function ActionRow({ action, onUpdate, onRemove, disabled, canRemove, availableA
     // Determine if the new action type has expandable details that auto-expand
     const newTypeHasDetails =
       newType === 'alarm_trigger' ||
+      newType === 'alarm_set_state' ||
+      newType === 'control_panel_set_state' ||
+      newType === 'control_panel_trigger' ||
       newType === 'ha_call_service' ||
       newType === 'zwavejs_set_value' ||
       newType === 'zigbee2mqtt_set_value' ||
@@ -96,11 +129,20 @@ function ActionRow({ action, onUpdate, onRemove, disabled, canRemove, availableA
       case 'alarm_trigger':
         onUpdate({ type: 'alarm_trigger' })
         break
+      case 'alarm_set_state':
+        onUpdate({ type: 'alarm_set_state', state: 'pending' })
+        break
       case 'alarm_disarm':
         onUpdate({ type: 'alarm_disarm' })
         break
       case 'alarm_arm':
         onUpdate({ type: 'alarm_arm', mode: 'armed_away' })
+        break
+      case 'control_panel_set_state':
+        onUpdate({ type: 'control_panel_set_state', panelId: 0, state: 'pending' })
+        break
+      case 'control_panel_trigger':
+        onUpdate({ type: 'control_panel_trigger', panelId: 0 })
         break
       case 'send_notification':
         onUpdate({
@@ -166,6 +208,31 @@ function ActionRow({ action, onUpdate, onRemove, disabled, canRemove, availableA
         {actionType === 'alarm_trigger' && ((action as AlarmTriggerAction).delaySeconds ?? 0) > 0 && (
           <span className="text-sm text-muted-foreground">
             delay {(action as AlarmTriggerAction).delaySeconds}s
+          </span>
+        )}
+
+        {/* Quick summary for alarm_set_state */}
+        {actionType === 'alarm_set_state' && (
+          <span className="text-sm text-muted-foreground">
+            → {(action as AlarmSetStateAction).state}
+            {((action as AlarmSetStateAction).delaySeconds ?? 0) > 0 &&
+              ` after ${(action as AlarmSetStateAction).delaySeconds}s`}
+          </span>
+        )}
+
+        {/* Quick summary for control_panel_set_state */}
+        {actionType === 'control_panel_set_state' && (
+          <span className="text-sm text-muted-foreground">
+            panel #{(action as ControlPanelSetStateAction).panelId || '—'} → {(action as ControlPanelSetStateAction).state}
+          </span>
+        )}
+
+        {/* Quick summary for control_panel_trigger */}
+        {actionType === 'control_panel_trigger' && (
+          <span className="text-sm text-muted-foreground">
+            panel #{(action as ControlPanelTriggerAction).panelId || '—'}
+            {((action as ControlPanelTriggerAction).delaySeconds ?? 0) > 0 &&
+              ` after ${(action as ControlPanelTriggerAction).delaySeconds}s`}
           </span>
         )}
 
@@ -257,6 +324,33 @@ function ActionRow({ action, onUpdate, onRemove, disabled, canRemove, availableA
       {expanded && actionType === 'alarm_trigger' && (
         <AlarmTriggerFields
           action={action as AlarmTriggerAction}
+          onUpdate={onUpdate}
+          disabled={disabled}
+        />
+      )}
+
+      {/* Expanded details for alarm_set_state (ADR-0094) */}
+      {expanded && actionType === 'alarm_set_state' && (
+        <AlarmSetStateFields
+          action={action as AlarmSetStateAction}
+          onUpdate={onUpdate}
+          disabled={disabled}
+        />
+      )}
+
+      {/* Expanded details for control_panel_set_state (ADR-0094) */}
+      {expanded && actionType === 'control_panel_set_state' && (
+        <ControlPanelSetStateFields
+          action={action as ControlPanelSetStateAction}
+          onUpdate={onUpdate}
+          disabled={disabled}
+        />
+      )}
+
+      {/* Expanded details for control_panel_trigger (ADR-0094) */}
+      {expanded && actionType === 'control_panel_trigger' && (
+        <ControlPanelTriggerFields
+          action={action as ControlPanelTriggerAction}
           onUpdate={onUpdate}
           disabled={disabled}
         />
@@ -1023,12 +1117,286 @@ function Zigbee2mqttSetValueFields({
   )
 }
 
+/**
+ * Generic delay-seconds field used by the new ADR-0094 primitives. Mirrors
+ * AlarmTriggerFields/NotificationDelayField but lives at module scope so it
+ * can be shared without duplicating the input + validation logic.
+ */
+function DelaySecondsField({
+  value,
+  onChange,
+  disabled,
+  helpText,
+}: {
+  value: number | undefined
+  onChange: (next: number | undefined) => void
+  disabled?: boolean
+  helpText?: string
+}) {
+  const initial = value ?? 0
+  const [text, setText] = useState<string>(initial > 0 ? String(initial) : '')
+  const [error, setError] = useState<string | null>(null)
+
+  const handleChange = (next: string) => {
+    setText(next)
+    if (next === '') {
+      setError(null)
+      onChange(undefined)
+      return
+    }
+    const parsed = Number(next)
+    if (!Number.isInteger(parsed) || parsed < 0) {
+      setError('Must be a whole number ≥ 0')
+      return
+    }
+    if (parsed > ACTION_MAX_DELAY_SECONDS) {
+      setError(`Must be ≤ ${ACTION_MAX_DELAY_SECONDS} seconds`)
+      return
+    }
+    setError(null)
+    onChange(parsed === 0 ? undefined : parsed)
+  }
+
+  return (
+    <div className="space-y-1">
+      <label className="text-xs text-muted-foreground">
+        Delay (seconds){' '}
+        <HelpTip
+          className="ml-1"
+          content={
+            helpText ??
+            'Defer this action via the PendingAction queue. Disarm cancels it unless this rule was scheduled while disarmed.'
+          }
+        />
+      </label>
+      <Input
+        value={text}
+        type="number"
+        min={0}
+        max={ACTION_MAX_DELAY_SECONDS}
+        onChange={(e) => handleChange(e.target.value)}
+        placeholder="0"
+        disabled={disabled}
+        className="max-w-[140px]"
+      />
+      {error && <p className="text-xs text-destructive">{error}</p>}
+    </div>
+  )
+}
+
+/**
+ * Fields for alarm_set_state (ADR-0094). Lets the operator pick the alarm
+ * state to enter and optionally defer the transition.
+ */
+function AlarmSetStateFields({
+  action,
+  onUpdate,
+  disabled,
+}: {
+  action: AlarmSetStateAction
+  onUpdate: (action: ActionNode) => void
+  disabled?: boolean
+}) {
+  return (
+    <div className="border-t p-3 space-y-3">
+      <div className="space-y-1">
+        <label className="text-xs text-muted-foreground">
+          Target state{' '}
+          <HelpTip
+            className="ml-1"
+            content="PENDING set this way is informational — it does NOT auto-advance to TRIGGERED. Compose with a delayed alarm_trigger for a classic entry-delay flow. Use Arm Alarm for the standard exit-delay flow."
+          />
+        </label>
+        <Select
+          value={action.state}
+          onChange={(e) =>
+            onUpdate({ ...action, state: e.target.value as AlarmSetStateAction['state'] })
+          }
+          disabled={disabled}
+          size="sm"
+          className="min-w-[180px]"
+        >
+          {ALARM_SET_STATE_OPTIONS.map((opt) => (
+            <option key={opt.value} value={opt.value}>
+              {opt.label}
+            </option>
+          ))}
+        </Select>
+      </div>
+      <DelaySecondsField
+        value={action.delaySeconds}
+        onChange={(next) =>
+          onUpdate(next === undefined ? { ...action, delaySeconds: undefined } : { ...action, delaySeconds: next })
+        }
+        disabled={disabled}
+      />
+    </div>
+  )
+}
+
+/**
+ * Panel picker used by both control_panel_* field components.
+ */
+function PanelPicker({
+  value,
+  onChange,
+  disabled,
+}: {
+  value: number
+  onChange: (panelId: number) => void
+  disabled?: boolean
+}) {
+  const panelsQuery = useControlPanelsQuery()
+  const panels = panelsQuery.data ?? []
+  return (
+    <Select
+      value={String(value || '')}
+      onChange={(e) => onChange(Number(e.target.value))}
+      disabled={disabled || panels.length === 0}
+      size="sm"
+      className="min-w-[200px]"
+    >
+      <option value="">— select panel —</option>
+      {panels.map((p) => (
+        <option key={p.id} value={String(p.id)}>
+          #{p.id} · {p.name}
+        </option>
+      ))}
+    </Select>
+  )
+}
+
+/**
+ * Fields for control_panel_set_state (ADR-0094).
+ */
+function ControlPanelSetStateFields({
+  action,
+  onUpdate,
+  disabled,
+}: {
+  action: ControlPanelSetStateAction
+  onUpdate: (action: ActionNode) => void
+  disabled?: boolean
+}) {
+  return (
+    <div className="border-t p-3 space-y-3">
+      <div className="space-y-1">
+        <label className="text-xs text-muted-foreground">
+          Panel{' '}
+          <HelpTip
+            className="ml-1"
+            content="Setting a panel state flips its follow_alarm_state off until disarm or the special 'auto' state. This action does NOT change the central alarm state."
+          />
+        </label>
+        <PanelPicker
+          value={action.panelId}
+          onChange={(panelId) => onUpdate({ ...action, panelId })}
+          disabled={disabled}
+        />
+      </div>
+      <div className="space-y-1">
+        <label className="text-xs text-muted-foreground">Indicator</label>
+        <Select
+          value={action.state}
+          onChange={(e) =>
+            onUpdate({ ...action, state: e.target.value as ControlPanelSetStateAction['state'] })
+          }
+          disabled={disabled}
+          size="sm"
+          className="min-w-[220px]"
+        >
+          {PANEL_SET_STATE_OPTIONS.map((opt) => (
+            <option key={opt.value} value={opt.value}>
+              {opt.label}
+            </option>
+          ))}
+        </Select>
+      </div>
+      {action.state === 'pending' && (
+        <div className="space-y-1">
+          <label className="text-xs text-muted-foreground">
+            Countdown (seconds){' '}
+            <HelpTip
+              className="ml-1"
+              content="Optional. Drives the entry-delay indicator's visible countdown."
+            />
+          </label>
+          <Input
+            value={action.countdownSeconds ?? ''}
+            type="number"
+            min={0}
+            max={ACTION_MAX_DELAY_SECONDS}
+            placeholder="30"
+            onChange={(e) => {
+              const raw = e.target.value
+              if (raw === '') {
+                const { countdownSeconds: _drop, ...rest } = action
+                void _drop
+                onUpdate(rest as ControlPanelSetStateAction)
+                return
+              }
+              const parsed = Number(raw)
+              if (!Number.isFinite(parsed) || parsed < 0) return
+              onUpdate({ ...action, countdownSeconds: parsed })
+            }}
+            disabled={disabled}
+            className="max-w-[140px]"
+          />
+        </div>
+      )}
+      <DelaySecondsField
+        value={action.delaySeconds}
+        onChange={(next) => onUpdate({ ...action, delaySeconds: next })}
+        disabled={disabled}
+      />
+    </div>
+  )
+}
+
+/**
+ * Fields for control_panel_trigger (ADR-0094).
+ */
+function ControlPanelTriggerFields({
+  action,
+  onUpdate,
+  disabled,
+}: {
+  action: ControlPanelTriggerAction
+  onUpdate: (action: ActionNode) => void
+  disabled?: boolean
+}) {
+  return (
+    <div className="border-t p-3 space-y-3">
+      <div className="space-y-1">
+        <label className="text-xs text-muted-foreground">
+          Panel{' '}
+          <HelpTip
+            className="ml-1"
+            content="Lights the burglar indicator on the chosen panel. Does NOT change the central alarm state."
+          />
+        </label>
+        <PanelPicker
+          value={action.panelId}
+          onChange={(panelId) => onUpdate({ ...action, panelId })}
+          disabled={disabled}
+        />
+      </div>
+      <DelaySecondsField
+        value={action.delaySeconds}
+        onChange={(next) => onUpdate({ ...action, delaySeconds: next })}
+        disabled={disabled}
+      />
+    </div>
+  )
+}
+
 export function ActionsEditor({ actions, onChange, entities, disabled = false }: ActionsEditorProps) {
   // Check what services are configured
   const haStatus = useHomeAssistantStatus()
   const zwavejsStatus = useZwavejsStatusQuery()
   const zigbee2mqttStatus = useZigbee2mqttStatusQuery()
   const providersQuery = useEnabledNotificationProviders()
+  const controlPanelsQuery = useControlPanelsQuery()
 
   // Same shape used by the WHEN editor's value-editor context (RuleQueryBuilder).
   // Memoised so passing it through to children does not invalidate React.memo
@@ -1048,6 +1416,7 @@ export function ActionsEditor({ actions, onChange, entities, disabled = false }:
   const isZwavejsConfigured = zwavejsStatus.data?.configured && zwavejsStatus.data?.enabled
   const isZigbee2mqttConfigured = zigbee2mqttStatus.data?.enabled ?? false
   const hasNotificationProviders = (providersQuery.data?.length ?? 0) > 0 || isHaConfigured
+  const hasControlPanels = (controlPanelsQuery.data?.length ?? 0) > 0
 
   // Filter action types based on what's configured
   const availableActionTypes = useMemo(() => {
@@ -1057,9 +1426,16 @@ export function ActionsEditor({ actions, onChange, entities, disabled = false }:
       if (type.requiresConfig === 'zwavejs') return isZwavejsConfigured
       if (type.requiresConfig === 'zigbee2mqtt') return isZigbee2mqttConfigured
       if (type.requiresConfig === 'notifications') return hasNotificationProviders
+      if (type.requiresConfig === 'controlPanels') return hasControlPanels
       return true
     })
-  }, [isHaConfigured, isZwavejsConfigured, isZigbee2mqttConfigured, hasNotificationProviders])
+  }, [
+    isHaConfigured,
+    isZwavejsConfigured,
+    isZigbee2mqttConfigured,
+    hasNotificationProviders,
+    hasControlPanels,
+  ])
 
   // Stable keys for React reconciliation (avoid index-based keys, which would
   // migrate row-local state onto a neighbour after delete). Using state lets
