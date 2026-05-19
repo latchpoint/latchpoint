@@ -27,34 +27,25 @@ class ValidateActionTests(TestCase):
         errors = validate_action({"type": "alarm_trigger"})
         self.assertEqual(errors, [])
 
-    def test_valid_alarm_trigger_with_delay(self):
+    def test_alarm_trigger_rejects_delay_seconds(self):
+        # ADR-0094 §9 decision (a): alarm_trigger does NOT accept delay_seconds.
+        # Operators must compose with alarm_set_state for any timing-aware flow.
         errors = validate_action({"type": "alarm_trigger", "delay_seconds": 15})
-        self.assertEqual(errors, [])
+        self.assertTrue(any("does not accept delay_seconds" in e for e in errors))
 
-    def test_valid_alarm_trigger_with_zero_delay(self):
+    def test_alarm_trigger_rejects_even_zero_delay(self):
+        # Presence of the field at all is the rejection trigger — keeps the
+        # API surface unambiguous and prevents "did the operator mean 0 or
+        # forget to set it?" confusion.
         errors = validate_action({"type": "alarm_trigger", "delay_seconds": 0})
+        self.assertTrue(any("does not accept delay_seconds" in e for e in errors))
+
+    def test_alarm_set_state_accepts_delay(self):
+        # The composable replacement: a delayed alarm_set_state(triggered)
+        # is how you express what the legacy {alarm_trigger, delay_seconds:N}
+        # used to do.
+        errors = validate_action({"type": "alarm_set_state", "state": "triggered", "delay_seconds": 15})
         self.assertEqual(errors, [])
-
-    def test_alarm_trigger_rejects_negative_delay(self):
-        errors = validate_action({"type": "alarm_trigger", "delay_seconds": -1})
-        self.assertTrue(any(">= 0" in e for e in errors))
-
-    def test_alarm_trigger_rejects_delay_above_max(self):
-        errors = validate_action({"type": "alarm_trigger", "delay_seconds": 601})
-        self.assertTrue(any("<= 600" in e for e in errors))
-
-    def test_alarm_trigger_rejects_non_integer_delay(self):
-        errors = validate_action({"type": "alarm_trigger", "delay_seconds": 15.5})
-        self.assertTrue(any("integer" in e for e in errors))
-
-    def test_alarm_trigger_rejects_string_delay(self):
-        errors = validate_action({"type": "alarm_trigger", "delay_seconds": "15"})
-        self.assertTrue(any("integer" in e for e in errors))
-
-    def test_alarm_trigger_rejects_boolean_delay(self):
-        # bool is a subclass of int in Python; the validator must reject it.
-        errors = validate_action({"type": "alarm_trigger", "delay_seconds": True})
-        self.assertTrue(any("integer" in e for e in errors))
 
     def test_valid_send_notification_with_delay(self):
         errors = validate_action(

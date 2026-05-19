@@ -336,12 +336,14 @@ def cleanup_orphan_rule_entity_refs() -> int:
 
 
 def _recover_alarm_from_stale_pending_action(stale_ids: list[int]) -> None:
-    """Recover the alarm from a stuck PENDING after stale-cancelled alarm_trigger rows.
+    """Recover the alarm from a stuck PENDING after a stale-cancelled deferred TRIGGERED.
 
     ADR-0094 §3.6: if the backend was down past the stale threshold while the
-    alarm was in PENDING with a queued trigger, the queued trigger has just
-    been cancelled. The snapshot would otherwise sit in PENDING with no
-    scheduled follow-up. Step the alarm back to its previous armed state.
+    alarm was in PENDING with a queued ``alarm_set_state(state='triggered')``
+    (the post-pending follow-up emitted by the §3.7 data migration and by
+    operator-authored entry-delay flows), the queued action has just been
+    cancelled. The snapshot would otherwise sit in PENDING with no scheduled
+    follow-up. Step the alarm back to its previous armed state.
 
     Best-effort: any failure is logged and swallowed so the scheduler tick
     keeps making progress.
@@ -458,15 +460,18 @@ def fire_due_pending_actions() -> dict:
     now = timezone.now()
     stale_cutoff = now - timedelta(seconds=PENDING_ACTION_STALE_THRESHOLD_SECONDS)
 
-    # ADR-0094: capture stale-cancel candidates BEFORE the bulk update so we can
-    # recover the alarm state for any cancelled alarm_trigger payloads — a
-    # restart-during-PENDING scenario otherwise leaves the snapshot stuck in
-    # PENDING with no scheduled follow-up.
-    stale_alarm_trigger_rule_ids = list(
+    # ADR-0094: capture stale-cancel candidates BEFORE the bulk update so we
+    # can recover the alarm state for any cancelled alarm_set_state(triggered)
+    # payloads — a restart-during-PENDING scenario otherwise leaves the
+    # snapshot stuck in PENDING with no scheduled follow-up. Under ADR-0094
+    # §9 decision (a) the post-pending action is alarm_set_state(triggered);
+    # alarm_trigger itself cannot be deferred.
+    stale_deferred_trigger_ids = list(
         PendingAction.objects.filter(
             status=PendingActionStatus.SCHEDULED,
             fire_at__lt=stale_cutoff,
-            action_payload__type="alarm_trigger",
+            action_payload__type="alarm_set_state",
+            action_payload__state="triggered",
         ).values_list("id", flat=True)
     )
 
@@ -480,8 +485,8 @@ def fire_due_pending_actions() -> dict:
         updated_at=now,
     )
 
-    if stale_alarm_trigger_rule_ids:
-        _recover_alarm_from_stale_pending_action(stale_alarm_trigger_rule_ids)
+    if stale_deferred_trigger_ids:
+        _recover_alarm_from_stale_pending_action(stale_deferred_trigger_ids)
 
     fired = 0
     failed = 0

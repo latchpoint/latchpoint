@@ -97,7 +97,19 @@ def validate_action(action: Any, schema_version: int = 1) -> list[str]:
 
 
 def _validate_alarm_trigger(action: dict[str, Any]) -> list[str]:
-    """alarm_trigger has no per-handler params (ADR-0094); delay_seconds validated generically."""
+    """alarm_trigger has no per-handler params (ADR-0094 §9 decision (a)).
+
+    Rejects ``delay_seconds`` explicitly. To express an entry-delay flow,
+    compose with ``alarm_set_state(state='pending')`` plus a delayed
+    ``alarm_set_state(state='triggered')``. This keeps ``alarm_trigger``
+    a pure "force TRIGGERED now" primitive — no implicit timing.
+    """
+    if "delay_seconds" in action:
+        return [
+            "alarm_trigger does not accept delay_seconds; compose with "
+            "alarm_set_state(state='pending') and a delayed "
+            "alarm_set_state(state='triggered') instead"
+        ]
     return []
 
 
@@ -286,10 +298,15 @@ def get_action_schemas() -> dict[str, dict[str, Any]]:
             "type": "object",
             "properties": {
                 "type": {"const": "alarm_trigger"},
-                "delay_seconds": _GENERIC_DELAY_PROPERTY,
             },
             "required": ["type"],
             "admin_only": False,
+            "description": (
+                "Force the alarm into TRIGGERED immediately. Does NOT accept "
+                "delay_seconds (ADR-0094 §9 decision (a)). For an entry-delay "
+                "flow, compose alarm_set_state(pending) with a delayed "
+                "alarm_set_state(triggered)."
+            ),
         },
         "alarm_set_state": {
             "type": "object",

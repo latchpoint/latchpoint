@@ -475,22 +475,52 @@ Rollback strategy: PRs 1-3 are additive and revertible. PR 4's data
 migration has a working reverse (collapses the pair back into a single
 delayed `alarm_trigger`). PR 5 is UI + dead-code removal.
 
-## Open Question
+## Decision on `alarm_trigger.delay_seconds` (resolved)
 
-After the migration, should `alarm_trigger { delay_seconds: N }` be:
+The two options considered:
 
 - **(a)** **Rejected** by `_validate_alarm_trigger` — forces operators to
-  write `[alarm_set_state(pending), {delay:N, alarm_trigger}]`
-  explicitly. Matches the "no implicit pending" framing.
+  write the explicit composition. Aligns with "no implicit timing on
+  `alarm_trigger`."
 - **(b)** **Accepted** via the generic executor queue — defers
   `TRIGGERED` N seconds with no intermediate `PENDING`.
 
-**Recommended: (a).** The whole point of the refactor is explicit
-composability; accepting `delay_seconds` on a renamed-only `alarm_trigger`
-would re-introduce a coupled-feeling primitive (silent `TRIGGERED` delay
-without `PENDING`) just because the operator wrote it. Confirm with
-stakeholders before PR 4 lands; the decision is a one-line difference
-in the validator.
+**Decision: (a).** `alarm_trigger` is a pure "force TRIGGERED now"
+primitive and rejects `delay_seconds` at the validator. The composable
+replacement for the legacy `{alarm_trigger, delay_seconds: N}` shape is:
+
+```json
+[
+  {"type": "alarm_set_state", "state": "pending"},
+  {"type": "alarm_set_state", "state": "triggered", "delay_seconds": N}
+]
+```
+
+Both halves use `alarm_set_state`; the executor's generic delay machinery
+defers the second half via `PendingAction`. The data migration in §3.7
+emits this exact shape, so existing rules transparently migrate without
+operator intervention.
+
+Implementation notes:
+
+- The validator returns the error message
+  `"alarm_trigger does not accept delay_seconds; compose with alarm_set_state(state='pending') and a delayed alarm_set_state(state='triggered') instead"`
+  so authors get an actionable hint instead of a generic "bad field"
+  error.
+- The stale-cancel recovery receiver in `backend/alarm/tasks.py` keys on
+  `action_payload__type="alarm_set_state"` + `action_payload__state="triggered"`
+  (rather than `action_payload__type="alarm_trigger"`) to find the
+  post-pending follow-ups that need recovery after a restart-during-
+  PENDING.
+- The frontend rule-builder UI for `alarm_trigger` has no expandable
+  fields — there is nothing to configure.
+
+Rationale: the whole point of the refactor is explicit composability.
+Accepting `delay_seconds` on a "renamed only" `alarm_trigger` would
+re-introduce a coupled-feeling primitive (silent `TRIGGERED` delay
+without `PENDING`) just because the operator wrote it, and would split
+the "PENDING entered" surface across two primitives. Decision (a) keeps
+`alarm_trigger` semantically narrow.
 
 ## Todos
 
@@ -499,7 +529,6 @@ in the validator.
 - [ ] PR 3: `follow_alarm_state` migration + `control_panel_set_state` + `control_panel_trigger` + decoupled receiver.
 - [ ] PR 4: data migration + retire `alarm_trigger.delay_seconds` + stale-cancel recovery + rewrite affected tests.
 - [ ] PR 5: cleanup + `AlarmStateCard` "PENDING (manual)" UI.
-- [ ] Confirm Open Question (a) vs (b) with stakeholders before PR 4.
 - [ ] Add frontend "Entry Delay Flow" template after PR 4.
 - [ ] Update ADR-0091 status header to `Superseded by ADR-0094` once this ADR is Accepted.
 

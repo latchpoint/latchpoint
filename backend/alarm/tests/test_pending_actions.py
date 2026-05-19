@@ -144,14 +144,17 @@ class GenericDelayEnqueueTests(TestCase):
         pa = PendingAction.objects.get(id=action_result["pending_action_id"])
         self.assertEqual(pa.action_payload["type"], "send_notification")
 
-    def test_alarm_trigger_with_delay_enqueues(self):
-        actions = [{"type": "alarm_trigger", "delay_seconds": 15}]
+    def test_alarm_set_state_triggered_with_delay_enqueues(self):
+        # ADR-0094 §9 decision (a): alarm_trigger rejects delay_seconds, so the
+        # "delayed trigger" pattern is expressed via alarm_set_state(triggered).
+        actions = [{"type": "alarm_set_state", "state": "triggered", "delay_seconds": 15}]
         result = execute_actions(rule=self.rule, actions=actions, now=timezone.now())
         action_result = result["actions"][0]
         self.assertTrue(action_result["ok"])
         self.assertTrue(action_result["deferred"])
         pa = PendingAction.objects.get(id=action_result["pending_action_id"])
-        self.assertEqual(pa.action_payload["type"], "alarm_trigger")
+        self.assertEqual(pa.action_payload["type"], "alarm_set_state")
+        self.assertEqual(pa.action_payload["state"], "triggered")
         self.assertEqual(pa.delay_seconds, 15)
 
     def test_negative_delay_runs_immediately(self):
