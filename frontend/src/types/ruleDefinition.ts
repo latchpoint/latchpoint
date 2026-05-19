@@ -139,23 +139,22 @@ export interface AlarmDisarmAction {
 /**
  * Alarm trigger action
  *
- * Per ADR-0094 this is the immediate-TRIGGERED primitive. `delaySeconds`
- * (optional, 0-600) defers the action through the generic PendingAction
- * queue — the alarm does NOT pass through PENDING. For a classic
- * entry-delay flow, compose with `alarm_set_state(pending)` followed by
- * a delayed `alarm_trigger`.
+ * Per ADR-0094 §9 decision (a), this is the pure "force TRIGGERED now"
+ * primitive — it does NOT accept `delaySeconds`. To express an entry-delay
+ * flow, compose `alarm_set_state('pending')` with a delayed
+ * `alarm_set_state('triggered')`.
  */
 export interface AlarmTriggerAction {
   type: 'alarm_trigger'
-  delaySeconds?: number
 }
 
 /**
  * Set alarm state directly (ADR-0094 composable primitive).
  *
- * PENDING does not auto-advance — combine with a delayed `alarm_trigger`
- * for an entry-delay flow. `arming` is rejected at the backend; use
- * `alarm_arm` for the standard exit-delay arming flow.
+ * PENDING does not auto-advance — combine with a delayed
+ * `alarm_set_state('triggered')` for an entry-delay flow. `arming` is
+ * rejected at the backend; use `alarm_arm` for the standard exit-delay
+ * arming flow.
  */
 export interface AlarmSetStateAction {
   type: 'alarm_set_state'
@@ -414,11 +413,17 @@ function _validDelaySeconds(action: Record<string, unknown>): boolean {
 }
 
 /**
- * Check if action is AlarmTriggerAction
+ * Check if action is AlarmTriggerAction.
+ *
+ * Per ADR-0094 §9 decision (a), the type does not carry `delaySeconds`
+ * and the backend validator rejects payloads that include it. The guard
+ * mirrors that — presence of `delaySeconds` is a hard fail here too, so
+ * legacy data that survived without being migrated cannot type-narrow.
  */
 export function isAlarmTriggerAction(action: unknown): action is AlarmTriggerAction {
   if (!isRecord(action) || action.type !== 'alarm_trigger') return false
-  return _validDelaySeconds(action)
+  if ('delaySeconds' in action) return false
+  return true
 }
 
 const _ALARM_SET_STATE_VALUES: readonly AlarmSetStateValue[] = [

@@ -18,37 +18,12 @@ describe('isAlarmTriggerAction', () => {
     expect(isAlarmTriggerAction({ type: 'alarm_trigger' })).toBe(true)
   })
 
-  it('accepts a valid integer delaySeconds in range', () => {
-    expect(isAlarmTriggerAction({ type: 'alarm_trigger', delaySeconds: 0 })).toBe(true)
-    expect(isAlarmTriggerAction({ type: 'alarm_trigger', delaySeconds: 15 })).toBe(true)
-    expect(
-      isAlarmTriggerAction({ type: 'alarm_trigger', delaySeconds: ALARM_TRIGGER_MAX_DELAY_SECONDS }),
-    ).toBe(true)
-  })
-
-  it('rejects delaySeconds above the max', () => {
-    expect(
-      isAlarmTriggerAction({
-        type: 'alarm_trigger',
-        delaySeconds: ALARM_TRIGGER_MAX_DELAY_SECONDS + 1,
-      }),
-    ).toBe(false)
-  })
-
-  it('rejects negative delaySeconds', () => {
+  it('rejects any payload that includes delaySeconds (ADR-0094 §9 decision (a))', () => {
+    // alarm_trigger is a pure "force TRIGGERED now" primitive. The guard
+    // mirrors the backend validator — presence of the field is the rejection.
+    expect(isAlarmTriggerAction({ type: 'alarm_trigger', delaySeconds: 0 })).toBe(false)
+    expect(isAlarmTriggerAction({ type: 'alarm_trigger', delaySeconds: 15 })).toBe(false)
     expect(isAlarmTriggerAction({ type: 'alarm_trigger', delaySeconds: -1 })).toBe(false)
-  })
-
-  it('rejects non-integer delaySeconds', () => {
-    expect(isAlarmTriggerAction({ type: 'alarm_trigger', delaySeconds: 15.5 })).toBe(false)
-  })
-
-  it('rejects boolean delaySeconds (JS-level — bool is not number)', () => {
-    expect(isAlarmTriggerAction({ type: 'alarm_trigger', delaySeconds: true as unknown as number })).toBe(false)
-  })
-
-  it('rejects string delaySeconds', () => {
-    expect(isAlarmTriggerAction({ type: 'alarm_trigger', delaySeconds: '15' as unknown as number })).toBe(false)
   })
 
   it('rejects non-objects and wrong-type actions', () => {

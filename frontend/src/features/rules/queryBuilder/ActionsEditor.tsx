@@ -4,10 +4,8 @@
  */
 import {
   ACTION_MAX_DELAY_SECONDS,
-  ALARM_TRIGGER_MAX_DELAY_SECONDS,
   type ActionNode,
   type AlarmSetStateAction,
-  type AlarmTriggerAction,
   type ControlPanelSetStateAction,
   type ControlPanelTriggerAction,
   type HaCallServiceAction,
@@ -95,9 +93,10 @@ interface ActionRowProps {
 function ActionRow({ action, onUpdate, onRemove, disabled, canRemove, availableActionTypes, entityOptions }: ActionRowProps) {
   const actionType = action.type
 
-  // Check if this action type has expandable details
+  // Check if this action type has expandable details.
+  // alarm_trigger is intentionally not in this set under ADR-0094 §9
+  // decision (a) — it carries no params.
   const hasDetails =
-    actionType === 'alarm_trigger' ||
     actionType === 'alarm_set_state' ||
     actionType === 'control_panel_set_state' ||
     actionType === 'control_panel_trigger' ||
@@ -111,7 +110,6 @@ function ActionRow({ action, onUpdate, onRemove, disabled, canRemove, availableA
   const handleTypeChange = (newType: string) => {
     // Determine if the new action type has expandable details that auto-expand
     const newTypeHasDetails =
-      newType === 'alarm_trigger' ||
       newType === 'alarm_set_state' ||
       newType === 'control_panel_set_state' ||
       newType === 'control_panel_trigger' ||
@@ -203,13 +201,6 @@ function ActionRow({ action, onUpdate, onRemove, disabled, canRemove, availableA
             </option>
           ))}
         </Select>
-
-        {/* Quick summary for alarm_trigger: show "delay Ns" if set */}
-        {actionType === 'alarm_trigger' && ((action as AlarmTriggerAction).delaySeconds ?? 0) > 0 && (
-          <span className="text-sm text-muted-foreground">
-            delay {(action as AlarmTriggerAction).delaySeconds}s
-          </span>
-        )}
 
         {/* Quick summary for alarm_set_state */}
         {actionType === 'alarm_set_state' && (
@@ -320,15 +311,6 @@ function ActionRow({ action, onUpdate, onRemove, disabled, canRemove, availableA
         </div>
       </div>
 
-      {/* Expanded details for alarm_trigger: entry-delay grace window */}
-      {expanded && actionType === 'alarm_trigger' && (
-        <AlarmTriggerFields
-          action={action as AlarmTriggerAction}
-          onUpdate={onUpdate}
-          disabled={disabled}
-        />
-      )}
-
       {/* Expanded details for alarm_set_state (ADR-0094) */}
       {expanded && actionType === 'alarm_set_state' && (
         <AlarmSetStateFields
@@ -392,71 +374,6 @@ function ActionRow({ action, onUpdate, onRemove, disabled, canRemove, availableA
           disabled={disabled}
         />
       )}
-    </div>
-  )
-}
-
-/**
- * Fields for alarm_trigger action — exposes the optional entry-delay grace window.
- */
-function AlarmTriggerFields({
-  action,
-  onUpdate,
-  disabled,
-}: {
-  action: AlarmTriggerAction
-  onUpdate: (action: ActionNode) => void
-  disabled?: boolean
-}) {
-  const delay = action.delaySeconds ?? 0
-  const [text, setText] = useState<string>(delay > 0 ? String(delay) : '')
-  const [error, setError] = useState<string | null>(null)
-
-  const handleChange = (next: string) => {
-    setText(next)
-    if (next === '') {
-      setError(null)
-      onUpdate({ type: 'alarm_trigger' })
-      return
-    }
-    const parsed = Number(next)
-    if (!Number.isInteger(parsed) || parsed < 0) {
-      setError('Must be a whole number ≥ 0')
-      return
-    }
-    if (parsed > ALARM_TRIGGER_MAX_DELAY_SECONDS) {
-      setError(`Must be ≤ ${ALARM_TRIGGER_MAX_DELAY_SECONDS} seconds`)
-      return
-    }
-    setError(null)
-    if (parsed === 0) {
-      onUpdate({ type: 'alarm_trigger' })
-    } else {
-      onUpdate({ type: 'alarm_trigger', delaySeconds: parsed })
-    }
-  }
-
-  return (
-    <div className="border-t p-3 space-y-1">
-      <label className="text-xs text-muted-foreground">
-        Entry delay (seconds){' '}
-        <HelpTip
-          className="ml-1"
-          content="The alarm enters its Pending state with a countdown for this many seconds, then triggers unless disarmed. Only a disarm aborts the trigger — closing the door or the WHEN condition flipping false will NOT cancel it. 0 or empty triggers immediately."
-        />
-      </label>
-      <Input
-        type="number"
-        min={0}
-        max={ALARM_TRIGGER_MAX_DELAY_SECONDS}
-        step={1}
-        value={text}
-        onChange={(e) => handleChange(e.target.value)}
-        placeholder="0 = trigger immediately"
-        disabled={disabled}
-        className="max-w-[180px]"
-      />
-      {error && <p className="text-xs text-destructive">{error}</p>}
     </div>
   )
 }
@@ -801,8 +718,8 @@ function NotificationDelayField({
       setError('Must be a whole number ≥ 0')
       return
     }
-    if (parsed > ALARM_TRIGGER_MAX_DELAY_SECONDS) {
-      setError(`Must be ≤ ${ALARM_TRIGGER_MAX_DELAY_SECONDS} seconds`)
+    if (parsed > ACTION_MAX_DELAY_SECONDS) {
+      setError(`Must be ≤ ${ACTION_MAX_DELAY_SECONDS} seconds`)
       return
     }
     setError(null)
@@ -825,7 +742,7 @@ function NotificationDelayField({
       <Input
         type="number"
         min={0}
-        max={ALARM_TRIGGER_MAX_DELAY_SECONDS}
+        max={ACTION_MAX_DELAY_SECONDS}
         step={1}
         value={text}
         onChange={(e) => handleChange(e.target.value)}
@@ -1204,7 +1121,7 @@ function AlarmSetStateFields({
           Target state{' '}
           <HelpTip
             className="ml-1"
-            content="PENDING set this way is informational — it does NOT auto-advance to TRIGGERED. Compose with a delayed alarm_trigger for a classic entry-delay flow. Use Arm Alarm for the standard exit-delay flow."
+            content="PENDING set this way is informational — it does NOT auto-advance to TRIGGERED. To express a classic entry-delay flow, follow this with a delayed alarm_set_state('triggered'). Use Arm Alarm for the standard exit-delay flow."
           />
         </label>
         <Select
