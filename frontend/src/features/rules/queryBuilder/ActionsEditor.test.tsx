@@ -279,4 +279,140 @@ describe('ActionsEditor', () => {
     expect(screen.getByText(/must be ≤ 600 seconds/i)).toBeInTheDocument()
     expect(onChange).not.toHaveBeenCalled()
   })
+
+  // ── alarm_set_state (ADR-0094) ───────────────────────────────────────────
+
+  it('renders the alarm_set_state quick summary with target state and delay badge', async () => {
+    const { ActionsEditor } = await import('./ActionsEditor')
+    renderWithProviders(
+      <ActionsEditor
+        actions={[{ type: 'alarm_set_state', state: 'triggered', delaySeconds: 45 }]}
+        onChange={vi.fn()}
+        entities={[]}
+      />
+    )
+    expect(screen.getByText(/→ triggered/i)).toBeInTheDocument()
+    expect(screen.getByText(/after 45s/i)).toBeInTheDocument()
+  })
+
+  it('omits the delay-badge text for alarm_set_state when delaySeconds is 0 or unset', async () => {
+    const { ActionsEditor } = await import('./ActionsEditor')
+    renderWithProviders(
+      <ActionsEditor
+        actions={[{ type: 'alarm_set_state', state: 'pending' }]}
+        onChange={vi.fn()}
+        entities={[]}
+      />
+    )
+    expect(screen.getByText(/→ pending/i)).toBeInTheDocument()
+    expect(screen.queryByText(/after \d+s/i)).toBeNull()
+  })
+
+  // ── alarm_arm + armingTimeSeconds (ADR-0095) ─────────────────────────────
+
+  it('renders alarm_arm with a mode selector and an exit-delay input populated from armingTimeSeconds', async () => {
+    const { ActionsEditor } = await import('./ActionsEditor')
+    renderWithProviders(
+      <ActionsEditor
+        actions={[{ type: 'alarm_arm', mode: 'armed_away', armingTimeSeconds: 30 }]}
+        onChange={vi.fn()}
+        entities={[]}
+      />
+    )
+    expect(screen.getByText(/^exit delay$/i)).toBeInTheDocument()
+    const input = screen.getByPlaceholderText('0') as HTMLInputElement
+    expect(input.value).toBe('30')
+  })
+
+  it('emits armingTimeSeconds when the user types into the alarm_arm exit-delay input', async () => {
+    const { ActionsEditor } = await import('./ActionsEditor')
+    const onChange = vi.fn()
+    renderWithProviders(
+      <ActionsEditor
+        actions={[{ type: 'alarm_arm', mode: 'armed_away' }]}
+        onChange={onChange}
+        entities={[]}
+      />
+    )
+    const input = screen.getByPlaceholderText('0')
+    fireEvent.change(input, { target: { value: '60' } })
+    expect(onChange).toHaveBeenLastCalledWith([
+      expect.objectContaining({
+        type: 'alarm_arm',
+        mode: 'armed_away',
+        armingTimeSeconds: 60,
+      }),
+    ])
+  })
+
+  it('strips armingTimeSeconds when the user clears the alarm_arm exit-delay input', async () => {
+    const { ActionsEditor } = await import('./ActionsEditor')
+    const onChange = vi.fn()
+    renderWithProviders(
+      <ActionsEditor
+        actions={[{ type: 'alarm_arm', mode: 'armed_away', armingTimeSeconds: 30 }]}
+        onChange={onChange}
+        entities={[]}
+      />
+    )
+    const input = screen.getByPlaceholderText('0')
+    fireEvent.change(input, { target: { value: '' } })
+    const lastCall = onChange.mock.calls.at(-1)?.[0] as Array<Record<string, unknown>>
+    expect(lastCall[0]).not.toHaveProperty('armingTimeSeconds')
+    expect(lastCall[0]).toMatchObject({ type: 'alarm_arm', mode: 'armed_away' })
+  })
+
+  // ── control_panel_set_state (ADR-0094) ───────────────────────────────────
+
+  it('renders the control_panel_set_state quick summary with panel id and indicator state', async () => {
+    const { ActionsEditor } = await import('./ActionsEditor')
+    renderWithProviders(
+      <ActionsEditor
+        actions={[{ type: 'control_panel_set_state', panelId: 7, state: 'pending' }]}
+        onChange={vi.fn()}
+        entities={[]}
+      />
+    )
+    expect(screen.getByText(/panel #7 → pending/i)).toBeInTheDocument()
+  })
+
+  it('shows an em-dash placeholder for control_panel_set_state when panelId is unset', async () => {
+    const { ActionsEditor } = await import('./ActionsEditor')
+    renderWithProviders(
+      <ActionsEditor
+        actions={[{ type: 'control_panel_set_state', panelId: 0, state: 'auto' }]}
+        onChange={vi.fn()}
+        entities={[]}
+      />
+    )
+    expect(screen.getByText(/panel #— → auto/i)).toBeInTheDocument()
+  })
+
+  // ── control_panel_trigger (ADR-0094) ─────────────────────────────────────
+
+  it('renders the control_panel_trigger quick summary with panel id and delay badge', async () => {
+    const { ActionsEditor } = await import('./ActionsEditor')
+    renderWithProviders(
+      <ActionsEditor
+        actions={[{ type: 'control_panel_trigger', panelId: 9, delaySeconds: 15 }]}
+        onChange={vi.fn()}
+        entities={[]}
+      />
+    )
+    expect(screen.getByText(/panel #9/i)).toBeInTheDocument()
+    expect(screen.getByText(/after 15s/i)).toBeInTheDocument()
+  })
+
+  it('omits the delay text for control_panel_trigger when delaySeconds is 0 or unset', async () => {
+    const { ActionsEditor } = await import('./ActionsEditor')
+    renderWithProviders(
+      <ActionsEditor
+        actions={[{ type: 'control_panel_trigger', panelId: 9 }]}
+        onChange={vi.fn()}
+        entities={[]}
+      />
+    )
+    expect(screen.getByText(/panel #9/i)).toBeInTheDocument()
+    expect(screen.queryByText(/after \d+s/i)).toBeNull()
+  })
 })
