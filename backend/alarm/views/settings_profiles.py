@@ -8,13 +8,12 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from accounts.permissions import IsAdminRole
-from alarm.models import AlarmSettingsProfile, AlarmState
+from alarm.models import AlarmSettingsProfile
 from alarm.serializers import (
     AlarmSettingsProfileDetailSerializer,
     AlarmSettingsProfileMetaSerializer,
     AlarmSettingsProfileUpdateSerializer,
 )
-from alarm.state_machine.timing import resolve_timing
 from alarm.use_cases import settings_profile as settings_uc
 
 
@@ -75,14 +74,3 @@ class AlarmSettingsProfileActivateView(APIView):
         profile = get_object_or_404(AlarmSettingsProfile, id=profile_id)
         profile = settings_uc.activate_settings_profile(profile=profile)
         return Response(AlarmSettingsProfileMetaSerializer(profile).data, status=status.HTTP_200_OK)
-
-
-class AlarmSettingsTimingView(APIView):
-    def get(self, request, state: str):
-        """Return resolved timing for a target alarm state under the active profile."""
-        if state not in set(AlarmState.values):
-            raise ValidationError({"state": ["Invalid state."]})
-
-        profile = settings_uc.ensure_active_settings_profile()
-        timing = resolve_timing(profile, target_state=state)
-        return Response(timing.as_dict(), status=status.HTTP_200_OK)

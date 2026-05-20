@@ -7,21 +7,17 @@ from django.utils import timezone
 from accounts.models import User
 from alarm.models import AlarmEvent, AlarmEventType, AlarmSettingsProfile, AlarmState, AlarmStateSnapshot, Sensor
 from alarm.state_machine.snapshot_store import get_snapshot_for_update, set_previous_armed_state, transition
-from alarm.state_machine.timing import base_timing
-from alarm.tests.settings_test_utils import set_profile_settings
 
 
 class SnapshotStoreTests(TestCase):
     def setUp(self):
         self.profile = AlarmSettingsProfile.objects.create(name="Default", is_active=True)
-        set_profile_settings(self.profile, delay_time=11, arming_time=22, trigger_time=33)
 
     def test_get_snapshot_for_update_bootstraps(self):
         with transaction.atomic():
             snapshot = get_snapshot_for_update()
         self.assertEqual(snapshot.current_state, AlarmState.DISARMED)
         self.assertEqual(snapshot.last_transition_reason, "bootstrap")
-        self.assertEqual(snapshot.timing_snapshot, base_timing(self.profile).as_dict())
 
     def test_get_snapshot_for_update_returns_existing(self):
         existing = AlarmStateSnapshot.objects.create(
@@ -32,7 +28,6 @@ class SnapshotStoreTests(TestCase):
             entered_at=timezone.now(),
             exit_at=None,
             last_transition_reason="existing",
-            timing_snapshot=base_timing(self.profile).as_dict(),
         )
         with transaction.atomic():
             snapshot = get_snapshot_for_update()
@@ -47,10 +42,9 @@ class SnapshotStoreTests(TestCase):
             entered_at=timezone.now(),
             exit_at=None,
             last_transition_reason="init",
-            timing_snapshot=base_timing(self.profile).as_dict(),
         )
         user = User.objects.create_user(email="snap@example.com", password="pass")
-        sensor = Sensor.objects.create(name="Front Door", is_active=True, is_entry_point=True)
+        sensor = Sensor.objects.create(name="Front Door", is_active=True)
         now = timezone.now()
 
         transition(
@@ -85,7 +79,6 @@ class SnapshotStoreTests(TestCase):
             entered_at=timezone.now(),
             exit_at=None,
             last_transition_reason="init",
-            timing_snapshot=base_timing(self.profile).as_dict(),
         )
         now = timezone.now()
         transition(
@@ -108,7 +101,6 @@ class SnapshotStoreTests(TestCase):
             entered_at=timezone.now(),
             exit_at=None,
             last_transition_reason="init",
-            timing_snapshot=base_timing(self.profile).as_dict(),
         )
         set_previous_armed_state(snapshot)
         self.assertEqual(snapshot.previous_state, AlarmState.ARMED_AWAY)
@@ -122,7 +114,6 @@ class SnapshotStoreTests(TestCase):
             entered_at=timezone.now(),
             exit_at=None,
             last_transition_reason="init",
-            timing_snapshot=base_timing(self.profile).as_dict(),
         )
         set_previous_armed_state(snapshot)
         self.assertEqual(snapshot.previous_state, AlarmState.ARMED_HOME)

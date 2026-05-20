@@ -27,7 +27,6 @@ class FrontendContractSmokeApiTests(APITestCase):
             "last_transition_reason",
             "last_transition_by",
             "target_armed_state",
-            "timing_snapshot",
         ):
             self.assertIn(key, payload)
         self.assertIn(payload["current_state"], set(AlarmState.values))
@@ -50,11 +49,8 @@ class FrontendContractSmokeApiTests(APITestCase):
 
         entries_by_key = {row["key"]: row for row in entries}
         for key in (
-            "delay_time",
-            "trigger_time",
             "code_arm_required",
             "available_arming_states",
-            "state_overrides",
         ):
             self.assertIn(key, entries_by_key)
             row = entries_by_key[key]

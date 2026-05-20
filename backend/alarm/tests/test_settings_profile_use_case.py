@@ -59,11 +59,11 @@ class UpdateSettingsProfileTests(TestCase):
         self.assertEqual(self.profile.name, "Updated Name")
 
     def test_updates_entries(self):
-        changes = {"entries": [{"key": "delay_time", "value": 45}]}
+        changes = {"entries": [{"key": "code_arm_required", "value": False}]}
         update_settings_profile(profile=self.profile, changes=changes)
 
-        entry = AlarmSettingsEntry.objects.get(profile=self.profile, key="delay_time")
-        self.assertEqual(entry.value, 45)
+        entry = AlarmSettingsEntry.objects.get(profile=self.profile, key="code_arm_required")
+        self.assertIs(entry.value, False)
 
     def test_raises_for_unknown_setting_key(self):
         changes = {"entries": [{"key": "unknown_key", "value": "foo"}]}
@@ -73,11 +73,11 @@ class UpdateSettingsProfileTests(TestCase):
     def test_emits_signal_on_entries_update(self):
         # Signal is sent via transaction.on_commit, so we verify the use case completes
         # without error when updating entries
-        changes = {"entries": [{"key": "delay_time", "value": 60}]}
+        changes = {"entries": [{"key": "code_arm_required", "value": True}]}
         result = update_settings_profile(profile=self.profile, changes=changes)
         self.assertEqual(result.id, self.profile.id)
-        entry = AlarmSettingsEntry.objects.get(profile=self.profile, key="delay_time")
-        self.assertEqual(entry.value, 60)
+        entry = AlarmSettingsEntry.objects.get(profile=self.profile, key="code_arm_required")
+        self.assertIs(entry.value, True)
 
 
 class DeleteSettingsProfileTests(TestCase):

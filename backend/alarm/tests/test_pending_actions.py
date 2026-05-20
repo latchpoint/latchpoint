@@ -35,7 +35,6 @@ from alarm.models import (
 from alarm.rules.action_executor import execute_actions
 from alarm.rules.action_handlers import ActionContext
 from alarm.rules.template_render import TriggerContext
-from alarm.state_machine.timing import base_timing
 from alarm.state_machine.transitions import disarm
 from alarm.tasks import fire_due_pending_actions
 from alarm.tests.settings_test_utils import set_profile_settings
@@ -58,7 +57,7 @@ class _FakeAlarmServices:
     def disarm(self, *, user=None, code=None, reason: str = ""):
         self.calls.append(("disarm", user, reason))
 
-    def arm(self, *, target_state: str, user=None, code=None, reason: str = ""):
+    def arm(self, *, target_state: str, arming_time_seconds: int | None = None, user=None, code=None, reason: str = ""):
         self.calls.append(("arm", target_state, user, reason))
 
     def trigger(self, *, user=None, reason: str = ""):
@@ -97,15 +96,9 @@ def _make_rule(*, name: str = "Test rule", definition: dict | None = None) -> Ru
 
 
 def _seed_profile(*, delay_time: int = 5) -> AlarmSettingsProfile:
+    del delay_time  # kept for caller-side compatibility; ADR-0095 removed the setting
     profile = AlarmSettingsProfile.objects.create(name="Default", is_active=True)
-    set_profile_settings(
-        profile,
-        delay_time=delay_time,
-        arming_time=0,
-        trigger_time=5,
-        code_arm_required=False,
-        disarm_after_trigger=False,
-    )
+    set_profile_settings(profile, code_arm_required=False)
     return profile
 
 
@@ -122,7 +115,6 @@ class GenericDelayEnqueueTests(TestCase):
             settings_profile=self.profile,
             entered_at=timezone.now(),
             last_transition_reason="setup",
-            timing_snapshot=base_timing(self.profile).as_dict(),
         )
         self.rule = _make_rule(name="notify rule")
         self.provider_id = str(uuid4())
@@ -196,7 +188,6 @@ class FireDuePendingActionsTests(TestCase):
             settings_profile=self.profile,
             entered_at=timezone.now(),
             last_transition_reason="setup",
-            timing_snapshot=base_timing(self.profile).as_dict(),
         )
         self.rule = _make_rule()
         self.provider_id = str(uuid4())
@@ -278,7 +269,6 @@ class CancellationTests(TestCase):
             settings_profile=self.profile,
             entered_at=timezone.now(),
             last_transition_reason="setup",
-            timing_snapshot=base_timing(self.profile).as_dict(),
         )
         self.rule = _make_rule()
         self.user = User.objects.create_user(email="cancel@example.com", password="pass")

@@ -137,13 +137,22 @@ def _validate_alarm_disarm(action: dict[str, Any]) -> list[str]:
 
 
 def _validate_alarm_arm(action: dict[str, Any]) -> list[str]:
-    """alarm_arm requires a valid 'mode' field."""
+    """alarm_arm requires a valid 'mode' field; optional arming_time_seconds (ADR-0095)."""
     errors: list[str] = []
     mode = action.get("mode")
     if not isinstance(mode, str):
         errors.append("alarm_arm requires 'mode' string field")
     elif mode not in ARMED_MODES:
         errors.append(f"Invalid mode '{mode}'. Must be one of: {', '.join(ARMED_MODES)}")
+
+    arming_time = action.get("arming_time_seconds")
+    if arming_time is not None:
+        if isinstance(arming_time, bool) or not isinstance(arming_time, int):
+            errors.append("alarm_arm 'arming_time_seconds' must be an integer if provided")
+        elif arming_time < 0:
+            errors.append("alarm_arm 'arming_time_seconds' must be >= 0")
+        elif arming_time > ACTION_MAX_DELAY_SECONDS:
+            errors.append(f"alarm_arm 'arming_time_seconds' must be <= {ACTION_MAX_DELAY_SECONDS}")
     return errors
 
 
@@ -422,6 +431,16 @@ def get_action_schemas() -> dict[str, dict[str, Any]]:
             "properties": {
                 "type": {"const": "alarm_arm"},
                 "mode": {"type": "string", "enum": list(ARMED_MODES)},
+                "arming_time_seconds": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": ACTION_MAX_DELAY_SECONDS,
+                    "description": (
+                        "Exit-delay duration before the alarm enters the target armed state "
+                        "(ADR-0095). When omitted or 0, the alarm transitions directly to the "
+                        "armed state with no ARMING. When >0, ARMING is held for this many seconds."
+                    ),
+                },
                 "delay_seconds": _GENERIC_DELAY_PROPERTY,
             },
             "required": ["type", "mode"],

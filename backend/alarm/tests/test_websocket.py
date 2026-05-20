@@ -154,7 +154,6 @@ class AlarmWebSocketTests(TransactionTestCase):
 
                 alarm_payload = alarm_msg.get("payload") or {}
                 self.assertIn("state", alarm_payload)
-                self.assertIn("effective_settings", alarm_payload)
                 state = alarm_payload.get("state") or {}
                 for key in (
                     "id",
@@ -162,13 +161,8 @@ class AlarmWebSocketTests(TransactionTestCase):
                     "previous_state",
                     "settings_profile",
                     "entered_at",
-                    "timing_snapshot",
                 ):
                     self.assertIn(key, state)
-
-                effective = alarm_payload.get("effective_settings") or {}
-                for key in ("delay_time", "arming_time", "trigger_time"):
-                    self.assertIn(key, effective)
 
                 system_payload = system_msg.get("payload") or {}
                 for key in ("home_assistant", "mqtt", "zwavejs", "zigbee2mqtt", "frigate"):
@@ -206,7 +200,6 @@ class AlarmWebSocketTests(TransactionTestCase):
                     payload.get("state", {}).get("current_state"),
                     {AlarmState.ARMING, AlarmState.ARMED_HOME},
                 )
-                self.assertIn("effective_settings", payload)
             finally:
                 await communicator.disconnect()
 

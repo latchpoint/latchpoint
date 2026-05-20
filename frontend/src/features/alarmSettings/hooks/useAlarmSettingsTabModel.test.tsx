@@ -18,12 +18,8 @@ vi.mock('@/hooks/useAlarmQueries', () => {
         id: 1,
         name: 'Default',
         isActive: true,
-        delayTime: 5,
-        triggerTime: 30,
-        disarmAfterTrigger: false,
         codeArmRequired: true,
         availableArmingStates: [AlarmState.ARMED_HOME],
-        stateOverrides: {},
         audioVisualSettings: { beepEnabled: true, countdownDisplayEnabled: true, colorCodingEnabled: true },
         sensorBehavior: { warnOnOpenSensors: false, autoBypassEnabled: false, forceArmEnabled: false },
         createdAt: '2025-01-01T00:00:00Z',
@@ -45,13 +41,6 @@ describe('useAlarmSettingsTabModel', () => {
 
     act(() => {
       result.current.setDraft({
-        delayTime: '0',
-        armingTimeHome: '0',
-        armingTimeAway: '0',
-        armingTimeNight: '0',
-        armingTimeVacation: '0',
-        triggerTime: '0',
-        disarmAfterTrigger: false,
         codeArmRequired: false,
         availableArmingStates: [],
       })
@@ -70,13 +59,6 @@ describe('useAlarmSettingsTabModel', () => {
 
     act(() => {
       result.current.setDraft({
-        delayTime: '5',
-        armingTimeHome: '1',
-        armingTimeAway: '2',
-        armingTimeNight: '3',
-        armingTimeVacation: '4',
-        triggerTime: '30',
-        disarmAfterTrigger: true,
         codeArmRequired: true,
         availableArmingStates: [AlarmState.ARMED_HOME],
       })
@@ -91,16 +73,12 @@ describe('useAlarmSettingsTabModel', () => {
         id: 1,
         changes: expect.objectContaining({
           entries: expect.arrayContaining([
-            { key: 'delay_time', value: 5 },
-            { key: 'trigger_time', value: 30 },
-            { key: 'disarm_after_trigger', value: true },
             { key: 'code_arm_required', value: true },
             { key: 'available_arming_states', value: [AlarmState.ARMED_HOME] },
           ]),
         }),
-      })
+      }),
     )
     expect(result.current.notice).toBe('Saved alarm settings.')
   })
 })
-

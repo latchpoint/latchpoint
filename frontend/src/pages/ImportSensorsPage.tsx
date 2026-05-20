@@ -14,11 +14,6 @@ import { ImportSubmitBar } from '@/features/sensors/components/ImportSubmitBar'
 import { useImportSensorsModel } from '@/features/sensors/hooks/useImportSensorsModel'
 
 export function ImportSensorsPage() {
-  const entrySensorHelp =
-    'Entry sensors start the entry delay (Pending) when triggered while the alarm is armed. Turn off for instant trigger.'
-  const entrySensorSuggestedHelp =
-    'Suggested based on the Home Assistant device class (door/window/garage_door).'
-
   const model = useImportSensorsModel()
 
   return (
@@ -76,7 +71,7 @@ export function ImportSensorsPage() {
 
       <SectionCard
         title="Entities"
-        description="Select the sensors you want the alarm to react to. “Entry sensor” means it starts the entry delay (Pending) instead of triggering instantly."
+        description="Select the sensors you want the alarm to react to. Entry-delay behavior is configured per-rule in the rule builder."
       >
           {model.isLoading ? (
             <LoadingInline label="Loading…" />
@@ -100,13 +95,6 @@ export function ImportSensorsPage() {
                     onCheckedChange={(nextChecked) => model.setEntityChecked(entity, nextChecked)}
                     nameOverride={row.nameOverride}
                     onNameOverrideChange={(next) => model.setEntityNameOverride(entity.entityId, next)}
-                    suggestedEntry={row.suggestedEntry}
-                    entry={row.entry}
-                    onEntryChange={(next) => model.setEntityEntry(entity.entityId, next)}
-                    entryHelpOpen={row.entryHelpOpen}
-                    onToggleEntryHelp={() => model.toggleEntryHelp(entity.entityId)}
-                    entrySensorHelp={entrySensorHelp}
-                    entrySensorSuggestedHelp={entrySensorSuggestedHelp}
                   />
                 )
               })}

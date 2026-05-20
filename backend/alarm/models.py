@@ -87,7 +87,6 @@ class AlarmStateSnapshot(models.Model):
         on_delete=models.SET_NULL,
         related_name="alarm_transitions",
     )
-    timing_snapshot = models.JSONField(default=dict, blank=True)
 
     class Meta:
         indexes = [
@@ -215,7 +214,6 @@ class Sensor(models.Model):
     name = models.CharField(max_length=150)
     entity_id = models.CharField(max_length=255, blank=True)
     is_active = models.BooleanField(default=True)
-    is_entry_point = models.BooleanField(default=False)
 
     class Meta:
         indexes = [

@@ -19,7 +19,6 @@ class SensorSerializer(serializers.ModelSerializer):
             "name",
             "entity_id",
             "is_active",
-            "is_entry_point",
             "current_state",
             "last_triggered",
             "used_in_rules",
@@ -64,7 +63,6 @@ class SensorCreateSerializer(serializers.ModelSerializer):
             "name",
             "entity_id",
             "is_active",
-            "is_entry_point",
         )
 
     def validate_entity_id(self, value: str) -> str:
@@ -84,5 +82,4 @@ class SensorUpdateSerializer(serializers.ModelSerializer):
             "id",
             "name",
             "is_active",
-            "is_entry_point",
         )

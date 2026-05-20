@@ -102,8 +102,7 @@ export function isAlarmStateSnapshot(data: unknown): data is AlarmStateSnapshot 
     (data.exitAt === null || typeof data.exitAt === 'string') &&
     typeof data.lastTransitionReason === 'string' &&
     (data.lastTransitionBy === null || typeof data.lastTransitionBy === 'string') &&
-    (data.targetArmedState === null || isAlarmStateType(data.targetArmedState)) &&
-    isRecord(data.timingSnapshot)
+    (data.targetArmedState === null || isAlarmStateType(data.targetArmedState))
   )
 }
 
@@ -138,17 +137,7 @@ export function isAlarmStatePayload(payload: unknown): payload is AlarmStatePayl
   if (!('state' in payload)) return false
 
   const state = payload.state
-  if (!isAlarmStateSnapshot(state)) return false
-
-  if (!('effectiveSettings' in payload)) return false
-  const settings = payload.effectiveSettings
-  if (!isRecord(settings)) return false
-
-  return (
-    typeof settings.delayTime === 'number' &&
-    typeof settings.armingTime === 'number' &&
-    typeof settings.triggerTime === 'number'
-  )
+  return isAlarmStateSnapshot(state)
 }
 
 /**

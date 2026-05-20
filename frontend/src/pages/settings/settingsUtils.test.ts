@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
   formatArmStateLabel,
-  normalizeStateOverrides,
   parseNonNegativeInt,
   parsePositiveInt,
   toggleState,
@@ -53,26 +52,9 @@ describe('settingsUtils', () => {
     })
   })
 
-  describe('normalizeStateOverrides', () => {
-    it('normalizes camelCase keys to snake_case and filters invalid entries', () => {
-      const result = normalizeStateOverrides({
-        armedHome: { arming_time: 10 },
-        armed_away: { delay_time: 5 },
-        '': { x: 1 },
-        triggered: 'nope',
-      })
-
-      expect(result).toEqual({
-        armed_home: { arming_time: 10 },
-        armed_away: { delay_time: 5 },
-      })
-    })
-  })
-
   describe('formatArmStateLabel', () => {
     it('returns a friendly label when known', () => {
       expect(formatArmStateLabel(AlarmState.ARMED_HOME)).toMatch(/home/i)
     })
   })
 })
-

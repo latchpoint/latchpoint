@@ -37,7 +37,6 @@ class AlarmStateSnapshotSerializer(serializers.ModelSerializer):
             "exit_at",
             "last_transition_reason",
             "last_transition_by",
-            "timing_snapshot",
         )
 
 

@@ -66,14 +66,17 @@ class AlarmApiTests(APITestCase):
             AlarmEvent.objects.filter(event_type=AlarmEventType.FAILED_CODE, metadata__action="arm").exists()
         )
 
-    def test_arm_to_arming(self):
+    def test_arm_via_api_arms_immediately_without_arming_time(self):
+        # Post-ADR-0095: the arm API endpoint does not accept arming_time_seconds.
+        # Exit delays are configured per-rule in the rule builder, so manual API
+        # arming goes straight to the target armed state.
         url = reverse("alarm-arm")
         response = self.client.post(
             url,
             data={"target_state": AlarmState.ARMED_AWAY, "code": self.code_value},
         )
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["data"]["current_state"], AlarmState.ARMING)
+        self.assertEqual(response.json()["data"]["current_state"], AlarmState.ARMED_AWAY)
         self.assertTrue(AlarmEvent.objects.filter(event_type=AlarmEventType.CODE_USED, metadata__action="arm").exists())
 
     def test_disarm_requires_code(self):
@@ -136,16 +139,15 @@ class AlarmApiTests(APITestCase):
             name="Front Door",
             entity_id="binary_sensor.front_door",
             is_active=True,
-            is_entry_point=True,
         )
 
         url = reverse("alarm-sensor-detail", args=[sensor.id])
-        response = self.client.patch(url, data={"is_entry_point": False}, format="json")
+        response = self.client.patch(url, data={"name": "Front Entry"}, format="json")
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["data"]["is_entry_point"], False)
+        self.assertEqual(response.json()["data"]["name"], "Front Entry")
 
         sensor.refresh_from_db()
-        self.assertEqual(sensor.is_entry_point, False)
+        self.assertEqual(sensor.name, "Front Entry")
 
     def test_get_sensor_detail_404_when_missing(self):
         url = reverse("alarm-sensor-detail", args=[99999])
@@ -157,7 +159,6 @@ class AlarmApiTests(APITestCase):
             name="Front Door",
             entity_id="binary_sensor.front_door",
             is_active=True,
-            is_entry_point=True,
         )
         Entity.objects.create(
             entity_id="binary_sensor.front_door",
@@ -177,13 +178,11 @@ class AlarmApiTests(APITestCase):
             name="Front Door",
             entity_id="binary_sensor.front_door",
             is_active=True,
-            is_entry_point=True,
         )
         Sensor.objects.create(
             name="Unused Door",
             entity_id="binary_sensor.unused",
             is_active=True,
-            is_entry_point=True,
         )
 
         url = reverse("alarm-rules")
@@ -226,7 +225,6 @@ class AlarmApiTests(APITestCase):
             name="Front Door",
             entity_id="binary_sensor.front_door",
             is_active=True,
-            is_entry_point=True,
         )
         Entity.objects.create(
             entity_id="binary_sensor.front_door",

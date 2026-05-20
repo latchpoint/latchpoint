@@ -21,7 +21,6 @@ urlpatterns = [
         views.AlarmSettingsProfileActivateView.as_view(),
         name="alarm-settings-profile-activate",
     ),
-    path("settings/timing/<str:state>/", views.AlarmSettingsTimingView.as_view(), name="alarm-settings-timing"),
     path("sensors/", views.SensorsView.as_view(), name="alarm-sensors"),
     path("sensors/<int:sensor_id>/", views.SensorDetailView.as_view(), name="alarm-sensor-detail"),
     path("rules/", views.RulesView.as_view(), name="alarm-rules"),

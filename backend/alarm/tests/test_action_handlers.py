@@ -36,8 +36,8 @@ class _FakeAlarmServices:
         if self._fail:
             raise RuntimeError("disarm boom")
 
-    def arm(self, *, target_state: str, user=None, code=None, reason: str = ""):
-        self.calls.append(("arm", target_state, user, reason))
+    def arm(self, *, target_state: str, arming_time_seconds: int | None = None, user=None, code=None, reason: str = ""):
+        self.calls.append(("arm", target_state, arming_time_seconds, user, reason))
         if self._fail:
             raise RuntimeError("arm boom")
 

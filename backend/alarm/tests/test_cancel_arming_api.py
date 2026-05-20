@@ -31,7 +31,7 @@ class CancelArmingApiTests(APITestCase):
 
     def test_cancel_arming_returns_disarmed_state(self):
         # Put alarm into arming state
-        transitions.arm(target_state=AlarmState.ARMED_AWAY, user=self.user, reason="test")
+        transitions.arm(target_state=AlarmState.ARMED_AWAY, arming_time_seconds=30, user=self.user, reason="test")
 
         url = reverse("alarm-cancel-arming")
         response = self.client.post(url)
@@ -48,7 +48,7 @@ class CancelArmingApiTests(APITestCase):
         self.assertEqual(response.json()["error"]["status"], "conflict")
 
     def test_cancel_arming_records_event(self):
-        transitions.arm(target_state=AlarmState.ARMED_AWAY, user=self.user, reason="test")
+        transitions.arm(target_state=AlarmState.ARMED_AWAY, arming_time_seconds=30, user=self.user, reason="test")
 
         url = reverse("alarm-cancel-arming")
         response = self.client.post(url)

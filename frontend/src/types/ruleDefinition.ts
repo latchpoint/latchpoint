@@ -190,10 +190,15 @@ export interface ControlPanelTriggerAction {
 
 /**
  * Alarm arm action
+ *
+ * `armingTimeSeconds` (optional, 0-600): exit-delay duration before the
+ * alarm enters the target armed state (ADR-0095). When omitted or 0, the
+ * alarm transitions directly to the armed state with no ARMING.
  */
 export interface AlarmArmAction {
   type: 'alarm_arm'
   mode: AlarmArmMode
+  armingTimeSeconds?: number
 }
 
 /**
@@ -493,12 +498,16 @@ export function isControlPanelTriggerAction(
  * Check if action is AlarmArmAction
  */
 export function isAlarmArmAction(action: unknown): action is AlarmArmAction {
-  return (
-    isRecord(action) &&
-    action.type === 'alarm_arm' &&
-    typeof action.mode === 'string' &&
-    ['armed_home', 'armed_away', 'armed_night', 'armed_vacation'].includes(action.mode as string)
-  )
+  if (!isRecord(action) || action.type !== 'alarm_arm') return false
+  if (typeof action.mode !== 'string') return false
+  if (!['armed_home', 'armed_away', 'armed_night', 'armed_vacation'].includes(action.mode as string)) return false
+  if ('armingTimeSeconds' in action && action.armingTimeSeconds !== undefined) {
+    const ats = action.armingTimeSeconds
+    if (typeof ats !== 'number' || !Number.isInteger(ats) || ats < 0 || ats > ACTION_MAX_DELAY_SECONDS) {
+      return false
+    }
+  }
+  return true
 }
 
 /**

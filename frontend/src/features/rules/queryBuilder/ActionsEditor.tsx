@@ -5,6 +5,7 @@
 import {
   ACTION_MAX_DELAY_SECONDS,
   type ActionNode,
+  type AlarmArmAction,
   type AlarmSetStateAction,
   type ControlPanelSetStateAction,
   type ControlPanelTriggerAction,
@@ -227,16 +228,17 @@ function ActionRow({ action, onUpdate, onRemove, disabled, canRemove, availableA
           </span>
         )}
 
-        {/* Mode selector for alarm_arm */}
+        {/* Mode selector + exit-delay (ADR-0095) for alarm_arm */}
         {actionType === 'alarm_arm' && (
           <>
             <span className="text-sm text-muted-foreground">to</span>
             <Select
-              value={(action as { type: 'alarm_arm'; mode: string }).mode}
+              value={(action as AlarmArmAction).mode}
               onChange={(e) =>
                 onUpdate({
+                  ...(action as AlarmArmAction),
                   type: 'alarm_arm',
-                  mode: e.target.value as 'armed_home' | 'armed_away' | 'armed_night' | 'armed_vacation',
+                  mode: e.target.value as AlarmArmAction['mode'],
                 })
               }
               disabled={disabled}
@@ -249,6 +251,32 @@ function ActionRow({ action, onUpdate, onRemove, disabled, canRemove, availableA
                 </option>
               ))}
             </Select>
+            <span className="text-sm text-muted-foreground">exit delay</span>
+            <Input
+              type="number"
+              min={0}
+              max={ACTION_MAX_DELAY_SECONDS}
+              inputMode="numeric"
+              className="h-8 w-[90px]"
+              value={(action as AlarmArmAction).armingTimeSeconds ?? 0}
+              placeholder="0"
+              onChange={(e) => {
+                const raw = e.target.value
+                const next: AlarmArmAction = { ...(action as AlarmArmAction), type: 'alarm_arm' }
+                if (raw === '') {
+                  delete next.armingTimeSeconds
+                } else {
+                  const parsed = Number.parseInt(raw, 10)
+                  if (Number.isFinite(parsed)) {
+                    next.armingTimeSeconds = Math.max(0, Math.min(ACTION_MAX_DELAY_SECONDS, parsed))
+                  }
+                }
+                onUpdate(next)
+              }}
+              disabled={disabled}
+            />
+            <span className="text-sm text-muted-foreground">s</span>
+            <HelpTip content="Exit-delay duration (seconds) before the alarm enters the armed state. Leave blank or 0 to transition immediately with no ARMING countdown." />
           </>
         )}
 

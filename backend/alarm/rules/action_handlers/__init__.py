@@ -29,8 +29,16 @@ class AlarmServices(Protocol):
 
         ...
 
-    def arm(self, *, target_state: str, user=None, code=None, reason: str = ""):
-        """Arm the alarm to the target state."""
+    def arm(
+        self,
+        *,
+        target_state: str,
+        arming_time_seconds: int | None = None,
+        user=None,
+        code=None,
+        reason: str = "",
+    ):
+        """Arm the alarm to the target state with an optional ARMING exit-delay (ADR-0095)."""
 
         ...
 
