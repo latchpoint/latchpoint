@@ -16,7 +16,6 @@ from integrations_home_assistant import api as home_assistant
 from accounts.models import Role, User, UserCode, UserCodeAllowedState, UserRoleAssignment
 from alarm.models import (
     AlarmSettingsProfile,
-    AlarmState,
     AlarmSystem,
     Entity,
     Rule,
@@ -75,28 +74,6 @@ def _ensure_active_settings_profile() -> AlarmSettingsProfile:
     return AlarmSettingsProfile.objects.create(
         name="Default",
         is_active=True,
-        delay_time=60,
-        arming_time=60,
-        trigger_time=120,
-        disarm_after_trigger=False,
-        code_arm_required=True,
-        available_arming_states=[
-            AlarmState.ARMED_AWAY,
-            AlarmState.ARMED_HOME,
-            AlarmState.ARMED_NIGHT,
-            AlarmState.ARMED_VACATION,
-        ],
-        state_overrides={},
-        audio_visual_settings={
-            "beep_enabled": True,
-            "countdown_display_enabled": True,
-            "color_coding_enabled": True,
-        },
-        sensor_behavior={
-            "warn_on_open_sensors": True,
-            "auto_bypass_enabled": False,
-            "force_arm_enabled": True,
-        },
     )
 
 
@@ -357,13 +334,11 @@ class Command(BaseCommand):
                 name="[seed] Entry Door",
                 entity_id=config.entry_entity_id,
                 is_active=True,
-                is_entry_point=True,
             )
             Sensor.objects.create(
                 name="[seed] Motion",
                 entity_id=config.motion_entity_id,
                 is_active=True,
-                is_entry_point=False,
             )
 
             rules: list[tuple[str, str, dict[str, Any]]] = [

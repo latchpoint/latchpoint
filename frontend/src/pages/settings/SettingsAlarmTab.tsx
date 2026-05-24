@@ -1,8 +1,6 @@
 import { LoadingInline } from '@/components/ui/loading-inline'
 import { SettingsTabShell } from '@/features/settings/components/SettingsTabShell'
-import { AlarmBehaviorCard } from '@/features/alarmSettings/components/AlarmBehaviorCard'
 import { AlarmArmModesCard } from '@/features/alarmSettings/components/AlarmArmModesCard'
-import { AlarmTimingCard } from '@/features/alarmSettings/components/AlarmTimingCard'
 import { SystemSettingsCard } from '@/features/alarmSettings/components/SystemSettingsCard'
 import { useAlarmSettingsTabModel } from '@/features/alarmSettings/hooks/useAlarmSettingsTabModel'
 
@@ -17,7 +15,7 @@ export function SettingsAlarmTab() {
         </div>
       ) : !model.draft ? null : (
         <div className="space-y-6">
-          <AlarmTimingCard
+          <AlarmArmModesCard
             isAdmin={model.isAdmin}
             isLoading={model.isLoading}
             hasInitialDraft={Boolean(model.initialDraft)}
@@ -28,10 +26,6 @@ export function SettingsAlarmTab() {
             onSetDraft={model.setDraft}
           />
 
-          <AlarmBehaviorCard isAdmin={model.isAdmin} isLoading={model.isLoading} draft={model.draft} onSetDraft={model.setDraft} />
-
-          <AlarmArmModesCard isAdmin={model.isAdmin} isLoading={model.isLoading} draft={model.draft} onSetDraft={model.setDraft} />
-
           <SystemSettingsCard isAdmin={model.isAdmin} />
         </div>
       )}
@@ -40,4 +34,3 @@ export function SettingsAlarmTab() {
 }
 
 export default SettingsAlarmTab
-

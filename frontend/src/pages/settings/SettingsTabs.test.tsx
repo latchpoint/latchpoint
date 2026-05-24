@@ -44,14 +44,8 @@ vi.mock('@/features/alarmSettings/hooks/useAlarmSettingsTabModel', () => {
   }
 })
 
-vi.mock('@/features/alarmSettings/components/AlarmBehaviorCard', () => {
-  return { AlarmBehaviorCard: () => <div>AlarmBehaviorCard</div> }
-})
 vi.mock('@/features/alarmSettings/components/AlarmArmModesCard', () => {
   return { AlarmArmModesCard: () => <div>AlarmArmModesCard</div> }
-})
-vi.mock('@/features/alarmSettings/components/AlarmTimingCard', () => {
-  return { AlarmTimingCard: () => <div>AlarmTimingCard</div> }
 })
 vi.mock('@/features/alarmSettings/components/SystemSettingsCard', () => {
   return { SystemSettingsCard: () => <div>SystemSettingsCard</div> }
@@ -210,8 +204,6 @@ describe('Settings tabs', () => {
   it('renders alarm settings tab', () => {
     render(<SettingsAlarmTab />)
     expect(document.querySelector('[data-testid="SettingsTabShell"]')).toBeTruthy()
-    expect(document.body.textContent).toContain('AlarmTimingCard')
-    expect(document.body.textContent).toContain('AlarmBehaviorCard')
     expect(document.body.textContent).toContain('AlarmArmModesCard')
     expect(document.body.textContent).toContain('SystemSettingsCard')
   })

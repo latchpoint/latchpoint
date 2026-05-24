@@ -8,7 +8,6 @@ from alarm.models import AlarmState, AlarmStateSnapshot, Sensor
 from .constants import ARMED_STATES
 from .events import record_state_event
 from .settings import get_active_settings_profile
-from .timing import base_timing
 
 
 def get_snapshot_for_update() -> AlarmStateSnapshot:
@@ -26,7 +25,6 @@ def get_snapshot_for_update() -> AlarmStateSnapshot:
         entered_at=now,
         exit_at=None,
         last_transition_reason="bootstrap",
-        timing_snapshot=base_timing(profile).as_dict(),
     )
 
 

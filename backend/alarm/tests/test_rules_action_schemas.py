@@ -27,34 +27,25 @@ class ValidateActionTests(TestCase):
         errors = validate_action({"type": "alarm_trigger"})
         self.assertEqual(errors, [])
 
-    def test_valid_alarm_trigger_with_delay(self):
+    def test_alarm_trigger_rejects_delay_seconds(self):
+        # ADR-0094 §9 decision (a): alarm_trigger does NOT accept delay_seconds.
+        # Operators must compose with alarm_set_state for any timing-aware flow.
         errors = validate_action({"type": "alarm_trigger", "delay_seconds": 15})
-        self.assertEqual(errors, [])
+        self.assertTrue(any("does not accept delay_seconds" in e for e in errors))
 
-    def test_valid_alarm_trigger_with_zero_delay(self):
+    def test_alarm_trigger_rejects_even_zero_delay(self):
+        # Presence of the field at all is the rejection trigger — keeps the
+        # API surface unambiguous and prevents "did the operator mean 0 or
+        # forget to set it?" confusion.
         errors = validate_action({"type": "alarm_trigger", "delay_seconds": 0})
+        self.assertTrue(any("does not accept delay_seconds" in e for e in errors))
+
+    def test_alarm_set_state_accepts_delay(self):
+        # The composable replacement: a delayed alarm_set_state(triggered)
+        # is how you express what the legacy {alarm_trigger, delay_seconds:N}
+        # used to do.
+        errors = validate_action({"type": "alarm_set_state", "state": "triggered", "delay_seconds": 15})
         self.assertEqual(errors, [])
-
-    def test_alarm_trigger_rejects_negative_delay(self):
-        errors = validate_action({"type": "alarm_trigger", "delay_seconds": -1})
-        self.assertTrue(any(">= 0" in e for e in errors))
-
-    def test_alarm_trigger_rejects_delay_above_max(self):
-        errors = validate_action({"type": "alarm_trigger", "delay_seconds": 601})
-        self.assertTrue(any("<= 600" in e for e in errors))
-
-    def test_alarm_trigger_rejects_non_integer_delay(self):
-        errors = validate_action({"type": "alarm_trigger", "delay_seconds": 15.5})
-        self.assertTrue(any("integer" in e for e in errors))
-
-    def test_alarm_trigger_rejects_string_delay(self):
-        errors = validate_action({"type": "alarm_trigger", "delay_seconds": "15"})
-        self.assertTrue(any("integer" in e for e in errors))
-
-    def test_alarm_trigger_rejects_boolean_delay(self):
-        # bool is a subclass of int in Python; the validator must reject it.
-        errors = validate_action({"type": "alarm_trigger", "delay_seconds": True})
-        self.assertTrue(any("integer" in e for e in errors))
 
     def test_valid_send_notification_with_delay(self):
         errors = validate_action(
@@ -367,8 +358,11 @@ class ActionSchemaMetadataTests(TestCase):
             ACTION_TYPES,
             {
                 "alarm_trigger",
+                "alarm_set_state",
                 "alarm_disarm",
                 "alarm_arm",
+                "control_panel_set_state",
+                "control_panel_trigger",
                 "ha_call_service",
                 "zwavejs_set_value",
                 "zigbee2mqtt_set_value",
@@ -392,6 +386,151 @@ class ActionSchemaMetadataTests(TestCase):
         self.assertTrue(schemas["zigbee2mqtt_set_value"]["admin_only"])
         self.assertTrue(schemas["zigbee2mqtt_switch"]["admin_only"])
         self.assertTrue(schemas["zigbee2mqtt_light"]["admin_only"])
+
+
+class AlarmSetStateSchemaTests(TestCase):
+    """Reject-branch coverage for _validate_alarm_set_state (ADR-0094)."""
+
+    def test_accepts_every_allowed_state(self):
+        for state in (
+            "disarmed",
+            "pending",
+            "triggered",
+            "armed_home",
+            "armed_away",
+            "armed_night",
+            "armed_vacation",
+        ):
+            errors = validate_action({"type": "alarm_set_state", "state": state})
+            self.assertEqual(errors, [], msg=f"state={state!r} should validate")
+
+    def test_rejects_missing_state(self):
+        errors = validate_action({"type": "alarm_set_state"})
+        self.assertTrue(any("requires 'state' string field" in e for e in errors))
+
+    def test_rejects_arming_with_actionable_hint(self):
+        # 'arming' is a multi-step flow that must go through alarm_arm — the
+        # error message must point operators at the right primitive so the
+        # mistake is self-correcting.
+        errors = validate_action({"type": "alarm_set_state", "state": "arming"})
+        self.assertTrue(any("use alarm_arm instead" in e for e in errors))
+
+    def test_rejects_unknown_state(self):
+        errors = validate_action({"type": "alarm_set_state", "state": "bogus"})
+        self.assertTrue(any("Invalid state" in e for e in errors))
+
+    def test_rejects_non_string_state(self):
+        errors = validate_action({"type": "alarm_set_state", "state": 42})
+        self.assertTrue(any("requires 'state' string field" in e for e in errors))
+
+
+class ControlPanelSetStateSchemaTests(TestCase):
+    """Reject-branch coverage for _validate_control_panel_set_state (ADR-0094)."""
+
+    def test_happy_path(self):
+        errors = validate_action({"type": "control_panel_set_state", "panel_id": 1, "state": "pending"})
+        self.assertEqual(errors, [])
+
+    def test_rejects_missing_panel_id(self):
+        errors = validate_action({"type": "control_panel_set_state", "state": "pending"})
+        self.assertTrue(any("positive integer 'panel_id'" in e for e in errors))
+
+    def test_rejects_zero_or_negative_panel_id(self):
+        for bad in (0, -1):
+            errors = validate_action({"type": "control_panel_set_state", "panel_id": bad, "state": "pending"})
+            self.assertTrue(
+                any("positive integer 'panel_id'" in e for e in errors),
+                msg=f"panel_id={bad!r}",
+            )
+
+    def test_rejects_boolean_panel_id(self):
+        # `True is int` in Python — without the bool guard, panel_id=True would
+        # smuggle through as a positive integer (1).
+        errors = validate_action({"type": "control_panel_set_state", "panel_id": True, "state": "pending"})
+        self.assertTrue(any("positive integer 'panel_id'" in e for e in errors))
+
+    def test_rejects_unknown_state(self):
+        errors = validate_action({"type": "control_panel_set_state", "panel_id": 1, "state": "bogus"})
+        self.assertTrue(any("'state' to be one of" in e for e in errors))
+
+    def test_accepts_countdown_seconds_at_boundary(self):
+        from alarm.rules.action_schemas import ACTION_MAX_DELAY_SECONDS
+
+        errors = validate_action(
+            {
+                "type": "control_panel_set_state",
+                "panel_id": 1,
+                "state": "pending",
+                "countdown_seconds": ACTION_MAX_DELAY_SECONDS,
+            }
+        )
+        self.assertEqual(errors, [])
+
+    def test_rejects_non_integer_countdown(self):
+        errors = validate_action(
+            {
+                "type": "control_panel_set_state",
+                "panel_id": 1,
+                "state": "pending",
+                "countdown_seconds": "30",
+            }
+        )
+        self.assertTrue(any("'countdown_seconds' must be an integer" in e for e in errors))
+
+    def test_rejects_boolean_countdown(self):
+        errors = validate_action(
+            {
+                "type": "control_panel_set_state",
+                "panel_id": 1,
+                "state": "pending",
+                "countdown_seconds": True,
+            }
+        )
+        self.assertTrue(any("'countdown_seconds' must be an integer" in e for e in errors))
+
+    def test_rejects_negative_countdown(self):
+        errors = validate_action(
+            {
+                "type": "control_panel_set_state",
+                "panel_id": 1,
+                "state": "pending",
+                "countdown_seconds": -1,
+            }
+        )
+        self.assertTrue(any("'countdown_seconds' must be >= 0" in e for e in errors))
+
+    def test_rejects_countdown_above_max(self):
+        from alarm.rules.action_schemas import ACTION_MAX_DELAY_SECONDS
+
+        errors = validate_action(
+            {
+                "type": "control_panel_set_state",
+                "panel_id": 1,
+                "state": "pending",
+                "countdown_seconds": ACTION_MAX_DELAY_SECONDS + 1,
+            }
+        )
+        self.assertTrue(any("'countdown_seconds' must be <=" in e for e in errors))
+
+
+class ControlPanelTriggerSchemaTests(TestCase):
+    """Reject-branch coverage for _validate_control_panel_trigger (ADR-0094)."""
+
+    def test_happy_path(self):
+        errors = validate_action({"type": "control_panel_trigger", "panel_id": 7})
+        self.assertEqual(errors, [])
+
+    def test_rejects_missing_panel_id(self):
+        errors = validate_action({"type": "control_panel_trigger"})
+        self.assertTrue(any("positive integer 'panel_id'" in e for e in errors))
+
+    def test_rejects_invalid_panel_id(self):
+        for bad in (0, -3, True, "x"):
+            errors = validate_action({"type": "control_panel_trigger", "panel_id": bad})
+            self.assertTrue(
+                any("positive integer 'panel_id'" in e for e in errors),
+                msg=f"panel_id={bad!r}",
+            )
 
 
 class RuleUpsertSerializerValidationTests(TestCase):

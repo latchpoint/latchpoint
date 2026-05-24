@@ -107,6 +107,11 @@ This document tracks all Architecture Decision Records (ADRs) and their implemen
 | [0088](0088-rule-message-template-variables.md) | Template Variables in Rule Notification Action Messages | **Implemented** |
 | [0089](0089-frontend-only-demo-mode.md) | Frontend-Only Demo Mode | **Implemented** |
 | [0090](0090-container-timezone-env-var.md) | Container Timezone via TZ Env Var | **Implemented** |
+| [0091](0091-rule-action-entry-delay.md) | Rule Action Entry Delay (hybrid PENDING + queue) | Superseded by 0094 |
+| [0092](0092-zwavejs-lock-push-sync.md) | Z-Wave JS Lock Push Sync — Programming PINs and Schedules to Physical Locks | **Proposed** |
+| [0093](0093-scheduler-instance-id-stable-default.md) | Stable Default for Scheduler `instance_id` | **Implemented** |
+| [0094](0094-composable-rule-action-primitives.md) | Composable Rule-Action Primitives for Alarm and Control Panel (supersedes 0091) | **Proposed** |
+| [0095](0095-deprecate-profile-timing-settings.md) | Deprecate Profile-Level Timing Settings; Move Exit-Delay into alarm_arm Action | **Proposed** |
 
 ---
 
@@ -114,15 +119,15 @@ This document tracks all Architecture Decision Records (ADRs) and their implemen
 
 | Status | Count |
 |--------|-------|
-| **Implemented** | 66 |
+| **Implemented** | 67 |
 | **Partially Implemented** | 0 |
 | **Accepted** | 1 |
-| **Proposed** | 8 |
-| **Superseded** | 14 |
-| **Total** | 89 |
+| **Proposed** | 11 |
+| **Superseded** | 15 |
+| **Total** | 94 |
 
 Note: **Superseded** includes entries marked as "Superseded by …" in the table above.
 
 ---
 
-*Last updated: 2026-05-12* (ADR 0090 flipped to Implemented: container timezone via TZ env var)
+*Last updated: 2026-05-20* (added ADR 0095: deprecate profile timing settings; ADRs 0091-0094 from prior update remain; 0091 superseded by 0094)

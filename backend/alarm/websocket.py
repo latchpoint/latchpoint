@@ -9,7 +9,6 @@ from channels.layers import get_channel_layer
 from django.utils import timezone
 
 from alarm.serializers.alarm import AlarmStateSnapshotSerializer
-from alarm.state_machine.timing import timing_from_snapshot
 
 logger = logging.getLogger(__name__)
 
@@ -17,15 +16,13 @@ _sequence = itertools.count(1)
 
 
 def build_alarm_state_message(*, snapshot) -> dict[str, Any]:
-    """Build the websocket message envelope for an alarm snapshot + resolved timing."""
-    timing = timing_from_snapshot(snapshot)
+    """Build the websocket message envelope for an alarm snapshot."""
     return {
         "type": "alarm_state",
         "timestamp": timezone.now().isoformat(),
         "sequence": next(_sequence),
         "payload": {
             "state": AlarmStateSnapshotSerializer(snapshot).data,
-            "effective_settings": timing.as_dict(),
         },
     }
 

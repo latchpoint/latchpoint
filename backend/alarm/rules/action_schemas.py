@@ -2,15 +2,21 @@
 Action schema definitions and validation for rules engine THEN actions.
 
 Supports schema_version=1 action types:
-- alarm_trigger: Trigger the alarm
+- alarm_trigger: Trigger the alarm immediately (ADR-0094: no embedded delay).
+- alarm_set_state: Set the alarm state directly (ADR-0094).
 - alarm_disarm: Disarm the alarm
 - alarm_arm: Arm the alarm with a target mode
+- control_panel_set_state: Drive a specific control panel's indicator (ADR-0094).
+- control_panel_trigger: Light a specific control panel's burglar indicator (ADR-0094).
 - ha_call_service: Call a Home Assistant service
 - zwavejs_set_value: Write a Z-Wave JS value
 - zigbee2mqtt_set_value: Publish a Zigbee2MQTT set payload for an entity
 - zigbee2mqtt_switch: Zigbee2MQTT switch on/off (guided)
 - zigbee2mqtt_light: Zigbee2MQTT light on/off + brightness (guided)
 - send_notification: Send a notification via configured provider
+
+Every action accepts an optional ``delay_seconds`` field validated generically
+by ``_validate_delay_seconds`` (ADR-0094 §3.3).
 """
 
 from __future__ import annotations
@@ -18,6 +24,8 @@ from __future__ import annotations
 from typing import Any
 
 ARMED_MODES = ("armed_home", "armed_away", "armed_night", "armed_vacation")
+ALARM_STATES_SET = ("disarmed", "pending", "triggered", *ARMED_MODES)
+PANEL_STATES = ("pending", "disarmed", "armed_stay", "armed_away", "triggered", "auto")
 
 ADMIN_ONLY_ACTION_TYPES = frozenset(
     {
@@ -32,8 +40,11 @@ ADMIN_ONLY_ACTION_TYPES = frozenset(
 ACTION_TYPES = frozenset(
     {
         "alarm_trigger",
+        "alarm_set_state",
         "alarm_disarm",
         "alarm_arm",
+        "control_panel_set_state",
+        "control_panel_trigger",
         "ha_call_service",
         "zwavejs_set_value",
         "zigbee2mqtt_set_value",
@@ -45,7 +56,22 @@ ACTION_TYPES = frozenset(
 
 ZIGBEE2MQTT_ON_OFF = ("on", "off")
 
-ALARM_TRIGGER_MAX_DELAY_SECONDS = 600
+ACTION_MAX_DELAY_SECONDS = 600
+ALARM_TRIGGER_MAX_DELAY_SECONDS = ACTION_MAX_DELAY_SECONDS
+
+
+def _validate_delay_seconds(action: dict[str, Any]) -> list[str]:
+    """Generic delay_seconds validation applied to every action (ADR-0094)."""
+    if "delay_seconds" not in action:
+        return []
+    delay = action["delay_seconds"]
+    if isinstance(delay, bool) or not isinstance(delay, int):
+        return ["'delay_seconds' must be an integer if provided"]
+    if delay < 0:
+        return ["'delay_seconds' must be >= 0"]
+    if delay > ACTION_MAX_DELAY_SECONDS:
+        return [f"'delay_seconds' must be <= {ACTION_MAX_DELAY_SECONDS}"]
+    return []
 
 
 def validate_action(action: Any, schema_version: int = 1) -> list[str]:
@@ -67,24 +93,41 @@ def validate_action(action: Any, schema_version: int = 1) -> list[str]:
     if action_type not in ACTION_TYPES:
         return [f"Unknown action type: {action_type}"]
 
+    errors: list[str] = []
     validator = _VALIDATORS.get(action_type)
     if validator:
-        return validator(action)
-
-    return []
+        errors.extend(validator(action))
+    errors.extend(_validate_delay_seconds(action))
+    return errors
 
 
 def _validate_alarm_trigger(action: dict[str, Any]) -> list[str]:
-    """alarm_trigger accepts an optional 'delay_seconds' grace window."""
-    errors: list[str] = []
+    """alarm_trigger has no per-handler params (ADR-0094 §9 decision (a)).
+
+    Rejects ``delay_seconds`` explicitly. To express an entry-delay flow,
+    compose with ``alarm_set_state(state='pending')`` plus a delayed
+    ``alarm_set_state(state='triggered')``. This keeps ``alarm_trigger``
+    a pure "force TRIGGERED now" primitive — no implicit timing.
+    """
     if "delay_seconds" in action:
-        delay = action["delay_seconds"]
-        if isinstance(delay, bool) or not isinstance(delay, int):
-            errors.append("alarm_trigger 'delay_seconds' must be an integer if provided")
-        elif delay < 0:
-            errors.append("alarm_trigger 'delay_seconds' must be >= 0")
-        elif delay > ALARM_TRIGGER_MAX_DELAY_SECONDS:
-            errors.append(f"alarm_trigger 'delay_seconds' must be <= {ALARM_TRIGGER_MAX_DELAY_SECONDS}")
+        return [
+            "alarm_trigger does not accept delay_seconds; compose with "
+            "alarm_set_state(state='pending') and a delayed "
+            "alarm_set_state(state='triggered') instead"
+        ]
+    return []
+
+
+def _validate_alarm_set_state(action: dict[str, Any]) -> list[str]:
+    """alarm_set_state requires a 'state' string from the allowed set (ADR-0094)."""
+    errors: list[str] = []
+    state = action.get("state")
+    if not isinstance(state, str):
+        errors.append("alarm_set_state requires 'state' string field")
+    elif state == "arming":
+        errors.append("alarm_set_state cannot set state to 'arming'; use alarm_arm instead")
+    elif state not in ALARM_STATES_SET:
+        errors.append(f"Invalid state '{state}'. Must be one of: {', '.join(ALARM_STATES_SET)}")
     return errors
 
 
@@ -94,13 +137,22 @@ def _validate_alarm_disarm(action: dict[str, Any]) -> list[str]:
 
 
 def _validate_alarm_arm(action: dict[str, Any]) -> list[str]:
-    """alarm_arm requires a valid 'mode' field."""
+    """alarm_arm requires a valid 'mode' field; optional arming_time_seconds (ADR-0095)."""
     errors: list[str] = []
     mode = action.get("mode")
     if not isinstance(mode, str):
         errors.append("alarm_arm requires 'mode' string field")
     elif mode not in ARMED_MODES:
         errors.append(f"Invalid mode '{mode}'. Must be one of: {', '.join(ARMED_MODES)}")
+
+    arming_time = action.get("arming_time_seconds")
+    if arming_time is not None:
+        if isinstance(arming_time, bool) or not isinstance(arming_time, int):
+            errors.append("alarm_arm 'arming_time_seconds' must be an integer if provided")
+        elif arming_time < 0:
+            errors.append("alarm_arm 'arming_time_seconds' must be >= 0")
+        elif arming_time > ACTION_MAX_DELAY_SECONDS:
+            errors.append(f"alarm_arm 'arming_time_seconds' must be <= {ACTION_MAX_DELAY_SECONDS}")
     return errors
 
 
@@ -223,28 +275,62 @@ def _validate_send_notification(action: dict[str, Any]) -> list[str]:
     if data is not None and not isinstance(data, dict):
         errors.append("send_notification 'data' must be an object if provided")
 
-    if "delay_seconds" in action:
-        delay = action["delay_seconds"]
-        if isinstance(delay, bool) or not isinstance(delay, int):
-            errors.append("send_notification 'delay_seconds' must be an integer if provided")
-        elif delay < 0:
-            errors.append("send_notification 'delay_seconds' must be >= 0")
-        elif delay > ALARM_TRIGGER_MAX_DELAY_SECONDS:
-            errors.append(f"send_notification 'delay_seconds' must be <= {ALARM_TRIGGER_MAX_DELAY_SECONDS}")
+    return errors
 
+
+def _validate_control_panel_set_state(action: dict[str, Any]) -> list[str]:
+    """control_panel_set_state requires a panel_id (int) and state from PANEL_STATES."""
+    errors: list[str] = []
+    panel_id = action.get("panel_id")
+    if not isinstance(panel_id, int) or isinstance(panel_id, bool) or panel_id <= 0:
+        errors.append("control_panel_set_state requires positive integer 'panel_id'")
+    state = action.get("state")
+    if not isinstance(state, str) or state not in PANEL_STATES:
+        errors.append(f"control_panel_set_state requires 'state' to be one of: {', '.join(PANEL_STATES)}")
+    countdown = action.get("countdown_seconds")
+    if countdown is not None:
+        if isinstance(countdown, bool) or not isinstance(countdown, int):
+            errors.append("control_panel_set_state 'countdown_seconds' must be an integer if provided")
+        elif countdown < 0:
+            errors.append("control_panel_set_state 'countdown_seconds' must be >= 0")
+        elif countdown > ACTION_MAX_DELAY_SECONDS:
+            errors.append(f"control_panel_set_state 'countdown_seconds' must be <= {ACTION_MAX_DELAY_SECONDS}")
+    return errors
+
+
+def _validate_control_panel_trigger(action: dict[str, Any]) -> list[str]:
+    """control_panel_trigger requires a panel_id (int)."""
+    errors: list[str] = []
+    panel_id = action.get("panel_id")
+    if not isinstance(panel_id, int) or isinstance(panel_id, bool) or panel_id <= 0:
+        errors.append("control_panel_trigger requires positive integer 'panel_id'")
     return errors
 
 
 _VALIDATORS = {
     "alarm_trigger": _validate_alarm_trigger,
+    "alarm_set_state": _validate_alarm_set_state,
     "alarm_disarm": _validate_alarm_disarm,
     "alarm_arm": _validate_alarm_arm,
+    "control_panel_set_state": _validate_control_panel_set_state,
+    "control_panel_trigger": _validate_control_panel_trigger,
     "ha_call_service": _validate_ha_call_service,
     "zwavejs_set_value": _validate_zwavejs_set_value,
     "zigbee2mqtt_set_value": _validate_zigbee2mqtt_set_value,
     "zigbee2mqtt_switch": _validate_zigbee2mqtt_switch,
     "zigbee2mqtt_light": _validate_zigbee2mqtt_light,
     "send_notification": _validate_send_notification,
+}
+
+
+_GENERIC_DELAY_PROPERTY = {
+    "type": "integer",
+    "minimum": 0,
+    "maximum": ACTION_MAX_DELAY_SECONDS,
+    "description": (
+        "Optional delay (seconds) before this action fires. The action is queued in "
+        "PendingAction; disarm cancels it (unless the rule was scheduled while disarmed)."
+    ),
 }
 
 
@@ -257,25 +343,85 @@ def get_action_schemas() -> dict[str, dict[str, Any]]:
             "type": "object",
             "properties": {
                 "type": {"const": "alarm_trigger"},
-                "delay_seconds": {
-                    "type": "integer",
-                    "minimum": 0,
-                    "maximum": ALARM_TRIGGER_MAX_DELAY_SECONDS,
-                    "description": (
-                        "Optional entry-delay grace window in seconds before the alarm "
-                        "transitions to TRIGGERED. 0 (or omitted) triggers immediately. "
-                        "While in the grace window the alarm is in PENDING and a disarm "
-                        "cancels the trigger."
-                    ),
-                },
             },
             "required": ["type"],
+            "admin_only": False,
+            "description": (
+                "Force the alarm into TRIGGERED immediately. Does NOT accept "
+                "delay_seconds (ADR-0094 §9 decision (a)). For an entry-delay "
+                "flow, compose alarm_set_state(pending) with a delayed "
+                "alarm_set_state(triggered)."
+            ),
+        },
+        "alarm_set_state": {
+            "type": "object",
+            "properties": {
+                "type": {"const": "alarm_set_state"},
+                "state": {
+                    "type": "string",
+                    "enum": list(ALARM_STATES_SET),
+                    "description": (
+                        "Alarm state to set directly. PENDING is informational — it "
+                        "does not auto-advance. Compose with a delayed alarm_trigger "
+                        "for an entry-delay flow. Use alarm_arm for the standard "
+                        "exit-delay arming flow."
+                    ),
+                },
+                "delay_seconds": _GENERIC_DELAY_PROPERTY,
+            },
+            "required": ["type", "state"],
+            "admin_only": False,
+        },
+        "control_panel_set_state": {
+            "type": "object",
+            "properties": {
+                "type": {"const": "control_panel_set_state"},
+                "panel_id": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "ControlPanelDevice.id to drive.",
+                },
+                "state": {
+                    "type": "string",
+                    "enum": list(PANEL_STATES),
+                    "description": (
+                        "Indicator to display on the panel. 'auto' returns the panel "
+                        "to following the central alarm state."
+                    ),
+                },
+                "countdown_seconds": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": ACTION_MAX_DELAY_SECONDS,
+                    "description": (
+                        "Optional countdown seconds for indicators that support it "
+                        "(entry-delay / pending). Ignored for other states."
+                    ),
+                },
+                "delay_seconds": _GENERIC_DELAY_PROPERTY,
+            },
+            "required": ["type", "panel_id", "state"],
+            "admin_only": False,
+        },
+        "control_panel_trigger": {
+            "type": "object",
+            "properties": {
+                "type": {"const": "control_panel_trigger"},
+                "panel_id": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "ControlPanelDevice.id to drive.",
+                },
+                "delay_seconds": _GENERIC_DELAY_PROPERTY,
+            },
+            "required": ["type", "panel_id"],
             "admin_only": False,
         },
         "alarm_disarm": {
             "type": "object",
             "properties": {
                 "type": {"const": "alarm_disarm"},
+                "delay_seconds": _GENERIC_DELAY_PROPERTY,
             },
             "required": ["type"],
             "admin_only": False,
@@ -285,6 +431,17 @@ def get_action_schemas() -> dict[str, dict[str, Any]]:
             "properties": {
                 "type": {"const": "alarm_arm"},
                 "mode": {"type": "string", "enum": list(ARMED_MODES)},
+                "arming_time_seconds": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": ACTION_MAX_DELAY_SECONDS,
+                    "description": (
+                        "Exit-delay duration before the alarm enters the target armed state "
+                        "(ADR-0095). When omitted or 0, the alarm transitions directly to the "
+                        "armed state with no ARMING. When >0, ARMING is held for this many seconds."
+                    ),
+                },
+                "delay_seconds": _GENERIC_DELAY_PROPERTY,
             },
             "required": ["type", "mode"],
             "admin_only": False,
@@ -299,6 +456,7 @@ def get_action_schemas() -> dict[str, dict[str, Any]]:
                 },
                 "target": {"type": "object"},
                 "data": {"type": "object"},
+                "delay_seconds": _GENERIC_DELAY_PROPERTY,
             },
             "required": ["type", "action"],
             "admin_only": True,
@@ -319,6 +477,7 @@ def get_action_schemas() -> dict[str, dict[str, Any]]:
                     "required": ["commandClass", "property"],
                 },
                 "value": {},
+                "delay_seconds": _GENERIC_DELAY_PROPERTY,
             },
             "required": ["type", "node_id", "value_id", "value"],
             "admin_only": True,
@@ -332,6 +491,7 @@ def get_action_schemas() -> dict[str, dict[str, Any]]:
                     "description": "Target Zigbee2MQTT entity_id (e.g., 'z2m_switch.0x..._state')",
                 },
                 "value": {},
+                "delay_seconds": _GENERIC_DELAY_PROPERTY,
             },
             "required": ["type", "entity_id", "value"],
             "admin_only": True,
@@ -342,6 +502,7 @@ def get_action_schemas() -> dict[str, dict[str, Any]]:
                 "type": {"const": "zigbee2mqtt_switch"},
                 "entity_id": {"type": "string", "description": "Any Zigbee2MQTT entity_id for the target device"},
                 "state": {"type": "string", "enum": list(ZIGBEE2MQTT_ON_OFF)},
+                "delay_seconds": _GENERIC_DELAY_PROPERTY,
             },
             "required": ["type", "entity_id", "state"],
             "admin_only": True,
@@ -353,6 +514,7 @@ def get_action_schemas() -> dict[str, dict[str, Any]]:
                 "entity_id": {"type": "string", "description": "Any Zigbee2MQTT entity_id for the target device"},
                 "state": {"type": "string", "enum": list(ZIGBEE2MQTT_ON_OFF)},
                 "brightness": {"type": "integer", "minimum": 0, "maximum": 255},
+                "delay_seconds": _GENERIC_DELAY_PROPERTY,
             },
             "required": ["type", "entity_id", "state"],
             "admin_only": True,
@@ -365,15 +527,7 @@ def get_action_schemas() -> dict[str, dict[str, Any]]:
                 "message": {"type": "string", "description": "Notification message body"},
                 "title": {"type": "string", "description": "Optional notification title"},
                 "data": {"type": "object", "description": "Optional provider-specific data"},
-                "delay_seconds": {
-                    "type": "integer",
-                    "minimum": 0,
-                    "maximum": ALARM_TRIGGER_MAX_DELAY_SECONDS,
-                    "description": (
-                        "Optional delay (seconds) before sending. The notification is queued; "
-                        "disarm, WHEN-condition flipping, or manual cancel will abort it."
-                    ),
-                },
+                "delay_seconds": _GENERIC_DELAY_PROPERTY,
             },
             "required": ["type", "provider_id", "message"],
             "admin_only": False,

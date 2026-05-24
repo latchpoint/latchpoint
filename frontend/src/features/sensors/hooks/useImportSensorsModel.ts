@@ -12,11 +12,6 @@ import type { EntityImportViewMode } from '@/features/sensors/components/EntityI
 type SubmitProgress = { current: number; total: number }
 type ImportSuccess = { count: number; names: string[] }
 
-function defaultEntryPointFromDeviceClass(deviceClass?: string | null): boolean {
-  if (!deviceClass) return false
-  return ['door', 'window', 'garage_door'].includes(deviceClass)
-}
-
 export function useImportSensorsModel() {
   const queryClient = useQueryClient()
   const haStatusQuery = useHomeAssistantStatus()
@@ -28,8 +23,6 @@ export function useImportSensorsModel() {
   const [success, setSuccess] = useState<ImportSuccess | null>(null)
   const [selected, setSelected] = useState<Record<string, boolean>>({})
   const [nameOverrides, setNameOverrides] = useState<Record<string, string>>({})
-  const [entryOverrides, setEntryOverrides] = useState<Record<string, boolean>>({})
-  const [entryHelpOpenFor, setEntryHelpOpenFor] = useState<string | null>(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [submitProgress, setSubmitProgress] = useState<SubmitProgress | null>(null)
   const [viewMode, setViewMode] = useState<EntityImportViewMode>('available')
@@ -59,63 +52,53 @@ export function useImportSensorsModel() {
   const entities = useMemo<HomeAssistantEntity[]>(() => {
     if (entitiesLoadError) return []
     return haEntitiesQuery.data ?? []
-  }, [entitiesLoadError, haEntitiesQuery.data])
+  }, [haEntitiesQuery.data, entitiesLoadError])
 
-  const isLoading = haStatusQuery.isLoading || haEntitiesQuery.isLoading || sensorsQuery.isLoading
+  const isLoading = haEntitiesQuery.isLoading || haStatusQuery.isLoading || sensorsQuery.isLoading || isSubmitting
+  const bannerError = error || entitiesLoadError || null
 
-  const existingEntityIds = useMemo(() => {
-    const ids = new Set<string>()
-    for (const sensor of sensors) {
-      if (sensor.entityId) ids.add(sensor.entityId)
-    }
-    return ids
-  }, [sensors])
+  const allSensorEntities = useMemo(
+    () => entities.filter((entity) => entity.domain === 'binary_sensor'),
+    [entities],
+  )
 
   const importedByEntityId = useMemo(() => {
     const map = new Map<string, { sensorId: number }>()
     for (const sensor of sensors) {
-      if (!sensor.entityId) continue
-      map.set(sensor.entityId, { sensorId: sensor.id })
+      if (sensor.entityId) {
+        map.set(sensor.entityId, { sensorId: sensor.id })
+      }
     }
     return map
   }, [sensors])
 
-  const bannerError = error ?? entitiesLoadError
+  const existingEntityIds = useMemo(() => new Set(importedByEntityId.keys()), [importedByEntityId])
+
+  const importedSensorEntities = useMemo(
+    () => allSensorEntities.filter((entity) => existingEntityIds.has(entity.entityId)),
+    [allSensorEntities, existingEntityIds],
+  )
+
+  const availableSensorEntities = useMemo(
+    () => allSensorEntities.filter((entity) => !existingEntityIds.has(entity.entityId)),
+    [allSensorEntities, existingEntityIds],
+  )
+
+  const filtered = useMemo(() => {
+    const source = viewMode === 'imported' ? importedSensorEntities : availableSensorEntities
+    if (!query.trim()) return source
+    const q = query.toLowerCase()
+    return source.filter(
+      (entity) =>
+        entity.name.toLowerCase().includes(q) ||
+        entity.entityId.toLowerCase().includes(q) ||
+        (entity.deviceClass || '').toLowerCase().includes(q),
+    )
+  }, [viewMode, importedSensorEntities, availableSensorEntities, query])
 
   useEffect(() => {
     setVisibleCount(50)
-  }, [query, viewMode])
-
-  const allSensorEntities = useMemo(() => {
-    return entities.filter((e) => e.domain.endsWith('sensor'))
-  }, [entities])
-
-  const importedSensorEntities = useMemo(() => {
-    return allSensorEntities.filter((e) => existingEntityIds.has(e.entityId))
-  }, [allSensorEntities, existingEntityIds])
-
-  const availableSensorEntities = useMemo(() => {
-    return allSensorEntities.filter((e) => !existingEntityIds.has(e.entityId))
-  }, [allSensorEntities, existingEntityIds])
-
-  const filtered = useMemo(() => {
-    const q = query.trim().toLowerCase()
-    const base =
-      viewMode === 'available'
-        ? availableSensorEntities
-        : viewMode === 'imported'
-          ? importedSensorEntities
-          : allSensorEntities
-
-    return base
-      .filter((e) => {
-        if (!q) return true
-        return (
-          e.entityId.toLowerCase().includes(q) || String(e.name ?? '').toLowerCase().includes(q)
-        )
-      })
-      .sort((a, b) => String(a.name ?? '').localeCompare(String(b.name ?? '')))
-  }, [allSensorEntities, availableSensorEntities, importedSensorEntities, query, viewMode])
+  }, [filtered])
 
   const visible = useMemo(() => filtered.slice(0, visibleCount), [filtered, visibleCount])
   const canLoadMore = visibleCount < filtered.length
@@ -125,42 +108,22 @@ export function useImportSensorsModel() {
   const getRowModel = (entity: HomeAssistantEntity) => {
     const alreadyImported = existingEntityIds.has(entity.entityId)
     const checked = Boolean(selected[entity.entityId])
-    const suggestedEntry = defaultEntryPointFromDeviceClass(entity.deviceClass)
-    const entry = entryOverrides[entity.entityId] ?? suggestedEntry
-    const entryHelpOpen = entryHelpOpenFor === entity.entityId
     const imported = importedByEntityId.get(entity.entityId)
     const nameOverride = nameOverrides[entity.entityId] ?? entity.name
     return {
       alreadyImported,
       checked,
-      suggestedEntry,
-      entry: Boolean(entry),
-      entryHelpOpen,
       importedSensorId: imported?.sensorId ?? null,
       nameOverride,
     }
   }
 
   const setEntityChecked = (entity: HomeAssistantEntity, nextChecked: boolean) => {
-    const suggestedEntry = defaultEntryPointFromDeviceClass(entity.deviceClass)
     setSelected((prev) => ({ ...prev, [entity.entityId]: nextChecked }))
-    if (nextChecked) {
-      setEntryOverrides((prev) =>
-        prev[entity.entityId] === undefined ? { ...prev, [entity.entityId]: suggestedEntry } : prev
-      )
-    }
   }
 
   const setEntityNameOverride = (entityId: string, next: string) => {
     setNameOverrides((prev) => ({ ...prev, [entityId]: next }))
-  }
-
-  const setEntityEntry = (entityId: string, next: boolean) => {
-    setEntryOverrides((prev) => ({ ...prev, [entityId]: next }))
-  }
-
-  const toggleEntryHelp = (entityId: string) => {
-    setEntryHelpOpenFor((prev) => (prev === entityId ? null : entityId))
   }
 
   const loadMore = () => setVisibleCount((c) => c + 50)
@@ -177,14 +140,11 @@ export function useImportSensorsModel() {
         index += 1
         setSubmitProgress({ current: index, total: selectedEntities.length })
         const name = (nameOverrides[entity.entityId] || entity.name || entity.entityId).trim()
-        const isEntryPoint =
-          entryOverrides[entity.entityId] ?? defaultEntryPointFromDeviceClass(entity.deviceClass)
 
         await sensorsService.createSensor({
           name,
           entityId: entity.entityId,
           isActive: true,
-          isEntryPoint,
         })
         importedNames.push(name || entity.entityId)
       }
@@ -224,7 +184,5 @@ export function useImportSensorsModel() {
     getRowModel,
     setEntityChecked,
     setEntityNameOverride,
-    setEntityEntry,
-    toggleEntryHelp,
   }
 }

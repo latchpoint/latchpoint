@@ -54,7 +54,7 @@ def record_sensor_event(sensor: Sensor, timestamp=None) -> AlarmEvent:
         state_to=None,
         timestamp=timestamp or timezone.now(),
         sensor=sensor,
-        metadata={"is_entry_point": sensor.is_entry_point},
+        metadata={},
     )
 
 

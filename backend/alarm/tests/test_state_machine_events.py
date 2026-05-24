@@ -22,7 +22,6 @@ class StateMachineEventsTests(TestCase):
             entered_at=datetime(2025, 1, 1, 0, 0, tzinfo=dt_timezone.utc),
             exit_at=None,
             last_transition_reason="init",
-            timing_snapshot={},
         )
         self.user = User.objects.create_user(email="events@example.com", password="pass")
         self.raw_code = "1234"
@@ -62,8 +61,8 @@ class StateMachineEventsTests(TestCase):
         self.assertEqual(event.event_type, AlarmEventType.FAILED_CODE)
         self.assertEqual(event.metadata, {"action": "disarm", "reason": "bad"})
 
-    def test_record_sensor_event_marks_entry_point(self):
-        sensor = Sensor.objects.create(name="Front Door", is_active=True, is_entry_point=True)
+    def test_record_sensor_event_emits_sensor_triggered(self):
+        sensor = Sensor.objects.create(name="Front Door", is_active=True)
         event = record_sensor_event(sensor)
         self.assertEqual(event.event_type, AlarmEventType.SENSOR_TRIGGERED)
-        self.assertEqual(event.metadata["is_entry_point"], True)
+        self.assertEqual(event.sensor_id, sensor.id)

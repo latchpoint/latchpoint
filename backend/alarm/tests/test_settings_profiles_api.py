@@ -47,12 +47,12 @@ class AlarmSettingsProfilesApiTests(APITestCase):
 
         updated = client.patch(
             reverse("alarm-settings-profile-detail", kwargs={"profile_id": profile_id}),
-            data={"entries": [{"key": "delay_time", "value": 31}]},
+            data={"entries": [{"key": "code_arm_required", "value": False}]},
             format="json",
         )
         self.assertEqual(updated.status_code, 200)
         entry_by_key = {row["key"]: row for row in updated.data["entries"]}
-        self.assertEqual(entry_by_key["delay_time"]["value"], 31)
+        self.assertIs(entry_by_key["code_arm_required"]["value"], False)
 
         activated = client.post(reverse("alarm-settings-profile-activate", kwargs={"profile_id": profile_id}))
         self.assertEqual(activated.status_code, 200)

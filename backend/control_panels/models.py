@@ -51,6 +51,12 @@ class ControlPanelDevice(models.Model):
     last_seen_at = models.DateTimeField(null=True, blank=True)
     last_error = models.TextField(blank=True)
 
+    # ADR-0094: when True, the panel mirrors the central alarm state via the
+    # alarm_state_change_committed signal. When False, the panel is under
+    # explicit rule control (set via control_panel_set_state / control_panel_trigger).
+    # Resumes to True on disarm or via control_panel_set_state(state="auto").
+    follow_alarm_state = models.BooleanField(default=True)
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

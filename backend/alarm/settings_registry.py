@@ -88,30 +88,6 @@ class SettingDefinition:
 
 ALARM_PROFILE_SETTINGS: list[SettingDefinition] = [
     SettingDefinition(
-        key="delay_time",
-        name="Delay time",
-        value_type=SystemConfigValueType.INTEGER,
-        default=60,
-        description="Entry delay (seconds) before triggering after a sensor is tripped while armed.",
-    ),
-    SettingDefinition(
-        key="trigger_time",
-        name="Trigger time",
-        value_type=SystemConfigValueType.INTEGER,
-        default=0,
-        description=(
-            "Seconds the alarm stays in the Triggered state before auto-clearing. "
-            "0 keeps it triggered until manually disarmed."
-        ),
-    ),
-    SettingDefinition(
-        key="disarm_after_trigger",
-        name="Disarm after trigger",
-        value_type=SystemConfigValueType.BOOLEAN,
-        default=False,
-        description="If true, auto-disarm after trigger_time; otherwise return to the previous armed state.",
-    ),
-    SettingDefinition(
         key="code_arm_required",
         name="Code required to arm",
         value_type=SystemConfigValueType.BOOLEAN,
@@ -129,18 +105,6 @@ ALARM_PROFILE_SETTINGS: list[SettingDefinition] = [
             AlarmState.ARMED_VACATION,
         ],
         description="Restrict which arm modes are available in the UI.",
-    ),
-    SettingDefinition(
-        key="state_overrides",
-        name="State overrides",
-        value_type=SystemConfigValueType.JSON,
-        default={
-            AlarmState.ARMED_HOME: {"arming_time": 0},
-            AlarmState.ARMED_NIGHT: {"arming_time": 10},
-            AlarmState.ARMED_AWAY: {"arming_time": 60},
-            AlarmState.ARMED_VACATION: {"arming_time": 60},
-        },
-        description="Per-state timing overrides (delay_time/arming_time/trigger_time).",
     ),
     SettingDefinition(
         key="audio_visual_settings",

@@ -20,7 +20,6 @@ from .settings_profiles import (
     AlarmSettingsProfileActivateView,
     AlarmSettingsProfileDetailView,
     AlarmSettingsProfilesView,
-    AlarmSettingsTimingView,
 )
 from .system_config import SystemConfigDetailView, SystemConfigListView
 from .transitions import ArmAlarmView, CancelArmingView, DisarmAlarmView
@@ -31,7 +30,6 @@ __all__ = [
     "AlarmSettingsProfileActivateView",
     "AlarmSettingsProfileDetailView",
     "AlarmSettingsProfilesView",
-    "AlarmSettingsTimingView",
     "AlarmStateView",
     "AlarmEventsView",
     "ArmAlarmView",

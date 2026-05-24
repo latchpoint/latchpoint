@@ -6,8 +6,8 @@ from django.test import TestCase
 
 from accounts.models import User
 from accounts.use_cases.user_codes import create_user_code
-from alarm.models import AlarmSettingsProfile, AlarmState, Sensor
-from alarm.state_machine.transitions import arm, get_current_snapshot, sensor_triggered
+from alarm.models import AlarmSettingsProfile, AlarmState
+from alarm.state_machine.transitions import arm, get_current_snapshot, set_state
 from alarm.tests.settings_test_utils import set_profile_settings
 from control_panels.models import ControlPanelDevice, ControlPanelIntegrationType, ControlPanelKind
 from control_panels.zwave_ring_keypad_v2 import handle_zwavejs_ring_keypad_v2_event, sync_ring_keypad_v2_devices_state
@@ -132,16 +132,9 @@ class RingKeypadV2ControlPanelTests(TestCase):
         self.assertTrue(any(call.get("property") == 11 and call.get("property_key") == 1 for call in calls))
 
     def test_sync_arming_sets_exit_delay_indicator(self):
-        set_profile_settings(
-            self.profile,
-            delay_time=30,
-            arming_time=15,
-            trigger_time=20,
-            code_arm_required=True,
-            state_overrides={},
-        )
+        set_profile_settings(self.profile, code_arm_required=True)
 
-        arm(target_state=AlarmState.ARMED_AWAY, user=None, code=None, reason="test")
+        arm(target_state=AlarmState.ARMED_AWAY, arming_time_seconds=15, user=None, code=None, reason="test")
         snapshot = get_current_snapshot(process_timers=False)
         self.assertEqual(snapshot.current_state, AlarmState.ARMING)
 
@@ -158,9 +151,18 @@ class RingKeypadV2ControlPanelTests(TestCase):
         )
 
     def test_sync_pending_sets_entry_delay_indicator(self):
-        arm(target_state=AlarmState.ARMED_AWAY, user=None, code=None, reason="test")
-        sensor = Sensor.objects.create(name="Door", is_entry_point=True)
-        sensor_triggered(sensor=sensor, user=None, reason="test")
+        # Post-ADR-0095: PENDING is entered via a rule action (alarm_set_state)
+        # rather than a sensor-triggered side channel. The keypad sync still
+        # animates the entry-delay countdown when the snapshot's ``exit_at``
+        # is set (either via ``set_state(pending, exit_at=...)`` or a delayed
+        # follow-up action driving the snapshot via ``timer_expired``).
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        arm(target_state=AlarmState.ARMED_AWAY, arming_time_seconds=0, user=None, code=None, reason="test")
+        exit_at = timezone.now() + timedelta(seconds=15)
+        set_state(new_state=AlarmState.PENDING, exit_at=exit_at, reason="test")
 
         snapshot = get_current_snapshot(process_timers=False)
         self.assertEqual(snapshot.current_state, AlarmState.PENDING)

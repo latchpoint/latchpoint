@@ -15,7 +15,6 @@ export const sensorsService = {
     name: string
     entityId: string | null
     isActive: boolean
-    isEntryPoint: boolean
   }): Promise<Sensor> {
     return api.post<Sensor>(apiEndpoints.sensors.all, sensor)
   },

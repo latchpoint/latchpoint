@@ -49,12 +49,8 @@ export const alarmService = {
       const entryMap = new Map(entries.map((e) => [e.key, e.value]))
       return {
         ...profile,
-        delayTime: (entryMap.get('delay_time') as number) ?? 30,
-        triggerTime: (entryMap.get('trigger_time') as number) ?? 0,
-        disarmAfterTrigger: (entryMap.get('disarm_after_trigger') as boolean) ?? false,
         codeArmRequired: (entryMap.get('code_arm_required') as boolean) ?? true,
         availableArmingStates: (entryMap.get('available_arming_states') as AlarmSettingsProfile['availableArmingStates']) ?? [],
-        stateOverrides: (entryMap.get('state_overrides') as AlarmSettingsProfile['stateOverrides']) ?? {},
         audioVisualSettings: (entryMap.get('audio_visual_settings') as AlarmSettingsProfile['audioVisualSettings']) ?? { beepEnabled: true, countdownDisplayEnabled: true, colorCodingEnabled: true },
         sensorBehavior: (entryMap.get('sensor_behavior') as AlarmSettingsProfile['sensorBehavior']) ?? { warnOnOpenSensors: true, autoBypassEnabled: false, forceArmEnabled: true },
       }
@@ -68,12 +64,8 @@ export const alarmService = {
       isActive: flat.isActive,
       createdAt: flat.createdAt,
       updatedAt: flat.updatedAt,
-      delayTime: flat.delayTime ?? 30,
-      triggerTime: flat.triggerTime ?? 0,
-      disarmAfterTrigger: flat.disarmAfterTrigger ?? false,
       codeArmRequired: flat.codeArmRequired ?? true,
       availableArmingStates: flat.availableArmingStates ?? [],
-      stateOverrides: flat.stateOverrides ?? {},
       audioVisualSettings: flat.audioVisualSettings ?? { beepEnabled: true, countdownDisplayEnabled: true, colorCodingEnabled: true },
       sensorBehavior: flat.sensorBehavior ?? { warnOnOpenSensors: true, autoBypassEnabled: false, forceArmEnabled: true },
     }

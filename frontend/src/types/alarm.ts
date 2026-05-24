@@ -15,36 +15,19 @@ export interface AlarmStateSnapshot {
   lastTransitionReason: string
   lastTransitionBy: string | null // User ID (UUID)
   targetArmedState: AlarmStateType | null
-  timingSnapshot: {
-    delayTime?: number
-    armingTime?: number
-    triggerTime?: number
-  }
 }
 
-// Alarm Settings Profile
+// Alarm Settings Profile (post ADR-0095: timing knobs live in rules, not the profile)
 export interface AlarmSettingsProfile {
   id: number
   name: string
   isActive: boolean
-  delayTime: number // seconds
-  triggerTime: number // seconds
-  disarmAfterTrigger: boolean
   codeArmRequired: boolean
   availableArmingStates: AlarmStateType[]
-  stateOverrides: StateOverrides
   audioVisualSettings: AudioVisualSettings
   sensorBehavior: SensorBehavior
   createdAt: string
   updatedAt: string
-}
-
-export interface StateOverrides {
-  [state: string]: {
-    delayTime?: number
-    armingTime?: number
-    triggerTime?: number
-  }
 }
 
 export interface AudioVisualSettings {
@@ -65,7 +48,6 @@ export interface Sensor {
   name: string
   entityId: string | null // HA entity ID
   isActive: boolean
-  isEntryPoint: boolean
   currentState: 'open' | 'closed' | 'unknown'
   lastTriggered: string | null
   usedInRules?: boolean
@@ -181,11 +163,6 @@ export interface EntitySyncPayload {
 
 export interface AlarmStatePayload {
   state: AlarmStateSnapshot
-  effectiveSettings: {
-    delayTime: number
-    armingTime: number
-    triggerTime: number
-  }
 }
 
 export interface AlarmEventPayload {

@@ -1,4 +1,4 @@
-import React, { type PropsWithChildren } from 'react'
+import { type PropsWithChildren } from 'react'
 import { describe, expect, it, vi } from 'vitest'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { renderHook, act, waitFor } from '@testing-library/react'
@@ -33,7 +33,7 @@ vi.mock('@/hooks/useHomeAssistant', () => {
 vi.mock('@/hooks/useAlarmQueries', () => {
   return {
     useSensorsQuery: () => ({
-      data: [{ id: 10, name: 'Existing', entityId: 'binary_sensor.motion', isActive: true, isEntryPoint: false, currentState: 'closed', lastTriggered: null }],
+      data: [{ id: 10, name: 'Existing', entityId: 'binary_sensor.motion', isActive: true, currentState: 'closed', lastTriggered: null }],
       isLoading: false,
     }),
   }
@@ -46,7 +46,7 @@ function createClient() {
 }
 
 describe('useImportSensorsModel', () => {
-  it('computes row model with suggested entrypoint and import status', async () => {
+  it('computes row model with import status', () => {
     const client = createClient()
     const wrapper = ({ children }: PropsWithChildren) => (
       <QueryClientProvider client={client}>{children}</QueryClientProvider>
@@ -57,7 +57,6 @@ describe('useImportSensorsModel', () => {
 
     const doorRow = result.current.getRowModel(doorEntity)
     expect(doorRow.alreadyImported).toBe(false)
-    expect(doorRow.suggestedEntry).toBe(true)
 
     act(() => {
       result.current.setViewMode('imported')
@@ -91,8 +90,7 @@ describe('useImportSensorsModel', () => {
       expect.objectContaining({
         entityId: 'binary_sensor.front_door',
         isActive: true,
-        isEntryPoint: true,
-      })
+      }),
     )
 
     await waitFor(() => {

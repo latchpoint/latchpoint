@@ -1,8 +1,21 @@
 # ADR-0091: Rule Action Entry Delay (Hybrid: PENDING state for alarm_trigger, PendingAction queue for send_notification)
 
-**Status:** Revised — Implemented (hybrid model after stakeholder review; see [Revision (2026-05-12)](#revision-2026-05-12))
+**Status:** Superseded by [ADR-0094](0094-composable-rule-action-primitives.md) (2026-05-18)
 **Date:** 2026-05-12
 **Author:** Leonardo Merza
+
+> **Supersession note (2026-05-18):** The hybrid model described below
+> coupled `PENDING` state entry to the `alarm_trigger` action, which
+> prevented operators from expressing "PENDING without a TRIGGERED
+> follow-up" or "control-panel state independent of the central alarm
+> state." [ADR-0094](0094-composable-rule-action-primitives.md) replaces
+> the coupling with four explicit composable primitives
+> (`alarm_set_state`, a stripped `alarm_trigger`, `control_panel_set_state`,
+> `control_panel_trigger`) and lifts `delay_seconds` from per-handler to
+> executor-level so any action is deferrable. Existing rules using
+> `alarm_trigger { delay_seconds: N }` are migrated to a two-action
+> composition by a reversible data migration. Read ADR-0094 before
+> authoring new rule-action handlers.
 
 ## Context
 

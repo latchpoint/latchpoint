@@ -88,14 +88,17 @@ class ConcurrencyApiTests(TransactionTestCase):
         return results, errors
 
     def test_parallel_arm_requests_have_one_success_and_one_conflict(self):
-        set_profile_settings(self.profile, arming_time=30, code_arm_required=False)
+        # Post-ADR-0095: the arm API doesn't take arming_time_seconds, so manual
+        # arming goes straight to ARMED_AWAY. We still verify that two parallel
+        # arm calls serialize correctly via the state-machine lock.
+        set_profile_settings(self.profile, code_arm_required=False)
         transitions.disarm(reason="test_setup")
 
         arm_url = reverse("alarm-arm")
         baseline = AlarmEvent.objects.filter(
-            event_type=AlarmEventType.STATE_CHANGED,
+            event_type=AlarmEventType.ARMED,
             state_from=AlarmState.DISARMED,
-            state_to=AlarmState.ARMING,
+            state_to=AlarmState.ARMED_AWAY,
         ).count()
 
         def call_arm():
@@ -111,12 +114,12 @@ class ConcurrencyApiTests(TransactionTestCase):
 
         snapshot = AlarmStateSnapshot.objects.first()
         assert snapshot is not None
-        self.assertEqual(snapshot.current_state, AlarmState.ARMING)
+        self.assertEqual(snapshot.current_state, AlarmState.ARMED_AWAY)
 
         after = AlarmEvent.objects.filter(
-            event_type=AlarmEventType.STATE_CHANGED,
+            event_type=AlarmEventType.ARMED,
             state_from=AlarmState.DISARMED,
-            state_to=AlarmState.ARMING,
+            state_to=AlarmState.ARMED_AWAY,
         ).count()
         self.assertEqual(after - baseline, 1)
 
@@ -155,9 +158,14 @@ class ConcurrencyApiTests(TransactionTestCase):
         self.assertEqual(after - baseline, 1)
 
     def test_parallel_cancel_arming_requests_have_one_success_and_one_conflict(self):
-        set_profile_settings(self.profile, arming_time=30, code_arm_required=False)
+        set_profile_settings(self.profile, code_arm_required=False)
         transitions.disarm(reason="test_setup")
-        transitions.arm(target_state=AlarmState.ARMED_AWAY, user=self.user, reason="test_arm")
+        transitions.arm(
+            target_state=AlarmState.ARMED_AWAY,
+            arming_time_seconds=30,
+            user=self.user,
+            reason="test_arm",
+        )
 
         cancel_url = reverse("alarm-cancel-arming")
         baseline = AlarmEvent.objects.filter(

@@ -29,7 +29,7 @@ class _AlarmServices:
         self.calls.append(("disarm", user, reason))
         self._state = "disarmed"
 
-    def arm(self, *, target_state: str, user=None, code=None, reason: str = ""):
+    def arm(self, *, target_state: str, arming_time_seconds: int | None = None, user=None, code=None, reason: str = ""):
         self.calls.append(("arm", target_state, user, reason))
         self._state = target_state
 

@@ -32,7 +32,12 @@ class IdempotencyApiTests(APITestCase):
 
     def test_cancel_arming_repeated_calls_keep_deterministic_state_without_duplicate_transition(self):
         transitions.disarm(reason="test_setup")
-        transitions.arm(target_state=AlarmState.ARMED_AWAY, user=self.user, reason="test_arm")
+        transitions.arm(
+            target_state=AlarmState.ARMED_AWAY,
+            arming_time_seconds=30,
+            user=self.user,
+            reason="test_arm",
+        )
 
         url = reverse("alarm-cancel-arming")
         first = self.client.post(url, data={}, format="json")

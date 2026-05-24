@@ -7,11 +7,34 @@ import { isRecord } from '@/lib/typeGuards'
 import type { WhenOperator, AlarmArmMode } from '@/lib/typeGuards'
 
 /**
- * Maximum allowed value for `delaySeconds` on action types that support an
- * entry-delay / queue-delay (ADR-0091). Mirrors the backend constant in
- * `backend/alarm/rules/action_schemas.py::ALARM_TRIGGER_MAX_DELAY_SECONDS`.
+ * Maximum allowed value for `delaySeconds` on rule actions. Under ADR-0094
+ * every action can be deferred via the generic executor delay; this constant
+ * is the upper bound the schema validator enforces. Mirrors the backend
+ * constant `backend/alarm/rules/action_schemas.py::ACTION_MAX_DELAY_SECONDS`.
  */
-export const ALARM_TRIGGER_MAX_DELAY_SECONDS = 600
+export const ACTION_MAX_DELAY_SECONDS = 600
+/**
+ * @deprecated Use `ACTION_MAX_DELAY_SECONDS`. Kept temporarily for callers
+ * predating ADR-0094 (the constant value is unchanged).
+ */
+export const ALARM_TRIGGER_MAX_DELAY_SECONDS = ACTION_MAX_DELAY_SECONDS
+
+export type AlarmSetStateValue =
+  | 'disarmed'
+  | 'pending'
+  | 'triggered'
+  | 'armed_home'
+  | 'armed_away'
+  | 'armed_night'
+  | 'armed_vacation'
+
+export type ControlPanelStateValue =
+  | 'pending'
+  | 'disarmed'
+  | 'armed_stay'
+  | 'armed_away'
+  | 'triggered'
+  | 'auto'
 
 // ============================================================================
 // When Condition Nodes
@@ -116,23 +139,66 @@ export interface AlarmDisarmAction {
 /**
  * Alarm trigger action
  *
- * `delaySeconds` (optional, 0-600) is an entry-delay grace window: the alarm
- * enters its PENDING state for that many seconds, then transitions to TRIGGERED
- * unless the user disarms first (ADR-0091, revised). Closing the door / WHEN
- * flipping false will NOT cancel — Ring-panel semantic. Omit or 0 triggers
- * immediately.
+ * Per ADR-0094 §9 decision (a), this is the pure "force TRIGGERED now"
+ * primitive — it does NOT accept `delaySeconds`. To express an entry-delay
+ * flow, compose `alarm_set_state('pending')` with a delayed
+ * `alarm_set_state('triggered')`.
  */
 export interface AlarmTriggerAction {
   type: 'alarm_trigger'
+}
+
+/**
+ * Set alarm state directly (ADR-0094 composable primitive).
+ *
+ * PENDING does not auto-advance — combine with a delayed
+ * `alarm_set_state('triggered')` for an entry-delay flow. `arming` is
+ * rejected at the backend; use `alarm_arm` for the standard exit-delay
+ * arming flow.
+ */
+export interface AlarmSetStateAction {
+  type: 'alarm_set_state'
+  state: AlarmSetStateValue
+  delaySeconds?: number
+}
+
+/**
+ * Set a specific control panel's indicator (ADR-0094).
+ *
+ * Flips the panel's `follow_alarm_state=false` so it stops mirroring the
+ * central alarm state. `state="auto"` re-enables the mirror.
+ */
+export interface ControlPanelSetStateAction {
+  type: 'control_panel_set_state'
+  panelId: number
+  state: ControlPanelStateValue
+  countdownSeconds?: number
+  delaySeconds?: number
+}
+
+/**
+ * Light a specific control panel's burglar indicator (ADR-0094).
+ *
+ * Equivalent to `control_panel_set_state(state="triggered")` but surfaced
+ * as a separate primitive for rule clarity.
+ */
+export interface ControlPanelTriggerAction {
+  type: 'control_panel_trigger'
+  panelId: number
   delaySeconds?: number
 }
 
 /**
  * Alarm arm action
+ *
+ * `armingTimeSeconds` (optional, 0-600): exit-delay duration before the
+ * alarm enters the target armed state (ADR-0095). When omitted or 0, the
+ * alarm transitions directly to the armed state with no ARMING.
  */
 export interface AlarmArmAction {
   type: 'alarm_arm'
   mode: AlarmArmMode
+  armingTimeSeconds?: number
 }
 
 /**
@@ -203,7 +269,10 @@ export interface SendNotificationAction {
 export type ActionNode =
   | AlarmDisarmAction
   | AlarmTriggerAction
+  | AlarmSetStateAction
   | AlarmArmAction
+  | ControlPanelSetStateAction
+  | ControlPanelTriggerAction
   | HaCallServiceAction
   | ZwavejsSetValueAction
   | Zigbee2mqttSetValueAction
@@ -336,35 +405,109 @@ export function isAlarmDisarmAction(action: unknown): action is AlarmDisarmActio
   return isRecord(action) && action.type === 'alarm_disarm'
 }
 
+function _validDelaySeconds(action: Record<string, unknown>): boolean {
+  if (!('delaySeconds' in action)) return true
+  const ds = action.delaySeconds
+  if (ds === undefined) return true
+  return (
+    typeof ds === 'number' &&
+    Number.isInteger(ds) &&
+    ds >= 0 &&
+    ds <= ACTION_MAX_DELAY_SECONDS
+  )
+}
+
 /**
- * Check if action is AlarmTriggerAction
+ * Check if action is AlarmTriggerAction.
+ *
+ * Per ADR-0094 §9 decision (a), the type does not carry `delaySeconds`
+ * and the backend validator rejects payloads that include it. The guard
+ * mirrors that — presence of `delaySeconds` is a hard fail here too, so
+ * legacy data that survived without being migrated cannot type-narrow.
  */
 export function isAlarmTriggerAction(action: unknown): action is AlarmTriggerAction {
   if (!isRecord(action) || action.type !== 'alarm_trigger') return false
-  if ('delaySeconds' in action) {
-    const ds = action.delaySeconds
-    if (
-      typeof ds !== 'number' ||
-      !Number.isInteger(ds) ||
-      ds < 0 ||
-      ds > ALARM_TRIGGER_MAX_DELAY_SECONDS
-    ) {
+  if ('delaySeconds' in action) return false
+  return true
+}
+
+const _ALARM_SET_STATE_VALUES: readonly AlarmSetStateValue[] = [
+  'disarmed',
+  'pending',
+  'triggered',
+  'armed_home',
+  'armed_away',
+  'armed_night',
+  'armed_vacation',
+]
+
+/**
+ * Check if action is AlarmSetStateAction (ADR-0094)
+ */
+export function isAlarmSetStateAction(action: unknown): action is AlarmSetStateAction {
+  if (!isRecord(action) || action.type !== 'alarm_set_state') return false
+  if (typeof action.state !== 'string') return false
+  if (!(_ALARM_SET_STATE_VALUES as readonly string[]).includes(action.state)) return false
+  return _validDelaySeconds(action)
+}
+
+const _CONTROL_PANEL_STATE_VALUES: readonly ControlPanelStateValue[] = [
+  'pending',
+  'disarmed',
+  'armed_stay',
+  'armed_away',
+  'triggered',
+  'auto',
+]
+
+/**
+ * Check if action is ControlPanelSetStateAction (ADR-0094)
+ */
+export function isControlPanelSetStateAction(
+  action: unknown,
+): action is ControlPanelSetStateAction {
+  if (!isRecord(action) || action.type !== 'control_panel_set_state') return false
+  if (typeof action.panelId !== 'number' || !Number.isInteger(action.panelId) || action.panelId <= 0) {
+    return false
+  }
+  if (typeof action.state !== 'string') return false
+  if (!(_CONTROL_PANEL_STATE_VALUES as readonly string[]).includes(action.state)) return false
+  if ('countdownSeconds' in action && action.countdownSeconds !== undefined) {
+    const cs = action.countdownSeconds
+    if (typeof cs !== 'number' || !Number.isInteger(cs) || cs < 0 || cs > ACTION_MAX_DELAY_SECONDS) {
       return false
     }
   }
-  return true
+  return _validDelaySeconds(action)
+}
+
+/**
+ * Check if action is ControlPanelTriggerAction (ADR-0094)
+ */
+export function isControlPanelTriggerAction(
+  action: unknown,
+): action is ControlPanelTriggerAction {
+  if (!isRecord(action) || action.type !== 'control_panel_trigger') return false
+  if (typeof action.panelId !== 'number' || !Number.isInteger(action.panelId) || action.panelId <= 0) {
+    return false
+  }
+  return _validDelaySeconds(action)
 }
 
 /**
  * Check if action is AlarmArmAction
  */
 export function isAlarmArmAction(action: unknown): action is AlarmArmAction {
-  return (
-    isRecord(action) &&
-    action.type === 'alarm_arm' &&
-    typeof action.mode === 'string' &&
-    ['armed_home', 'armed_away', 'armed_night', 'armed_vacation'].includes(action.mode as string)
-  )
+  if (!isRecord(action) || action.type !== 'alarm_arm') return false
+  if (typeof action.mode !== 'string') return false
+  if (!['armed_home', 'armed_away', 'armed_night', 'armed_vacation'].includes(action.mode as string)) return false
+  if ('armingTimeSeconds' in action && action.armingTimeSeconds !== undefined) {
+    const ats = action.armingTimeSeconds
+    if (typeof ats !== 'number' || !Number.isInteger(ats) || ats < 0 || ats > ACTION_MAX_DELAY_SECONDS) {
+      return false
+    }
+  }
+  return true
 }
 
 /**
@@ -440,13 +583,7 @@ export function isSendNotificationAction(action: unknown): action is SendNotific
   if (typeof action.message !== 'string') return false
   if ('title' in action && action.title !== undefined && typeof action.title !== 'string') return false
   if ('data' in action && action.data !== undefined && !isRecord(action.data)) return false
-  if ('delaySeconds' in action) {
-    const ds = action.delaySeconds
-    if (typeof ds !== 'number' || !Number.isInteger(ds) || ds < 0 || ds > ALARM_TRIGGER_MAX_DELAY_SECONDS) {
-      return false
-    }
-  }
-  return true
+  return _validDelaySeconds(action)
 }
 
 /**
@@ -456,7 +593,10 @@ export function isActionNode(action: unknown): action is ActionNode {
   return (
     isAlarmDisarmAction(action) ||
     isAlarmTriggerAction(action) ||
+    isAlarmSetStateAction(action) ||
     isAlarmArmAction(action) ||
+    isControlPanelSetStateAction(action) ||
+    isControlPanelTriggerAction(action) ||
     isHaCallServiceAction(action) ||
     isZwavejsSetValueAction(action) ||
     isZigbee2mqttSetValueAction(action) ||

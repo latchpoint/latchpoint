@@ -29,8 +29,16 @@ class AlarmServices(Protocol):
 
         ...
 
-    def arm(self, *, target_state: str, user=None, code=None, reason: str = ""):
-        """Arm the alarm to the target state."""
+    def arm(
+        self,
+        *,
+        target_state: str,
+        arming_time_seconds: int | None = None,
+        user=None,
+        code=None,
+        reason: str = "",
+    ):
+        """Arm the alarm to the target state with an optional ARMING exit-delay (ADR-0095)."""
 
         ...
 
@@ -39,8 +47,16 @@ class AlarmServices(Protocol):
 
         ...
 
-    def trigger_with_delay(self, *, delay_seconds: int, user=None, reason: str = ""):
-        """Enter PENDING for delay_seconds. No-op if not in an armed-ready state."""
+    def set_state(
+        self,
+        *,
+        new_state: str,
+        user=None,
+        reason: str = "",
+        exit_at=None,
+        metadata: dict | None = None,
+    ):
+        """Set the alarm state directly (ADR-0094)."""
 
         ...
 
@@ -80,7 +96,10 @@ def get_handler(action_type: str) -> ActionHandler | None:
 from alarm.rules.action_handlers import (  # noqa: E402, F401
     alarm_arm,
     alarm_disarm,
+    alarm_set_state,
     alarm_trigger,
+    control_panel_set_state,
+    control_panel_trigger,
     ha_call_service,
     send_notification,
     zigbee2mqtt_light,

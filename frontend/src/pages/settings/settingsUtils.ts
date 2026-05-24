@@ -1,5 +1,4 @@
 import { AlarmState, AlarmStateLabels, type AlarmStateType } from '@/lib/constants'
-import { isRecord } from '@/lib/typeGuards'
 
 export const ARM_MODE_OPTIONS: AlarmStateType[] = [
   AlarmState.ARMED_AWAY,
@@ -57,23 +56,6 @@ export function parsePositiveInt(
 export function toggleState(states: AlarmStateType[], state: AlarmStateType): AlarmStateType[] {
   if (states.includes(state)) return states.filter((s) => s !== state)
   return [...states, state]
-}
-
-export function normalizeStateOverrides(value: unknown): Record<string, Record<string, unknown>> {
-  if (!isRecord(value)) return {}
-  const out: Record<string, Record<string, unknown>> = {}
-  for (const [rawKey, rawOverride] of Object.entries(value)) {
-    if (!rawKey) continue
-    const normalizedKey = rawKey.includes('_')
-      ? rawKey
-      : rawKey
-          .replace(/([A-Z])/g, '_$1')
-          .replace(/__/g, '_')
-          .toLowerCase()
-    if (!isRecord(rawOverride)) continue
-    out[normalizedKey] = rawOverride
-  }
-  return out
 }
 
 export function formatArmStateLabel(state: AlarmStateType): string {

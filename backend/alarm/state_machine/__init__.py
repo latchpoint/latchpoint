@@ -7,7 +7,7 @@ from .transitions import (
     cancel_arming,
     disarm,
     get_current_snapshot,
-    sensor_triggered,
+    set_state,
     timer_expired,
     trigger,
 )
@@ -21,7 +21,7 @@ __all__ = [
     "disarm",
     "get_active_settings_profile",
     "get_current_snapshot",
-    "sensor_triggered",
+    "set_state",
     "timer_expired",
     "trigger",
 ]
