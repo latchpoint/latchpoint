@@ -27,6 +27,11 @@ logger = logging.getLogger(__name__)
 # Catches "backend was down for hours, don't fire stale notifications" (ADR-0091).
 PENDING_ACTION_STALE_THRESHOLD_SECONDS = 60
 
+# How far past exit_at an alarm timer may drift before the ticker logs a warning.
+# Under the 1s tick this should never exceed ~1-2s; a larger gap means the ticker
+# stalled and the alarm sat in arming/pending unprotected — a regression to surface.
+STUCK_TIMER_WARN_SECONDS = 5
+
 
 def _is_home_assistant_active() -> bool:
     """
@@ -465,3 +470,42 @@ def fire_due_pending_actions() -> dict:
         )
 
     return {"fired": fired, "failed": failed, "stale_cancelled": stale_cancelled}
+
+
+@register(
+    "process_alarm_timers",
+    schedule=Every(seconds=1),
+    description="Advances alarm exit-delay/entry-delay timers so the alarm arms and "
+    "triggers on schedule even when no client is reading state.",
+)
+def process_alarm_timers() -> dict:
+    """Advance any due alarm timer (arming->armed, pending->triggered, triggered->clear).
+
+    These exit_at-based transitions are otherwise only processed lazily when a client
+    reads state (GET /alarm/state) or a rule action runs. Without this tick, an
+    unattended alarm sits in `arming`/`pending` indefinitely — never actually arming
+    or triggering — so this scheduled tick is what makes the timers reliable.
+    """
+    from alarm.models import AlarmStateSnapshot
+    from alarm.use_cases.process_timers import tick_alarm_timers
+
+    now = timezone.now()
+    # Cheap, non-locking pre-check so the common idle path avoids a select_for_update
+    # row lock every second. Single-row table, so this is one indexed lookup.
+    due = AlarmStateSnapshot.objects.filter(exit_at__lte=now).first()
+    if due is None:
+        return {"processed": False}
+
+    overdue_seconds = (now - due.exit_at).total_seconds()
+    result = tick_alarm_timers()
+
+    if overdue_seconds > STUCK_TIMER_WARN_SECONDS:
+        logger.warning(
+            "Alarm timer was overdue by %.1fs (state was %s) before the ticker advanced "
+            "it to %s — expected <~1s under normal cadence.",
+            overdue_seconds,
+            due.current_state,
+            result.state,
+        )
+
+    return {"processed": True, "state": result.state, "overdue_seconds": overdue_seconds}
