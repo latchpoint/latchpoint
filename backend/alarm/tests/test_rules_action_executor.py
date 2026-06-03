@@ -78,7 +78,7 @@ class ActionExecutorTests(TestCase):
             actions=[
                 {"type": "alarm_arm", "mode": "armed_home"},
                 {"type": "ha_call_service", "action": "light.turn_on", "target": {"entity_id": "light.kitchen"}},
-                {"type": "alarm_trigger"},
+                {"type": "alarm_trigger", "delay_seconds": 0},
                 {"type": "alarm_disarm"},
             ],
             now=now,

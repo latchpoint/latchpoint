@@ -11,7 +11,7 @@ from unittest.mock import MagicMock, patch
 
 from django.test import TestCase
 
-from alarm.models import Rule
+from alarm.models import AlarmSettingsProfile, Rule
 from alarm.rules.action_handlers import ActionContext
 from alarm.rules.action_handlers.alarm_arm import execute as alarm_arm_execute
 from alarm.rules.action_handlers.alarm_disarm import execute as alarm_disarm_execute
@@ -22,6 +22,7 @@ from alarm.rules.action_handlers.zigbee2mqtt_light import execute as zigbee2mqtt
 from alarm.rules.action_handlers.zigbee2mqtt_set_value import execute as zigbee2mqtt_set_value_execute
 from alarm.rules.action_handlers.zigbee2mqtt_switch import execute as zigbee2mqtt_switch_execute
 from alarm.rules.action_handlers.zwavejs_set_value import execute as zwavejs_set_value_execute
+from alarm.tests.settings_test_utils import set_profile_settings
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -169,33 +170,65 @@ class AlarmArmHandlerTests(TestCase):
 
 
 class AlarmTriggerHandlerTests(TestCase):
-    def test_happy_path(self):
+    def setUp(self):
+        # The handler falls back to the profile's global delay_time when the action
+        # omits delay_seconds, so these tests need a deterministic active profile.
+        self.profile = AlarmSettingsProfile.objects.create(name="Default", is_active=True)
+        set_profile_settings(self.profile, delay_time=0)
+
+    def _set_global_entry_delay(self, seconds: int) -> None:
+        set_profile_settings(self.profile, delay_time=seconds)
+
+    def test_no_delay_with_zero_global_triggers_immediately(self):
+        # No per-action delay + global delay_time=0 → immediate trigger.
         ctx = _make_ctx()
         result, error = alarm_trigger_execute({"type": "alarm_trigger"}, ctx)
         self.assertTrue(result["ok"])
         self.assertIsNone(error)
         self.assertEqual([c[0] for c in ctx.alarm_services.calls], ["trigger"])
 
-    def test_exception_path(self):
+    def test_no_delay_uses_global_entry_delay(self):
+        # No per-action delay + global delay_time>0 → enter PENDING for the global delay.
+        self._set_global_entry_delay(45)
+        ctx = _make_ctx()
+        result, error = alarm_trigger_execute({"type": "alarm_trigger"}, ctx)
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["deferred"])
+        self.assertEqual(result["delay_seconds"], 45)
+        self.assertIsNone(error)
+        self.assertEqual([c[0] for c in ctx.alarm_services.calls], ["trigger_with_delay"])
+        self.assertEqual(ctx.alarm_services.calls[0][1], 45)
+
+    def test_immediate_exception_path(self):
+        # global delay_time=0 → immediate path → surfaces trigger() failure.
         ctx = _make_ctx(fail=True)
         result, error = alarm_trigger_execute({"type": "alarm_trigger"}, ctx)
         self.assertFalse(result["ok"])
         self.assertIn("trigger boom", error)
 
-    def test_positive_delay_routes_through_trigger_with_delay(self):
-        # Under the revised ADR-0091, delaySeconds routes the alarm into
-        # PENDING via the state machine instead of enqueuing a PendingAction.
+    def test_explicit_delay_overrides_global(self):
+        # An explicit delay_seconds wins over the global setting.
+        self._set_global_entry_delay(45)
         ctx = _make_ctx()
         result, error = alarm_trigger_execute({"type": "alarm_trigger", "delay_seconds": 15}, ctx)
         self.assertTrue(result["ok"])
         self.assertTrue(result["deferred"])
         self.assertEqual(result["delay_seconds"], 15)
         self.assertIsNone(error)
-        # Did NOT invoke the immediate trigger path:
         self.assertEqual([c[0] for c in ctx.alarm_services.calls], ["trigger_with_delay"])
         self.assertEqual(ctx.alarm_services.calls[0][1], 15)
 
+    def test_explicit_zero_delay_triggers_immediately_despite_global(self):
+        # delay_seconds=0 is an explicit "immediate" override even when the global delay > 0.
+        self._set_global_entry_delay(45)
+        ctx = _make_ctx()
+        result, _ = alarm_trigger_execute({"type": "alarm_trigger", "delay_seconds": 0}, ctx)
+        self.assertNotIn("deferred", result)
+        self.assertEqual([c[0] for c in ctx.alarm_services.calls], ["trigger"])
+
     def test_negative_delay_falls_through_to_immediate(self):
+        # Present-but-invalid delay_seconds is coerced to 0 (immediate), ignoring the global.
+        self._set_global_entry_delay(45)
         ctx = _make_ctx()
         result, _ = alarm_trigger_execute({"type": "alarm_trigger", "delay_seconds": -5}, ctx)
         self.assertTrue(result["ok"])
@@ -204,6 +237,7 @@ class AlarmTriggerHandlerTests(TestCase):
 
     def test_bool_delay_falls_through_to_immediate(self):
         # bool subclasses int; handler must reject it before treating as a delay.
+        self._set_global_entry_delay(45)
         ctx = _make_ctx()
         result, _ = alarm_trigger_execute({"type": "alarm_trigger", "delay_seconds": True}, ctx)
         self.assertTrue(result["ok"])
