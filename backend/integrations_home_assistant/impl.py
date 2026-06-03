@@ -14,6 +14,17 @@ logger = logging.getLogger(__name__)
 
 GATEWAY_NAME = "Home Assistant"
 
+# HA service-call target keys are singular (``entity_id``) even when the value is a list.
+# The rules builder UI models the entity target as ``entityIds``, which the frontend
+# snake-cases to ``entity_ids`` on the wire (see frontend ActionsEditor + services/api.ts).
+# Without this remap HA rejects the unknown key with HTTP 400 and the service call
+# (e.g. ``lock.lock``) silently does nothing. Scoped to entity targets — all the UI emits.
+_HA_TARGET_KEY_ALIASES = {
+    "entity_ids": "entity_id",
+    "entityIds": "entity_id",
+    "entityId": "entity_id",
+}
+
 
 class HomeAssistantAvailabilityError(GatewayError):
     gateway_name = GATEWAY_NAME
@@ -364,7 +375,8 @@ def call_service(
     # wrapper shape is used by the WebSocket call_service API, not the REST endpoint.
     payload: dict[str, Any] = {}
     if isinstance(target, dict):
-        payload.update(target)
+        for key, value in target.items():
+            payload[_HA_TARGET_KEY_ALIASES.get(key, key)] = value
     if isinstance(service_data, dict):
         payload.update(service_data)
 
