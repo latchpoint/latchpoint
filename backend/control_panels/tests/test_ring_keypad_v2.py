@@ -7,7 +7,7 @@ from django.test import TestCase
 from accounts.models import User
 from accounts.use_cases.user_codes import create_user_code
 from alarm.models import AlarmSettingsProfile, AlarmState, Sensor
-from alarm.state_machine.transitions import arm, get_current_snapshot, sensor_triggered
+from alarm.state_machine.transitions import arm, get_current_snapshot, sensor_triggered, trigger
 from alarm.tests.settings_test_utils import set_profile_settings
 from control_panels.models import ControlPanelDevice, ControlPanelIntegrationType, ControlPanelKind
 from control_panels.zwave_ring_keypad_v2 import handle_zwavejs_ring_keypad_v2_event, sync_ring_keypad_v2_devices_state
@@ -173,6 +173,47 @@ class RingKeypadV2ControlPanelTests(TestCase):
         self.assertTrue(
             any(
                 call.get("property") == 17 and call.get("property_key") == 9 and call.get("value") == 77
+                for call in calls
+            )
+        )
+
+    def test_sync_triggered_sounds_sustained_burglar_siren(self):
+        # Arm, then force TRIGGERED. The burglar siren must sound until disarmed.
+        arm(target_state=AlarmState.ARMED_AWAY, user=None, code=None, reason="test")
+        trigger(user=None, reason="test")
+
+        snapshot = get_current_snapshot(process_timers=False)
+        self.assertEqual(snapshot.current_state, AlarmState.TRIGGERED)
+
+        with patch("alarm.gateways.zwavejs.DefaultZwavejsGateway.set_value") as set_value:
+            sync_ring_keypad_v2_devices_state()
+
+        calls = [kwargs for _args, kwargs in set_value.call_args_list]
+        # Burglar alarm indicator = property 13; multilevel (key 1) driven full-on so it stays sounding.
+        self.assertTrue(
+            any(
+                call.get("property") == 13 and call.get("property_key") == 1 and call.get("value") == 99
+                for call in calls
+            )
+        )
+        # Auto-clear timeout zeroed (key 6 = minutes, 7 = seconds) so the siren holds until disarmed
+        # instead of self-clearing after the keypad's stored ~5s timeout.
+        self.assertTrue(
+            any(
+                call.get("property") == 13 and call.get("property_key") == 6 and call.get("value") == 0
+                for call in calls
+            )
+        )
+        self.assertTrue(
+            any(
+                call.get("property") == 13 and call.get("property_key") == 7 and call.get("value") == 0
+                for call in calls
+            )
+        )
+        # Volume (key 9) set to the device's beep_volume.
+        self.assertTrue(
+            any(
+                call.get("property") == 13 and call.get("property_key") == 9 and call.get("value") == 77
                 for call in calls
             )
         )

@@ -329,9 +329,15 @@ def _sync_device_state(*, device: ControlPanelDevice) -> None:
         _indicator_set(device=device, property_id=_IND_ENTRY_DELAY, property_key=7, value=seconds)
         return
     if snapshot.current_state == AlarmState.TRIGGERED:
-        # Alarm indicators are sticky until a mode is selected; keep value minimal to avoid volume/brightness quirks.
+        # Sound the burglar siren until the alarm is disarmed. Ring ships the burglar indicator with
+        # a non-zero Indicator CC auto-clear timeout (property_key 6 = minutes, 7 = seconds; ~5s by
+        # default), so a plain "on" command stops sounding after the timeout. Zero the timeout — like
+        # the sticky disarmed/armed mode indicators (all-zero timeout) — and drive the multilevel to
+        # full, so the siren holds until a mode indicator is next selected (e.g. on disarm).
         _apply_ring_keypad_v2_volume(device=device, property_id=_IND_BURGLAR_ALARM)
-        _indicator_set(device=device, property_id=_IND_BURGLAR_ALARM, property_key=1, value=1)
+        _indicator_set(device=device, property_id=_IND_BURGLAR_ALARM, property_key=6, value=0)
+        _indicator_set(device=device, property_id=_IND_BURGLAR_ALARM, property_key=7, value=0)
+        _indicator_set(device=device, property_id=_IND_BURGLAR_ALARM, property_key=1, value=99)
         return
 
     # Best-effort fallback for other armed states.
