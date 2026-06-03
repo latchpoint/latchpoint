@@ -49,7 +49,9 @@ class RuleEngineForTests(TestCase):
                         "equals": "on",
                     },
                 },
-                "then": [{"type": "alarm_trigger"}],
+                # delay_seconds: 0 → trigger immediately; this test asserts the `for:`
+                # schedule-then-fire path, not the global entry-delay behavior.
+                "then": [{"type": "alarm_trigger", "delay_seconds": 0}],
             },
         )
 

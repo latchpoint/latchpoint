@@ -406,3 +406,30 @@ correct primitive for that security boundary.
 None. Existing rules without `delay_seconds` keep working unchanged. New
 rules opt in by setting the field. The `PendingAction` table starts empty.
 No backfill required.
+
+## Amendment (2026-06-03): `alarm_trigger` honors the global entry-delay setting
+
+The original design treated the `alarm_trigger` entry delay as **strictly
+per-action**: an omitted `delay_seconds` meant "trigger immediately," and the
+global `delay_time` ("Entry delay") profile setting was never consulted by the
+rules path. This surprised users who configured a global entry delay and expected
+a door-open while armed to honor it — instead the alarm went `armed → triggered`
+with no `PENDING` grace window.
+
+Revised precedence in `alarm/rules/action_handlers/alarm_trigger.py`
+(`_resolve_delay_seconds`):
+
+- `delay_seconds` **present** on the action → explicit override (any int ≥ 0;
+  `0` = trigger immediately). Unchanged.
+- `delay_seconds` **omitted** → fall back to the profile's global `delay_time`
+  (entry delay). If that resolves to 0, trigger immediately.
+
+This makes the global Entry-delay setting actually govern rule-based triggers
+while preserving per-rule overrides (including explicit "no delay"). No data
+migration: rules with no `delay_seconds` now inherit the global setting on the
+next trigger. The `PENDING → TRIGGERED` hand-off at the end of the window relies
+on the scheduled timer ticker (ADR-0096).
+
+Follow-up (not in this change): the rules-builder UI cannot yet author an explicit
+`delay_seconds: 0` (it drops the field when 0), so "use global" and "immediate"
+are not yet distinguishable in the editor for new rules.
