@@ -7,11 +7,19 @@ from channels.db import database_sync_to_async
 from channels.generic.websocket import AsyncJsonWebsocketConsumer
 from rest_framework.utils.encoders import JSONEncoder
 
+from alarm.log_handler import LOG_BROADCAST_GROUP
 from alarm.state_machine import transitions
 from alarm.system_status import get_current_system_status_message
 from alarm.websocket import build_alarm_state_message
 
 logger = logging.getLogger(__name__)
+
+
+def _user_is_admin(user) -> bool:
+    """Sync helper (wrapped in database_sync_to_async) — does the user have admin role?"""
+    from accounts.policies import is_admin
+
+    return is_admin(user)
 
 
 class AlarmConsumer(AsyncJsonWebsocketConsumer):
@@ -38,6 +46,10 @@ class AlarmConsumer(AsyncJsonWebsocketConsumer):
         logger.info("WS connect: accepted user_id=%s", getattr(user, "id", None))
         await self.accept()
         await self.channel_layer.group_add(self.group_name, self.channel_name)
+        # Only admins receive the server log stream (the HTTP log view is admin-only too).
+        self._receives_logs = await database_sync_to_async(_user_is_admin)(user)
+        if self._receives_logs:
+            await self.channel_layer.group_add(LOG_BROADCAST_GROUP, self.channel_name)
         try:
             await self.send_json(await self._get_current_alarm_state_message())
         except Exception:
@@ -57,6 +69,8 @@ class AlarmConsumer(AsyncJsonWebsocketConsumer):
         user = self.scope.get("user")
         try:
             await self.channel_layer.group_discard(self.group_name, self.channel_name)
+            if getattr(self, "_receives_logs", False):
+                await self.channel_layer.group_discard(LOG_BROADCAST_GROUP, self.channel_name)
         except Exception:
             logger.exception("WS disconnect: group_discard failed")
         logger.info("WS disconnect: code=%s user_id=%s", code, getattr(user, "id", None) if user else None)

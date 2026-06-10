@@ -13,10 +13,14 @@ logger = logging.getLogger(__name__)
 
 @database_sync_to_async
 def _get_user_for_token(token_key: str):
-    """Resolve a DRF token key to a user, returning AnonymousUser when invalid."""
+    """Resolve a DRF token key to a user, returning AnonymousUser when invalid/expired."""
+    from accounts.authentication import token_is_expired
+
     try:
         token = Token.objects.select_related("user").get(key=token_key)
     except Token.DoesNotExist:
+        return AnonymousUser()
+    if token_is_expired(token):
         return AnonymousUser()
     return token.user
 

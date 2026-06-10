@@ -26,6 +26,7 @@ class CsrfView(APIView):
 
 class LoginView(APIView):
     permission_classes = [AllowAny]
+    throttle_scope = "login"
 
     def post(self, request):
         """Authenticate a user and establish a Django session (SPA cookie auth)."""

@@ -76,8 +76,16 @@ class SettingsEncryption:
         cls._instance = None
 
     def __init__(self) -> None:
-        key = ensure_encryption_key()
-        self._fernet = Fernet(key.encode())
+        # Lazily initialized: masking never needs the key, so only encrypt/decrypt
+        # force key resolution (and only those should fail when it is missing).
+        self._fernet = None
+
+    def _cipher(self) -> Fernet:
+        """Return the Fernet cipher, resolving the key on first encrypt/decrypt use."""
+        if self._fernet is None:
+            key = ensure_encryption_key()
+            self._fernet = Fernet(key.encode())
+        return self._fernet
 
     # ------------------------------------------------------------------
     # Primitive operations
@@ -89,7 +97,7 @@ class SettingsEncryption:
             return ""
         if value.startswith(ENCRYPTED_PREFIX):
             return value  # already encrypted
-        return ENCRYPTED_PREFIX + self._fernet.encrypt(value.encode()).decode()
+        return ENCRYPTED_PREFIX + self._cipher().encrypt(value.encode()).decode()
 
     def decrypt(self, value: str) -> str:
         """Decrypt an ``enc:v1:``-prefixed token.
@@ -104,7 +112,7 @@ class SettingsEncryption:
             raise ValueError(
                 f"Expected encrypted value with '{ENCRYPTED_PREFIX}' prefix, got plaintext. Run the data migration."
             )
-        return self._fernet.decrypt(value[len(ENCRYPTED_PREFIX) :].encode()).decode()
+        return self._cipher().decrypt(value[len(ENCRYPTED_PREFIX) :].encode()).decode()
 
     def is_encrypted(self, value: str) -> bool:
         """Check whether a string carries the encryption prefix."""

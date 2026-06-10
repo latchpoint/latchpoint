@@ -289,6 +289,12 @@ def custom_exception_handler(exc: Exception, context):
             message=str(exc),
             http_status=status.HTTP_409_CONFLICT,
         )
+    if isinstance(exc, domain.RateLimitedError):
+        return _error_response(
+            error_status="rate_limited",
+            message=str(exc),
+            http_status=status.HTTP_429_TOO_MANY_REQUESTS,
+        )
     if isinstance(exc, domain.OperationTimeoutError):
         return _error_response(
             error_status="timeout",
