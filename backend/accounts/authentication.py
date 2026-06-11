@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from datetime import timedelta
 
 from django.conf import settings
@@ -7,6 +8,8 @@ from django.utils import timezone
 from rest_framework import exceptions
 from rest_framework.authentication import TokenAuthentication
 from rest_framework.authtoken.models import Token
+
+logger = logging.getLogger(__name__)
 
 
 def token_ttl_seconds() -> int:
@@ -29,6 +32,7 @@ class ExpiringTokenAuthentication(TokenAuthentication):
         """Resolve the token, then fail closed and delete it if it has expired."""
         user, token = super().authenticate_credentials(key)
         if token_is_expired(token):
+            logger.info("Auth token expired; deleting (user_id=%s)", token.user_id)
             token.delete()
             raise exceptions.AuthenticationFailed("Token has expired.")
         return user, token

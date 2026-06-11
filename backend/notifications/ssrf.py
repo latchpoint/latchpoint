@@ -26,6 +26,10 @@ class BlockedAddressError(ValueError):
 def _ip_is_blocked(ip_text: str, *, block_private: bool) -> bool:
     """Return True if the resolved IP is in a range we refuse to connect to."""
     ip = ipaddress.ip_address(ip_text)
+    # Unwrap IPv4-mapped IPv6 (e.g. ::ffff:127.0.0.1): the embedded IPv4 must drive the
+    # loopback/private checks, otherwise it slips through as a "plain" IPv6 address.
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+        ip = ip.ipv4_mapped
     if ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_unspecified or ip.is_reserved:
         return True
     return bool(block_private and ip.is_private)

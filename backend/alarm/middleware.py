@@ -21,6 +21,7 @@ def _get_user_for_token(token_key: str):
     except Token.DoesNotExist:
         return AnonymousUser()
     if token_is_expired(token):
+        logger.info("WS auth: token expired (user_id=%s)", token.user_id)
         return AnonymousUser()
     return token.user
 

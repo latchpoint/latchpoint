@@ -4,10 +4,11 @@ import contextlib
 import logging
 
 from rest_framework import status
-from rest_framework.permissions import IsAdminUser
+from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from accounts.permissions import IsAdminRole
 from alarm.log_handler import clear_buffer, get_buffered_entries
 
 logger = logging.getLogger(__name__)
@@ -24,7 +25,9 @@ _VALID_LEVELS = {
 class DebugLogsView(APIView):
     """Admin-only endpoint for reading / clearing the in-memory log buffer."""
 
-    permission_classes = [IsAdminUser]
+    # Use the project-wide admin predicate (is_staff/superuser OR the "admin" role) so the
+    # HTTP log view matches the WebSocket log-stream gating in AlarmConsumer (both is_admin).
+    permission_classes = [IsAuthenticated, IsAdminRole]
 
     def get(self, request):
         """Return buffered log entries with optional filtering."""

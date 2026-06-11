@@ -3,7 +3,7 @@ from __future__ import annotations
 from django.test import SimpleTestCase, override_settings
 
 from notifications.handlers.webhook import WebhookHandler
-from notifications.ssrf import BlockedAddressError, validate_outbound_url
+from notifications.ssrf import BlockedAddressError, _ip_is_blocked, validate_outbound_url
 
 
 class SsrfGuardTests(SimpleTestCase):
@@ -30,6 +30,16 @@ class SsrfGuardTests(SimpleTestCase):
     def test_blocks_private_when_configured(self):
         with self.assertRaises(BlockedAddressError):
             validate_outbound_url("http://192.168.1.50/hook")
+
+    def test_blocks_ipv4_mapped_ipv6(self):
+        # ::ffff:127.0.0.1 / ::ffff:169.254.169.254 must be judged by the embedded IPv4 —
+        # ipaddress.is_loopback / is_link_local are False for the v6-wrapped form.
+        self.assertTrue(_ip_is_blocked("::ffff:127.0.0.1", block_private=False))
+        self.assertTrue(_ip_is_blocked("::ffff:169.254.169.254", block_private=False))
+
+    def test_blocks_ipv4_mapped_loopback_via_url(self):
+        with self.assertRaises(BlockedAddressError):
+            validate_outbound_url("http://[::ffff:127.0.0.1]/hook")
 
 
 class WebhookHandlerSsrfTests(SimpleTestCase):
