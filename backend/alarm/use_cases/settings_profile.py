@@ -73,11 +73,26 @@ def update_settings_profile(*, profile: AlarmSettingsProfile, changes: dict) -> 
             if key not in ALARM_PROFILE_SETTINGS_BY_KEY:
                 raise ValidationError({"detail": f"Unknown setting key: {key}"})
             definition = ALARM_PROFILE_SETTINGS_BY_KEY[key]
-            AlarmSettingsEntry.objects.update_or_create(
-                profile=profile,
-                key=key,
-                defaults={"value": value, "value_type": definition.value_type},
-            )
+            if isinstance(value, dict):
+                # Route dict settings through the encryption-aware write path so secret
+                # fields (HA token, MQTT password, …) are encrypted at rest and never
+                # stored as plaintext. Presence-based secret semantics mean the masked
+                # value the UI reads back (has_<field>) round-trips without clobbering.
+                obj, _ = AlarmSettingsEntry.objects.get_or_create(
+                    profile=profile,
+                    key=key,
+                    defaults={"value": {}, "value_type": definition.value_type},
+                )
+                if obj.value_type != definition.value_type:
+                    obj.value_type = definition.value_type
+                    obj.save(update_fields=["value_type"])
+                obj.set_value_with_encryption(value, partial=False)
+            else:
+                AlarmSettingsEntry.objects.update_or_create(
+                    profile=profile,
+                    key=key,
+                    defaults={"value": value, "value_type": definition.value_type},
+                )
         try:
             from alarm.signals import settings_profile_changed
 

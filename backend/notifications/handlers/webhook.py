@@ -9,6 +9,8 @@ import logging
 
 import httpx
 
+from notifications.ssrf import BlockedAddressError, validate_outbound_url
+
 from .base import NotificationHandler, NotificationResult
 
 logger = logging.getLogger(__name__)
@@ -118,6 +120,11 @@ class WebhookHandler(NotificationHandler):
         data = data or {}
 
         url = config["url"]
+        try:
+            validate_outbound_url(url)
+        except BlockedAddressError as exc:
+            logger.warning("Webhook blocked by SSRF guard: %s", exc)
+            return NotificationResult.error(str(exc), code="BLOCKED_URL")
         method = config.get("method", "POST")
         content_type = config.get("content_type", "application/json")
 

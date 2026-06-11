@@ -137,7 +137,7 @@ REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": [
         "accounts.authentication.BearerTokenAuthentication",
         "rest_framework.authentication.SessionAuthentication",
-        "rest_framework.authentication.TokenAuthentication",
+        "accounts.authentication.ExpiringTokenAuthentication",
     ],
     "DEFAULT_PERMISSION_CLASSES": [
         "rest_framework.permissions.IsAuthenticated",
@@ -151,10 +151,41 @@ REST_FRAMEWORK = {
         "rest_framework.renderers.BrowsableAPIRenderer",
     ],
     "EXCEPTION_HANDLER": "config.exception_handler.custom_exception_handler",
+    # ScopedRateThrottle is a no-op for views that don't declare ``throttle_scope``,
+    # so listing it globally only rate-limits the sensitive endpoints that opt in
+    # (login, alarm arm/disarm) without throttling the rest of the API.
+    "DEFAULT_THROTTLE_CLASSES": [
+        "rest_framework.throttling.ScopedRateThrottle",
+    ],
     "DEFAULT_THROTTLE_RATES": {
         "anon": "60/min",
+        "login": env.str("LOGIN_THROTTLE_RATE", default="10/min"),
+        "alarm_code": env.str("ALARM_CODE_THROTTLE_RATE", default="10/min"),
     },
 }
+
+if IS_TESTING:
+    # Disable the opt-in throttles during tests: DRF throttle history lives in the
+    # process cache and would otherwise leak across unrelated test methods. The
+    # throttle is exercised explicitly via override_settings where it matters.
+    REST_FRAMEWORK["DEFAULT_THROTTLE_RATES"]["login"] = None
+    REST_FRAMEWORK["DEFAULT_THROTTLE_RATES"]["alarm_code"] = None
+
+# Account lockout (defense-in-depth on top of the login throttle): after
+# ACCOUNT_LOCKOUT_THRESHOLD consecutive failed logins, the account is locked for
+# ACCOUNT_LOCKOUT_WINDOW_SECONDS. Set the threshold to 0 to disable lockout.
+ACCOUNT_LOCKOUT_THRESHOLD = env.int("ACCOUNT_LOCKOUT_THRESHOLD", default=5)
+ACCOUNT_LOCKOUT_WINDOW_SECONDS = env.int("ACCOUNT_LOCKOUT_WINDOW_SECONDS", default=900)
+
+# Auth token lifetime for the DRF token / WebSocket ?token= path. 0 disables
+# expiry (session cookies remain the primary SPA auth and have their own expiry).
+AUTH_TOKEN_TTL_SECONDS = env.int("AUTH_TOKEN_TTL_SECONDS", default=7 * 24 * 3600)
+
+# SSRF guard for user-configurable webhook notification URLs. Loopback,
+# link-local (incl. cloud metadata), reserved and multicast are always blocked;
+# private/LAN ranges are allowed by default because home-lab webhooks commonly
+# target other devices on the local network. Set True to also block private ranges.
+NOTIFICATIONS_WEBHOOK_BLOCK_PRIVATE = env.bool("NOTIFICATIONS_WEBHOOK_BLOCK_PRIVATE", default=False)
 
 CORS_ALLOWED_ORIGINS = env.list("CORS_ALLOWED_ORIGINS", default=[])
 CORS_ALLOW_ALL_ORIGINS = env.bool("CORS_ALLOW_ALL_ORIGINS", default=False)

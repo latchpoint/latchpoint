@@ -27,6 +27,10 @@ class ConflictError(DomainError):
     pass
 
 
+class RateLimitedError(DomainError):
+    """Too many requests / temporarily locked out (maps to HTTP 429)."""
+
+
 class ServiceUnavailableError(DomainError):
     pass
 

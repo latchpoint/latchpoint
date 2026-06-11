@@ -39,6 +39,11 @@ _ANSI_RESET = "\033[0m"
 _ANSI_CYAN = "\033[36m"
 _ANSI_DIM = "\033[2m"
 
+# Server log entries are broadcast to a dedicated group that only admin WebSocket
+# clients join (see AlarmConsumer). The general "alarm" group — which every
+# authenticated client joins for alarm-state updates — must NOT receive logs.
+LOG_BROADCAST_GROUP = "alarm_logs"
+
 _sequence = itertools.count(1)
 
 # ---------------------------------------------------------------------------
@@ -170,7 +175,7 @@ def _broadcast_worker() -> None:
                 "payload": entry,
             }
             async_to_sync(channel_layer.group_send)(
-                "alarm",
+                LOG_BROADCAST_GROUP,
                 {"type": "broadcast", "message": message},
             )
         except Exception:

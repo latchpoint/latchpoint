@@ -2,16 +2,33 @@ from __future__ import annotations
 
 from rest_framework import serializers
 
-from alarm.models import AlarmEvent, AlarmSettingsProfile, AlarmStateSnapshot
+from alarm.models import AlarmEvent, AlarmSettingsEntry, AlarmSettingsProfile, AlarmStateSnapshot
 from alarm.settings_registry import ALARM_PROFILE_SETTINGS
-from alarm.state_machine.settings import get_setting_json
+
+
+def _masked_default(definition) -> object:
+    """Return the registry default with any encrypted fields masked to ``has_<field>``."""
+    default = definition.default
+    if isinstance(default, dict) and definition.encrypted_fields:
+        from alarm.crypto import SettingsEncryption
+
+        return SettingsEncryption.get().mask_fields(default, definition.encrypted_fields)
+    return default
 
 
 def _list_profile_setting_entries(profile: AlarmSettingsProfile) -> list[dict[str, object]]:
-    """Materialize settings entry rows for a profile from the settings registry."""
+    """Materialize settings entry rows for a profile with secret fields masked (ADR-0079)."""
+    entries_by_key = {entry.key: entry for entry in AlarmSettingsEntry.objects.filter(profile=profile)}
     out: list[dict[str, object]] = []
     for definition in ALARM_PROFILE_SETTINGS:
-        value = get_setting_json(profile, definition.key)
+        entry = entries_by_key.get(definition.key)
+        if entry is None:
+            value = _masked_default(definition)
+        elif isinstance(definition.default, dict):
+            # Dict settings may carry encrypted fields — mask them and merge defaults.
+            value = entry.get_masked_value_with_defaults()
+        else:
+            value = entry.value
         out.append(
             {
                 "key": definition.key,
