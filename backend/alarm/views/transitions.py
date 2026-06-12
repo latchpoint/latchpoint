@@ -9,8 +9,6 @@ from alarm.use_cases import alarm_actions
 
 
 class ArmAlarmView(APIView):
-    throttle_scope = "alarm_code"
-
     def post(self, request):
         """Arm the alarm, optionally validating an entered code depending on settings."""
         target_state = request.data.get("target_state")
@@ -24,8 +22,6 @@ class ArmAlarmView(APIView):
 
 
 class DisarmAlarmView(APIView):
-    throttle_scope = "alarm_code"
-
     def post(self, request):
         """Disarm the alarm, validating a code when required."""
         raw_code = request.data.get("code")

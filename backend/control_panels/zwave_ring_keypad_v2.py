@@ -8,6 +8,7 @@ from typing import Any
 from django.utils import timezone
 
 from accounts.use_cases import code_validation
+from alarm import code_attempt_guard
 from alarm.models import AlarmState
 from alarm.state_machine.events import record_code_used, record_failed_code
 from alarm.state_machine.settings import get_active_settings_profile, get_setting_bool
@@ -159,31 +160,6 @@ def _extract_entry_control_notification(msg: dict[str, Any]) -> RingKeypadV2Acti
         event_type=int(event_type),
         event_data=event_data,
     )
-
-
-def _rate_limit(*, device_id: int, action: str, limit: int = 10, window_seconds: int = 60) -> bool:
-    """Best-effort fixed-window rate limiter backed by Django cache."""
-    from django.core.cache import cache
-
-    cache_key = f"control_panels:ring_keypad_v2:{device_id}:{action}"
-    try:
-        current = cache.get(cache_key)
-        if current is None:
-            cache.set(cache_key, 1, timeout=window_seconds)
-            return True
-        try:
-            current_int = int(current)
-        except Exception:
-            current_int = 0
-        if current_int >= limit:
-            return False
-        try:
-            cache.incr(cache_key)
-        except Exception:
-            cache.set(cache_key, current_int + 1, timeout=window_seconds)
-        return True
-    except Exception:
-        return True
 
 
 def _indicator_set(*, device: ControlPanelDevice, property_id: int, property_key: int, value: object) -> None:
@@ -442,7 +418,18 @@ def handle_zwavejs_ring_keypad_v2_event(msg: dict[str, Any]) -> None:
         return
 
     if req.event_type in (_EVT_DISARM, _EVT_ENTER):
-        if not _rate_limit(device_id=device.id, action="disarm"):
+        locked, remaining = code_attempt_guard.is_locked_out()
+        if locked:
+            record_failed_code(
+                user=None,
+                action="disarm",
+                metadata={"source": "control_panel", "device_id": device.id, "reason": "locked_out"},
+            )
+            _apply_ring_keypad_v2_volume(device=device, property_id=_IND_CODE_NOT_ACCEPTED)
+            _indicator_set(device=device, property_id=_IND_CODE_NOT_ACCEPTED, property_key=1, value=1)
+            logger.info("Ring Keypad v2 disarm rejected: locked out device_id=%s remaining=%ss", device.id, remaining)
+            return
+        if not code_attempt_guard.check_rate_limit(f"keypad:{device.id}:disarm"):
             return
         if not raw_code:
             record_failed_code(
@@ -450,6 +437,7 @@ def handle_zwavejs_ring_keypad_v2_event(msg: dict[str, Any]) -> None:
                 action="disarm",
                 metadata={"source": "control_panel", "device_id": device.id, "reason": "missing"},
             )
+            code_attempt_guard.register_failed_attempt()
             _apply_ring_keypad_v2_volume(device=device, property_id=_IND_CODE_NOT_ACCEPTED)
             _indicator_set(device=device, property_id=_IND_CODE_NOT_ACCEPTED, property_key=1, value=1)
             logger.info("Ring Keypad v2 disarm rejected: missing code device_id=%s", device.id)
@@ -458,6 +446,7 @@ def handle_zwavejs_ring_keypad_v2_event(msg: dict[str, Any]) -> None:
             result = code_validation.validate_any_active_code(raw_code=raw_code, now=now)
         except Exception:
             record_failed_code(user=None, action="disarm", metadata={"source": "control_panel", "device_id": device.id})
+            code_attempt_guard.register_failed_attempt()
             _apply_ring_keypad_v2_volume(device=device, property_id=_IND_CODE_NOT_ACCEPTED)
             _indicator_set(device=device, property_id=_IND_CODE_NOT_ACCEPTED, property_key=1, value=1)
             logger.info("Ring Keypad v2 disarm rejected: invalid code device_id=%s", device.id)
@@ -469,6 +458,7 @@ def handle_zwavejs_ring_keypad_v2_event(msg: dict[str, Any]) -> None:
             record_code_used(
                 user=user, code=code_obj, action="disarm", metadata={"source": "control_panel", "device_id": device.id}
             )
+            code_attempt_guard.reset_lockout()
             # Alarm state sync -> keypads happens via `alarm_state_change_committed`.
             logger.info("Ring Keypad v2 disarm ok device_id=%s user_id=%s", device.id, getattr(user, "id", None))
         except Exception as exc:
@@ -487,7 +477,23 @@ def handle_zwavejs_ring_keypad_v2_event(msg: dict[str, Any]) -> None:
         user = None
         code_obj = None
         if code_required:
-            if not _rate_limit(device_id=device.id, action=f"arm:{target_state}"):
+            locked, remaining = code_attempt_guard.is_locked_out()
+            if locked:
+                record_failed_code(
+                    user=None,
+                    action="arm",
+                    metadata={
+                        "source": "control_panel",
+                        "device_id": device.id,
+                        "target_state": target_state,
+                        "reason": "locked_out",
+                    },
+                )
+                _apply_ring_keypad_v2_volume(device=device, property_id=_IND_CODE_NOT_ACCEPTED)
+                _indicator_set(device=device, property_id=_IND_CODE_NOT_ACCEPTED, property_key=1, value=1)
+                logger.info("Ring Keypad v2 arm rejected: locked out device_id=%s remaining=%ss", device.id, remaining)
+                return
+            if not code_attempt_guard.check_rate_limit(f"keypad:{device.id}:arm:{target_state}"):
                 return
             if not raw_code:
                 record_failed_code(
@@ -500,6 +506,7 @@ def handle_zwavejs_ring_keypad_v2_event(msg: dict[str, Any]) -> None:
                         "reason": "missing",
                     },
                 )
+                code_attempt_guard.register_failed_attempt()
                 _apply_ring_keypad_v2_volume(device=device, property_id=_IND_CODE_NOT_ACCEPTED)
                 _indicator_set(device=device, property_id=_IND_CODE_NOT_ACCEPTED, property_key=1, value=1)
                 return
@@ -511,6 +518,7 @@ def handle_zwavejs_ring_keypad_v2_event(msg: dict[str, Any]) -> None:
                     action="arm",
                     metadata={"source": "control_panel", "device_id": device.id, "target_state": target_state},
                 )
+                code_attempt_guard.register_failed_attempt()
                 _apply_ring_keypad_v2_volume(device=device, property_id=_IND_CODE_NOT_ACCEPTED)
                 _indicator_set(device=device, property_id=_IND_CODE_NOT_ACCEPTED, property_key=1, value=1)
                 return
@@ -526,6 +534,7 @@ def handle_zwavejs_ring_keypad_v2_event(msg: dict[str, Any]) -> None:
                     action="arm",
                     metadata={"source": "control_panel", "device_id": device.id, "target_state": target_state},
                 )
+                code_attempt_guard.reset_lockout()
             # Alarm state sync -> keypads happens via `alarm_state_change_committed`.
             logger.info(
                 "Ring Keypad v2 arm ok device_id=%s target_state=%s user_id=%s",

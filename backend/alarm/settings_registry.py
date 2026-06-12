@@ -539,6 +539,36 @@ SYSTEM_CONFIG_SETTINGS: list[SettingDefinition] = [
         description="Centralized rule trigger dispatcher settings (ADR 0057). "
         "Dispatcher is always enabled - these are tuning parameters.",
     ),
+    SettingDefinition(
+        key="alarm_code.rate_limit_max_attempts",
+        name="Alarm code rate limit (max attempts)",
+        value_type=SystemConfigValueType.INTEGER,
+        default=10,
+        description="Maximum alarm-code attempts allowed per window before requests are "
+        "rate-limited (HTTP 429). Set to 0 to disable rate limiting.",
+    ),
+    SettingDefinition(
+        key="alarm_code.rate_limit_window_seconds",
+        name="Alarm code rate limit window (seconds)",
+        value_type=SystemConfigValueType.INTEGER,
+        default=60,
+        description="Length of the alarm-code rate-limit window in seconds.",
+    ),
+    SettingDefinition(
+        key="alarm_code.lockout_threshold",
+        name="Alarm code lockout threshold",
+        value_type=SystemConfigValueType.INTEGER,
+        default=5,
+        description="Consecutive failed alarm-code attempts (across all sources) before the "
+        "panel is locked out. Set to 0 to disable lockout.",
+    ),
+    SettingDefinition(
+        key="alarm_code.lockout_duration_seconds",
+        name="Alarm code lockout duration (seconds)",
+        value_type=SystemConfigValueType.INTEGER,
+        default=300,
+        description="How long the panel stays locked after too many failed alarm-code attempts.",
+    ),
 ]
 
 SYSTEM_CONFIG_SETTINGS_BY_KEY = {d.key: d for d in SYSTEM_CONFIG_SETTINGS}

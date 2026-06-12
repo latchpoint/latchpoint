@@ -153,14 +153,14 @@ REST_FRAMEWORK = {
     "EXCEPTION_HANDLER": "config.exception_handler.custom_exception_handler",
     # ScopedRateThrottle is a no-op for views that don't declare ``throttle_scope``,
     # so listing it globally only rate-limits the sensitive endpoints that opt in
-    # (login, alarm arm/disarm) without throttling the rest of the API.
+    # (login) without throttling the rest of the API. Alarm-code rate limiting is
+    # handled separately by ``alarm.code_attempt_guard`` (configurable, plus lockout).
     "DEFAULT_THROTTLE_CLASSES": [
         "rest_framework.throttling.ScopedRateThrottle",
     ],
     "DEFAULT_THROTTLE_RATES": {
         "anon": "60/min",
         "login": env.str("LOGIN_THROTTLE_RATE", default="10/min"),
-        "alarm_code": env.str("ALARM_CODE_THROTTLE_RATE", default="10/min"),
     },
 }
 
@@ -169,7 +169,6 @@ if IS_TESTING:
     # process cache and would otherwise leak across unrelated test methods. The
     # throttle is exercised explicitly via override_settings where it matters.
     REST_FRAMEWORK["DEFAULT_THROTTLE_RATES"]["login"] = None
-    REST_FRAMEWORK["DEFAULT_THROTTLE_RATES"]["alarm_code"] = None
 
 # Account lockout (defense-in-depth on top of the login throttle): after
 # ACCOUNT_LOCKOUT_THRESHOLD consecutive failed logins, the account is locked for

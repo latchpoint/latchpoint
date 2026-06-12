@@ -3,6 +3,7 @@ import { SettingsTabShell } from '@/features/settings/components/SettingsTabShel
 import { AlarmBehaviorCard } from '@/features/alarmSettings/components/AlarmBehaviorCard'
 import { AlarmArmModesCard } from '@/features/alarmSettings/components/AlarmArmModesCard'
 import { AlarmTimingCard } from '@/features/alarmSettings/components/AlarmTimingCard'
+import { SecuritySettingsCard } from '@/features/alarmSettings/components/SecuritySettingsCard'
 import { SystemSettingsCard } from '@/features/alarmSettings/components/SystemSettingsCard'
 import { useAlarmSettingsTabModel } from '@/features/alarmSettings/hooks/useAlarmSettingsTabModel'
 
@@ -31,6 +32,8 @@ export function SettingsAlarmTab() {
           <AlarmBehaviorCard isAdmin={model.isAdmin} isLoading={model.isLoading} draft={model.draft} onSetDraft={model.setDraft} />
 
           <AlarmArmModesCard isAdmin={model.isAdmin} isLoading={model.isLoading} draft={model.draft} onSetDraft={model.setDraft} />
+
+          <SecuritySettingsCard isAdmin={model.isAdmin} />
 
           <SystemSettingsCard isAdmin={model.isAdmin} />
         </div>

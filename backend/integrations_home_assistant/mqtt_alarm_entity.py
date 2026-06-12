@@ -5,12 +5,12 @@ import logging
 import threading
 from dataclasses import dataclass
 
-from django.core.cache import cache
 from django.db import close_old_connections
 from django.utils import timezone
 from transports_mqtt.manager import MqttNotReachable, mqtt_connection_manager
 
 from accounts.use_cases import code_validation
+from alarm import code_attempt_guard
 from alarm.models import AlarmState
 from alarm.state_machine.events import record_code_used, record_failed_code
 from alarm.state_machine.settings import get_active_settings_profile, get_setting_bool, get_setting_json
@@ -225,32 +225,6 @@ def handle_mqtt_alarm_command(*, topic: str, payload: str) -> None:
     if topic != COMMAND_TOPIC:
         return
 
-    # Basic global rate limiting for MQTT code attempts to reduce brute-force risk.
-    # This is intentionally coarse because MQTT commands do not have user/device/ip context.
-    def _rate_limit(*, key: str, limit: int, window_seconds: int) -> bool:
-        """Best-effort fixed-window rate limiter backed by Django cache."""
-        cache_key = f"mqtt_rate:{key}"
-        try:
-            current = cache.get(cache_key)
-            if current is None:
-                cache.set(cache_key, 1, timeout=window_seconds)
-                return True
-            try:
-                current_int = int(current)
-            except Exception:
-                current_int = 0
-            if current_int >= limit:
-                return False
-            # Best-effort increment (atomic in Redis, safe enough in LocMem).
-            try:
-                cache.incr(cache_key)
-            except Exception:
-                cache.set(cache_key, current_int + 1, timeout=window_seconds)
-            return True
-        except Exception:
-            # If cache is unavailable, don't hard-block.
-            return True
-
     try:
         action, raw_code = _handle_command_payload(payload=payload)
     except Exception:
@@ -266,23 +240,31 @@ def handle_mqtt_alarm_command(*, topic: str, payload: str) -> None:
 
     # Disarm always requires code (per requirement).
     if action == "DISARM":
-        if not _rate_limit(key="disarm", limit=10, window_seconds=60):
+        locked, remaining = code_attempt_guard.is_locked_out()
+        if locked:
+            record_failed_code(user=None, action="disarm", metadata={"source": "mqtt", "reason": "locked_out"})
+            publish_error(action=action, error=f"Locked out. Try again in {remaining}s.")
+            return
+        if not code_attempt_guard.check_rate_limit("mqtt:disarm"):
             publish_error(action=action, error="Too many attempts. Try again later.")
             return
         if not raw_code:
             record_failed_code(user=None, action="disarm", metadata={"source": "mqtt", "reason": "missing"})
+            code_attempt_guard.register_failed_attempt()
             publish_error(action=action, error="Code required.")
             return
         try:
             result = code_validation.validate_any_active_code(raw_code=raw_code, now=now)
         except Exception:
             record_failed_code(user=None, action="disarm", metadata={"source": "mqtt"})
+            code_attempt_guard.register_failed_attempt()
             publish_error(action=action, error="Invalid code.")
             return
         code_obj = result.code
         user = code_obj.user
         disarm(user=user, code=code_obj, reason="mqtt_disarm")
         record_code_used(user=user, code=code_obj, action="disarm", metadata={"source": "mqtt"})
+        code_attempt_guard.reset_lockout()
         return
 
     # Arm: respect existing setting, but accept a code if provided.
@@ -291,7 +273,16 @@ def handle_mqtt_alarm_command(*, topic: str, payload: str) -> None:
     code_obj = None
     user = None
     if code_required:
-        if not _rate_limit(key=f"arm:{target}", limit=10, window_seconds=60):
+        locked, remaining = code_attempt_guard.is_locked_out()
+        if locked:
+            record_failed_code(
+                user=None,
+                action="arm",
+                metadata={"source": "mqtt", "target_state": target, "reason": "locked_out"},
+            )
+            publish_error(action=action, error=f"Locked out. Try again in {remaining}s.")
+            return
+        if not code_attempt_guard.check_rate_limit(f"mqtt:arm:{target}"):
             publish_error(action=action, error="Too many attempts. Try again later.")
             return
         if not raw_code:
@@ -300,12 +291,14 @@ def handle_mqtt_alarm_command(*, topic: str, payload: str) -> None:
                 action="arm",
                 metadata={"source": "mqtt", "target_state": target, "reason": "missing"},
             )
+            code_attempt_guard.register_failed_attempt()
             publish_error(action=action, error="Code required.")
             return
         try:
             result = code_validation.validate_any_active_code(raw_code=raw_code, now=now)
         except Exception:
             record_failed_code(user=None, action="arm", metadata={"source": "mqtt", "target_state": target})
+            code_attempt_guard.register_failed_attempt()
             publish_error(action=action, error="Invalid code.")
             return
         code_obj = result.code
@@ -314,6 +307,7 @@ def handle_mqtt_alarm_command(*, topic: str, payload: str) -> None:
     arm(target_state=target, user=user, code=code_obj, reason="mqtt_arm")
     if code_obj is not None and user is not None:
         record_code_used(user=user, code=code_obj, action="arm", metadata={"source": "mqtt", "target_state": target})
+        code_attempt_guard.reset_lockout()
 
 
 def initialize_home_assistant_mqtt_alarm_entity_integration() -> None:

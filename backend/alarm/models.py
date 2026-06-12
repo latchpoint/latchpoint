@@ -484,6 +484,29 @@ class SystemConfig(models.Model):
         return self.key
 
 
+class AlarmCodeLockout(models.Model):
+    """
+    Global panel-wide lockout state for alarm-code entry.
+
+    A single row tracks consecutive failed alarm-code attempts across every
+    source (web, Ring Keypad v2, MQTT). Once ``alarm_code.lockout_threshold``
+    is reached the whole panel is locked until ``locked_until``. This mirrors
+    login's ``User.locked_until`` lockout but is global rather than per-user
+    (keypad/MQTT entries carry no user identity). DB-backed so the lockout
+    survives restarts and is shared across worker processes.
+    """
+
+    SINGLETON_ID = 1
+
+    failed_attempts = models.PositiveIntegerField(default=0)
+    locked_until = models.DateTimeField(null=True, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self) -> str:  # pragma: no cover - simple representation
+        """Return a short status string for logs/admin lists."""
+        return f"AlarmCodeLockout(attempts={self.failed_attempts}, locked_until={self.locked_until})"
+
+
 class PendingActionStatus(models.TextChoices):
     SCHEDULED = "scheduled", "Scheduled"
     FIRED = "fired", "Fired"
