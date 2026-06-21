@@ -109,21 +109,27 @@ def record_rule_success(*, runtime: RuleRuntimeState) -> None:
         runtime: The runtime state to update
     """
     if runtime.consecutive_failures > 0 or runtime.error_suspended:
+        from alarm.models import RuleRuntimeStatus
+
         runtime.consecutive_failures = 0
         runtime.last_failure_at = None
         runtime.next_allowed_at = None
         runtime.error_suspended = False
         runtime.last_error = ""
-        runtime.save(
-            update_fields=[
-                "consecutive_failures",
-                "last_failure_at",
-                "next_allowed_at",
-                "error_suspended",
-                "last_error",
-                "updated_at",
-            ]
-        )
+        update_fields = [
+            "consecutive_failures",
+            "last_failure_at",
+            "next_allowed_at",
+            "error_suspended",
+            "last_error",
+            "updated_at",
+        ]
+        # record_rule_failure sets status="error_suspended" alongside the flag; clear it
+        # here too, or a recovered (active) rule keeps displaying "Error Suspended".
+        if runtime.status == RuleRuntimeStatus.ERROR_SUSPENDED:
+            runtime.status = RuleRuntimeStatus.PENDING
+            update_fields.append("status")
+        runtime.save(update_fields=update_fields)
 
 
 def is_rule_allowed(*, runtime: RuleRuntimeState, now: datetime) -> tuple[bool, str]:
@@ -159,19 +165,23 @@ def clear_suspension(*, runtime: RuleRuntimeState) -> None:
     Args:
         runtime: The runtime state to update
     """
+    from alarm.models import RuleRuntimeStatus
+
     runtime.consecutive_failures = 0
     runtime.last_failure_at = None
     runtime.next_allowed_at = None
     runtime.error_suspended = False
     runtime.last_error = ""
-    runtime.save(
-        update_fields=[
-            "consecutive_failures",
-            "last_failure_at",
-            "next_allowed_at",
-            "error_suspended",
-            "last_error",
-            "updated_at",
-        ]
-    )
+    update_fields = [
+        "consecutive_failures",
+        "last_failure_at",
+        "next_allowed_at",
+        "error_suspended",
+        "last_error",
+        "updated_at",
+    ]
+    if runtime.status == RuleRuntimeStatus.ERROR_SUSPENDED:
+        runtime.status = RuleRuntimeStatus.PENDING
+        update_fields.append("status")
+    runtime.save(update_fields=update_fields)
     logger.info("Cleared suspension for rule runtime %s", runtime.id)
