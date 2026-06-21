@@ -5,6 +5,7 @@ from datetime import timedelta
 from django.db import transaction
 from django.utils import timezone
 
+from alarm import rearm_guard
 from alarm.models import AlarmState, AlarmStateSnapshot, Sensor
 
 from .constants import ARMED_STATES
@@ -97,6 +98,10 @@ def disarm(*, user=None, code=None, reason: str = "disarm", metadata: dict | Non
     snapshot.target_armed_state = None
     snapshot.timing_snapshot = {}
     snapshot.save(update_fields=["target_armed_state", "timing_snapshot"])
+    # Open the post-disarm re-arm guard window once this disarm commits, so a
+    # rapid/accidental arm command (e.g. from the HA card swapping buttons under
+    # the user's finger) cannot silently re-arm. See alarm/rearm_guard.py.
+    transaction.on_commit(rearm_guard.mark_disarmed)
     return transition(
         snapshot=snapshot,
         state_to=AlarmState.DISARMED,
