@@ -187,8 +187,15 @@ def _rate_limit(*, device_id: int, action: str, limit: int = 10, window_seconds:
         return True
 
 
-def _indicator_set(*, device: ControlPanelDevice, property_id: int, property_key: int, value: object) -> None:
-    """Best-effort Indicator CC write; swallows all failures."""
+def _indicator_set(
+    *, device: ControlPanelDevice, property_id: int, property_key: int, value: object, log_failures: bool = False
+) -> None:
+    """Best-effort Indicator CC write.
+
+    Swallows failures so one dropped indicator never breaks the rest of a sync. Pass
+    ``log_failures=True`` for safety-critical writes (e.g. the burglar siren) so a failed
+    Z-Wave write is logged instead of vanishing silently.
+    """
     if not isinstance(device.external_id, dict):
         return
     node_id = device.external_id.get("node_id")
@@ -206,6 +213,14 @@ def _indicator_set(*, device: ControlPanelDevice, property_id: int, property_key
             value=value,
         )
     except Exception:
+        if log_failures:
+            logger.warning(
+                "Ring Keypad v2 indicator write failed device_id=%s property=%s key=%s",
+                device.id,
+                property_id,
+                property_key,
+                exc_info=True,
+            )
         return
 
 
@@ -254,7 +269,7 @@ def _indicator_set_strict(*, device: ControlPanelDevice, property_id: int, prope
     )
 
 
-def _apply_ring_keypad_v2_volume(*, device: ControlPanelDevice, property_id: int) -> None:
+def _apply_ring_keypad_v2_volume(*, device: ControlPanelDevice, property_id: int, log_failures: bool = False) -> None:
     """
     Best-effort: set Indicator CC volume (property_key=9) for a given property_id.
 
@@ -272,7 +287,7 @@ def _apply_ring_keypad_v2_volume(*, device: ControlPanelDevice, property_id: int
     if volume > 99:
         volume = 99
 
-    _indicator_set(device=device, property_id=property_id, property_key=9, value=volume)
+    _indicator_set(device=device, property_id=property_id, property_key=9, value=volume, log_failures=log_failures)
 
 
 def test_ring_keypad_v2_beep(*, device: ControlPanelDevice, volume: int = 50) -> None:
@@ -335,10 +350,13 @@ def _sync_device_state(*, device: ControlPanelDevice) -> None:
         # default), so a plain "on" command stops sounding after the timeout. Zero the timeout — like
         # the sticky disarmed/armed mode indicators (all-zero timeout) — and drive the multilevel to
         # full, so the siren holds until a mode indicator is next selected (e.g. on disarm).
-        _apply_ring_keypad_v2_volume(device=device, property_id=_IND_BURGLAR_ALARM)
-        _indicator_set(device=device, property_id=_IND_BURGLAR_ALARM, property_key=6, value=0)
-        _indicator_set(device=device, property_id=_IND_BURGLAR_ALARM, property_key=7, value=0)
-        _indicator_set(device=device, property_id=_IND_BURGLAR_ALARM, property_key=1, value=99)
+        # log_failures=True: the siren is the most safety-critical indicator, so a failed Z-Wave
+        # write is logged rather than silently swallowed (a silent siren is otherwise undiagnosable).
+        logger.info("Ring Keypad v2 burglar siren commanded device_id=%s", device.id)
+        _apply_ring_keypad_v2_volume(device=device, property_id=_IND_BURGLAR_ALARM, log_failures=True)
+        _indicator_set(device=device, property_id=_IND_BURGLAR_ALARM, property_key=6, value=0, log_failures=True)
+        _indicator_set(device=device, property_id=_IND_BURGLAR_ALARM, property_key=7, value=0, log_failures=True)
+        _indicator_set(device=device, property_id=_IND_BURGLAR_ALARM, property_key=1, value=99, log_failures=True)
         return
 
     # Best-effort fallback for other armed states.

@@ -10,9 +10,13 @@ from alarm.dispatcher.failure_handler import (
     AUTO_RECOVERY_SECONDS,
     BACKOFF_SCHEDULE_SECONDS,
     CIRCUIT_BREAKER_THRESHOLD,
+    clear_suspension,
     get_backoff_seconds,
     is_rule_allowed,
+    record_rule_failure,
+    record_rule_success,
 )
+from alarm.models import RuleRuntimeStatus
 
 
 class TestGetBackoffSeconds(TestCase):
@@ -112,3 +116,79 @@ class TestConstants(TestCase):
     def test_auto_recovery_seconds_is_at_least_an_hour(self):
         """Auto recovery period is at least an hour."""
         self.assertGreaterEqual(AUTO_RECOVERY_SECONDS, 3600)
+
+
+class TestStatusTracksSuspension(TestCase):
+    """Regression: the `status` label must not get stuck at 'error_suspended' after recovery.
+
+    The circuit breaker sets both `error_suspended=True` and `status='error_suspended'`, but the
+    recovery paths previously cleared only the boolean — leaving an active rule falsely displaying
+    'Error Suspended' (seen in prod on the alarm trigger rule).
+    """
+
+    def test_success_resets_stale_error_suspended_status(self):
+        runtime = MagicMock()
+        runtime.consecutive_failures = 4
+        runtime.error_suspended = True
+        runtime.status = "error_suspended"
+
+        record_rule_success(runtime=runtime)
+
+        self.assertFalse(runtime.error_suspended)
+        self.assertEqual(runtime.status, RuleRuntimeStatus.PENDING)
+        runtime.save.assert_called_once()
+        self.assertIn("status", runtime.save.call_args.kwargs["update_fields"])
+
+    def test_success_is_noop_when_nothing_to_clear(self):
+        runtime = MagicMock()
+        runtime.consecutive_failures = 0
+        runtime.error_suspended = False
+
+        record_rule_success(runtime=runtime)
+
+        runtime.save.assert_not_called()
+
+    def test_success_from_backoff_does_not_touch_a_non_suspended_status(self):
+        runtime = MagicMock()
+        runtime.consecutive_failures = 2  # backing off, but never circuit-broken
+        runtime.error_suspended = False
+        runtime.status = "pending"
+
+        record_rule_success(runtime=runtime)
+
+        runtime.save.assert_called_once()
+        self.assertNotIn("status", runtime.save.call_args.kwargs["update_fields"])
+
+    def test_clear_suspension_resets_stale_status(self):
+        runtime = MagicMock()
+        runtime.status = "error_suspended"
+
+        clear_suspension(runtime=runtime)
+
+        self.assertEqual(runtime.status, RuleRuntimeStatus.PENDING)
+        self.assertIn("status", runtime.save.call_args.kwargs["update_fields"])
+
+    def test_failure_at_threshold_sets_both_flag_and_status(self):
+        rule = MagicMock(name="rule")
+        rule.name = "trigger"
+        rule.id = 3
+        runtime = MagicMock()
+        runtime.consecutive_failures = CIRCUIT_BREAKER_THRESHOLD - 1
+
+        record_rule_failure(rule=rule, runtime=runtime, error="boom", now=timezone.now())
+
+        self.assertTrue(runtime.error_suspended)
+        self.assertEqual(runtime.status, "error_suspended")
+
+    def test_failure_below_threshold_leaves_status_untouched(self):
+        rule = MagicMock(name="rule")
+        rule.name = "trigger"
+        rule.id = 3
+        runtime = MagicMock()
+        runtime.consecutive_failures = 0
+        runtime.status = "pending"
+
+        record_rule_failure(rule=rule, runtime=runtime, error="boom", now=timezone.now())
+
+        self.assertEqual(runtime.consecutive_failures, 1)
+        self.assertEqual(runtime.status, "pending")
