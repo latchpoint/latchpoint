@@ -8,6 +8,7 @@ from typing import Any
 from django.utils import timezone
 
 from accounts.use_cases import code_validation
+from alarm import rearm_guard
 from alarm.models import AlarmState
 from alarm.state_machine.events import record_code_used, record_failed_code
 from alarm.state_machine.settings import get_active_settings_profile, get_setting_bool
@@ -456,11 +457,16 @@ def handle_zwavejs_ring_keypad_v2_event(msg: dict[str, Any]) -> None:
             return
         try:
             result = code_validation.validate_any_active_code(raw_code=raw_code, now=now)
-        except Exception:
+        except code_validation.CodeValidationError:
             record_failed_code(user=None, action="disarm", metadata={"source": "control_panel", "device_id": device.id})
             _apply_ring_keypad_v2_volume(device=device, property_id=_IND_CODE_NOT_ACCEPTED)
             _indicator_set(device=device, property_id=_IND_CODE_NOT_ACCEPTED, property_key=1, value=1)
             logger.info("Ring Keypad v2 disarm rejected: invalid code device_id=%s", device.id)
+            return
+        except Exception:
+            logger.exception("Ring Keypad v2 disarm code validation failed unexpectedly device_id=%s", device.id)
+            _apply_ring_keypad_v2_volume(device=device, property_id=_IND_CODE_NOT_ACCEPTED)
+            _indicator_set(device=device, property_id=_IND_CODE_NOT_ACCEPTED, property_key=1, value=1)
             return
         code_obj = result.code
         user = code_obj.user
@@ -480,6 +486,25 @@ def handle_zwavejs_ring_keypad_v2_event(msg: dict[str, Any]) -> None:
     if req.event_type in (_EVT_ARM_AWAY, _EVT_ARM_STAY):
         # Ring v2 only provides Arm Away and Arm Stay; Arm Stay maps to armed_home.
         target_state = AlarmState.ARMED_AWAY if req.event_type == _EVT_ARM_AWAY else AlarmState.ARMED_HOME
+
+        # Re-arm guard: refuse an arm landing within the post-disarm window (e.g. an
+        # accidental Arm press right after disarming). See alarm/rearm_guard.py.
+        blocked, remaining = rearm_guard.recently_disarmed()
+        if blocked:
+            record_failed_code(
+                user=None,
+                action="arm",
+                metadata={
+                    "source": "control_panel",
+                    "device_id": device.id,
+                    "target_state": target_state,
+                    "reason": "rearm_guard",
+                },
+            )
+            _apply_ring_keypad_v2_volume(device=device, property_id=_IND_CODE_NOT_ACCEPTED)
+            _indicator_set(device=device, property_id=_IND_CODE_NOT_ACCEPTED, property_key=1, value=1)
+            logger.info("Ring Keypad v2 arm rejected: re-arm guard device_id=%s remaining=%ss", device.id, remaining)
+            return
 
         profile = get_active_settings_profile()
         code_required = get_setting_bool(profile, "code_arm_required") or raw_code is not None
@@ -505,11 +530,20 @@ def handle_zwavejs_ring_keypad_v2_event(msg: dict[str, Any]) -> None:
                 return
             try:
                 result = code_validation.validate_any_active_code(raw_code=raw_code, now=now)
-            except Exception:
+            except code_validation.CodeValidationError:
                 record_failed_code(
                     user=None,
                     action="arm",
                     metadata={"source": "control_panel", "device_id": device.id, "target_state": target_state},
+                )
+                _apply_ring_keypad_v2_volume(device=device, property_id=_IND_CODE_NOT_ACCEPTED)
+                _indicator_set(device=device, property_id=_IND_CODE_NOT_ACCEPTED, property_key=1, value=1)
+                return
+            except Exception:
+                logger.exception(
+                    "Ring Keypad v2 arm code validation failed unexpectedly device_id=%s target_state=%s",
+                    device.id,
+                    target_state,
                 )
                 _apply_ring_keypad_v2_volume(device=device, property_id=_IND_CODE_NOT_ACCEPTED)
                 _indicator_set(device=device, property_id=_IND_CODE_NOT_ACCEPTED, property_key=1, value=1)

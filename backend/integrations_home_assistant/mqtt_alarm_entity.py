@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import threading
@@ -11,10 +12,12 @@ from django.utils import timezone
 from transports_mqtt.manager import MqttNotReachable, mqtt_connection_manager
 
 from accounts.use_cases import code_validation
+from alarm import rearm_guard
 from alarm.models import AlarmState
 from alarm.state_machine.events import record_code_used, record_failed_code
 from alarm.state_machine.settings import get_active_settings_profile, get_setting_bool, get_setting_json
 from alarm.state_machine.transitions import arm, disarm, get_current_snapshot
+from alarm.system_config_utils import get_int_system_config_value
 from integrations_home_assistant import mqtt_alarm_entity_status_store as status_store
 
 logger = logging.getLogger(__name__)
@@ -216,6 +219,31 @@ _ACTION_TO_STATE = {
 }
 
 
+def _is_duplicate_command(*, action: str, raw_code: str | None) -> bool:
+    """Collapse duplicate inbound commands within the debounce window.
+
+    HA's card/app can emit the same command several times in a burst (the
+    motivating incident saw three identical DISARMs within 51 ms). The first
+    occurrence inside ``alarm.command_debounce_ms`` is processed; identical
+    follow-ups are dropped. The fingerprint is ``action`` + a SHA-256 hash of the
+    code (the PIN is never stored in the cache), so a *fast corrected retry* with
+    a different PIN has a different fingerprint and is NOT swallowed. Disabled
+    when the setting is ``0``; fails open (never dedupes) if the cache is down.
+    """
+    debounce_ms = get_int_system_config_value(key="alarm.command_debounce_ms")
+    if debounce_ms <= 0:
+        return False
+    fingerprint = hashlib.sha256(f"{action}:{raw_code or ''}".encode()).hexdigest()[:16]
+    cache_key = f"alarm_cmd_dedupe:{fingerprint}"
+    try:
+        # cache.add stores only when absent and returns False if the key already
+        # exists — i.e. a duplicate command within the window.
+        added = cache.add(cache_key, 1, timeout=debounce_ms / 1000.0)
+    except Exception:
+        return False
+    return not added
+
+
 def handle_mqtt_alarm_command(*, topic: str, payload: str) -> None:
     """Handle incoming MQTT commands for the alarm entity (arm/disarm + code validation)."""
     close_old_connections()
@@ -262,6 +290,10 @@ def handle_mqtt_alarm_command(*, topic: str, payload: str) -> None:
         publish_error(action=action, error="Unknown action.")
         return
 
+    if _is_duplicate_command(action=action, raw_code=raw_code):
+        logger.debug("Ignoring duplicate MQTT alarm command action=%s within debounce window", action)
+        return
+
     now = timezone.now()
 
     # Disarm always requires code (per requirement).
@@ -275,14 +307,32 @@ def handle_mqtt_alarm_command(*, topic: str, payload: str) -> None:
             return
         try:
             result = code_validation.validate_any_active_code(raw_code=raw_code, now=now)
-        except Exception:
+        except code_validation.CodeValidationError:
             record_failed_code(user=None, action="disarm", metadata={"source": "mqtt"})
             publish_error(action=action, error="Invalid code.")
+            return
+        except Exception:
+            logger.exception("MQTT disarm code validation failed unexpectedly")
+            publish_error(action=action, error="Code validation error. Try again.")
             return
         code_obj = result.code
         user = code_obj.user
         disarm(user=user, code=code_obj, reason="mqtt_disarm")
         record_code_used(user=user, code=code_obj, action="disarm", metadata={"source": "mqtt"})
+        return
+
+    # Re-arm guard: refuse an arm landing within the post-disarm window — e.g. an
+    # accidental Arm tap right after disarming (HA's card swaps Disarm -> Arm the
+    # instant state flips). Runs before the code path. See alarm/rearm_guard.py.
+    blocked, remaining = rearm_guard.recently_disarmed()
+    if blocked:
+        record_failed_code(
+            user=None,
+            action="arm",
+            metadata={"source": "mqtt", "target_state": target, "reason": "rearm_guard"},
+        )
+        publish_error(action=action, error=f"Ignored — just disarmed. Try again in {remaining}s.")
+        logger.info("MQTT arm ignored by re-arm guard target_state=%s remaining=%ss", target, remaining)
         return
 
     # Arm: respect existing setting, but accept a code if provided.
@@ -304,9 +354,13 @@ def handle_mqtt_alarm_command(*, topic: str, payload: str) -> None:
             return
         try:
             result = code_validation.validate_any_active_code(raw_code=raw_code, now=now)
-        except Exception:
+        except code_validation.CodeValidationError:
             record_failed_code(user=None, action="arm", metadata={"source": "mqtt", "target_state": target})
             publish_error(action=action, error="Invalid code.")
+            return
+        except Exception:
+            logger.exception("MQTT arm code validation failed unexpectedly target_state=%s", target)
+            publish_error(action=action, error="Code validation error. Try again.")
             return
         code_obj = result.code
         user = code_obj.user

@@ -473,6 +473,27 @@ ALARM_PROFILE_SETTINGS_BY_KEY = {d.key: d for d in ALARM_PROFILE_SETTINGS}
 
 SYSTEM_CONFIG_SETTINGS: list[SettingDefinition] = [
     SettingDefinition(
+        key="alarm.rearm_guard_seconds",
+        name="Re-arm guard (seconds)",
+        value_type=SystemConfigValueType.INTEGER,
+        default=5,
+        description=(
+            "After a disarm, ignore arm commands from the Ring keypad and Home Assistant "
+            "for this many seconds, so rapidly re-pressing Disarm cannot accidentally re-arm "
+            "the panel. Set to 0 to disable."
+        ),
+    ),
+    SettingDefinition(
+        key="alarm.command_debounce_ms",
+        name="Alarm command debounce (ms)",
+        value_type=SystemConfigValueType.INTEGER,
+        default=1000,
+        description=(
+            "Collapse duplicate Home Assistant MQTT alarm commands with the same action "
+            "received within this many milliseconds into a single command. Set to 0 to disable."
+        ),
+    ),
+    SettingDefinition(
         key="events.retention_days",
         name="Event retention (days)",
         value_type=SystemConfigValueType.INTEGER,
