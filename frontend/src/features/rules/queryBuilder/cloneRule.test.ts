@@ -84,14 +84,14 @@ describe('cloneRule', () => {
     const rule = makeRule()
     const seed = cloneRule(rule, [])
 
-    ;(seed.definition.then as any).push({ type: 'alarm_disarm' })
-    const seedWhen = seed.definition.when as any
+    seed.definition.then.push({ type: 'alarm_disarm' })
+    const seedWhen = seed.definition.when as unknown as { conditions: unknown[] }
     if (seedWhen && 'conditions' in seedWhen) {
       seedWhen.conditions.push({ type: 'entity_state', entity_id: 'x', state: 'y' })
     }
 
     expect(rule.definition.then).toHaveLength(1)
-    const ruleWhen = rule.definition.when as any
+    const ruleWhen = rule.definition.when as unknown as { conditions: unknown[] }
     expect(ruleWhen.conditions).toHaveLength(1)
   })
 })

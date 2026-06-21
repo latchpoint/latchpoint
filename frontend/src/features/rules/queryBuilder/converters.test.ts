@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import type { RuleGroupType } from 'react-querybuilder'
+import type { RuleGroupType, RuleType } from 'react-querybuilder'
+import type { WhenNode } from '@/types/ruleDefinition'
 import { alarmDslToRqbWithFor, rqbToAlarmDsl } from './converters'
 
 describe('converters', () => {
@@ -26,7 +27,7 @@ describe('converters', () => {
     expect(JSON.stringify(when)).toContain('"source":"home_assistant"')
 
     const roundTrip = alarmDslToRqbWithFor(when)
-    const rule = roundTrip.query.rules[0] as any
+    const rule = roundTrip.query.rules[0] as RuleType
     expect(rule.field).toBe('entity_state_ha')
   })
 
@@ -48,7 +49,7 @@ describe('converters', () => {
     expect(JSON.stringify(when)).toContain('"source":"all"')
 
     const roundTrip = alarmDslToRqbWithFor(when)
-    const rule = roundTrip.query.rules[0] as any
+    const rule = roundTrip.query.rules[0] as RuleType
     expect(rule.field).toBe('entity_state')
   })
 
@@ -78,12 +79,12 @@ describe('converters', () => {
           ],
         },
       ],
-    } as any
+    } as unknown as WhenNode
 
     const result = alarmDslToRqbWithFor(when)
     expect(result.query.rules).toHaveLength(2)
 
-    const nestedGroup = result.query.rules[1] as any
+    const nestedGroup = result.query.rules[1] as RuleGroupType & { rules: RuleType[] }
     expect(nestedGroup.combinator).toBe('and')
     expect(nestedGroup.rules).toHaveLength(2)
     expect(nestedGroup.rules[0].field).toBe('entity_state_ha')
@@ -106,10 +107,10 @@ describe('converters', () => {
           entityId: 'binary_sensor.front_door_window_door_is_open',
         },
       ],
-    } as any
+    } as unknown as WhenNode
 
     const result = alarmDslToRqbWithFor(when)
-    const rule = result.query.rules[0] as any
+    const rule = result.query.rules[0] as RuleType
     expect(rule.field).toBe('entity_state_ha')
     expect(rule.value.entityId).toBe('binary_sensor.front_door_window_door_is_open')
   })
@@ -140,7 +141,7 @@ describe('converters', () => {
     expect(json).not.toContain('"tz"')
 
     const roundTrip = alarmDslToRqbWithFor(when)
-    const rule = roundTrip.query.rules[0] as any
+    const rule = roundTrip.query.rules[0] as RuleType
     expect(rule.field).toBe('time_in_range')
     expect(rule.value.tz).toBe('system')
     expect(rule.value.days).toHaveLength(7)
@@ -172,7 +173,7 @@ describe('converters', () => {
     expect(when.children[0].tz).toBe('America/New_York')
 
     const roundTrip = alarmDslToRqbWithFor(when)
-    const rule = roundTrip.query.rules[0] as any
+    const rule = roundTrip.query.rules[0] as RuleType
     expect(rule.value.tz).toBe('America/New_York')
     expect(rule.value.days).toEqual(['mon', 'tue'])
   })

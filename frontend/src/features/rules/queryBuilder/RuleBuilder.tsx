@@ -4,7 +4,7 @@
  * Note: 'kind' is auto-derived from actions by the backend
  */
 import { useState, useCallback, useMemo } from 'react'
-import type { RuleGroupType } from 'react-querybuilder'
+import type { RuleGroupType, RuleType } from 'react-querybuilder'
 import type { Rule, Entity } from '@/types/rules'
 import type {
   ActionNode,
@@ -188,7 +188,7 @@ export function RuleBuilder({
           walk(r as RuleGroupType)
           continue
         }
-        const field = (r as any).field as string | undefined
+        const field = (r as RuleType).field as string | undefined
         if (!field) continue
         if (field === 'time_in_range') hasTime = true
         else hasTriggerable = true
