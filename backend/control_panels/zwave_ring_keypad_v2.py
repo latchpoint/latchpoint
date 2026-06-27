@@ -41,6 +41,11 @@ _IND_ENTRY_DELAY = 17
 _IND_EXIT_DELAY = 18
 _IND_SOUND_DOUBLE_BEEP = 96
 
+# Burglar-siren play duration — Indicator CC "Timeout: Seconds" (property_key 7). The keypad only
+# re-syncs on alarm state changes, so this single command carries the full siren duration; a
+# disarm/arm transition re-selects a mode indicator and silences it early. One byte, capped at 255.
+_BURGLAR_SIREN_SECONDS = 240
+
 
 @dataclass(frozen=True)
 class RingKeypadV2ActionRequest:
@@ -345,18 +350,25 @@ def _sync_device_state(*, device: ControlPanelDevice) -> None:
         _indicator_set(device=device, property_id=_IND_ENTRY_DELAY, property_key=7, value=seconds)
         return
     if snapshot.current_state == AlarmState.TRIGGERED:
-        # Sound the burglar siren until the alarm is disarmed. Ring ships the burglar indicator with
-        # a non-zero Indicator CC auto-clear timeout (property_key 6 = minutes, 7 = seconds; ~5s by
-        # default), so a plain "on" command stops sounding after the timeout. Zero the timeout — like
-        # the sticky disarmed/armed mode indicators (all-zero timeout) — and drive the multilevel to
-        # full, so the siren holds until a mode indicator is next selected (e.g. on disarm).
+        # Sound the burglar siren. On the Ring Keypad v2 the alarm indicators (12 "Alarming",
+        # 13 "Alarming: Burglar") are activated by a *non-zero* Indicator CC timeout: property_key 7
+        # (seconds) sets how long the tone plays — exactly like the entry/exit-delay tones above.
+        # (#64 wrongly read the timeout as an auto-clear to suppress and zeroed it, i.e. "sound for
+        # 0 seconds" = silent; multilevel/key 1 is not supported on this indicator. See ADR-0097.)
+        # The keypad only re-syncs on alarm state changes, so this single command carries the full
+        # duration; a disarm/arm transition re-selects a mode indicator and silences it early.
         # log_failures=True: the siren is the most safety-critical indicator, so a failed Z-Wave
         # write is logged rather than silently swallowed (a silent siren is otherwise undiagnosable).
         logger.info("Ring Keypad v2 burglar siren commanded device_id=%s", device.id)
         _apply_ring_keypad_v2_volume(device=device, property_id=_IND_BURGLAR_ALARM, log_failures=True)
         _indicator_set(device=device, property_id=_IND_BURGLAR_ALARM, property_key=6, value=0, log_failures=True)
-        _indicator_set(device=device, property_id=_IND_BURGLAR_ALARM, property_key=7, value=0, log_failures=True)
-        _indicator_set(device=device, property_id=_IND_BURGLAR_ALARM, property_key=1, value=99, log_failures=True)
+        _indicator_set(
+            device=device,
+            property_id=_IND_BURGLAR_ALARM,
+            property_key=7,
+            value=_BURGLAR_SIREN_SECONDS,
+            log_failures=True,
+        )
         return
 
     # Best-effort fallback for other armed states.
