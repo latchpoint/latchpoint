@@ -176,14 +176,107 @@ class PushDoorCodeToLockTests(EncryptionTestMixin, TestCase):
         ]
         self.assertEqual(len(schedule_calls), 2)
         for call in schedule_calls:
-            payload = call["args"][0]
-            self.assertEqual(payload["userId"], result.slot_index)
-            self.assertEqual(payload["startHour"], 9)
-            self.assertEqual(payload["startMinute"], 0)
-            self.assertEqual(payload["durationHour"], 8)
-            self.assertEqual(payload["durationMinute"], 30)
-            self.assertEqual(len(payload["weekdays"]), 1)
-            self.assertIn(payload["weekdays"][0], (1, 3))
+            # setDailyRepeatingSchedule(slot, schedule) — two positional args.
+            slot, schedule = call["args"]
+            self.assertEqual(slot["userId"], result.slot_index)
+            self.assertIn(slot["slotId"], (1, 3))  # Mon=slot 1, Wed=slot 3 (bit+1)
+            self.assertEqual(schedule["startHour"], 9)
+            self.assertEqual(schedule["startMinute"], 0)
+            self.assertEqual(schedule["durationHour"], 8)
+            self.assertEqual(schedule["durationMinute"], 30)
+            self.assertEqual(len(schedule["weekdays"]), 1)
+            self.assertIn(schedule["weekdays"][0], (1, 3))
+
+    def test_pushes_full_day_schedule_when_days_set_without_window(self):
+        # The reported prod bug: days set (Sat+Sun) but no time window. Previously
+        # this pushed only the PIN; now it must push a full-day CC 78 schedule so
+        # the lock enforces the day restriction.
+        gateway = FakeGateway(usersNumber=7, slot_status=dict.fromkeys(range(1, 8), 0))
+        code = self._make_code(
+            pin="4242",
+            code_type=DoorCode.CodeType.TEMPORARY,
+            days_of_week=96,  # bit5 (Sat) + bit6 (Sun)
+        )
+
+        result = push_door_code_to_lock(
+            door_code=code,
+            lock_entity_id=self.LOCK_ENTITY_ID,
+            zwavejs=gateway,
+        )
+
+        self.assertTrue(result.schedule_applied)
+        # CC 78 ScheduleEntryLockWeekday: Saturday=6, Sunday=0.
+        self.assertEqual(sorted(result.weekdays_pushed), [0, 6])
+
+        schedule_calls = [
+            c
+            for c in gateway.invoke_calls
+            if c["command_class"] == 78 and c["method_name"] == "setDailyRepeatingSchedule"
+        ]
+        self.assertEqual(len(schedule_calls), 2)
+        for call in schedule_calls:
+            slot, schedule = call["args"]
+            self.assertEqual(slot["userId"], result.slot_index)
+            self.assertIn(slot["slotId"], (6, 7))  # Sat=slot 6, Sun=slot 7 (bit+1)
+            self.assertEqual(schedule["startHour"], 0)
+            self.assertEqual(schedule["startMinute"], 0)
+            self.assertEqual(schedule["durationHour"], 23)
+            self.assertEqual(schedule["durationMinute"], 59)
+            self.assertEqual(len(schedule["weekdays"]), 1)
+            self.assertIn(schedule["weekdays"][0], (0, 6))
+
+        event = DoorCodeEvent.objects.get(door_code=code)
+        self.assertTrue(event.metadata.get("schedule_applied"))
+
+    def test_full_day_schedule_uses_correct_weekday_enum(self):
+        # No window, Mon (bit0) + Wed (bit2): enum maps Mon=1, Wed=3.
+        gateway = FakeGateway(usersNumber=3, slot_status={1: 0, 2: 0, 3: 0})
+        code = self._make_code(
+            pin="1357",
+            code_type=DoorCode.CodeType.TEMPORARY,
+            days_of_week=0b101,
+        )
+
+        result = push_door_code_to_lock(
+            door_code=code,
+            lock_entity_id=self.LOCK_ENTITY_ID,
+            zwavejs=gateway,
+        )
+
+        self.assertTrue(result.schedule_applied)
+        self.assertEqual(sorted(result.weekdays_pushed), [1, 3])
+
+    def test_no_schedule_pushed_when_days_of_week_none(self):
+        gateway = FakeGateway(usersNumber=3, slot_status={1: 0, 2: 0, 3: 0})
+        code = self._make_code(pin="1234", code_type=DoorCode.CodeType.TEMPORARY)  # days_of_week=None
+
+        result = push_door_code_to_lock(
+            door_code=code,
+            lock_entity_id=self.LOCK_ENTITY_ID,
+            zwavejs=gateway,
+        )
+
+        self.assertFalse(result.schedule_applied)
+        self.assertEqual(result.weekdays_pushed, [])
+        schedule_calls = [c for c in gateway.invoke_calls if c["command_class"] == 78]
+        self.assertEqual(schedule_calls, [])
+
+    def test_schedule_window_end_before_start_raises_invalid_pin(self):
+        gateway = FakeGateway(usersNumber=3, slot_status={1: 0, 2: 0, 3: 0})
+        code = self._make_code(
+            pin="2222",
+            code_type=DoorCode.CodeType.TEMPORARY,
+            days_of_week=0b1,  # Monday
+            window_start=time(17, 0),
+            window_end=time(9, 0),  # end <= start
+        )
+
+        with self.assertRaises(InvalidPin):
+            push_door_code_to_lock(
+                door_code=code,
+                lock_entity_id=self.LOCK_ENTITY_ID,
+                zwavejs=gateway,
+            )
 
     def test_slots_full_raises_before_any_network_write(self):
         # Every slot occupied.

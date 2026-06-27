@@ -58,11 +58,11 @@ CC_API_CONTRACTS: dict[tuple[int, str], tuple[tuple[str, ArgRule], ...]] = {
     ),
     # CC 99 (User Code) — UserCodeCCAPI.clear(userId).
     (99, "clear"): (("userId", _T_INT),),
-    # CC 78 (Schedule Entry Lock) — setDailyRepeatingSchedule(schedule).
-    # The schedule dict carries userId, slotId, startHour, startMinute,
-    # durationHour, durationMinute, weekdays. We validate it's a dict; the
-    # ZJS server validates the inner fields.
-    (78, "setDailyRepeatingSchedule"): (("schedule", _T_DICT),),
+    # CC 78 (Schedule Entry Lock) — setDailyRepeatingSchedule(slot, schedule).
+    # slot = {userId, slotId}; schedule = {weekdays[], startHour, startMinute,
+    # durationHour, durationMinute}. Two positional args — the ZJS server spreads
+    # them and validates the inner fields.
+    (78, "setDailyRepeatingSchedule"): (("slot", _T_DICT), ("schedule", _T_DICT)),
 }
 
 
