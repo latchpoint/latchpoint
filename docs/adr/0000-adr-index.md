@@ -107,6 +107,7 @@ This document tracks all Architecture Decision Records (ADRs) and their implemen
 | [0088](0088-rule-message-template-variables.md) | Template Variables in Rule Notification Action Messages | **Implemented** |
 | [0089](0089-frontend-only-demo-mode.md) | Frontend-Only Demo Mode | **Implemented** |
 | [0090](0090-container-timezone-env-var.md) | Container Timezone via TZ Env Var | **Implemented** |
+| [0097](0097-ring-keypad-v2-burglar-siren-timeout.md) | Ring Keypad v2 Burglar Siren via Non-Zero Indicator CC Timeout | **Accepted** |
 
 ---
 
