@@ -281,13 +281,14 @@ def _parse_schedule_key(property_key: object) -> tuple[int | None, int | None, i
 
 def _weekday_to_mask_index(weekday: int) -> int | None:
     """
-    Convert weekday to LatchPoint's mask index where Monday=0..Sunday=6.
-    Accepts either 1..7 (common Z-Wave semantics) or 0..6.
+    Convert a Z-Wave weekday to LatchPoint's mask index where Monday=0..Sunday=6.
+
+    CC 78 ScheduleEntryLockWeekday encodes Sunday=0..Saturday=6; some sources use
+    1=Monday..7=Sunday. (weekday - 1) % 7 maps both: 0->Sun(6), 1->Mon(0),
+    6->Sat(5), 7->Sun(6).
     """
-    if 1 <= weekday <= 7:
-        return weekday - 1
-    if 0 <= weekday <= 6:
-        return weekday
+    if 0 <= weekday <= 7:
+        return (weekday - 1) % 7
     return None
 
 
@@ -577,7 +578,7 @@ def _extract_daily_repeating_schedule_windows_via_cc_api(
                 user_error = "Different schedule windows across daily repeating slots."
                 break
 
-            # Build days bitmask from weekdays array (1=Monday .. 7=Sunday).
+            # Build days bitmask from weekdays array (CC 78: Sunday=0 .. Saturday=6).
             weekdays = response.get("weekdays", [])
             if isinstance(weekdays, list):
                 for wd in weekdays:

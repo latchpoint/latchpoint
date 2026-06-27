@@ -13,7 +13,28 @@ from alarm.settings_registry import ALARM_PROFILE_SETTINGS_BY_KEY
 from alarm.tests.settings_test_utils import EncryptionTestMixin
 from alarm.use_cases.settings_profile import ensure_active_settings_profile
 from locks.models import DoorCode, DoorCodeLockAssignment
-from locks.use_cases.lock_config_sync import _normalize_pin
+from locks.use_cases.lock_config_sync import _normalize_pin, _weekday_to_mask_index
+
+
+class WeekdayToMaskIndexTests(TestCase):
+    """CC 78 ScheduleEntryLockWeekday (Sunday=0..Saturday=6) -> mask bit (Mon=0..Sun=6)."""
+
+    def test_cc78_sunday_zero_maps_to_sunday_bit(self):
+        # The round-trip bug: ZW 0 = Sunday, must decode to bit 6 (not Monday/bit 0).
+        self.assertEqual(_weekday_to_mask_index(0), 6)
+
+    def test_monday_through_saturday(self):
+        self.assertEqual(_weekday_to_mask_index(1), 0)  # Monday
+        self.assertEqual(_weekday_to_mask_index(2), 1)
+        self.assertEqual(_weekday_to_mask_index(6), 5)  # Saturday
+
+    def test_legacy_seven_still_maps_to_sunday(self):
+        # Some sources use 1=Monday..7=Sunday; 7 must also land on the Sunday bit.
+        self.assertEqual(_weekday_to_mask_index(7), 6)
+
+    def test_out_of_range_returns_none(self):
+        self.assertIsNone(_weekday_to_mask_index(8))
+        self.assertIsNone(_weekday_to_mask_index(-1))
 
 
 class FakeZwavejsGateway:

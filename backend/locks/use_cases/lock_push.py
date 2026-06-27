@@ -49,16 +49,17 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Weekday bit -> Z-Wave JS weekday integer (1=Monday .. 7=Sunday).
-# Mirrors the read path's _weekday_to_mask_index inversion.
+# Weekday bit -> CC 78 ScheduleEntryLockWeekday (Sunday=0, Monday=1 .. Saturday=6).
+# Mirrors the read path's _weekday_to_mask_index inversion. NOTE: Sunday is 0, not 7
+# — node-zwave-js's ScheduleEntryLockWeekday enum has no value 7.
 _WEEKDAY_BIT_TO_ZWAVE = {
     0: 1,  # Monday
     1: 2,
     2: 3,
     3: 4,
     4: 5,
-    5: 6,
-    6: 7,  # Sunday
+    5: 6,  # Saturday
+    6: 0,  # Sunday
 }
 
 
@@ -165,6 +166,13 @@ def _enumerate_free_slot(
     raise LockSlotsFull("All user-code slots on this lock are occupied.")
 
 
+# CC 78 daily-repeating schedules are time-based, so "all day" is the widest
+# expressible window: 00:00 for 23h59m. Used when a code restricts days but
+# carries no explicit time-of-day window.
+_FULL_DAY_START = time(0, 0)
+_FULL_DAY_DURATION = (23, 59)
+
+
 def _compute_schedule_duration(window_start: time, window_end: time) -> tuple[int, int]:
     """Return (durationHour, durationMinute) for a same-day window."""
     start_dt = datetime(2000, 1, 1, window_start.hour, window_start.minute, tzinfo=timezone.utc)
@@ -184,11 +192,21 @@ def _push_daily_repeating_schedule(
     door_code: DoorCode,
     timeout_seconds: float,
 ) -> list[int]:
-    """Push CC 78 daily-repeating schedule for each enabled weekday. Returns ZW weekday ints used."""
-    if door_code.days_of_week is None or not door_code.window_start or not door_code.window_end:
+    """Push CC 78 daily-repeating schedule for each enabled weekday. Returns ZW weekday ints used.
+
+    When the code restricts days but carries no time-of-day window, the schedule
+    falls back to a full-day window (00:00 + 23h59m) so the day restriction still
+    reaches the lock. The stored model is not mutated — synthesis happens here only.
+    """
+    if door_code.days_of_week is None:
         return []
 
-    duration_h, duration_m = _compute_schedule_duration(door_code.window_start, door_code.window_end)
+    if door_code.window_start and door_code.window_end:
+        start = door_code.window_start
+        duration_h, duration_m = _compute_schedule_duration(start, door_code.window_end)
+    else:
+        start = _FULL_DAY_START
+        duration_h, duration_m = _FULL_DAY_DURATION
     if duration_h == 0 and duration_m == 0:
         return []
 
@@ -197,20 +215,20 @@ def _push_daily_repeating_schedule(
         if not (int(door_code.days_of_week) & (1 << bit)):
             continue
         slot_id = bit + 1
-        payload = {
-            "userId": slot_index,
-            "slotId": slot_id,
-            "startHour": door_code.window_start.hour,
-            "startMinute": door_code.window_start.minute,
+        # setDailyRepeatingSchedule(slot, schedule) — two positional args.
+        slot = {"userId": slot_index, "slotId": slot_id}
+        schedule = {
+            "weekdays": [zwave_weekday],
+            "startHour": start.hour,
+            "startMinute": start.minute,
             "durationHour": duration_h,
             "durationMinute": duration_m,
-            "weekdays": [zwave_weekday],
         }
         zwavejs.invoke_cc_api(
             node_id=node_id,
             command_class=CC_SCHEDULE_ENTRY_LOCK,
             method_name="setDailyRepeatingSchedule",
-            args=[payload],
+            args=[slot, schedule],
             timeout_seconds=timeout_seconds,
         )
         weekdays_pushed.append(zwave_weekday)

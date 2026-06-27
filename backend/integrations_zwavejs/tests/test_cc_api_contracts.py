@@ -43,16 +43,40 @@ class CcApiContractsTests(SimpleTestCase):
         with self.assertRaises(CcApiContractViolation):
             validate_cc_api_args(command_class=99, method_name="clear", args=[])
 
-    def test_cc_78_daily_schedule_takes_one_dict(self):
+    def test_cc_78_daily_schedule_takes_two_dicts(self):
+        # setDailyRepeatingSchedule(slot, schedule) — the shape node-zwave-js wants.
         validate_cc_api_args(
             command_class=78,
             method_name="setDailyRepeatingSchedule",
-            args=[{"userId": 1, "slotId": 1}],
+            args=[
+                {"userId": 1, "slotId": 1},
+                {
+                    "weekdays": [6, 0],
+                    "startHour": 0,
+                    "startMinute": 0,
+                    "durationHour": 23,
+                    "durationMinute": 59,
+                },
+            ],
         )
 
-    def test_cc_78_daily_schedule_rejects_list(self):
+    def test_cc_78_daily_schedule_rejects_single_merged_dict(self):
+        # The shipped-broken shape: one flattened dict instead of (slot, schedule).
+        with self.assertRaises(CcApiContractViolation) as ctx:
+            validate_cc_api_args(
+                command_class=78,
+                method_name="setDailyRepeatingSchedule",
+                args=[{"userId": 1, "slotId": 1, "weekdays": [6]}],
+            )
+        self.assertIn("expected 2 args", str(ctx.exception))
+
+    def test_cc_78_daily_schedule_rejects_non_dict_schedule(self):
         with self.assertRaises(CcApiContractViolation):
-            validate_cc_api_args(command_class=78, method_name="setDailyRepeatingSchedule", args=[["not", "a", "dict"]])
+            validate_cc_api_args(
+                command_class=78,
+                method_name="setDailyRepeatingSchedule",
+                args=[{"userId": 1, "slotId": 1}, ["not", "a", "dict"]],
+            )
 
     def test_unknown_cc_method_combo_passes_unvalidated(self):
         # We don't want to break things we haven't characterised; only enforce
