@@ -7,5 +7,5 @@ class NotificationsConfig(AppConfig):
     verbose_name = "Notification Providers"
 
     def ready(self) -> None:
-        # Import tasks to register them with the scheduler
-        from . import tasks  # noqa: F401
+        # Register scheduler tasks and wire signal receivers (ADR-0098)
+        from . import receivers, tasks  # noqa: F401

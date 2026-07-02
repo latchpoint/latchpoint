@@ -46,6 +46,12 @@ _IND_SOUND_DOUBLE_BEEP = 96
 # disarm/arm transition re-selects a mode indicator and silences it early. One byte, capped at 255.
 _BURGLAR_SIREN_SECONDS = 240
 
+# Bell cutoff for the periodic siren re-assert (ADR-0098): total time since the triggered
+# transition after which `resync_ring_keypad_siren` stops re-sounding the tone. The final
+# re-send still plays out its full _BURGLAR_SIREN_SECONDS, so the effective ceiling is
+# roughly this value plus one tone duration.
+_BURGLAR_SIREN_MAX_TOTAL_SECONDS = 900
+
 
 @dataclass(frozen=True)
 class RingKeypadV2ActionRequest:
