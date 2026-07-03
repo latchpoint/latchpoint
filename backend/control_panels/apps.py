@@ -11,6 +11,9 @@ class ControlPanelsConfig(AppConfig):
 
     def ready(self) -> None:
         """Initialize control panel runtime listeners (skips migrations/tests/collectstatic)."""
+        # Import tasks to register them with the scheduler
+        from . import tasks  # noqa: F401
+
         # Runtime wiring (signals / integration hooks) lives in this app to keep alarm core clean.
         argv = " ".join(sys.argv).lower()
         if any(token in argv for token in ["makemigrations", "migrate", "collectstatic", "pytest", " test"]):
