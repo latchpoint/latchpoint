@@ -324,6 +324,16 @@ def _sync_device_state(*, device: ControlPanelDevice) -> None:
     snapshot = get_current_snapshot(process_timers=False)
     now = timezone.now()
 
+    # Clear the burglar-siren timeout whenever the alarm is NOT triggered. The tone is started by a
+    # *rising edge* (0 -> non-zero) on the burglar "Timeout: Seconds" register, not merely by it being
+    # non-zero. Nothing else here ever zeroes it, so once a trigger sets it to _BURGLAR_SIREN_SECONDS
+    # it stays there and the *next* trigger writes the same value = no edge = silent siren. Resetting
+    # it to 0 on every non-triggered sync guarantees the next trigger's write is a genuine edge. See
+    # ADR-0099. (Idempotent best-effort write; the burglar indicator is not sounding in these states,
+    # so writing its timeout to 0 is inaudible.)
+    if snapshot.current_state != AlarmState.TRIGGERED:
+        _indicator_set(device=device, property_id=_IND_BURGLAR_ALARM, property_key=7, value=0)
+
     if snapshot.current_state == AlarmState.DISARMED:
         _indicator_set(device=device, property_id=_IND_DISARMED, property_key=1, value=99)
         return
@@ -357,15 +367,24 @@ def _sync_device_state(*, device: ControlPanelDevice) -> None:
         return
     if snapshot.current_state == AlarmState.TRIGGERED:
         # Sound the burglar siren. On the Ring Keypad v2 the alarm indicators (12 "Alarming",
-        # 13 "Alarming: Burglar") are activated by a *non-zero* Indicator CC timeout: property_key 7
-        # (seconds) sets how long the tone plays — exactly like the entry/exit-delay tones above.
-        # (#64 wrongly read the timeout as an auto-clear to suppress and zeroed it, i.e. "sound for
-        # 0 seconds" = silent; multilevel/key 1 is not supported on this indicator. See ADR-0097.)
-        # The keypad only re-syncs on alarm state changes, so this single command carries the full
-        # duration; a disarm/arm transition re-selects a mode indicator and silences it early.
+        # 13 "Alarming: Burglar") start sounding on a *rising edge* of the Indicator CC timeout:
+        # property_key 7 (seconds) transitioning from 0 -> non-zero — exactly like the entry/exit-delay
+        # tones above, whose countdown naturally returns to 0 between uses. (#64 wrongly read the
+        # timeout as an auto-clear to suppress and zeroed it, i.e. "sound for 0 seconds" = silent;
+        # multilevel/key 1 is not supported on this indicator. See ADR-0097/0098.)
+        #
+        # We force the edge by writing key 7 = 0 first and key 7 = _BURGLAR_SIREN_SECONDS last, with
+        # the volume/minutes writes in between: each write is a supervised round-trip, so the device
+        # has ACKed the 0 well before the non-zero value arrives. The teardown clear at the top of
+        # this function normally leaves the register at 0 already, but the explicit reset here is the
+        # backstop for the one case teardown can't cover — an app restart while already triggered
+        # (register left non-zero). Writing the same non-zero value with no preceding 0 is a no-op
+        # and leaves the keypad silent; that was the ADR-0099 bug.
+        #
         # log_failures=True: the siren is the most safety-critical indicator, so a failed Z-Wave
         # write is logged rather than silently swallowed (a silent siren is otherwise undiagnosable).
         logger.info("Ring Keypad v2 burglar siren commanded device_id=%s", device.id)
+        _indicator_set(device=device, property_id=_IND_BURGLAR_ALARM, property_key=7, value=0, log_failures=True)
         _apply_ring_keypad_v2_volume(device=device, property_id=_IND_BURGLAR_ALARM, log_failures=True)
         _indicator_set(device=device, property_id=_IND_BURGLAR_ALARM, property_key=6, value=0, log_failures=True)
         _indicator_set(

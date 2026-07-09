@@ -193,24 +193,24 @@ class RingKeypadV2ControlPanelTests(TestCase):
             sync_ring_keypad_v2_devices_state()
 
         calls = [kwargs for _args, kwargs in set_value.call_args_list]
-        # Burglar alarm indicator = property 13. The tone is activated by a NON-ZERO Indicator CC
-        # timeout (property_key 7 = seconds); zeroing it plays for 0s = silent (the bug, ADR-0097).
-        self.assertTrue(
-            any(
-                call.get("property") == 13
-                and call.get("property_key") == 7
-                and call.get("value") == _BURGLAR_SIREN_SECONDS
-                for call in calls
-            )
-        )
+        # Burglar alarm indicator = property 13. The tone starts on a RISING EDGE of the Indicator CC
+        # timeout (property_key 7): 0 -> non-zero. So the trigger must (a) end with a non-zero key 7 and
+        # (b) emit a key 7 = 0 write *before* the non-zero write to guarantee that edge. Writing the same
+        # non-zero value with no preceding 0 is a no-op = silent siren (the ADR-0099 stuck-register bug).
         self.assertGreater(_BURGLAR_SIREN_SECONDS, 0)
-        # Regression guard: property_key 7 must never be zeroed on trigger.
-        self.assertFalse(
-            any(
-                call.get("property") == 13 and call.get("property_key") == 7 and call.get("value") == 0
-                for call in calls
-            )
+        key7_values = [
+            call.get("value") for call in calls if call.get("property") == 13 and call.get("property_key") == 7
+        ]
+        # Edge guard: a 0 write must PRECEDE the non-zero write (0 -> _BURGLAR_SIREN_SECONDS).
+        self.assertIn(0, key7_values, "burglar key 7 must be reset to 0 to force a rising edge")
+        self.assertIn(_BURGLAR_SIREN_SECONDS, key7_values)
+        self.assertLess(
+            key7_values.index(0),
+            key7_values.index(_BURGLAR_SIREN_SECONDS),
+            "burglar key 7 must go 0 -> non-zero (reset before activate)",
         )
+        # The FINAL burglar key-7 write must be non-zero so the tone is left sounding, not silenced.
+        self.assertEqual(key7_values[-1], _BURGLAR_SIREN_SECONDS)
         # No multilevel/key 1 write — indicator 13 does not support it (it was silently ignored).
         self.assertFalse(any(call.get("property") == 13 and call.get("property_key") == 1 for call in calls))
         # Minutes timeout pinned to 0 so the play duration is exactly the seconds value.
@@ -226,4 +226,24 @@ class RingKeypadV2ControlPanelTests(TestCase):
                 call.get("property") == 13 and call.get("property_key") == 9 and call.get("value") == 77
                 for call in calls
             )
+        )
+
+    def test_sync_non_triggered_clears_burglar_siren_timeout(self):
+        # Regression guard for ADR-0099: whenever the alarm is NOT triggered, the burglar-siren
+        # timeout (property 13, key 7) must be reset to 0 so the *next* trigger produces a fresh
+        # 0 -> non-zero rising edge. Without this reset the register sticks at the last siren duration
+        # and a subsequent trigger writes the same value = no edge = silent siren (the real 7/9 bug).
+        snapshot = get_current_snapshot(process_timers=False)
+        self.assertEqual(snapshot.current_state, AlarmState.DISARMED)
+
+        with patch("alarm.gateways.zwavejs.DefaultZwavejsGateway.set_value") as set_value:
+            sync_ring_keypad_v2_devices_state()
+
+        calls = [kwargs for _args, kwargs in set_value.call_args_list]
+        self.assertTrue(
+            any(
+                call.get("property") == 13 and call.get("property_key") == 7 and call.get("value") == 0
+                for call in calls
+            ),
+            "a non-triggered sync must reset burglar key 7 to 0 to arm the next rising edge",
         )
