@@ -44,14 +44,18 @@ _IND_SOUND_DOUBLE_BEEP = 96
 # Burglar-siren play duration — Indicator CC "Timeout: Seconds" (property_key 7). One byte,
 # capped at 255. A disarm/arm transition re-selects a mode indicator and silences it early.
 #
-# ADR-0100 semantic model (supersedes the ADR-0097 "0 = silent" and ADR-0099 "rising edge"
-# readings): the keypad activates the burglar tone on any value-CHANGING write to this register
-# (0 = no auto-stop timeout, i.e. writing 0 over a non-zero value SOUNDS the siren indefinitely —
-# the 2026-07-10 arm-sounds-siren regression). Writing the register's current value does nothing.
-# So the siren is sounded by writing whichever of the two durations below differs from the last
-# value we wrote, and the register is otherwise never touched outside the TRIGGERED state.
+# ADR-0100 semantic model, hardware-verified 2026-07-10 (supersedes the ADR-0097 "0 = silent"
+# and ADR-0099 "rising edge" readings):
+# - Writing 0 ALWAYS sounds the siren with no auto-stop — even over an already-0 register.
+#   (This is why the ADR-0099 teardown clear sounded the siren on BOTH arm tests on 7/10.)
+# - Writing a non-zero value over a DIFFERENT register value sounds it for that many seconds.
+# - Writing the same NON-ZERO value as the register is a device no-op (the silent 7/7 + 7/9
+#   triggers, register stuck at 240).
+# - Selecting a mode indicator silences the tone; the register does NOT self-reset.
+# Therefore: the register is NEVER written outside TRIGGERED, and sounding the siren always
+# uses reset-then-set (0, then the duration) — every step of which is verified to activate
+# regardless of what the register holds.
 _BURGLAR_SIREN_SECONDS = 240
-_BURGLAR_SIREN_ALT_SECONDS = 239
 
 # Bell cutoff for the periodic siren re-assert (ADR-0098): total time since the triggered
 # transition after which `resync_ring_keypad_siren` stops re-sounding the tone. The final
@@ -369,14 +373,15 @@ def _desired_indicator_writes(
     device's last_written_indicators mapping — keys "property:property_key" for register values,
     "mode" for the last mode indicator selected, "state" for the last alarm state fully synced.
 
-    Burglar-siren policy (ADR-0100): the tone starts on any value-CHANGING write to the
-    "Timeout: Seconds" register (13:7) and stops when a mode indicator is selected. Therefore:
-    - The register is written ONLY while TRIGGERED (a "teardown clear" outside triggered sounds
-      the siren — the 2026-07-10 regression this replaces).
-    - Sounding it means writing whichever siren duration differs from the last written value.
-    - With no tracked value (fresh install / pre-ADR-0100 rows), write 0 then the duration:
-      both orderings sound the siren regardless of the register's actual content, which is the
-      desired outcome in TRIGGERED.
+    Burglar-siren policy (ADR-0100, hardware-verified 2026-07-10): a write of 0 to the
+    "Timeout: Seconds" register (13:7) ALWAYS sounds the siren with no auto-stop — even over an
+    already-0 register — and a 0 -> non-zero write sounds it for that duration; mode-indicator
+    selection silences it. Therefore:
+    - The register is written ONLY while TRIGGERED (any 0-write outside triggered sounds the
+      siren — the 2026-07-10 arm regression this replaces).
+    - Sounding it always uses reset-then-set (0, then _BURGLAR_SIREN_SECONDS): both writes are
+      verified activators, so the siren sounds regardless of what the register holds — no
+      dependence on same-value/dedupe semantics.
     """
     state = snapshot.current_state
     volume = _clamped_beep_volume(device)
@@ -389,17 +394,8 @@ def _desired_indicator_writes(
             writes.append(IndicatorWrite(_IND_BURGLAR_ALARM, 6, 0, log_failures=True))
         entering_triggered = tracked.get("state") != AlarmState.TRIGGERED
         if entering_triggered or force_siren_edge:
-            last_seconds = tracked.get(f"{_IND_BURGLAR_ALARM}:7")
-            if last_seconds is None:
-                writes.append(IndicatorWrite(_IND_BURGLAR_ALARM, 7, 0, log_failures=True))
-                writes.append(IndicatorWrite(_IND_BURGLAR_ALARM, 7, _BURGLAR_SIREN_SECONDS, log_failures=True))
-            else:
-                value = (
-                    _BURGLAR_SIREN_SECONDS
-                    if int(last_seconds) != _BURGLAR_SIREN_SECONDS
-                    else _BURGLAR_SIREN_ALT_SECONDS
-                )
-                writes.append(IndicatorWrite(_IND_BURGLAR_ALARM, 7, value, log_failures=True))
+            writes.append(IndicatorWrite(_IND_BURGLAR_ALARM, 7, 0, log_failures=True))
+            writes.append(IndicatorWrite(_IND_BURGLAR_ALARM, 7, _BURGLAR_SIREN_SECONDS, log_failures=True))
         return writes
 
     if state == AlarmState.ARMING:

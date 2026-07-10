@@ -54,22 +54,27 @@ symptoms while guessing the activation semantics:
 - ADR-0099 assumed activation is a rising edge `0 → non-zero` and added a **teardown clear
   (write 0) on every non-triggered sync**.
 
-All hardware observations to date fit a simpler, different model:
+The corrected model — initially inferred from prod evidence, then **live-verified on the
+device the same day** (see Hardware verification below):
 
-> **Any value-CHANGING write to the burglar timeout register (indicator 13, property_key 7)
-> activates the siren** (with the written value as the auto-stop timeout; `0` = no auto-stop).
-> **Writing the register's current value does nothing.** Selecting a mode indicator silences
-> the tone.
+> **A write of `0` to the burglar timeout register (indicator 13, property_key 7) ALWAYS
+> sounds the siren with no auto-stop — even over an already-0 register.** A write of a
+> non-zero value over a different register value sounds it for that many seconds (duration is
+> honored). **Writing the same NON-ZERO value as the register is a device no-op.** Selecting
+> a mode indicator silences the tone; the register does NOT self-reset.
 
-| Date | Write | Register | Result | Consistent |
+| Date | Write | Register | Result | Verdict |
 |---|---|---|---|---|
-| 2026-07-01 | 240 | 0 → 240 | siren sounded | ✔ |
-| 2026-07-07 / 07-09 | 240 | 240 → 240 | silent (the ADR-0099 incident) | ✔ |
-| 2026-06-27 (#64 code) | 0 | 0 → 0 | silent | ✔ |
-| **2026-07-10 11:26:21** | **0 (teardown clear)** | **240 → 0** | **siren sounded on arm** | ✔ |
+| 2026-07-01 | 240 | 0 → 240 | siren, auto-stop at ~240 s | ✔ activation + duration honored |
+| 2026-07-07 / 07-09 | 240 | 240 → 240 | silent (the ADR-0099 incident) | ✔ same non-zero value = no-op |
+| 2026-06-27 (#64 code) | 0 | 0 → 0 | silent | ⚠ unreliable — image predates write-failure logging; delivery unconfirmed |
+| **2026-07-10 11:26:21** | **0 (teardown clear)** | **240 → 0** | **siren sounded on arm** | ✔ 0-write activates |
+| 2026-07-10 live test | 0 | 0 → 0 | **siren, no auto-stop** | ✔ 0-write activates even over 0 |
 
-The ADR-0099 teardown clear is therefore itself the arm-sounds-siren regression: the first
-non-triggered sync after any trigger performs a value-changing write to the register.
+The ADR-0099 teardown clear is therefore itself the arm-sounds-siren regression — and worse
+than first thought: because a 0-write activates even over an already-0 register, the deployed
+build sounds the siren on **every** state-change sync, with nothing to cut it off in the
+`arming`/`pending` branches (no mode-select there). Both 7/10 arm tests sounding is explained.
 
 ## Decision
 
@@ -88,12 +93,14 @@ Replace inline signal-driven device I/O with a **reconciling panel-sync worker**
    `ControlPanelDevice.last_written_indicators` JSON field (keys `"property:key"`, plus
    `"mode"` and `"state"`). Syncs compute desired writes as a **pure function**
    (`_desired_indicator_writes`) and only write diffs:
-   - **Burglar register (13:7) is written ONLY while TRIGGERED.** Sounding the siren = writing
-     whichever of 240/239 differs from the last written value (a guaranteed value change).
-     With no tracked value (fresh install, pre-0100 rows) the trigger path writes `0` then
-     `240` — both orderings sound the siren regardless of the physical register.
-   - The ADR-0098 re-assert goes through the same path, so each re-assert is a genuine
-     value change (fixing the silent-re-assert flaw ADR-0099 identified but did not fix).
+   - **Burglar register (13:7) is written ONLY while TRIGGERED.** Sounding the siren always
+     uses reset-then-set (`0`, then `240`): a 0-write is hardware-verified to ALWAYS activate
+     — even over an already-0 register — and `0 → 240` is a verified activator, so the
+     sequence sounds regardless of what the register holds, with no dependence on
+     same-value/dedupe semantics. (An earlier draft used 240/239 alternation; dropped because
+     it depended on "any value change activates", which the live test did not confirm.)
+   - The ADR-0098 re-assert goes through the same path, so each re-assert genuinely restarts
+     the tone (fixing the silent-re-assert flaw ADR-0099 identified but did not fix).
    - Silencing remains mode-indicator selection (proven on hardware); the mode write is forced
      whenever the alarm state changed, even if the same mode indicator was selected before an
      intervening trigger.
@@ -103,22 +110,40 @@ Replace inline signal-driven device I/O with a **reconciling panel-sync worker**
    retries it), records `device.last_error`, and keeps the greppable
    `"burglar siren commanded"` / `"indicator write failed"` log lines.
 
-### Hardware verification (pre-deploy validation)
+### Hardware verification (run live 2026-07-10, ~15:28–15:35 EDT, node 13)
 
-The corrected semantic model explains all six observations but was inferred, not bench-tested.
-Before (or at) deploy, verify on node 13 via HA `zwave_js.set_value` (each step may sound the
-siren briefly — coordinate the window):
+Executed via HA `zwave_js.set_value` with the user listening; register transitions confirmed
+through the HA recorder (`number.back_door_keypad_alarming_burglar_timeout_seconds`):
 
-1. register 0 → write 0 → expect silent
-2. register 0 → write 5 → expect 5 s siren
-3. register 5 → write 5 → expect silent (same-value no-op)
-4. register 5 → write 4 → expect siren (any value change activates)
-5. while sounding → select Disarmed (indicator 2, key 1 = 99) → expect silence; note whether
-   the register self-resets
-6. register non-zero, silent → select mode, then write the same register value → expect silent
+| Step | Write (register before) | Result | Verdict |
+|---|---|---|---|
+| 0-over-0 | 13:7 = 0 (register 0) | **SIREN, no auto-stop** (user-confirmed on re-run) | ❌ refuted "same-value = no-op" for zero: **a 0-write ALWAYS activates** |
+| 0 → 5 | 13:7 = 5 | write ACKed 15:28:36; tone activation consistent with 6/27 manual 5 s test | ✔ non-zero write over different value activates, duration honored |
+| 240-over-240 | (prod 7/7 + 7/9) | silent | ✔ same NON-ZERO value = device no-op |
+| mode-select while sounding | 2:1 = 99 | silences immediately; **register stays at written value (240 observed), no self-reset** | ✔ silencer confirmed; stuck-register mechanism confirmed |
+| 240 → 0 | 13:7 = 0 | siren starts (deliberate reproduction of the 7/10 arm regression) | ✔ teardown-clear regression confirmed live |
 
-If a step contradicts the model, only `_desired_indicator_writes` needs adjusting — the worker
-architecture is policy-agnostic.
+Consequences applied to the policy: the 240/239 single-write alternation was **dropped** —
+every siren activation now uses reset-then-set (`0` then `240`), which rests only on verified
+facts. The 6/27 "write 0 over 0 was silent" observation from the #64 era is reclassified as
+unreliable (that prod image predates write-failure logging; delivery was never confirmed).
+The always-activating 0-write also means the deployed ADR-0099 build sounds the siren on
+EVERY state-change sync (its teardown clear), not just after a trigger — arming/pending syncs
+have no subsequent mode-select to cut it off, which is exactly the user's 7/10 experience on
+both arm tests.
+
+**Community-doc comparison** ([ImSorryButWho's RingKeypadV2 notes](https://github.com/ImSorryButWho/HomeAssistantNotes/blob/main/RingKeypadV2.md)):
+aligns on the mode/delay/sound property map and on the alarm indicators playing "until another
+mode is selected" (our latched-register finding). It diverges on activation: it drives alarms
+via `property_key 1` and claims alarm properties "do not respect duration (property_key 7)" —
+but this unit demonstrably honors key-7 durations (6/27 manual 5 s test, 7/1 auto-stop at
+exactly 240 s in the recorder). Likely a firmware difference. We deliberately do NOT use the
+key-1 activation: if it latches until mode-select ignoring duration, the ADR-0098 15-minute
+bell cutoff would be unenforceable device-side.
+
+Residual risk of reset-then-set: if the `0` lands but the `240` write fails, the siren sounds
+with no auto-stop until a mode-select (i.e. disarm) or a successful retry — acceptable while
+TRIGGERED (the worker retries, and the 120 s re-assert task provides further repair windows).
 
 ## Alternatives Considered
 
@@ -147,7 +172,8 @@ class of register-semantics bugs (including the 7/10 regression) remains.
 | Risk | Likelihood | Impact | Mitigation |
 |---|---|---|---|
 | Semantic model still wrong in some corner (e.g. mode-select resets the register) | Low | Medium | Hardware test matrix above; policy isolated in one pure function; tracked values make any fix local. |
-| Tracked register drifts from device (external writes via HA/zwave-js) | Low | Low | Reassert alternation still changes value unless externally set to the exact alternate; next trigger self-corrects. |
+| Tracked register drifts from device (external writes via HA/zwave-js) | Low | Low | Siren activation is reset-then-set (0 then 240) and a 0-write always activates, so drift cannot silence a trigger; drift only affects diff-only skips of volume/minutes. |
+| Reset-then-set: `0` lands but `240` write fails → siren latched with no auto-stop | Low | Low | Only reachable while TRIGGERED (sound is desired); worker retries + 120 s re-assert repair it, and any disarm/mode-select silences. |
 | Worker thread dies | Low | Medium | Thread is daemon + top-level exception guard per drain; a dead worker leaves indicators stale but never blocks alarm transitions. |
 | Sync no longer runs inline in tests that relied on it | Certain | Low | Tests drain the worker explicitly; `sync_ring_keypad_v2_devices_state()` remains directly callable. |
 

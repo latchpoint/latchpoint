@@ -12,7 +12,6 @@ from alarm.tests.settings_test_utils import set_profile_settings
 from control_panels.models import ControlPanelDevice, ControlPanelIntegrationType, ControlPanelKind
 from control_panels.sync_worker import panel_sync_worker
 from control_panels.zwave_ring_keypad_v2 import (
-    _BURGLAR_SIREN_ALT_SECONDS,
     _BURGLAR_SIREN_SECONDS,
     handle_zwavejs_ring_keypad_v2_event,
     sync_ring_keypad_v2_devices_state,
@@ -254,10 +253,11 @@ class RingKeypadV2ControlPanelTests(TestCase):
         # Leaving triggered still silences the tone by re-selecting the mode indicator.
         self.assertTrue(any(call.get("property") == 2 and call.get("property_key") == 1 for call in calls))
 
-    def test_sync_second_trigger_uses_single_value_changing_write(self):
-        # First trigger (fresh register) uses reset-then-set; after the register value is tracked,
-        # a subsequent trigger must sound the siren with ONE write whose value differs from the
-        # tracked register (240 <-> 239 alternation), with no transient 0.
+    def test_sync_second_trigger_uses_reset_then_set(self):
+        # Every trigger sounds the siren via reset-then-set (0 then the duration): a 0-write is
+        # hardware-verified to ALWAYS activate (even over an already-0 register) and 0 -> 240 is a
+        # verified activator, so the sequence works regardless of what the register holds. No
+        # single-write alternation: that would depend on unverified same-value/dedupe semantics.
         arm(target_state=AlarmState.ARMED_AWAY, user=None, code=None, reason="test")
         trigger(user=None, reason="test")
         with patch("alarm.gateways.zwavejs.DefaultZwavejsGateway.set_value"):
@@ -278,8 +278,8 @@ class RingKeypadV2ControlPanelTests(TestCase):
         ]
         self.assertEqual(
             key7_values,
-            [_BURGLAR_SIREN_ALT_SECONDS],
-            "a tracked register must be re-activated by one value-changing write (no reset-then-set)",
+            [0, _BURGLAR_SIREN_SECONDS],
+            "every trigger must re-activate the siren via reset-then-set",
         )
 
     def test_sync_same_state_twice_is_a_no_op(self):
