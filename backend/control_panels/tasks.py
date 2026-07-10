@@ -8,10 +8,8 @@ from django.utils import timezone
 
 from alarm.models import AlarmEvent, AlarmEventType, AlarmState
 from alarm.state_machine.transitions import get_current_snapshot
-from control_panels.zwave_ring_keypad_v2 import (
-    _BURGLAR_SIREN_MAX_TOTAL_SECONDS,
-    sync_ring_keypad_v2_devices_state,
-)
+from control_panels.sync_worker import panel_sync_worker
+from control_panels.zwave_ring_keypad_v2 import _BURGLAR_SIREN_MAX_TOTAL_SECONDS
 from scheduler import Every, register
 
 logger = logging.getLogger(__name__)
@@ -35,6 +33,10 @@ def resync_ring_keypad_siren() -> dict:
     silent after ~4 minutes. This task re-sends the siren command until the
     bell cutoff (`_BURGLAR_SIREN_MAX_TOTAL_SECONDS`) elapses; leaving the
     triggered state silences the keypad via the normal state-change sync.
+
+    The blocking Z-Wave writes happen on the panel-sync worker (ADR-0100), which makes
+    the value-CHANGING key-7 write needed to actually restart the tone — re-writing the
+    same duration does nothing on this keypad (the ADR-0099 silent-re-assert bug).
     """
     snapshot = get_current_snapshot(process_timers=False)
     if snapshot is None or snapshot.current_state != AlarmState.TRIGGERED:
@@ -47,5 +49,5 @@ def resync_ring_keypad_siren() -> dict:
             return {"resynced": False, "reason": "bell_cutoff", "elapsed_seconds": int(elapsed_seconds)}
 
     logger.info("Ring Keypad v2 siren re-assert: alarm still triggered")
-    sync_ring_keypad_v2_devices_state()
+    panel_sync_worker.request_siren_reassert()
     return {"resynced": True}

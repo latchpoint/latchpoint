@@ -12,6 +12,7 @@ from alarm.models import AlarmEvent, AlarmEventType, AlarmSettingsProfile, Alarm
 from alarm.state_machine.transitions import arm, get_current_snapshot
 from alarm.tests.settings_test_utils import set_profile_settings
 from control_panels.models import ControlPanelDevice, ControlPanelIntegrationType, ControlPanelKind
+from control_panels.sync_worker import panel_sync_worker
 from control_panels.zwave_ring_keypad_v2 import handle_zwavejs_ring_keypad_v2_event
 
 _HOME_ID = 4170970308
@@ -66,6 +67,8 @@ class RingKeypadV2RearmGuardTests(TestCase):
             patch("alarm.gateways.zwavejs.DefaultZwavejsGateway.set_value") as set_value,
         ):
             handle_zwavejs_ring_keypad_v2_event(_arm_away_event())
+            # Feedback tones are queued on the panel-sync worker (ADR-0100); drain to execute.
+            panel_sync_worker._drain()
 
         self.assertEqual(get_current_snapshot(process_timers=False).current_state, AlarmState.DISARMED)
         failed = list(AlarmEvent.objects.filter(event_type=AlarmEventType.FAILED_CODE))

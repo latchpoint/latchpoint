@@ -41,10 +41,17 @@ _IND_ENTRY_DELAY = 17
 _IND_EXIT_DELAY = 18
 _IND_SOUND_DOUBLE_BEEP = 96
 
-# Burglar-siren play duration — Indicator CC "Timeout: Seconds" (property_key 7). The keypad only
-# re-syncs on alarm state changes, so this single command carries the full siren duration; a
-# disarm/arm transition re-selects a mode indicator and silences it early. One byte, capped at 255.
+# Burglar-siren play duration — Indicator CC "Timeout: Seconds" (property_key 7). One byte,
+# capped at 255. A disarm/arm transition re-selects a mode indicator and silences it early.
+#
+# ADR-0100 semantic model (supersedes the ADR-0097 "0 = silent" and ADR-0099 "rising edge"
+# readings): the keypad activates the burglar tone on any value-CHANGING write to this register
+# (0 = no auto-stop timeout, i.e. writing 0 over a non-zero value SOUNDS the siren indefinitely —
+# the 2026-07-10 arm-sounds-siren regression). Writing the register's current value does nothing.
+# So the siren is sounded by writing whichever of the two durations below differs from the last
+# value we wrote, and the register is otherwise never touched outside the TRIGGERED state.
 _BURGLAR_SIREN_SECONDS = 240
+_BURGLAR_SIREN_ALT_SECONDS = 239
 
 # Bell cutoff for the periodic siren re-assert (ADR-0098): total time since the triggered
 # transition after which `resync_ring_keypad_siren` stops re-sounding the tone. The final
@@ -200,18 +207,19 @@ def _rate_limit(*, device_id: int, action: str, limit: int = 10, window_seconds:
 
 def _indicator_set(
     *, device: ControlPanelDevice, property_id: int, property_key: int, value: object, log_failures: bool = False
-) -> None:
-    """Best-effort Indicator CC write.
+) -> bool:
+    """Best-effort Indicator CC write; returns True when the write was issued successfully.
 
     Swallows failures so one dropped indicator never breaks the rest of a sync. Pass
     ``log_failures=True`` for safety-critical writes (e.g. the burglar siren) so a failed
-    Z-Wave write is logged instead of vanishing silently.
+    Z-Wave write is logged instead of vanishing silently. The boolean result lets the
+    reconciling sync record which register values actually reached the device (ADR-0100).
     """
     if not isinstance(device.external_id, dict):
-        return
+        return False
     node_id = device.external_id.get("node_id")
     if not isinstance(node_id, int):
-        return
+        return False
     try:
         from alarm.gateways.zwavejs import default_zwavejs_gateway
 
@@ -223,6 +231,7 @@ def _indicator_set(
             property_key=property_key,
             value=value,
         )
+        return True
     except Exception:
         if log_failures:
             logger.warning(
@@ -232,7 +241,7 @@ def _indicator_set(
                 property_key,
                 exc_info=True,
             )
-        return
+        return False
 
 
 def _indicator_set_strict(*, device: ControlPanelDevice, property_id: int, property_key: int, value: object) -> None:
@@ -280,6 +289,15 @@ def _indicator_set_strict(*, device: ControlPanelDevice, property_id: int, prope
     )
 
 
+def _clamped_beep_volume(device: ControlPanelDevice) -> int:
+    """Return the device's beep volume clamped to the Ring Keypad v2 Indicator CC range (1-99)."""
+    try:
+        volume = int(getattr(device, "beep_volume", 50) or 50)
+    except Exception:
+        volume = 50
+    return min(max(volume, 1), 99)
+
+
 def _apply_ring_keypad_v2_volume(*, device: ControlPanelDevice, property_id: int, log_failures: bool = False) -> None:
     """
     Best-effort: set Indicator CC volume (property_key=9) for a given property_id.
@@ -288,16 +306,7 @@ def _apply_ring_keypad_v2_volume(*, device: ControlPanelDevice, property_id: int
     entry/exit delay, code rejected, alarm, and test beeps.
     """
 
-    try:
-        volume = int(getattr(device, "beep_volume", 50) or 50)
-    except Exception:
-        volume = 50
-
-    if volume < 1:
-        volume = 1
-    if volume > 99:
-        volume = 99
-
+    volume = _clamped_beep_volume(device)
     _indicator_set(device=device, property_id=property_id, property_key=9, value=volume, log_failures=log_failures)
 
 
@@ -319,90 +328,157 @@ def test_ring_keypad_v2_beep(*, device: ControlPanelDevice, volume: int = 50) ->
     _indicator_set_strict(device=device, property_id=_IND_SOUND_DOUBLE_BEEP, property_key=9, value=volume)
 
 
-def _sync_device_state(*, device: ControlPanelDevice) -> None:
-    """Update keypad indicator state based on the current alarm snapshot (best-effort)."""
+@dataclass(frozen=True)
+class IndicatorWrite:
+    """One Indicator CC write, with reconciliation metadata (ADR-0100)."""
+
+    property_id: int
+    property_key: int
+    value: int
+    # Record the value into the device's last_written_indicators on success. Countdown writes
+    # (entry/exit delay seconds) are not tracked — the device decrements them to 0 on its own.
+    track: bool = True
+    log_failures: bool = False
+
+
+def _mode_indicator_for_state(state: str) -> int:
+    """Map an alarm state to the Ring Keypad v2 mode indicator property that represents it."""
+    if state == AlarmState.DISARMED:
+        return _IND_DISARMED
+    if state in (AlarmState.ARMED_HOME, AlarmState.ARMED_NIGHT):
+        # Ring Keypad v2 has no "night" mode; map to "armed stay" (home).
+        return _IND_ARMED_STAY
+    # armed_away / armed_vacation / fallback for any other armed state.
+    return _IND_ARMED_AWAY
+
+
+def _remaining_seconds(snapshot, now) -> int:
+    """Return whole seconds until the snapshot's exit_at deadline (0 when absent/past)."""
+    if not snapshot.exit_at:
+        return 0
+    return max(0, int((snapshot.exit_at - now).total_seconds()))
+
+
+def _desired_indicator_writes(
+    *, snapshot, now, device: ControlPanelDevice, tracked: dict, force_siren_edge: bool = False
+) -> list[IndicatorWrite]:
+    """
+    Compute the Indicator CC writes needed to reconcile the keypad with the alarm snapshot.
+
+    Pure function of (snapshot, tracked register state): performs no I/O. `tracked` is the
+    device's last_written_indicators mapping — keys "property:property_key" for register values,
+    "mode" for the last mode indicator selected, "state" for the last alarm state fully synced.
+
+    Burglar-siren policy (ADR-0100): the tone starts on any value-CHANGING write to the
+    "Timeout: Seconds" register (13:7) and stops when a mode indicator is selected. Therefore:
+    - The register is written ONLY while TRIGGERED (a "teardown clear" outside triggered sounds
+      the siren — the 2026-07-10 regression this replaces).
+    - Sounding it means writing whichever siren duration differs from the last written value.
+    - With no tracked value (fresh install / pre-ADR-0100 rows), write 0 then the duration:
+      both orderings sound the siren regardless of the register's actual content, which is the
+      desired outcome in TRIGGERED.
+    """
+    state = snapshot.current_state
+    volume = _clamped_beep_volume(device)
+    writes: list[IndicatorWrite] = []
+
+    if state == AlarmState.TRIGGERED:
+        if tracked.get(f"{_IND_BURGLAR_ALARM}:9") != volume:
+            writes.append(IndicatorWrite(_IND_BURGLAR_ALARM, 9, volume, log_failures=True))
+        if tracked.get(f"{_IND_BURGLAR_ALARM}:6") != 0:
+            writes.append(IndicatorWrite(_IND_BURGLAR_ALARM, 6, 0, log_failures=True))
+        entering_triggered = tracked.get("state") != AlarmState.TRIGGERED
+        if entering_triggered or force_siren_edge:
+            last_seconds = tracked.get(f"{_IND_BURGLAR_ALARM}:7")
+            if last_seconds is None:
+                writes.append(IndicatorWrite(_IND_BURGLAR_ALARM, 7, 0, log_failures=True))
+                writes.append(IndicatorWrite(_IND_BURGLAR_ALARM, 7, _BURGLAR_SIREN_SECONDS, log_failures=True))
+            else:
+                value = (
+                    _BURGLAR_SIREN_SECONDS
+                    if int(last_seconds) != _BURGLAR_SIREN_SECONDS
+                    else _BURGLAR_SIREN_ALT_SECONDS
+                )
+                writes.append(IndicatorWrite(_IND_BURGLAR_ALARM, 7, value, log_failures=True))
+        return writes
+
+    if state == AlarmState.ARMING:
+        seconds = _remaining_seconds(snapshot, now)
+        if seconds > 0:
+            if tracked.get(f"{_IND_EXIT_DELAY}:9") != volume:
+                writes.append(IndicatorWrite(_IND_EXIT_DELAY, 9, volume))
+            writes.append(IndicatorWrite(_IND_EXIT_DELAY, 7, seconds, track=False))
+        return writes
+
+    if state == AlarmState.PENDING:
+        seconds = _remaining_seconds(snapshot, now)
+        if seconds > 0:
+            if tracked.get(f"{_IND_ENTRY_DELAY}:9") != volume:
+                writes.append(IndicatorWrite(_IND_ENTRY_DELAY, 9, volume))
+            writes.append(IndicatorWrite(_IND_ENTRY_DELAY, 7, seconds, track=False))
+        return writes
+
+    # Mode states (disarmed / armed_*). Selecting a mode indicator also silences any sounding
+    # alarm tone, so the write must happen whenever the state changed — even if the same mode
+    # indicator was already selected before an intervening TRIGGERED period.
+    mode_property = _mode_indicator_for_state(state)
+    if tracked.get("mode") != mode_property or tracked.get("state") != state:
+        writes.append(IndicatorWrite(mode_property, 1, 99))
+    return writes
+
+
+def _sync_device_state(*, device: ControlPanelDevice, force_siren_edge: bool = False) -> None:
+    """Reconcile one keypad with the current alarm snapshot; raises when any write failed."""
     snapshot = get_current_snapshot(process_timers=False)
     now = timezone.now()
+    tracked = dict(device.last_written_indicators or {})
 
-    # Clear the burglar-siren timeout whenever the alarm is NOT triggered. The tone is started by a
-    # *rising edge* (0 -> non-zero) on the burglar "Timeout: Seconds" register, not merely by it being
-    # non-zero. Nothing else here ever zeroes it, so once a trigger sets it to _BURGLAR_SIREN_SECONDS
-    # it stays there and the *next* trigger writes the same value = no edge = silent siren. Resetting
-    # it to 0 on every non-triggered sync guarantees the next trigger's write is a genuine edge. See
-    # ADR-0099. (Idempotent best-effort write; the burglar indicator is not sounding in these states,
-    # so writing its timeout to 0 is inaudible.)
-    if snapshot.current_state != AlarmState.TRIGGERED:
-        _indicator_set(device=device, property_id=_IND_BURGLAR_ALARM, property_key=7, value=0)
+    writes = _desired_indicator_writes(
+        snapshot=snapshot, now=now, device=device, tracked=tracked, force_siren_edge=force_siren_edge
+    )
 
-    if snapshot.current_state == AlarmState.DISARMED:
-        _indicator_set(device=device, property_id=_IND_DISARMED, property_key=1, value=99)
-        return
-    if snapshot.current_state == AlarmState.ARMED_HOME:
-        _indicator_set(device=device, property_id=_IND_ARMED_STAY, property_key=1, value=99)
-        return
-    if snapshot.current_state == AlarmState.ARMED_NIGHT:
-        # Ring Keypad v2 has no "night" mode; map to "armed stay" (home).
-        _indicator_set(device=device, property_id=_IND_ARMED_STAY, property_key=1, value=99)
-        return
-    if snapshot.current_state in (AlarmState.ARMED_AWAY, AlarmState.ARMED_VACATION):
-        _indicator_set(device=device, property_id=_IND_ARMED_AWAY, property_key=1, value=99)
-        return
-    if snapshot.current_state == AlarmState.ARMING:
-        seconds = 0
-        if snapshot.exit_at:
-            seconds = max(0, int((snapshot.exit_at - now).total_seconds()))
-        if seconds <= 0:
-            return
-        _apply_ring_keypad_v2_volume(device=device, property_id=_IND_EXIT_DELAY)
-        _indicator_set(device=device, property_id=_IND_EXIT_DELAY, property_key=7, value=seconds)
-        return
-    if snapshot.current_state == AlarmState.PENDING:
-        seconds = 0
-        if snapshot.exit_at:
-            seconds = max(0, int((snapshot.exit_at - now).total_seconds()))
-        if seconds <= 0:
-            return
-        _apply_ring_keypad_v2_volume(device=device, property_id=_IND_ENTRY_DELAY)
-        _indicator_set(device=device, property_id=_IND_ENTRY_DELAY, property_key=7, value=seconds)
-        return
-    if snapshot.current_state == AlarmState.TRIGGERED:
-        # Sound the burglar siren. On the Ring Keypad v2 the alarm indicators (12 "Alarming",
-        # 13 "Alarming: Burglar") start sounding on a *rising edge* of the Indicator CC timeout:
-        # property_key 7 (seconds) transitioning from 0 -> non-zero — exactly like the entry/exit-delay
-        # tones above, whose countdown naturally returns to 0 between uses. (#64 wrongly read the
-        # timeout as an auto-clear to suppress and zeroed it, i.e. "sound for 0 seconds" = silent;
-        # multilevel/key 1 is not supported on this indicator. See ADR-0097/0098.)
-        #
-        # We force the edge by writing key 7 = 0 first and key 7 = _BURGLAR_SIREN_SECONDS last, with
-        # the volume/minutes writes in between: each write is a supervised round-trip, so the device
-        # has ACKed the 0 well before the non-zero value arrives. The teardown clear at the top of
-        # this function normally leaves the register at 0 already, but the explicit reset here is the
-        # backstop for the one case teardown can't cover — an app restart while already triggered
-        # (register left non-zero). Writing the same non-zero value with no preceding 0 is a no-op
-        # and leaves the keypad silent; that was the ADR-0099 bug.
-        #
-        # log_failures=True: the siren is the most safety-critical indicator, so a failed Z-Wave
-        # write is logged rather than silently swallowed (a silent siren is otherwise undiagnosable).
+    siren_commanded = any(w.property_id == _IND_BURGLAR_ALARM and w.property_key == 7 for w in writes)
+    if siren_commanded:
+        # The siren is the most safety-critical indicator: keep the greppable audit line and
+        # log (rather than swallow) failed writes — a silent siren is otherwise undiagnosable.
         logger.info("Ring Keypad v2 burglar siren commanded device_id=%s", device.id)
-        _indicator_set(device=device, property_id=_IND_BURGLAR_ALARM, property_key=7, value=0, log_failures=True)
-        _apply_ring_keypad_v2_volume(device=device, property_id=_IND_BURGLAR_ALARM, log_failures=True)
-        _indicator_set(device=device, property_id=_IND_BURGLAR_ALARM, property_key=6, value=0, log_failures=True)
-        _indicator_set(
+
+    failures = 0
+    for write in writes:
+        ok = _indicator_set(
             device=device,
-            property_id=_IND_BURGLAR_ALARM,
-            property_key=7,
-            value=_BURGLAR_SIREN_SECONDS,
-            log_failures=True,
+            property_id=write.property_id,
+            property_key=write.property_key,
+            value=write.value,
+            log_failures=write.log_failures,
         )
-        return
+        if not ok:
+            failures += 1
+            continue
+        if write.track:
+            tracked[f"{write.property_id}:{write.property_key}"] = write.value
+        if write.property_key == 1 and write.value == 99:
+            tracked["mode"] = write.property_id
 
-    # Best-effort fallback for other armed states.
-    _indicator_set(device=device, property_id=_IND_ARMED_AWAY, property_key=1, value=99)
+    if failures == 0:
+        # Only a fully-applied sync advances the tracked state; a partial one leaves the old
+        # state so the next sync recomputes (and retries) the remaining writes.
+        tracked["state"] = str(snapshot.current_state)
+
+    if tracked != (device.last_written_indicators or {}):
+        device.last_written_indicators = tracked
+        device.save(update_fields=["last_written_indicators", "updated_at"])
+
+    if failures:
+        raise RuntimeError(f"{failures} keypad indicator write(s) failed")
 
 
-def sync_ring_keypad_v2_devices_state() -> None:
+def sync_ring_keypad_v2_devices_state(*, force_siren_edge: bool = False) -> int:
     """
-    Sync alarm state -> Ring keypad indicators for all enabled Ring v2 devices.
+    Reconcile alarm state -> Ring keypad indicators for all enabled Ring v2 devices.
+
+    Returns the number of devices whose sync failed (0 = fully reconciled), so the panel-sync
+    worker can decide to retry. Never raises.
     """
 
     _maybe_close_old_connections()
@@ -415,20 +491,36 @@ def sync_ring_keypad_v2_devices_state() -> None:
         enabled=True,
         integration_type=ControlPanelIntegrationType.ZWAVEJS,
         kind=ControlPanelKind.RING_KEYPAD_V2,
-    ).only("id", "external_id", "last_error")
+    ).only("id", "external_id", "beep_volume", "last_error", "last_written_indicators")
+    failed_devices = 0
     for device in devices:
         try:
-            _sync_device_state(device=device)
+            _sync_device_state(device=device, force_siren_edge=force_siren_edge)
             if device.last_error:
                 device.last_error = ""
                 device.save(update_fields=["last_error", "updated_at"])
         except Exception as exc:
+            failed_devices += 1
             try:
                 device.last_error = str(exc)
                 device.save(update_fields=["last_error", "updated_at"])
             except Exception:
                 logger.warning("Failed to save device error state", exc_info=True)
             continue
+    return failed_devices
+
+
+def play_code_rejected(*, device: ControlPanelDevice) -> None:
+    """Play the "code not accepted" tone/LED on the keypad (blocking Z-Wave writes)."""
+    _apply_ring_keypad_v2_volume(device=device, property_id=_IND_CODE_NOT_ACCEPTED)
+    _indicator_set(device=device, property_id=_IND_CODE_NOT_ACCEPTED, property_key=1, value=1)
+
+
+def _request_code_rejected(device: ControlPanelDevice) -> None:
+    """Queue the "code not accepted" feedback on the panel-sync worker (non-blocking)."""
+    from control_panels.sync_worker import panel_sync_worker
+
+    panel_sync_worker.request_code_rejected(device_id=device.id)
 
 
 def handle_zwavejs_ring_keypad_v2_event(msg: dict[str, Any]) -> None:
@@ -506,22 +598,19 @@ def handle_zwavejs_ring_keypad_v2_event(msg: dict[str, Any]) -> None:
                 action="disarm",
                 metadata={"source": "control_panel", "device_id": device.id, "reason": "missing"},
             )
-            _apply_ring_keypad_v2_volume(device=device, property_id=_IND_CODE_NOT_ACCEPTED)
-            _indicator_set(device=device, property_id=_IND_CODE_NOT_ACCEPTED, property_key=1, value=1)
+            _request_code_rejected(device)
             logger.info("Ring Keypad v2 disarm rejected: missing code device_id=%s", device.id)
             return
         try:
             result = code_validation.validate_any_active_code(raw_code=raw_code, now=now)
         except code_validation.CodeValidationError:
             record_failed_code(user=None, action="disarm", metadata={"source": "control_panel", "device_id": device.id})
-            _apply_ring_keypad_v2_volume(device=device, property_id=_IND_CODE_NOT_ACCEPTED)
-            _indicator_set(device=device, property_id=_IND_CODE_NOT_ACCEPTED, property_key=1, value=1)
+            _request_code_rejected(device)
             logger.info("Ring Keypad v2 disarm rejected: invalid code device_id=%s", device.id)
             return
         except Exception:
             logger.exception("Ring Keypad v2 disarm code validation failed unexpectedly device_id=%s", device.id)
-            _apply_ring_keypad_v2_volume(device=device, property_id=_IND_CODE_NOT_ACCEPTED)
-            _indicator_set(device=device, property_id=_IND_CODE_NOT_ACCEPTED, property_key=1, value=1)
+            _request_code_rejected(device)
             return
         code_obj = result.code
         user = code_obj.user
@@ -556,8 +645,7 @@ def handle_zwavejs_ring_keypad_v2_event(msg: dict[str, Any]) -> None:
                     "reason": "rearm_guard",
                 },
             )
-            _apply_ring_keypad_v2_volume(device=device, property_id=_IND_CODE_NOT_ACCEPTED)
-            _indicator_set(device=device, property_id=_IND_CODE_NOT_ACCEPTED, property_key=1, value=1)
+            _request_code_rejected(device)
             logger.info("Ring Keypad v2 arm rejected: re-arm guard device_id=%s remaining=%ss", device.id, remaining)
             return
 
@@ -580,8 +668,7 @@ def handle_zwavejs_ring_keypad_v2_event(msg: dict[str, Any]) -> None:
                         "reason": "missing",
                     },
                 )
-                _apply_ring_keypad_v2_volume(device=device, property_id=_IND_CODE_NOT_ACCEPTED)
-                _indicator_set(device=device, property_id=_IND_CODE_NOT_ACCEPTED, property_key=1, value=1)
+                _request_code_rejected(device)
                 return
             try:
                 result = code_validation.validate_any_active_code(raw_code=raw_code, now=now)
@@ -591,8 +678,7 @@ def handle_zwavejs_ring_keypad_v2_event(msg: dict[str, Any]) -> None:
                     action="arm",
                     metadata={"source": "control_panel", "device_id": device.id, "target_state": target_state},
                 )
-                _apply_ring_keypad_v2_volume(device=device, property_id=_IND_CODE_NOT_ACCEPTED)
-                _indicator_set(device=device, property_id=_IND_CODE_NOT_ACCEPTED, property_key=1, value=1)
+                _request_code_rejected(device)
                 return
             except Exception:
                 logger.exception(
@@ -600,8 +686,7 @@ def handle_zwavejs_ring_keypad_v2_event(msg: dict[str, Any]) -> None:
                     device.id,
                     target_state,
                 )
-                _apply_ring_keypad_v2_volume(device=device, property_id=_IND_CODE_NOT_ACCEPTED)
-                _indicator_set(device=device, property_id=_IND_CODE_NOT_ACCEPTED, property_key=1, value=1)
+                _request_code_rejected(device)
                 return
             code_obj = result.code
             user = code_obj.user

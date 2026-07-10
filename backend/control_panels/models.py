@@ -51,6 +51,13 @@ class ControlPanelDevice(models.Model):
     last_seen_at = models.DateTimeField(null=True, blank=True)
     last_error = models.TextField(blank=True)
 
+    # Reconciliation state for the panel-sync worker (ADR-0100): the last indicator register values
+    # this app successfully wrote to the device, keyed "property:property_key", plus "mode" (last
+    # mode-indicator property selected) and "state" (last alarm state fully synced). The Ring Keypad
+    # v2 burglar indicator activates on a value-CHANGING write, so knowing the register's last
+    # written value is required to sound (or avoid sounding) the siren deliberately.
+    last_written_indicators = models.JSONField(default=dict, blank=True)
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
