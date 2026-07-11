@@ -50,16 +50,21 @@ def initialize() -> None:
 
     try:
         from alarm.signals import alarm_state_change_committed
-        from control_panels.zwave_ring_keypad_v2 import sync_ring_keypad_v2_devices_state
+        from control_panels.sync_worker import panel_sync_worker
     except Exception:
         return
 
     def _on_alarm_state_change(sender, *, state_to: str, **_kwargs) -> None:
-        """Sync keypad indicators after a committed alarm state change."""
+        """Queue a keypad reconcile after a committed alarm state change (non-blocking).
+
+        The blocking Z-Wave indicator writes run on the panel-sync worker thread (ADR-0100),
+        never on the committing thread (HTTP request / zwavejs-events / scheduler).
+        """
         try:
-            sync_ring_keypad_v2_devices_state()
+            panel_sync_worker.request_sync()
         except Exception:
             return
 
     alarm_state_change_committed.connect(_on_alarm_state_change, dispatch_uid="control_panels_alarm_state_changed")
-    logger.info("Control panels: registered alarm_state_change_committed handler.")
+    panel_sync_worker.start()
+    logger.info("Control panels: registered alarm_state_change_committed handler + panel-sync worker.")
