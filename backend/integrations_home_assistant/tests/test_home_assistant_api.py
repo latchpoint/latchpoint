@@ -82,6 +82,57 @@ class HomeAssistantNotifyServicesApiTests(APITestCase):
         self.assertEqual(len(body["data"]), 2)
 
 
+class HomeAssistantServicesApiTests(APITestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(email="ha-services@example.com", password="pass")
+        self.client = APIClient()
+        self.client.force_authenticate(self.user)
+        self.profile = AlarmSettingsProfile.objects.create(name="Default", is_active=True)
+
+    def test_services_requires_auth(self):
+        client = APIClient()
+        url = reverse("ha-service-catalog")
+        response = client.get(url)
+        self.assertEqual(response.status_code, 401)
+
+    def test_services_returns_error_when_not_configured(self):
+        url = reverse("ha-service-catalog")
+        response = self.client.get(url)
+        # Returns 400 (not configured) or 503 (not reachable) depending on gateway state
+        self.assertIn(response.status_code, [400, 503])
+        self.assertIn("error", response.json())
+
+    @patch("integrations_home_assistant.views.ha_gateway")
+    def test_services_returns_catalog_when_configured(self, mock_gateway):
+        mock_gateway.ensure_available.return_value = None
+        mock_gateway.list_service_catalog.return_value = [
+            {
+                "domain": "light",
+                "service": "turn_on",
+                "name": "Turn on",
+                "description": "",
+                "fields": {"rgb_color": {"selector": {"color_rgb": None}}},
+            },
+        ]
+
+        url = reverse("ha-service-catalog")
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertIn("data", body)
+        self.assertEqual(body["data"][0]["service"], "turn_on")
+
+    @patch("integrations_home_assistant.views.ha_gateway")
+    def test_services_returns_503_when_fetch_fails(self, mock_gateway):
+        mock_gateway.ensure_available.return_value = None
+        mock_gateway.list_service_catalog.side_effect = RuntimeError("boom")
+
+        url = reverse("ha-service-catalog")
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 503)
+        self.assertIn("error", response.json())
+
+
 class HomeAssistantSettingsApiPermissionTests(EncryptionTestMixin, APITestCase):
     def setUp(self):
         self.user = User.objects.create_user(email="ha-settings-user@example.com", password="pass")

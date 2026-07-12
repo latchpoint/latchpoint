@@ -48,6 +48,11 @@ class HomeAssistantGateway(Protocol):
 
         ...
 
+    def list_service_catalog(self, *, timeout_seconds: float = 5.0) -> list[dict[str, Any]]:
+        """List the slimmed service catalog (domain/service/name/fields) from Home Assistant."""
+
+        ...
+
     def call_service(
         self,
         *,
@@ -174,6 +179,18 @@ class DefaultHomeAssistantGateway:
         if error:
             raise HomeAssistantNotConfigured(error)
         return ha_impl.list_notify_services(
+            base_url=base_url,
+            token=token,
+            urlopen=urlopen,
+            timeout_seconds=timeout_seconds,
+        )
+
+    def list_service_catalog(self, *, timeout_seconds: float = 5.0) -> list[dict[str, Any]]:
+        """List the slimmed service catalog from Home Assistant (requires configured connection)."""
+        base_url, token, _default_timeout, error = self._resolve_connection()
+        if error:
+            raise HomeAssistantNotConfigured(error)
+        return ha_impl.list_service_catalog(
             base_url=base_url,
             token=token,
             urlopen=urlopen,

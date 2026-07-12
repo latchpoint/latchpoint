@@ -475,6 +475,50 @@ export const handlers = [
     })
   }),
   http.get('/api/alarm/home-assistant/entities/', () => ok(stores.haEntities)),
+  // Slimmed service catalog (ADR-0101): wire shape is snake_case, camelized by
+  // the API client like every other response.
+  http.get('/api/alarm/home-assistant/services/', () =>
+    ok([
+      {
+        domain: 'light',
+        service: 'turn_on',
+        name: 'Turn on',
+        description: 'Turns on one or more lights.',
+        target: { entity: [{ domain: ['light'] }] },
+        fields: {
+          brightness_pct: { selector: { number: { min: 0, max: 100, unit_of_measurement: '%' } } },
+          rgb_color: { selector: { color_rgb: null }, example: '[255, 100, 100]' },
+          transition: { selector: { number: { min: 0, max: 300 } } },
+        },
+      },
+      {
+        domain: 'light',
+        service: 'turn_off',
+        name: 'Turn off',
+        description: 'Turns off one or more lights.',
+        target: { entity: [{ domain: ['light'] }] },
+        fields: { transition: { selector: { number: { min: 0, max: 300 } } } },
+      },
+      {
+        domain: 'lock',
+        service: 'lock',
+        name: 'Lock',
+        description: 'Locks a lock.',
+        target: { entity: [{ domain: ['lock'] }] },
+        fields: {},
+      },
+      {
+        domain: 'notify',
+        service: 'mobile_app_admin_phone',
+        name: 'Send a notification via mobile_app_admin_phone',
+        description: '',
+        fields: {
+          message: { selector: { text: null }, required: true },
+          title: { selector: { text: null } },
+        },
+      },
+    ]),
+  ),
   http.get('/api/alarm/home-assistant/notify-services/', () =>
     ok(['notify.mobile_app_admin_phone', 'notify.discord_family', 'notify.slack_home']),
   ),

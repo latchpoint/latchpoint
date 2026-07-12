@@ -1,5 +1,5 @@
 import React from 'react'
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, screen } from '@testing-library/react'
 import { renderWithProviders } from '@/test/render'
 import type { ActionNode } from '@/types/ruleDefinition'
@@ -8,10 +8,32 @@ import type { Entity } from '@/types/rules'
 // Stub the integration-status hooks ActionsEditor uses to gate which action
 // types are available. We want HA enabled (so ha_call_service is available)
 // and the others disabled (kept off the picker so tests stay focused).
+const haMocks = vi.hoisted(() => ({
+  services: [] as Array<Record<string, unknown>>,
+}))
+
+const DEFAULT_SERVICE_CATALOG = [
+  {
+    domain: 'light',
+    service: 'turn_on',
+    name: 'Turn on',
+    description: '',
+    fields: {
+      brightnessPct: { name: 'Brightness', selector: { number: { min: 0, max: 100 } } },
+    },
+  },
+  { domain: 'light', service: 'turn_off', name: 'Turn off', description: '', fields: {} },
+]
+
 vi.mock('@/hooks/useHomeAssistant', () => ({
   useHomeAssistantStatus: () => ({ data: { configured: true } }),
   useHomeAssistantNotifyServices: () => ({ data: [] }),
+  useHomeAssistantServices: () => ({ data: haMocks.services }),
 }))
+
+beforeEach(() => {
+  haMocks.services = DEFAULT_SERVICE_CATALOG
+})
 vi.mock('@/hooks/useZwavejs', () => ({
   useZwavejsStatusQuery: () => ({ data: { configured: false, enabled: false } }),
 }))
@@ -151,6 +173,71 @@ describe('ActionsEditor', () => {
     fireEvent.click(screen.getByText(/^select entity\.\.\.$/i))
     expect(screen.getByText('light.kitchen')).toBeInTheDocument()
     expect(screen.queryByText('zwave.dimmer')).toBeNull()
+  })
+
+  // ── ha_call_service single Action input (ADR-0101) ───────────────────────
+
+  it('renders a single Action combobox and no Domain/Service inputs', async () => {
+    const { ActionsEditor } = await import('./ActionsEditor')
+    renderWithProviders(
+      <ActionsEditor actions={[makeCallServiceAction([])]} onChange={vi.fn()} entities={[]} />
+    )
+
+    expect(screen.getByRole('button', { name: /light\.turn_on/i })).toBeInTheDocument()
+    expect(screen.queryByText('Domain')).toBeNull()
+    expect(screen.queryByText('Service')).toBeNull()
+  })
+
+  it('emits the picked action when a catalog action is selected', async () => {
+    const { ActionsEditor } = await import('./ActionsEditor')
+    const onChange = vi.fn()
+    renderWithProviders(
+      <ActionsEditor actions={[makeCallServiceAction([])]} onChange={onChange} entities={[]} />
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: /light\.turn_on/i }))
+    fireEvent.click(screen.getByRole('option', { name: /light\.turn_off/i }))
+
+    expect(onChange).toHaveBeenCalledWith([
+      expect.objectContaining({ type: 'ha_call_service', action: 'light.turn_off' }),
+    ])
+  })
+
+  it('falls back to a free-text action input when the catalog is empty', async () => {
+    haMocks.services = []
+    const { ActionsEditor } = await import('./ActionsEditor')
+    const onChange = vi.fn()
+    renderWithProviders(
+      <ActionsEditor actions={[makeCallServiceAction([])]} onChange={onChange} entities={[]} />
+    )
+
+    const input = screen.getByPlaceholderText('e.g., light.turn_on')
+    fireEvent.change(input, { target: { value: 'switch.toggle' } })
+
+    expect(onChange).toHaveBeenCalledWith([
+      expect.objectContaining({ type: 'ha_call_service', action: 'switch.toggle' }),
+    ])
+  })
+
+  it('renders selector-driven data widgets for the picked action and preserves other data keys', async () => {
+    const { ActionsEditor } = await import('./ActionsEditor')
+    const onChange = vi.fn()
+    const action = {
+      ...makeCallServiceAction([]),
+      data: { customKey: 'keep-me' },
+    } as ActionNode
+    renderWithProviders(<ActionsEditor actions={[action]} onChange={onChange} entities={[]} />)
+
+    fireEvent.change(screen.getByRole('spinbutton', { name: 'Brightness' }), {
+      target: { value: '80' },
+    })
+
+    expect(onChange).toHaveBeenCalledWith([
+      expect.objectContaining({
+        type: 'ha_call_service',
+        data: { customKey: 'keep-me', brightnessPct: 80 },
+      }),
+    ])
   })
 
   // ── alarm_trigger entry-delay (ADR-0091) ─────────────────────────────────

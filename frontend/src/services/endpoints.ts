@@ -87,6 +87,7 @@ export const apiEndpoints = {
     status: '/api/alarm/home-assistant/status/',
     settings: '/api/alarm/home-assistant/settings/',
     entities: '/api/alarm/home-assistant/entities/',
+    services: '/api/alarm/home-assistant/services/',
     notifyServices: '/api/alarm/home-assistant/notify-services/',
   },
   mqtt: {

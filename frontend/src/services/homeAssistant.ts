@@ -26,6 +26,30 @@ export interface HomeAssistantEntity {
   lastChanged?: string | null
 }
 
+/**
+ * One field of a Home Assistant service, slimmed by the backend catalog
+ * endpoint (ADR-0101). Keys arrive camelized by the API client, so a wire
+ * field like `rgb_color` is exposed here as `rgbColor` — matching how rule
+ * `data` keys appear in-app after the same transform.
+ */
+export interface HomeAssistantServiceField {
+  name?: string
+  description?: string
+  required?: boolean
+  example?: unknown
+  default?: unknown
+  selector?: Record<string, unknown> | null
+}
+
+export interface HomeAssistantServiceDefinition {
+  domain: string
+  service: string
+  name: string
+  description: string
+  fields: Record<string, HomeAssistantServiceField>
+  target?: Record<string, unknown>
+}
+
 export const homeAssistantService = {
   async getStatus(): Promise<HomeAssistantStatus> {
     return api.get<HomeAssistantStatus>(apiEndpoints.homeAssistant.status)
@@ -41,6 +65,10 @@ export const homeAssistantService = {
 
   async listEntities(): Promise<HomeAssistantEntity[]> {
     return api.getData<HomeAssistantEntity[]>(apiEndpoints.homeAssistant.entities)
+  },
+
+  async listServices(): Promise<HomeAssistantServiceDefinition[]> {
+    return api.getData<HomeAssistantServiceDefinition[]>(apiEndpoints.homeAssistant.services)
   },
 
   async listNotifyServices(): Promise<string[]> {
