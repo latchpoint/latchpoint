@@ -50,6 +50,21 @@ export function useHomeAssistantEntities() {
   })
 }
 
+export function useHomeAssistantServices() {
+  const session = useAuthSessionQuery()
+  const isAuthenticated = session.data?.isAuthenticated ?? false
+  const statusQuery = useHomeAssistantStatus()
+  const enabled = !!isAuthenticated && !!statusQuery.data?.configured && !!statusQuery.data?.reachable
+
+  return useQuery({
+    queryKey: queryKeys.homeAssistant.services,
+    queryFn: homeAssistantService.listServices,
+    enabled,
+    // The catalog only changes when HA integrations are added/removed.
+    staleTime: 5 * 60 * 1000,
+  })
+}
+
 export function useHomeAssistantNotifyServices() {
   const session = useAuthSessionQuery()
   const isAuthenticated = session.data?.isAuthenticated ?? false

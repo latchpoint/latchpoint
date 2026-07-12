@@ -37,6 +37,7 @@
     "date-fns": "^4.1.0",
     "lucide-react": "^0.562.0",
     "react": "^19.2.0",
+    "react-colorful": "^5.7.0",
     "react-dnd": "^16.0.1",
     "react-dnd-html5-backend": "^16.0.1",
     "react-dom": "^19.2.0",

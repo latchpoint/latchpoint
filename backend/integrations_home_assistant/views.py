@@ -104,6 +104,19 @@ class HomeAssistantEntitiesView(_HomeAssistantBaseView):
         return Response({"data": entities}, status=status.HTTP_200_OK)
 
 
+class HomeAssistantServicesView(_HomeAssistantBaseView):
+    def get(self, request):
+        """List the slimmed service catalog from Home Assistant (requires configured/reachable connection)."""
+        gateway = self.get_gateway()
+        gateway.ensure_available()
+        try:
+            services = gateway.list_service_catalog()
+        except Exception as exc:
+            logger.exception("Failed to fetch Home Assistant services")
+            raise ServiceUnavailableError("Failed to fetch Home Assistant services.") from exc
+        return Response({"data": services}, status=status.HTTP_200_OK)
+
+
 class HomeAssistantNotifyServicesView(_HomeAssistantBaseView):
     def get(self, request):
         """List notify service names from Home Assistant (requires configured/reachable connection)."""

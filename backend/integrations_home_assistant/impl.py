@@ -464,6 +464,71 @@ def list_services(
     return [item for item in payload if isinstance(item, dict)]
 
 
+def _slim_service_fields(fields: dict[str, Any]) -> dict[str, Any]:
+    """
+    Slim a service's ``fields`` map to the keys the rules-builder form needs.
+
+    HA groups some fields into collapsed sections (entries with a nested
+    ``fields`` dict and no ``selector``, e.g. light.turn_on's advanced_fields);
+    those are hoisted so the result is a flat field map.
+    """
+    out: dict[str, Any] = {}
+    for field_name, spec in fields.items():
+        if not isinstance(field_name, str) or not field_name or not isinstance(spec, dict):
+            continue
+        nested = spec.get("fields")
+        if isinstance(nested, dict) and "selector" not in spec:
+            out.update(_slim_service_fields(nested))
+            continue
+        slim_keys = ("name", "description", "required", "example", "default", "selector")
+        out[field_name] = {key: spec[key] for key in slim_keys if key in spec}
+    return out
+
+
+def list_service_catalog(
+    *,
+    base_url: str,
+    token: str,
+    urlopen,
+    timeout_seconds: float = 5.0,
+    logger_obj: logging.Logger | None = None,
+) -> list[dict[str, Any]]:
+    """
+    Returns a flat, slimmed service catalog for the rules-builder action picker (ADR-0101):
+    [{domain, service, name, description, fields, target?}], sorted by domain.service.
+    """
+    rows = list_services(
+        base_url=base_url, token=token, urlopen=urlopen, timeout_seconds=timeout_seconds, logger_obj=logger_obj
+    )
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        domain = row.get("domain")
+        services = row.get("services")
+        if not isinstance(domain, str) or not domain or not isinstance(services, dict):
+            continue
+        for service_name, spec in services.items():
+            if not isinstance(service_name, str) or not service_name:
+                continue
+            if not isinstance(spec, dict):
+                spec = {}
+            name = spec.get("name")
+            description = spec.get("description")
+            fields = spec.get("fields")
+            entry: dict[str, Any] = {
+                "domain": domain,
+                "service": service_name,
+                "name": name if isinstance(name, str) else "",
+                "description": description if isinstance(description, str) else "",
+                "fields": _slim_service_fields(fields) if isinstance(fields, dict) else {},
+            }
+            target = spec.get("target")
+            if isinstance(target, dict):
+                entry["target"] = target
+            out.append(entry)
+    out.sort(key=lambda item: (item["domain"], item["service"]))
+    return out
+
+
 def list_notify_services(
     *,
     base_url: str,

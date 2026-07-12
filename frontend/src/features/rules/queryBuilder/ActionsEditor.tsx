@@ -22,12 +22,18 @@ import { cn } from '@/lib/utils'
 import { Trash2, ChevronDown, ChevronUp } from 'lucide-react'
 import { useState, useMemo, useRef } from 'react'
 import { TemplateVariablePicker } from '@/features/rules/queryBuilder/TemplateVariablePicker'
-import { useHomeAssistantStatus, useHomeAssistantNotifyServices } from '@/hooks/useHomeAssistant'
+import {
+  useHomeAssistantStatus,
+  useHomeAssistantNotifyServices,
+  useHomeAssistantServices,
+} from '@/hooks/useHomeAssistant'
 import { useEnabledNotificationProviders } from '@/features/notifications/hooks/useNotificationProviders'
 import { useZwavejsStatusQuery } from '@/hooks/useZwavejs'
 import { useZigbee2mqttStatusQuery } from '@/hooks/useZigbee2mqtt'
 import { HA_SYSTEM_PROVIDER_ID } from '@/lib/constants'
 import { EntityPicker } from './EntityPicker'
+import { ActionPicker } from './ActionPicker'
+import { ServiceDataFields } from './ServiceDataFields'
 import type { EntityOption } from './types'
 
 const ACTION_TYPES = [
@@ -382,16 +388,19 @@ function HaCallServiceFields({
   disabled?: boolean
   entityOptions: EntityOption[]
 }) {
-  // Parse action field (e.g., "notify.notify") into domain and service for editing
+  // Single HA 2024.8+ "action" identifier ("domain.service"); ADR-0101.
   const actionStr = action.action || ''
-  const dotIndex = actionStr.indexOf('.')
-  const domain = dotIndex > 0 ? actionStr.slice(0, dotIndex) : actionStr
-  const service = dotIndex > 0 ? actionStr.slice(dotIndex + 1) : ''
+  const servicesQuery = useHomeAssistantServices()
+  const services = servicesQuery.data ?? []
+  const selectedService = services.find((svc) => `${svc.domain}.${svc.service}` === actionStr)
 
-  const [dataText, setDataText] = useState(() =>
-    JSON.stringify(action.data || {}, null, 2)
-  )
+  // The JSON textarea and the structured data-field widgets edit the same
+  // `action.data` object. While the user types, the draft holds their exact
+  // text (including invalid JSON); once they leave the field the textarea
+  // re-derives from `action.data` so widget edits show through.
+  const [dataDraft, setDataDraft] = useState<string | null>(null)
   const [dataError, setDataError] = useState<string | null>(null)
+  const dataText = dataDraft ?? JSON.stringify(action.data || {}, null, 2)
 
   const entityIds = action.target?.entityIds ?? []
 
@@ -408,14 +417,6 @@ function HaCallServiceFields({
     let counter = nextRowId
     setRowKeys(entityIds.map(() => `entity-row-${counter++}`))
     setNextRowId(counter)
-  }
-
-  const handleDomainChange = (newDomain: string) => {
-    onUpdate({ ...action, action: `${newDomain}.${service}` })
-  }
-
-  const handleServiceChange = (newService: string) => {
-    onUpdate({ ...action, action: `${domain}.${newService}` })
   }
 
   const handleEntityIdChange = (index: number, entityId: string) => {
@@ -437,7 +438,7 @@ function HaCallServiceFields({
   }
 
   const handleDataChange = (text: string) => {
-    setDataText(text)
+    setDataDraft(text)
     try {
       const parsed = JSON.parse(text || '{}')
       setDataError(null)
@@ -450,27 +451,26 @@ function HaCallServiceFields({
     }
   }
 
+  const handleDataBlur = () => {
+    if (!dataError) setDataDraft(null)
+  }
+
   return (
     <div className="border-t p-3 space-y-3">
-      <div className="grid gap-3 sm:grid-cols-2">
-        <div className="space-y-1">
-          <label className="text-xs text-muted-foreground">Domain</label>
-          <Input
-            value={domain}
-            onChange={(e) => handleDomainChange(e.target.value)}
-            placeholder="e.g., notify, light, switch"
-            disabled={disabled}
+      <div className="space-y-1">
+        <label className="text-xs text-muted-foreground">
+          Action{' '}
+          <HelpTip
+            content='Home Assistant action to perform, as "domain.service" (e.g., light.turn_on).'
+            className="ml-1"
           />
-        </div>
-        <div className="space-y-1">
-          <label className="text-xs text-muted-foreground">Service</label>
-          <Input
-            value={service}
-            onChange={(e) => handleServiceChange(e.target.value)}
-            placeholder="e.g., notify, turn_on, turn_off"
-            disabled={disabled}
-          />
-        </div>
+        </label>
+        <ActionPicker
+          value={actionStr}
+          onChange={(next) => onUpdate({ ...action, action: next })}
+          services={services}
+          disabled={disabled}
+        />
       </div>
 
       <div className="space-y-2">
@@ -523,14 +523,27 @@ function HaCallServiceFields({
         </Button>
       </div>
 
+      {selectedService && (
+        <ServiceDataFields
+          fields={selectedService.fields}
+          data={(action.data as Record<string, unknown>) ?? {}}
+          onChange={(data) => onUpdate({ ...action, data })}
+          disabled={disabled}
+        />
+      )}
+
       <div className="space-y-1">
         <label className="text-xs text-muted-foreground">
-          Data (JSON){' '}
-          <HelpTip content="Additional data to pass to the action" className="ml-1" />
+          Advanced data (JSON){' '}
+          <HelpTip
+            content="The full data object sent with the action, including any fields without a dedicated input above."
+            className="ml-1"
+          />
         </label>
         <Textarea
           value={dataText}
           onChange={(e) => handleDataChange(e.target.value)}
+          onBlur={handleDataBlur}
           placeholder='{"message": "Alarm triggered!"}'
           disabled={disabled}
           className="min-h-[80px] font-mono text-xs"

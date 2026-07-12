@@ -106,6 +106,7 @@ export const queryKeys = {
     status: ['homeAssistant', 'status'] as const,
     settings: ['homeAssistant', 'settings'] as const,
     entities: ['homeAssistant', 'entities'] as const,
+    services: ['homeAssistant', 'services'] as const,
     notifyServices: ['homeAssistant', 'notifyServices'] as const,
   },
   websocket: {
