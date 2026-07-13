@@ -206,30 +206,23 @@ class HomeAssistantModuleTests(SimpleTestCase):
         )
 
     @patch("integrations_home_assistant.api.urlopen")
-    @patch("integrations_home_assistant.api._get_client")
-    def test_call_service_uses_client_when_available(self, mock_get_client, mock_urlopen):
+    def test_call_service_uses_rest_not_client(self, mock_urlopen):
+        # The homeassistant_api client exposes trigger_service (not call_service), so the old client
+        # branch AttributeError'd on every call and fell through to REST. call_service now POSTs directly.
         self._set_configured_connection(base_url="http://ha:8123", token="token")
+        mock_urlopen.return_value = _DummyResponse(status=200, headers={"Content-Type": "application/json"}, body=b"[]")
 
-        class _Client:
-            def __init__(self):
-                self.calls = []
-
-            def call_service(self, domain, service, **payload):
-                self.calls.append((domain, service, payload))
-
-        client = _Client()
-        mock_get_client.return_value = client
         home_assistant.call_service(
             domain="alarm_control_panel",
             service="alarm_arm_home",
             target={"entity_id": "alarm_control_panel.home"},
             service_data={"code": "1234"},
         )
-        self.assertEqual(len(client.calls), 1)
-        self.assertEqual(client.calls[0][0], "alarm_control_panel")
-        self.assertEqual(client.calls[0][1], "alarm_arm_home")
+
+        mock_urlopen.assert_called_once()
+        request = mock_urlopen.call_args.args[0]
+        self.assertTrue(request.full_url.endswith("/api/services/alarm_control_panel/alarm_arm_home"))
         self.assertEqual(
-            client.calls[0][2],
+            json.loads(request.data.decode("utf-8")),
             {"entity_id": "alarm_control_panel.home", "code": "1234"},
         )
-        mock_urlopen.assert_not_called()

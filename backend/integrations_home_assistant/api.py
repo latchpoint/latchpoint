@@ -139,7 +139,6 @@ def call_service(
     return impl.call_service(
         base_url=base_url,
         token=token,
-        get_client=lambda: _get_client(base_url=base_url, token=token),
         urlopen=urlopen,
         domain=domain,
         service=service,
