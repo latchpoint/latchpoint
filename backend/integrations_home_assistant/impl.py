@@ -352,11 +352,32 @@ def list_entities(
     return entities
 
 
+def _read_changed_states(response: Any) -> list[Any] | None:
+    """Best-effort parse of HA's service-call response body (the list of states it changed).
+
+    Returns the parsed list, or ``None`` when the body is unavailable/unparseable — so callers can
+    tell "changed nothing" apart from "don't know".
+    """
+    read = getattr(response, "read", None)
+    if not callable(read):
+        return None
+    try:
+        raw = read().decode("utf-8")
+    except Exception:
+        return None
+    if not raw:
+        return []
+    try:
+        data = json.loads(raw)
+    except (ValueError, TypeError):
+        return None
+    return data if isinstance(data, list) else None
+
+
 def call_service(
     *,
     base_url: str,
     token: str,
-    get_client,
     urlopen,
     domain: str,
     service: str,
@@ -364,7 +385,14 @@ def call_service(
     service_data: dict[str, Any] | None = None,
     timeout_seconds: float = 5.0,
 ) -> None:
-    """Call a Home Assistant service via client (preferred) or REST API fallback."""
+    """Call a Home Assistant service via the REST API.
+
+    We POST directly rather than via the ``homeassistant_api`` client: its ``Client`` exposes
+    ``trigger_service`` (not ``call_service``), so the old client branch here raised ``AttributeError``
+    on every call and silently fell through to REST anyway. HA's service endpoint returns the list of
+    states it changed, so a call that changes nothing is logged as a likely no-op (e.g. an optimistic
+    or script-backed light that never actuated).
+    """
     base_url = (base_url or "").strip()
     token = (token or "").strip()
     if not base_url or not token:
@@ -380,24 +408,24 @@ def call_service(
     if isinstance(service_data, dict):
         payload.update(service_data)
 
-    client = None
-    try:
-        client = get_client()
-    except Exception:
-        client = None
-
-    if client is not None:
-        try:
-            client.call_service(domain, service, **payload)
-            return
-        except Exception:
-            pass
-
     url = _build_url(base_url=base_url, path=f"/api/services/{domain}/{service}")
     request = Request(url, headers=_ha_headers(token), method="POST", data=json.dumps(payload).encode("utf-8"))
     with urlopen(request, timeout=timeout_seconds) as response:
-        if not (200 <= response.status < 300):
-            raise RuntimeError(f"Unexpected status: {response.status}")
+        status = getattr(response, "status", 200)
+        if not (200 <= status < 300):
+            raise RuntimeError(f"Unexpected status: {status}")
+        changed_states = _read_changed_states(response)
+
+    # Only flag calls that explicitly targeted entities: a 0-change response there is the fingerprint
+    # of a silent no-op (e.g. an optimistic/script-backed light that didn't actuate). Targetless
+    # calls such as ``notify.*`` legitimately change no states, so they must not warn.
+    if changed_states is not None and not changed_states and payload.get("entity_id"):
+        logger.warning(
+            "HA service %s.%s changed 0 states (possible no-op; entity_id=%s)",
+            domain,
+            service,
+            payload.get("entity_id"),
+        )
 
 
 def list_services(

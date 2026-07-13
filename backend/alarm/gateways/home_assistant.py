@@ -213,7 +213,6 @@ class DefaultHomeAssistantGateway:
         return ha_impl.call_service(
             base_url=base_url,
             token=token,
-            get_client=lambda: self._get_client(base_url=base_url, token=token),
             urlopen=urlopen,
             domain=domain,
             service=service,
