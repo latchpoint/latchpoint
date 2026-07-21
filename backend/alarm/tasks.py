@@ -243,7 +243,9 @@ def sync_entity_states() -> dict:
             stale_pks.append(entity.pk)
 
     if changed:
-        Entity.objects.bulk_update(changed, ["last_state", "last_changed", "last_seen"])
+        # batch_size caps mass-change passes (e.g. HA reconnect flipping thousands of
+        # entities out of "unavailable") — Postgres would otherwise get one giant statement.
+        Entity.objects.bulk_update(changed, ["last_state", "last_changed", "last_seen"], batch_size=500)
 
     last_seen_refreshed = 0
     if stale_pks:

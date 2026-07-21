@@ -8,7 +8,7 @@
 
 ### Background
 
-GitHub issue [#79](https://github.com/ljmerza/latchpoint/issues/79): the
+GitHub issue [#79](https://github.com/latchpoint/latchpoint/issues/79): the
 `sync_entity_states` scheduled task issues one `UPDATE` per Home Assistant
 entity on **every** sync pass, whether or not anything changed. On a live
 deployment with ~11,900 HA entities and the default 300s interval this
@@ -246,7 +246,7 @@ Migration: `AlterField` on `Entity.last_seen` removing `db_index=True`
 
 ## References
 
-- [Issue #79 — sync_entity_states writes every entity on every pass](https://github.com/ljmerza/latchpoint/issues/79)
+- [Issue #79 — sync_entity_states writes every entity on every pass](https://github.com/latchpoint/latchpoint/issues/79)
 - Issue #80 (scheduler polling volume) is the remaining idle-load floor once
   this lands; intentionally out of scope here.
 - Postgres HOT updates: [https://www.postgresql.org/docs/current/storage-hot.html](https://www.postgresql.org/docs/current/storage-hot.html)
