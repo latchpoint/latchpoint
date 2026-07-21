@@ -9,12 +9,17 @@ from django.utils import timezone
 
 from alarm.models import AlarmSettingsProfile
 from alarm.tests.settings_test_utils import set_profile_setting
+from integrations_frigate import runtime
 from integrations_frigate.models import FrigateDetection
 from integrations_frigate.tasks import cleanup_frigate_detections
 
 
 class FrigateCleanupTaskTests(TestCase):
     def setUp(self):
+        # `set_profile_setting` writes directly without firing `settings_profile_changed`
+        # (it simulates a direct DB edit), so reset the process-level settings snapshot
+        # the ingest cache added in ADR-0103 to keep per-test reads fresh.
+        runtime._settings_snapshot = None
         self.profile = AlarmSettingsProfile.objects.create(name="Default", is_active=True)
 
     def _enable_frigate(self, *, retention_seconds=3600):

@@ -7,10 +7,12 @@ from typing import Any
 
 from django.core.cache import cache
 from django.db import close_old_connections
+from django.dispatch import receiver
 from django.utils import timezone
 from transports_mqtt.manager import mqtt_connection_manager
 
 from alarm.models import Entity
+from alarm.signals import settings_profile_changed
 from alarm.state_machine.settings import get_active_settings_profile, get_setting_json
 from integrations_zigbee2mqtt import status_store
 from integrations_zigbee2mqtt.config import Zigbee2mqttSettings, normalize_zigbee2mqtt_settings, slugify_fragment
@@ -29,6 +31,14 @@ _init_lock = threading.Lock()
 _initialized = False
 _subscribed_wildcards: set[str] = set()
 _subscribed_topics: set[str] = set()
+
+# `_handle_message` reads settings on every inbound MQTT message, so hitting the DB
+# there scales query load with device chatter (ADR-0103). Cache a normalized snapshot,
+# refreshed lazily and cleared on `settings_profile_changed` — mirrors
+# `alarm.system_status._settings_snapshot`. The signal is fired on commit by the
+# settings-profile use cases and every integration settings view.
+_settings_lock = threading.Lock()
+_settings_snapshot: Zigbee2mqttSettings | None = None
 
 
 def _parse_devices_response(payload: str) -> tuple[list[dict[str, Any]] | None, str | None, str | None]:
@@ -92,13 +102,34 @@ def _mqtt_enabled() -> bool:
     return mqtt_enabled()
 
 
-def get_settings() -> Zigbee2mqttSettings:
-    """Read Zigbee2MQTT settings from DB."""
+def _refresh_settings_from_db() -> Zigbee2mqttSettings:
+    """Read and normalize Zigbee2MQTT settings from the active profile and cache them."""
     profile = get_active_settings_profile()
     raw = get_setting_json(profile, "zigbee2mqtt") or {}
     if not isinstance(raw, dict):
         raw = {}
-    return normalize_zigbee2mqtt_settings(raw)
+    snapshot = normalize_zigbee2mqtt_settings(raw)
+    with _settings_lock:
+        global _settings_snapshot
+        _settings_snapshot = snapshot
+    return snapshot
+
+
+def get_settings() -> Zigbee2mqttSettings:
+    """Return cached Zigbee2MQTT settings, reading the DB only when the cache is empty."""
+    with _settings_lock:
+        snapshot = _settings_snapshot
+    if snapshot is not None:
+        return snapshot
+    return _refresh_settings_from_db()
+
+
+@receiver(settings_profile_changed)
+def _invalidate_settings_snapshot(sender, **kwargs) -> None:
+    """Clear the cached settings on profile change; the next `get_settings()` re-reads."""
+    with _settings_lock:
+        global _settings_snapshot
+        _settings_snapshot = None
 
 
 def _topic(*, base_topic: str, suffix: str) -> str:
