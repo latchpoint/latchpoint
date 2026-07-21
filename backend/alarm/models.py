@@ -293,7 +293,7 @@ class Entity(models.Model):
     device_class = models.CharField(max_length=64, null=True, blank=True, db_index=True)  # noqa: DJ001
     last_state = models.CharField(max_length=255, null=True, blank=True)  # noqa: DJ001
     last_changed = models.DateTimeField(null=True, blank=True, db_index=True)
-    last_seen = models.DateTimeField(null=True, blank=True, db_index=True)
+    last_seen = models.DateTimeField(null=True, blank=True)
     attributes = models.JSONField(default=dict, blank=True)
     source = models.CharField(max_length=64, blank=True)
     tags = models.ManyToManyField(EntityTag, related_name="entities", blank=True)

@@ -32,6 +32,11 @@ PENDING_ACTION_STALE_THRESHOLD_SECONDS = 60
 # stalled and the alarm sat in arming/pending unprotected — a regression to surface.
 STUCK_TIMER_WARN_SECONDS = 5
 
+# How stale an unchanged entity's last_seen may get before the sync backstop
+# refreshes it. Bounds last_seen drift for entities that emit no state events;
+# the WebSocket stream keeps active entities fresh in real time (ADR-0102).
+LAST_SEEN_REFRESH_SECONDS = 3600
+
 
 def _is_home_assistant_active() -> bool:
     """
@@ -195,17 +200,24 @@ def sync_entity_states() -> dict:
 
     ha_states = {e["entity_id"]: e for e in ha_entities}
     now = timezone.now()
+    stale_before = now - timedelta(seconds=LAST_SEEN_REFRESH_SECONDS)
     updated = 0
     synced = 0
     changed_entities = []
+    changed = []  # instances persisted in one bulk_update after the loop
+    stale_pks = []  # unchanged entities whose last_seen needs a coarse refresh
 
-    for entity in Entity.objects.filter(source="home_assistant"):
+    # .only() the fields the loop reads; the attributes JSON blob is not needed here.
+    entities = Entity.objects.filter(source="home_assistant").only(
+        "entity_id", "last_state", "last_changed", "last_seen"
+    )
+    for entity in entities:
         ha_data = ha_states.get(entity.entity_id)
         if not ha_data:
             continue
 
+        synced += 1
         new_state = ha_data.get("state")
-        update_fields = ["last_seen"]
 
         if entity.last_state != new_state:
             old_state = entity.last_state
@@ -217,7 +229,8 @@ def sync_entity_states() -> dict:
             )
             entity.last_state = new_state
             entity.last_changed = now
-            update_fields.extend(["last_state", "last_changed"])
+            entity.last_seen = now
+            changed.append(entity)
             updated += 1
             changed_entities.append(
                 {
@@ -226,10 +239,15 @@ def sync_entity_states() -> dict:
                     "new_state": new_state,
                 }
             )
+        elif entity.last_seen is None or entity.last_seen < stale_before:
+            stale_pks.append(entity.pk)
 
-        entity.last_seen = now
-        entity.save(update_fields=update_fields)
-        synced += 1
+    if changed:
+        Entity.objects.bulk_update(changed, ["last_state", "last_changed", "last_seen"])
+
+    last_seen_refreshed = 0
+    if stale_pks:
+        last_seen_refreshed = Entity.objects.filter(pk__in=stale_pks).update(last_seen=now)
 
     if updated > 0:
         logger.info("Entity sync: updated %d entities with changed states", updated)
@@ -244,7 +262,7 @@ def sync_entity_states() -> dict:
         except Exception as e:
             logger.debug("Dispatcher notification skipped: %s", e)
 
-    return {"synced": synced, "updated": updated, "errors": 0}
+    return {"synced": synced, "updated": updated, "errors": 0, "last_seen_refreshed": last_seen_refreshed}
 
 
 @register(
