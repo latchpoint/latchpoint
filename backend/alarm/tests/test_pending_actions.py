@@ -190,6 +190,13 @@ class FireDuePendingActionsTests(TestCase):
             armed_state_at_schedule=AlarmState.ARMED_AWAY,
         )
 
+    def test_idle_tick_issues_single_query_when_no_scheduled_rows(self):
+        # ADR-0103: with no SCHEDULED rows the tick short-circuits after one existence
+        # check, skipping the stale-cancel UPDATE and the due-select.
+        with self.assertNumQueries(1):
+            result = fire_due_pending_actions()
+        self.assertEqual(result, {"fired": 0, "failed": 0, "stale_cancelled": 0})
+
     def test_fires_due_row_and_marks_fired(self):
         pa = self._enqueue(fire_at=timezone.now() - timedelta(seconds=1))
         with patch("alarm.rules.action_handlers.send_notification.get_notification_dispatcher") as dispatcher:

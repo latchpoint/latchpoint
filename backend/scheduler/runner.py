@@ -186,10 +186,20 @@ def _run_task_loop(*, task: ScheduledTask, stop_event: threading.Event) -> None:
                 }
             )
 
+        # Decide health persistence ONCE per run (ADR-0103) and reuse it for the started
+        # and finished-success writes below, so a persisted is_running=True always has a
+        # matching finished write.
+        persist_health = True
         if telemetry is not None:
+            try:
+                persist_health = telemetry.should_persist_health(task=task)
+            except Exception:
+                logger.debug("should_persist_health failed for task %s", task.name, exc_info=True)
+
+        if telemetry is not None and persist_health:
             _safe_telemetry(telemetry.update_task_health_scheduling, task=task, next_run_at=next_run)
 
-        logger.info(
+        logger.debug(
             "Task %s scheduled for %s (in %.0fs)",
             task.name,
             next_run.isoformat(),
@@ -225,7 +235,7 @@ def _run_task_loop(*, task: ScheduledTask, stop_event: threading.Event) -> None:
                 }
             )
 
-        if telemetry is not None:
+        if telemetry is not None and persist_health:
             _safe_telemetry(
                 telemetry.update_task_health_started,
                 task=task,
@@ -237,10 +247,10 @@ def _run_task_loop(*, task: ScheduledTask, stop_event: threading.Event) -> None:
         start_time = time.monotonic()
         try:
             close_old_connections()
-            logger.info("Task %s starting", task.name)
+            logger.debug("Task %s starting", task.name)
             task.func()
             duration = time.monotonic() - start_time
-            logger.info("Task %s completed in %.2fs", task.name, duration)
+            logger.debug("Task %s completed in %.2fs", task.name, duration)
             finished_at = timezone.now()
             with _lock:
                 status = _task_status.setdefault(task.name, {})
@@ -249,12 +259,13 @@ def _run_task_loop(*, task: ScheduledTask, stop_event: threading.Event) -> None:
                 status["consecutive_failures"] = 0
 
             if telemetry is not None:
-                _safe_telemetry(
-                    telemetry.update_task_health_finished_success,
-                    task=task,
-                    finished_at=finished_at,
-                    duration_seconds=duration,
-                )
+                if persist_health:
+                    _safe_telemetry(
+                        telemetry.update_task_health_finished_success,
+                        task=task,
+                        finished_at=finished_at,
+                        duration_seconds=duration,
+                    )
                 _safe_telemetry(
                     telemetry.record_task_run_success_if_slow,
                     task=task,

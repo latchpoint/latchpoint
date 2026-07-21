@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import threading
+import time
 import traceback
 from dataclasses import asdict, is_dataclass
 from typing import Any
@@ -12,12 +14,50 @@ from alarm.models import AlarmEvent, AlarmEventType
 
 from .models import SchedulerTaskHealth, SchedulerTaskRun, SchedulerTaskRunStatus
 from .registry import ScheduledTask
+from .schedules import Every
 
 _CACHED_INSTANCE_ID: str | None = None
 
 # Single-instance deployments share one bucket; multi-instance operators
 # override via SCHEDULER_INSTANCE_ID. See ADR-0093.
 _DEFAULT_INSTANCE_ID = "default"
+
+# ADR-0103: fast sub-minute tasks (e.g. process_alarm_timers at 1s) otherwise issue ~3
+# `scheduler_taskhealth` UPDATEs per run. Throttle the scheduling/started/finished-success
+# writes to at most once per window per task; failures and slow runs stay unconditional.
+_HEALTH_THROTTLE_WINDOW_SECONDS = 60.0
+_health_throttle_lock = threading.Lock()
+_last_health_persist_at: dict[str, float] = {}
+
+
+def _is_sub_minute_task(task: ScheduledTask) -> bool:
+    """Return True for `Every` schedules that fire more often than the throttle window."""
+    schedule = task.schedule
+    return isinstance(schedule, Every) and int(schedule.seconds) < int(_HEALTH_THROTTLE_WINDOW_SECONDS)
+
+
+def should_persist_health(*, task: ScheduledTask) -> bool:
+    """Decide whether to persist scheduling/started/finished-success health for this run.
+
+    Sub-minute `Every` tasks persist at most once per ~60s window; every other schedule
+    (DailyAt, `Every` >= 60s), the first run after process start, and any run past the
+    window always persist.
+
+    Call this ONCE per run and reuse the result for both the started (is_running=True) and
+    finished-success (is_running=False) writes, so a persisted `started` always has a
+    matching finished write and no health row is left stuck at is_running=True. Failure
+    writes (`update_task_health_finished_failure`) and slow-run records stay unconditional
+    and are intentionally not gated by this decision.
+    """
+    if not _is_sub_minute_task(task):
+        return True
+    now = time.monotonic()
+    with _health_throttle_lock:
+        last = _last_health_persist_at.get(task.name)
+        if last is not None and (now - last) < _HEALTH_THROTTLE_WINDOW_SECONDS:
+            return False
+        _last_health_persist_at[task.name] = now
+        return True
 
 
 def get_instance_id() -> str:
