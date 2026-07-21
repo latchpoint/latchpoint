@@ -110,6 +110,7 @@ This document tracks all Architecture Decision Records (ADRs) and their implemen
 | [0097](0097-ring-keypad-v2-burglar-siren-timeout.md) | Ring Keypad v2 Burglar Siren via Non-Zero Indicator CC Timeout | **Accepted** |
 | [0101](0101-single-ha-action-input-and-selector-driven-service-data.md) | Single HA Action Input and Selector-Driven Service Data in the Rules Builder | **Proposed** |
 | [0102](0102-change-only-entity-sync-writes.md) | Change-Only Entity Sync Writes with Coarse last_seen Refresh | **Proposed** |
+| [0103](0103-idle-scheduler-and-ingest-quiet-down.md) | Idle Scheduler and Ingest Quiet-Down | **Proposed** |
 
 ---
 
