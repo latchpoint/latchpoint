@@ -115,7 +115,6 @@ class DefaultHomeAssistantGateway:
         return ha_impl.get_status(
             base_url=base_url,
             token=token,
-            urlopen=urlopen,
             timeout_seconds=float(timeout_seconds or default_timeout),
         )
 
@@ -128,7 +127,6 @@ class DefaultHomeAssistantGateway:
             return ha_impl.ensure_available(
                 base_url=base_url,
                 token=token,
-                urlopen=urlopen,
                 timeout_seconds=float(timeout_seconds or default_timeout),
             )
         except ha_impl.HomeAssistantNotConfigured as exc:

@@ -14,7 +14,7 @@ dependencies = [
     "argon2-cffi>=23.1",
     "gunicorn>=21.2",
     "uvicorn>=0.27",
-    "homeassistant-api",
+    "homeassistant-api==6.0.1",
     "paho-mqtt>=2.0",
     "httpx>=0.27",
     "websocket-client>=1.8",

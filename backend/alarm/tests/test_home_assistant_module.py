@@ -1,13 +1,40 @@
 from __future__ import annotations
 
-import io
 import json
 from unittest.mock import patch
-from urllib.error import HTTPError, URLError
 
 from django.test import SimpleTestCase
+from homeassistant_api.errors import ProcessorNotFoundError, UnauthorizedError
 from integrations_home_assistant import api as home_assistant
 from integrations_home_assistant.connection import clear_cached_connection, set_cached_connection
+
+
+class _FakeStatusClient:
+    """Stands in for ``impl._StatusClient``: the attributes it captures plus a scripted outcome."""
+
+    def __init__(
+        self,
+        *,
+        status_code: int | None = None,
+        content_type: str = "",
+        body_preview: str = "",
+        running: bool = True,
+        raises: BaseException | None = None,
+    ):
+        self.last_status_code = status_code
+        self.last_content_type = content_type
+        self.last_body_preview = body_preview
+        self._running = running
+        self._raises = raises
+        self.closed = False
+
+    def check_api_running(self) -> bool:
+        if self._raises is not None:
+            raise self._raises
+        return self._running
+
+    def close(self) -> None:
+        self.closed = True
 
 
 class _DummyResponse:
@@ -60,54 +87,68 @@ class HomeAssistantModuleTests(SimpleTestCase):
         self.assertFalse(status.reachable)
         self.assertIsNone(status.base_url)
 
-    @patch("integrations_home_assistant.api.urlopen")
-    def test_get_status_raw_http_success_json_content_type(self, mock_urlopen):
+    @patch("integrations_home_assistant.impl._build_status_client")
+    def test_get_status_client_success_marks_reachable(self, mock_build_client):
         self._set_configured_connection(base_url="http://ha:8123/", token="token")
-        mock_urlopen.return_value = _DummyResponse(
-            status=200,
-            headers={"Content-Type": "application/json; charset=utf-8"},
-            body=b'{"message":"API running."}',
-        )
+        mock_build_client.return_value = _FakeStatusClient(status_code=200, content_type="application/json")
         status = home_assistant.get_status(timeout_seconds=0.01)
         self.assertTrue(status.configured)
         self.assertTrue(status.reachable)
         self.assertEqual(status.base_url, "http://ha:8123/")
-        request = mock_urlopen.call_args.args[0]
-        self.assertTrue(request.full_url.endswith("/api/"))
+        # The client must be built with the /api-suffixed URL: the bare base_url is Home
+        # Assistant's SPA route, which is what made the old client branch dead (#86).
+        self.assertEqual(mock_build_client.call_args.kwargs["api_url"], "http://ha:8123/api/")
 
-    @patch("integrations_home_assistant.api.urlopen")
-    def test_get_status_raw_http_non_json_content_type_marks_unreachable(self, mock_urlopen):
+    @patch("integrations_home_assistant.impl._build_status_client")
+    def test_get_status_non_json_content_type_marks_unreachable(self, mock_build_client):
         self._set_configured_connection(base_url="http://ha:8123", token="token")
-        mock_urlopen.return_value = _DummyResponse(
-            status=200,
-            headers={"Content-Type": "text/plain"},
-            body=b"hello",
+        # 200 text/plain: the library parses it to a str, then its "expected dict" guard raises.
+        mock_build_client.return_value = _FakeStatusClient(
+            status_code=200,
+            content_type="text/plain",
+            body_preview="hello",
+            raises=TypeError("Expected dict response, got str"),
         )
         status = home_assistant.get_status(timeout_seconds=0.01)
         self.assertTrue(status.configured)
         self.assertFalse(status.reachable)
         self.assertIn("Unexpected content-type", status.error or "")
 
-    @patch("integrations_home_assistant.api.urlopen")
-    def test_get_status_raw_http_http_error_sets_http_code(self, mock_urlopen):
+    @patch("integrations_home_assistant.impl._build_status_client")
+    def test_get_status_html_content_type_marks_unreachable(self, mock_build_client):
         self._set_configured_connection(base_url="http://ha:8123", token="token")
-        error = HTTPError(
-            "http://ha:8123/api/",
-            401,
-            "Unauthorized",
-            hdrs={"Content-Type": "application/json"},
-            fp=io.BytesIO(b'{"message":"Unauthorized"}'),
+        # Home Assistant's SPA route answers 200 text/html and the library has no processor
+        # for that mimetype — the exact symptom the dead client branches produced forever.
+        mock_build_client.return_value = _FakeStatusClient(
+            status_code=200,
+            content_type="text/html",
+            body_preview="<html>",
+            raises=ProcessorNotFoundError("No response processor found for mimetype 'text/html'."),
         )
-        mock_urlopen.side_effect = error
+        status = home_assistant.get_status(timeout_seconds=0.01)
+        self.assertTrue(status.configured)
+        self.assertFalse(status.reachable)
+        self.assertEqual(status.error, "Unexpected content-type from Home Assistant: text/html")
+
+    @patch("integrations_home_assistant.impl._build_status_client")
+    def test_get_status_http_error_sets_http_code(self, mock_build_client):
+        self._set_configured_connection(base_url="http://ha:8123", token="token")
+        mock_build_client.return_value = _FakeStatusClient(
+            status_code=401,
+            content_type="text/plain",
+            raises=UnauthorizedError(),
+        )
         status = home_assistant.get_status(timeout_seconds=0.01)
         self.assertTrue(status.configured)
         self.assertFalse(status.reachable)
         self.assertEqual(status.error, "HTTP 401")
 
-    @patch("integrations_home_assistant.api.urlopen")
-    def test_get_status_raw_http_url_error_sets_reason(self, mock_urlopen):
+    @patch("integrations_home_assistant.impl._build_status_client")
+    def test_get_status_transport_error_sets_reason(self, mock_build_client):
         self._set_configured_connection(base_url="http://ha:8123", token="token")
-        mock_urlopen.side_effect = URLError("no route")
+        # niquests' RequestException subclasses OSError, exactly as urllib's URLError did, so
+        # connect/DNS/TLS failures still surface their low-level reason.
+        mock_build_client.return_value = _FakeStatusClient(raises=ConnectionError("no route"))
         status = home_assistant.get_status(timeout_seconds=0.01)
         self.assertTrue(status.configured)
         self.assertFalse(status.reachable)

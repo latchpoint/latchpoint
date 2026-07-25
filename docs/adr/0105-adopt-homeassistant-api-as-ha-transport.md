@@ -184,13 +184,14 @@ HTTP as the fallback it was written to be. This was PR #85.
 
 ## Acceptance Criteria
 
-- [ ] **AC-1**: `requirements.txt` pins `homeassistant-api==6.0.1`; a build from a
-  clean checkout resolves exactly that version.
-- [ ] **AC-2**: Per-call timeouts are demonstrated to reach the underlying HTTP
+- [x] **AC-1**: `requirements.txt` pins `homeassistant-api==6.0.1`; a build from a
+  clean checkout resolves exactly that version. *(Also required `pyproject.toml` and
+  `uv.lock` — see Phase 0 Verification.)*
+- [x] **AC-2**: Per-call timeouts are demonstrated to reach the underlying HTTP
   request through the library — a call against an unresponsive host raises within
   the configured bound (2s status / 5s entities) rather than hanging. If this
   cannot be demonstrated, Phase 1 does not proceed.
-- [ ] **AC-3**: `get_status` via the library returns a `HomeAssistantStatus` equal
+- [x] **AC-3**: `get_status` via the library returns a `HomeAssistantStatus` equal
   to the REST implementation's for each case: reachable, unreachable, HTTP error,
   and not-configured; and still raises `HomeAssistantNotConfigured` /
   `HomeAssistantNotReachable` at the same boundaries.
@@ -241,19 +242,54 @@ HTTP as the fallback it was written to be. This was PR #85.
 | Risk | Likelihood | Impact | Mitigation |
 |------|-----------|--------|------------|
 | Silent field-shape drift changes `Entity` rows and thus sensor behavior (the PR #85 failure mode) | Medium | **High** | AC-6 parity test comparing library vs REST output key-by-key including types; `list_entities` migrates **last** (Phase 4); baseline entity count checked after deploy (AC-8) |
-| Per-call timeout does not survive through the library, so an unresponsive HA hangs a scheduler tick | Medium | High | **Unverified today.** AC-2 gates Phase 1 — if timeouts cannot be demonstrated, the migration stops before any function moves |
+| Per-call timeout does not survive through the library, so an unresponsive HA hangs a scheduler tick | Medium | High | **Verified — see Phase 0 Verification.** Timeouts are enforced, but only via `global_request_kwargs`; `check_api_running()` has no per-call seam. A regression test keeps AC-2 asserted |
 | Library API moves between releases (the old two-step soft import is evidence it already has) | Medium | Medium | Pin `==6.0.1` (Phase 0); treat upgrades as their own reviewed change |
 | `trigger_service`'s `**kwargs` rejects a user-authored service field that the JSON body accepted | Low | Medium | Validate keys are Python identifiers before the call and fall back or error explicitly rather than silently dropping fields |
 | Library exceptions bypass our domain exception boundaries | Medium | Medium | Explicit mapping to `HomeAssistantNotConfigured` / `HomeAssistantNotReachable`, asserted by AC-3 |
 | A dead client path is reintroduced and hidden by a broad `except`, repeating the whole class of bug this ADR came from | Medium | Medium | No `except Exception: pass` around a transport call; every phase leaves exactly **one** path for its function, never a preferred-plus-fallback pair |
 
+## Phase 0 Verification (AC-2)
+
+Run in the project's docker test environment against the installed 6.0.1, before any
+migration code was written.
+
+**Timeouts are enforced.** A `Client` pointed at a socket that completes the TCP
+handshake and then never answers gives up at the configured bound, and a call with no
+timeout configured does not:
+
+```
+timeout=1.0 -> RequestTimeoutError after 1.01s
+timeout=2.0 -> RequestTimeoutError after 2.00s
+10.255.255.1 (unroutable, connect timeout), timeout=2.0 -> RequestTimeoutError after 2.00s
+control: no timeout configured -> still blocked when a 6s watchdog gave up
+```
+
+**But not the way this ADR assumed.** `Client.request()` does forward `**kwargs` to its
+session, so a per-call `timeout=` works there — and it is unreachable from the call we
+actually need. `check_api_running()` takes no arguments and passes none through, so the
+only seam is `global_request_kwargs` at construction, which the client merges into every
+request. That is what Phase 1 uses, and a test asserts the bound so the property cannot
+silently regress. Note `global_request_kwargs` is annotated `Mapping[str, str]` while the
+library itself stores a `bool` there; a float `timeout` works at runtime.
+
+**AC-1 needed more than `requirements.txt`.** `requirements.txt` is only the *Docker*
+install path (`pip install -r requirements.txt`). CI resolves dependencies with
+`uv sync --frozen --group dev`, i.e. from `uv.lock`, which pinned **5.0.3** — a release
+that restructures `Client` around `rawclient.py`, ships `requests` rather than `niquests`,
+and makes `response_logic` a classmethod with a different signature. Pinning
+`requirements.txt` alone would have left CI installing a version the migrated code cannot
+run against, and `--frozen` means it would have done so silently. `pyproject.toml` and
+`uv.lock` are pinned to 6.0.1 as well.
+
 ## Implementation Plan
 
-- [ ] **Phase 0**: Pin `homeassistant-api==6.0.1` in `requirements.txt`. Verify
+- [x] **Phase 0**: Pin `homeassistant-api==6.0.1` in `requirements.txt`. Verify
   `AC-2` (per-call timeouts) before writing any migration code — this phase can
   legitimately end the ADR if timeouts cannot be made to work. (AC-1, AC-2)
-- [ ] **Phase 1**: Migrate `get_status` / `ensure_available`. Lowest risk: boolean
+- [x] **Phase 1**: Migrate `get_status` / `ensure_available`. Lowest risk: boolean
   reachability, no row shapes. Deploy and verify. (AC-3, AC-7)
+  *Code and tests landed (AC-3). AC-7's prod-log and mirror-entity check is still
+  outstanding — it needs the deploy.*
 - [ ] **Phase 2**: Migrate `list_services`, `list_service_catalog`,
   `list_notify_services` via `get_domains()`. Read-only and UI-facing. (AC-4, AC-7)
 - [ ] **Phase 3**: Migrate `call_service` to `trigger_service`, preserving the

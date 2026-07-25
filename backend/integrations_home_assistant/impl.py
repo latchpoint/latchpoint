@@ -1,9 +1,14 @@
-"""Home Assistant transport: REST only.
+"""Home Assistant transport: mid-migration onto ``homeassistant_api`` (ADR-0105).
 
-Every call here goes over HA's REST API. Earlier revisions also carried
-``homeassistant_api`` client branches that were meant to be preferred, with REST as a
-fallback — but not one of them ever worked, and each failure was swallowed by a broad
-``except``, so REST was always the real path:
+- ``get_status`` / ``ensure_available`` go through the pinned ``homeassistant_api`` client
+  (Phase 1). Reachability only — no row shapes cross this boundary.
+- ``list_entities``, ``call_service``, ``list_services``, ``list_service_catalog`` and
+  ``list_notify_services`` are still hand-rolled REST over ``urllib``. They move in
+  Phases 2-4, each behind its own shape-parity audit.
+
+Earlier revisions carried ``homeassistant_api`` branches that were meant to be preferred,
+with REST as a fallback — but not one of them ever worked, and each failure was swallowed by
+a broad ``except``, so REST was always the real path:
 
 - ``call_service`` called ``client.call_service()``, which does not exist (the library
   exposes ``trigger_service``), so it raised ``AttributeError`` every time. Removed in #78.
@@ -11,26 +16,34 @@ fallback — but not one of them ever worked, and each failure was swallowed by 
   ``api_url``. That argument is used verbatim as the endpoint prefix, so ``get_config()``
   requested ``{base_url}/config`` — Home Assistant's Single Page App route, which answers
   200 with ``text/html``. The library has no processor for that mimetype, so every call
-  raised ``ProcessorNotFoundError`` and logged a warning on the way to REST.
+  raised ``ProcessorNotFoundError`` and logged a warning on the way to REST. Removed in #86.
 
-Correcting that URL was tried and rejected: it would have *activated* a second, never-executed
-parser in ``list_entities`` whose ``last_changed`` is a ``datetime`` where the REST path yields
-an ISO string, silently changing the shape of rows that feed ``sync_entity_states`` and the
-``Entity`` table the alarm's sensors read. The branches were deleted instead.
+``_api_url`` is why that defect cannot come back: the client is only ever constructed with
+the ``/api``-suffixed URL, and a test pins it.
 
-Adopting ``homeassistant_api`` properly remains reasonable — it is more capable than the
-above suggests, e.g. ``trigger_service`` does return the states it changed — but it is a
-deliberate migration needing a pinned version and a field-by-field audit, not a drive-by.
+Correcting that URL *without* a migration was tried and rejected (#85): it would have
+activated a second, never-executed parser in ``list_entities`` whose ``last_changed`` is a
+``datetime`` where the REST path yields an ISO string, silently changing the shape of rows
+that feed ``sync_entity_states`` and the ``Entity`` table the alarm's sensors read. That is
+also why ``list_entities`` migrates last rather than first.
+
+There is deliberately **no** REST fallback behind the migrated path. A preferred-plus-fallback
+pair is precisely what hid all three dead branches above, so each phase leaves exactly one
+transport per function.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request
+
+from homeassistant_api import Client
+from homeassistant_api.errors import HomeassistantAPIError
 
 from config.domain_exceptions import GatewayError
 
@@ -94,64 +107,133 @@ def _build_url(*, base_url: str, path: str) -> str:
     return f"{base}{path}"
 
 
-def get_status(
+def _api_url(base_url: str) -> str:
+    """Return the REST API endpoint prefix that ``homeassistant_api`` must be built with.
+
+    The library's first constructor argument is named ``api_url`` and is used verbatim as the
+    endpoint prefix — it never inserts ``/api``. Settings store the browser-facing base URL
+    (``http://ha.local:8123``), so the suffix has to be added here; without it every call
+    lands on Home Assistant's Single Page App route and comes back as ``text/html``. That was
+    the defect behind the dead client branches (see the module docstring), so it is pinned by
+    a test. A ``base_url`` that already ends in ``/api`` is not doubled.
+    """
+    base = (base_url or "").strip().rstrip("/")
+    if base.lower().endswith("/api"):
+        return f"{base}/"
+    return f"{base}/api/"
+
+
+def _body_preview(response: Any, *, limit: int = 256) -> str:
+    """Best-effort short preview of a response body, for diagnostics only."""
+    try:
+        text = getattr(response, "text", None)
+    except Exception:  # pragma: no cover - defensive
+        return ""
+    return text[:limit] if isinstance(text, str) else ""
+
+
+class _StatusClient(Client):
+    """``homeassistant_api`` client that remembers the last response it processed.
+
+    The library maps HTTP failures onto exception *types* — 401 to ``UnauthorizedError``,
+    404 to ``EndpointNotFoundError``, 5xx to ``InternalServerError`` — and carries neither
+    the numeric status code nor the content type on the exception. ``get_status`` has to
+    report both, because ``"HTTP 401"`` and ``"Unexpected content-type from Home Assistant:
+    ..."`` are the strings the UI and the API have always returned. ``response_logic`` is the
+    single funnel every request passes through, and it runs before the status check raises,
+    so it is the one place that sees every response.
+    """
+
+    def __init__(self, *, api_url: str, token: str, timeout_seconds: float) -> None:
+        # The timeout has to be a global request kwarg: ``check_api_running()`` takes no
+        # arguments, so there is no per-call seam to thread it through, and
+        # ``global_request_kwargs`` is what the client forwards to the session on every
+        # request. Verified to bound the call at the socket layer (ADR-0105 AC-2).
+        super().__init__(api_url, token, global_request_kwargs={"timeout": timeout_seconds})
+        self.last_status_code: int | None = None
+        self.last_content_type: str = ""
+        self.last_body_preview: str = ""
+
+    def response_logic(self, response: Any) -> Any:
+        """Record the response, then hand it to the library's own processing unchanged."""
+        status_code = getattr(response, "status_code", None)
+        headers = getattr(response, "headers", None) or {}
+        content_type = str(headers.get("content-type") or "").lower()
+        self.last_status_code = status_code if isinstance(status_code, int) else None
+        self.last_content_type = content_type
+        # Mirror the raw-HTTP implementation: only read the body on the paths that report it.
+        if self.last_status_code is None or not _is_success(self.last_status_code) or not _is_json(content_type):
+            self.last_body_preview = _body_preview(response)
+        return Client.response_logic(response)
+
+    def close(self) -> None:
+        """Close the underlying HTTP session.
+
+        The library only closes it from ``__exit__``, and its ``__enter__`` calls
+        ``check_api_running()`` — so using it as a context manager would double the request.
+        """
+        self._session.close()
+
+
+def _is_success(status_code: int) -> bool:
+    """Return True for a 2xx HTTP status code."""
+    return 200 <= status_code < 300
+
+
+def _is_json(content_type: str) -> bool:
+    """Return True when a (lowercased) content-type header advertises JSON."""
+    return "application/json" in content_type
+
+
+def _build_status_client(*, api_url: str, token: str, timeout_seconds: float) -> _StatusClient:
+    """Build the client used for reachability checks. Patch point for tests that go via a view."""
+    return _StatusClient(api_url=api_url, token=token, timeout_seconds=timeout_seconds)
+
+
+def _close_quietly(client: Any) -> None:
+    """Release a client's HTTP session without letting cleanup mask the status result."""
+    close = getattr(client, "close", None)
+    if not callable(close):
+        return
+    try:
+        close()
+    except Exception:  # pragma: no cover - defensive
+        logger.debug("HA status: closing client session failed", exc_info=True)
+
+
+def _unreachable(
     *,
     base_url: str,
-    token: str,
-    urlopen,
-    timeout_seconds: float = 2.0,
-    logger_obj: logging.Logger | None = None,
+    client: Any,
+    exc: BaseException,
+    log: logging.Logger,
 ) -> HomeAssistantStatus:
-    """Return a non-raising status snapshot for the given Home Assistant connection settings."""
-    log = logger_obj or logger
-    base_url = (base_url or "").strip()
-    token = (token or "").strip()
-    if not base_url or not token:
-        log.info("HA status: not configured (missing url/token)")
-        return HomeAssistantStatus(configured=False, reachable=False, base_url=base_url or None)
+    """Build the unreachable status for a failed reachability check.
 
-    url = _build_url(base_url=base_url, path="/api/")
-    request = Request(url, headers=_ha_headers(token), method="GET")
-    try:
-        log.debug("HA status: checking via raw HTTP GET %s (timeout=%ss)", url, timeout_seconds)
-        with urlopen(request, timeout=timeout_seconds) as response:
-            content_type = (response.headers.get("Content-Type") or "").lower()
-            if 200 <= response.status < 300:
-                if "application/json" not in content_type:
-                    body_preview = response.read(256).decode("utf-8", errors="replace")
-                    log.warning(
-                        "HA status: unexpected content-type (status=%s, content_type=%s, body_preview=%r)",
-                        response.status,
-                        content_type or "unknown",
-                        body_preview,
-                    )
-                    return HomeAssistantStatus(
-                        configured=True,
-                        reachable=False,
-                        base_url=base_url,
-                        error=f"Unexpected content-type from Home Assistant: {content_type or 'unknown'}",
-                    )
-                log.info("HA status: reachable via raw HTTP (base_url=%s)", base_url)
-                return HomeAssistantStatus(configured=True, reachable=True, base_url=base_url)
-            return HomeAssistantStatus(
-                configured=True,
-                reachable=False,
-                base_url=base_url,
-                error=f"Unexpected status: {response.status}",
-            )
-    except HTTPError as exc:
-        try:
-            content_type = (exc.headers.get("Content-Type") or "").lower()
-        except Exception:
-            content_type = ""
-        try:
-            body_preview = exc.read(256).decode("utf-8", errors="replace")
-        except Exception:
-            body_preview = ""
+    The error string is derived from the response the client actually saw rather than from the
+    exception type, which keeps it identical to what the raw-HTTP implementation reported:
+    ``HTTP <code>`` for a non-2xx answer, ``Unexpected content-type ...`` for a 2xx answer we
+    cannot parse. When nothing was received at all — connect refused, DNS, TLS, timeout — the
+    low-level reason is passed through the way ``URLError.reason`` used to be.
+    """
+    status_code = getattr(client, "last_status_code", None)
+    content_type = getattr(client, "last_content_type", "") or ""
+    body_preview = getattr(client, "last_body_preview", "") or ""
+
+    if isinstance(status_code, int) and not _is_success(status_code):
         log.warning(
-            "HA status: HTTPError (base_url=%s, status=%s, content_type=%s, body_preview=%r)",
+            "HA status: HTTP error (base_url=%s, status=%s, content_type=%s, body_preview=%r)",
             base_url,
-            exc.code,
+            status_code,
+            content_type or "unknown",
+            body_preview,
+        )
+        return HomeAssistantStatus(configured=True, reachable=False, base_url=base_url, error=f"HTTP {status_code}")
+
+    if isinstance(status_code, int) and not _is_json(content_type):
+        log.warning(
+            "HA status: unexpected content-type (status=%s, content_type=%s, body_preview=%r)",
+            status_code,
             content_type or "unknown",
             body_preview,
         )
@@ -159,41 +241,96 @@ def get_status(
             configured=True,
             reachable=False,
             base_url=base_url,
-            error=f"HTTP {exc.code}",
+            error=f"Unexpected content-type from Home Assistant: {content_type or 'unknown'}",
         )
-    except URLError as exc:
-        log.warning("HA status: URLError (base_url=%s, reason=%s)", base_url, exc.reason)
-        return HomeAssistantStatus(
-            configured=True,
-            reachable=False,
-            base_url=base_url,
-            error=str(exc.reason),
-        )
+
+    log.warning(
+        "HA status: unreachable (base_url=%s, error=%s: %s)",
+        base_url,
+        type(exc).__name__,
+        exc,
+    )
+    return HomeAssistantStatus(configured=True, reachable=False, base_url=base_url, error=str(exc))
+
+
+def get_status(
+    *,
+    base_url: str,
+    token: str,
+    timeout_seconds: float = 2.0,
+    logger_obj: logging.Logger | None = None,
+    client_factory: Callable[..., Any] | None = None,
+) -> HomeAssistantStatus:
+    """Return a non-raising status snapshot for the given Home Assistant connection settings.
+
+    Reachability is ``homeassistant_api``'s ``check_api_running()`` (``GET {base_url}/api/``).
+    ``base_url`` is echoed back exactly as configured; only the client is built from the
+    ``/api``-suffixed form.
+    """
+    log = logger_obj or logger
+    base_url = (base_url or "").strip()
+    token = (token or "").strip()
+    if not base_url or not token:
+        log.info("HA status: not configured (missing url/token)")
+        return HomeAssistantStatus(configured=False, reachable=False, base_url=base_url or None)
+
+    api_url = _api_url(base_url)
+    factory = client_factory or _build_status_client
+    client: Any = None
+    try:
+        log.debug("HA status: checking via client GET %s (timeout=%ss)", api_url, timeout_seconds)
+        client = factory(api_url=api_url, token=token, timeout_seconds=timeout_seconds)
+        running = client.check_api_running()
+    except (HomeassistantAPIError, OSError, ValueError, TypeError) as exc:
+        # HomeassistantAPIError covers the library's own failures: RequestTimeoutError, the
+        # per-status-code errors, and ProcessorNotFoundError/MalformedDataError for a body it
+        # cannot parse. OSError covers every transport failure underneath it — niquests'
+        # RequestException subclasses OSError, exactly as urllib's URLError did — so connect
+        # refused, DNS, TLS and socket timeouts all land here. ValueError is the library
+        # rejecting a base_url with no http(s) scheme, and TypeError is its "expected dict
+        # response" guard when Home Assistant answers 2xx with a non-object body.
+        return _unreachable(base_url=base_url, client=client, exc=exc, log=log)
     except Exception as exc:  # pragma: no cover - defensive
         log.exception("HA status: unexpected error (base_url=%s)", base_url)
+        return HomeAssistantStatus(configured=True, reachable=False, base_url=base_url, error=str(exc))
+    finally:
+        _close_quietly(client)
+
+    if not running:
+        # 2xx JSON, but not Home Assistant's ``{"message": "API running."}``. The raw-HTTP
+        # implementation never read the body and would have called this reachable; the library
+        # checks it, and an unrecognised answer on /api/ is reported rather than assumed good.
+        log.warning(
+            "HA status: API did not report running (base_url=%s, status=%s)",
+            base_url,
+            getattr(client, "last_status_code", None),
+        )
         return HomeAssistantStatus(
             configured=True,
             reachable=False,
             base_url=base_url,
-            error=str(exc),
+            error="Home Assistant did not report the API as running.",
         )
+
+    log.info("HA status: reachable (base_url=%s)", base_url)
+    return HomeAssistantStatus(configured=True, reachable=True, base_url=base_url)
 
 
 def ensure_available(
     *,
     base_url: str,
     token: str,
-    urlopen,
     timeout_seconds: float = 2.0,
     logger_obj: logging.Logger | None = None,
+    client_factory: Callable[..., Any] | None = None,
 ) -> HomeAssistantStatus:
     """Validate that Home Assistant is configured and reachable; raise on failure."""
     status_obj = get_status(
         base_url=base_url,
         token=token,
-        urlopen=urlopen,
         timeout_seconds=timeout_seconds,
         logger_obj=logger_obj,
+        client_factory=client_factory,
     )
     if not status_obj.configured:
         raise HomeAssistantNotConfigured("Home Assistant is not configured.")

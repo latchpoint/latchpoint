@@ -54,7 +54,6 @@ def get_status(*, timeout_seconds: float = 2.0) -> HomeAssistantStatus:
     return impl.get_status(
         base_url=base_url,
         token=token,
-        urlopen=urlopen,
         timeout_seconds=float(timeout_seconds or default_timeout),
         logger_obj=logger,
     )
