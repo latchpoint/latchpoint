@@ -44,6 +44,19 @@ class ShouldPersistHealthTests(SimpleTestCase):
         self.assertTrue(telemetry_module.should_persist_health(task=task))
         self.assertTrue(telemetry_module.should_persist_health(task=task))
 
+    def test_jitter_does_not_affect_sub_minute_classification(self) -> None:
+        """Jitter is symmetric, so classification uses the nominal interval on purpose.
+
+        Pinned so nobody "fixes" it to seconds +/- jitter later: `Every(59, jitter=30)`
+        stays throttled even though a single gap can reach 89s, and `Every(60, jitter=30)`
+        stays unthrottled even though a gap can be as short as 30s.
+        """
+        throttled = ScheduledTask(name="test_jitter_fast", func=lambda: None, schedule=Every(seconds=59, jitter=30))
+        unthrottled = ScheduledTask(name="test_jitter_slow", func=lambda: None, schedule=Every(seconds=60, jitter=30))
+
+        self.assertTrue(telemetry_module._is_sub_minute_task(throttled))
+        self.assertFalse(telemetry_module._is_sub_minute_task(unthrottled))
+
 
 class FailureWriteNotThrottledTests(TestCase):
     """A failing run must persist its failure state even while the healthy-write window

@@ -31,7 +31,20 @@ _last_health_persist_at: dict[str, float] = {}
 
 
 def _is_sub_minute_task(task: ScheduledTask) -> bool:
-    """Return True for `Every` schedules that fire more often than the throttle window."""
+    """Return True for `Every` schedules whose *nominal* interval is under the window.
+
+    Jitter is deliberately ignored. `_compute_next_run` draws the offset from
+    `[-jitter, +jitter]`, so jitter is symmetric and the mean interval is `seconds` —
+    which is what decides whether a task is chatty enough to be worth throttling.
+    Classifying on `seconds + jitter` would exempt tasks that still average well under
+    the window, and on `seconds - jitter` would throttle tasks that mostly don't need it.
+
+    The consequence is that a task like `Every(seconds=59, jitter=30)` is throttled even
+    though an individual gap can reach 89s. That only makes the health row staler than
+    the window suggests (already documented in ADR-0103 as up to ~2 windows); it never
+    skips a write that correctness depends on, because failures, slow runs and overdue
+    runs all bypass the throttle entirely.
+    """
     schedule = task.schedule
     return isinstance(schedule, Every) and int(schedule.seconds) < int(_HEALTH_THROTTLE_WINDOW_SECONDS)
 
