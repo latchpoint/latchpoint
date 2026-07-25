@@ -77,6 +77,13 @@ def notifications_send_pending() -> int:
 
     Returns number of deliveries marked as sent.
     """
+    # Idle fast-path (ADR-0103): with nothing SENDING/PENDING there is no reclaim or
+    # batch work, so skip both unconditional queries after one cheap existence check.
+    if not NotificationDelivery.objects.filter(
+        status__in=[NotificationDelivery.Status.SENDING, NotificationDelivery.Status.PENDING]
+    ).exists():
+        return 0
+
     now = timezone.now()
     sent_count = 0
 

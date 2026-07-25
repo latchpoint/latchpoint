@@ -186,10 +186,20 @@ def _run_task_loop(*, task: ScheduledTask, stop_event: threading.Event) -> None:
                 }
             )
 
+        # Decide health persistence ONCE per run (ADR-0103) and reuse it for the started
+        # and finished-success writes below, so a persisted is_running=True always has a
+        # matching finished write.
+        persist_health = True
         if telemetry is not None:
+            try:
+                persist_health = telemetry.should_persist_health(task=task)
+            except Exception:
+                logger.debug("should_persist_health failed for task %s", task.name, exc_info=True)
+
+        if telemetry is not None and persist_health:
             _safe_telemetry(telemetry.update_task_health_scheduling, task=task, next_run_at=next_run)
 
-        logger.info(
+        logger.debug(
             "Task %s scheduled for %s (in %.0fs)",
             task.name,
             next_run.isoformat(),
@@ -225,7 +235,7 @@ def _run_task_loop(*, task: ScheduledTask, stop_event: threading.Event) -> None:
                 }
             )
 
-        if telemetry is not None:
+        if telemetry is not None and persist_health:
             _safe_telemetry(
                 telemetry.update_task_health_started,
                 task=task,
@@ -237,10 +247,10 @@ def _run_task_loop(*, task: ScheduledTask, stop_event: threading.Event) -> None:
         start_time = time.monotonic()
         try:
             close_old_connections()
-            logger.info("Task %s starting", task.name)
+            logger.debug("Task %s starting", task.name)
             task.func()
             duration = time.monotonic() - start_time
-            logger.info("Task %s completed in %.2fs", task.name, duration)
+            logger.debug("Task %s completed in %.2fs", task.name, duration)
             finished_at = timezone.now()
             with _lock:
                 status = _task_status.setdefault(task.name, {})
@@ -249,12 +259,22 @@ def _run_task_loop(*, task: ScheduledTask, stop_event: threading.Event) -> None:
                 status["consecutive_failures"] = 0
 
             if telemetry is not None:
-                _safe_telemetry(
-                    telemetry.update_task_health_finished_success,
-                    task=task,
-                    finished_at=finished_at,
-                    duration_seconds=duration,
-                )
+                # A throttled run still persists its finish when it was slow or overdue,
+                # so a supervisor-escalated is_running=True always gets cleared (ADR-0103).
+                persist_finish = persist_health
+                if not persist_finish:
+                    try:
+                        persist_finish = telemetry.should_persist_finish(task=task, duration_seconds=duration)
+                    except Exception:
+                        logger.debug("should_persist_finish failed for task %s", task.name, exc_info=True)
+                        persist_finish = True
+                if persist_finish:
+                    _safe_telemetry(
+                        telemetry.update_task_health_finished_success,
+                        task=task,
+                        finished_at=finished_at,
+                        duration_seconds=duration,
+                    )
                 _safe_telemetry(
                     telemetry.record_task_run_success_if_slow,
                     task=task,
@@ -378,6 +398,16 @@ def _run_watchdog() -> None:
                                 task_name=name,
                                 runtime_seconds=runtime_seconds,
                                 max_runtime_seconds=int(task.max_runtime_seconds),
+                            )
+                            # ADR-0103: the throttle usually skips this run's `started`
+                            # write, which would leave the DB-derived running/stuck status
+                            # in scheduler/views.py blind to the hang. Persist it now that
+                            # we know the run is overdue; `should_persist_finish` writes
+                            # the matching is_running=False when the run ends.
+                            _safe_telemetry(
+                                telemetry.persist_running_now,
+                                task=task,
+                                started_at=started_at,
                             )
                 except Exception:
                     logger.debug("Stuck detection failed for task %s", name, exc_info=True)

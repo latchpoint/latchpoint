@@ -44,6 +44,13 @@ class TestNotificationOutbox(TestCase):
         self.assertEqual(delivery.status, NotificationDelivery.Status.PENDING)
         self.assertEqual(delivery.provider_key, str(provider.id))
 
+    def test_idle_tick_issues_single_query_when_nothing_pending(self):
+        # ADR-0103: with no SENDING/PENDING rows the tick short-circuits after one
+        # existence check, skipping the reclaim UPDATE and the batch SELECT.
+        with self.assertNumQueries(1):
+            sent = notifications_send_pending()
+        self.assertEqual(sent, 0)
+
     def test_enqueue_ha_system_requires_service(self):
         dispatcher = get_dispatcher()
         delivery, result = dispatcher.enqueue(

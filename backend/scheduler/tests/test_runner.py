@@ -2,12 +2,18 @@
 
 from __future__ import annotations
 
+import logging
+import threading
 from datetime import timedelta
 from unittest.mock import patch
 
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.utils import timezone
 
+import scheduler.runner as runner
+import scheduler.telemetry as telemetry_module
+from scheduler.models import SchedulerTaskHealth
+from scheduler.registry import ScheduledTask
 from scheduler.runner import _compute_next_run, get_scheduler_status
 from scheduler.schedules import DailyAt, Every
 
@@ -110,3 +116,100 @@ class SchedulerStatusTests(TestCase):
         self.assertIn("tasks", status)
         self.assertIsInstance(status["running"], bool)
         self.assertIsInstance(status["tasks"], dict)
+
+
+class RunnerThrottledFinishTests(TestCase):
+    """ADR-0103: the supervisor persists is_running=True for an overdue run whose `started`
+    write the throttle skipped, so a throttled run that turns out to be slow must still
+    write its finish — otherwise the health row stays stuck at is_running=True."""
+
+    def setUp(self) -> None:
+        telemetry_module._last_health_persist_at.clear()
+        self._name = "test_throttled_finish"
+
+    def tearDown(self) -> None:
+        telemetry_module._last_health_persist_at.clear()
+        with runner._lock:
+            runner._running.discard(self._name)
+            runner._task_status.pop(self._name, None)
+            runner._threads.pop(self._name, None)
+            runner._stop_events.pop(self._name, None)
+
+    def _run_one_throttled_pass(self) -> None:
+        """Drive a single run whose health writes are already inside the throttle window."""
+        stop_event = threading.Event()
+        task = ScheduledTask(name=self._name, func=stop_event.set, schedule=Every(seconds=0))
+        # Consume the window so `_run_task_loop`'s own call returns False for this run.
+        self.assertTrue(telemetry_module.should_persist_health(task=task))
+        runner._run_task_loop(task=task, stop_event=stop_event)
+
+    @override_settings(SCHEDULER_SLOW_RUN_THRESHOLD_SECONDS=0.0)
+    def test_throttled_slow_run_still_persists_its_finish(self) -> None:
+        self._run_one_throttled_pass()
+
+        health = SchedulerTaskHealth.objects.get(task_name=self._name, instance_id="default")
+        self.assertFalse(health.is_running)
+        self.assertIsNotNone(health.last_finished_at)
+
+    @override_settings(SCHEDULER_SLOW_RUN_THRESHOLD_SECONDS=600.0)
+    def test_throttled_fast_run_writes_no_health(self) -> None:
+        """The quiet-down still holds for healthy fast runs — only the registration row
+        written at loop start is present, with no per-run health writes."""
+        self._run_one_throttled_pass()
+
+        health = SchedulerTaskHealth.objects.get(task_name=self._name, instance_id="default")
+        self.assertFalse(health.is_running)
+        self.assertIsNone(health.last_finished_at)
+        self.assertIsNone(health.last_started_at)
+        self.assertIsNone(health.next_run_at)
+
+
+class RunnerLogLevelTests(TestCase):
+    """ADR-0103: the three per-run runner log lines (scheduled / starting / completed)
+    drop to DEBUG so healthy no-op runs are silent at INFO."""
+
+    def setUp(self) -> None:
+        telemetry_module._last_health_persist_at.clear()
+        self._name = "test_log_demotion"
+
+    def tearDown(self) -> None:
+        telemetry_module._last_health_persist_at.clear()
+        with runner._lock:
+            runner._running.discard(self._name)
+            runner._task_status.pop(self._name, None)
+            runner._threads.pop(self._name, None)
+            runner._stop_events.pop(self._name, None)
+
+    def test_healthy_run_emits_no_info_per_run_lines(self):
+        stop_event = threading.Event()
+        runs: list[int] = []
+
+        def _func() -> None:
+            runs.append(1)
+            stop_event.set()  # end the loop after a single healthy run
+
+        task = ScheduledTask(name=self._name, func=_func, schedule=Every(seconds=0))
+
+        with self.assertLogs("scheduler.runner", level="DEBUG") as cm:
+            runner._run_task_loop(task=task, stop_event=stop_event)
+
+        self.assertEqual(len(runs), 1)
+
+        per_run_prefixes = (
+            f"Task {self._name} scheduled",
+            f"Task {self._name} starting",
+            f"Task {self._name} completed",
+        )
+        info_offenders = [
+            r.getMessage()
+            for r in cm.records
+            if r.levelno == logging.INFO and r.getMessage().startswith(per_run_prefixes)
+        ]
+        # The three per-run lines must not appear at INFO (only the test-induced
+        # "stopping" line does, which never occurs during steady-state operation).
+        self.assertEqual(info_offenders, [])
+
+        debug_msgs = [r.getMessage() for r in cm.records if r.levelno == logging.DEBUG]
+        self.assertTrue(any(m.startswith(f"Task {self._name} scheduled") for m in debug_msgs))
+        self.assertIn(f"Task {self._name} starting", debug_msgs)
+        self.assertTrue(any(m.startswith(f"Task {self._name} completed") for m in debug_msgs))

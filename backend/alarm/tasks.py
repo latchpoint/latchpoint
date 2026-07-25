@@ -436,6 +436,11 @@ def fire_due_pending_actions() -> dict:
 
     Returns ``{"fired": N, "failed": N, "stale_cancelled": N}``.
     """
+    # Idle fast-path (ADR-0103): with no SCHEDULED rows there is nothing to stale-cancel
+    # or fire, so skip both unconditional queries after one cheap existence check.
+    if not PendingAction.objects.filter(status=PendingActionStatus.SCHEDULED).exists():
+        return {"fired": 0, "failed": 0, "stale_cancelled": 0}
+
     now = timezone.now()
     stale_cutoff = now - timedelta(seconds=PENDING_ACTION_STALE_THRESHOLD_SECONDS)
 
