@@ -107,10 +107,18 @@ This document tracks all Architecture Decision Records (ADRs) and their implemen
 | [0088](0088-rule-message-template-variables.md) | Template Variables in Rule Notification Action Messages | **Implemented** |
 | [0089](0089-frontend-only-demo-mode.md) | Frontend-Only Demo Mode | **Implemented** |
 | [0090](0090-container-timezone-env-var.md) | Container Timezone via TZ Env Var | **Implemented** |
-| [0097](0097-ring-keypad-v2-burglar-siren-timeout.md) | Ring Keypad v2 Burglar Siren via Non-Zero Indicator CC Timeout | **Accepted** |
+| [0091](0091-rule-action-entry-delay.md) | Rule Action Entry Delay (PENDING state + PendingAction queue) | **Implemented** |
+| [0092](0092-zwavejs-lock-push-sync.md) | Z-Wave JS Lock Push Sync — Programming PINs and Schedules to Physical Locks | **Proposed** |
+| [0093](0093-scheduler-instance-id-stable-default.md) | Stable Default for Scheduler `instance_id` | **Implemented** |
+| [0096](0096-scheduled-alarm-timer-ticker.md) | Scheduled Ticker for Alarm Exit/Entry-Delay Timers | **Implemented** |
+| [0097](0097-ring-keypad-v2-burglar-siren-timeout.md) | Ring Keypad v2 Burglar Siren via Non-Zero Indicator CC Timeout | Superseded by 0104 |
+| [0098](0098-siren-reassert-and-triggered-notification.md) | Siren Re-Assert While Triggered + Built-In Triggered Notification | Superseded by 0104 |
+| [0099](0099-burglar-siren-rising-edge-activation.md) | Burglar Siren Needs a Rising-Edge Activation (Reset-Then-Set + Teardown Clear) | Superseded by 0100 |
+| [0100](0100-control-panel-reconciling-sync-worker.md) | Reconciling Panel-Sync Worker (Alarm State ↔ Control Panel, Both Directions) | **Accepted** |
 | [0101](0101-single-ha-action-input-and-selector-driven-service-data.md) | Single HA Action Input and Selector-Driven Service Data in the Rules Builder | **Proposed** |
 | [0102](0102-change-only-entity-sync-writes.md) | Change-Only Entity Sync Writes with Coarse last_seen Refresh | **Proposed** |
 | [0103](0103-idle-scheduler-and-ingest-quiet-down.md) | Idle Scheduler and Ingest Quiet-Down | **Proposed** |
+| [0104](0104-burglar-siren-continuous-until-disarmed.md) | Burglar Siren Sounds Continuously Until Disarmed | **Accepted** |
 
 ---
 
@@ -118,15 +126,15 @@ This document tracks all Architecture Decision Records (ADRs) and their implemen
 
 | Status | Count |
 |--------|-------|
-| **Implemented** | 66 |
+| **Implemented** | 69 |
 | **Partially Implemented** | 0 |
-| **Accepted** | 1 |
-| **Proposed** | 8 |
-| **Superseded** | 14 |
-| **Total** | 89 |
+| **Accepted** | 3 |
+| **Proposed** | 12 |
+| **Superseded** | 17 |
+| **Total** | 101 |
 
 Note: **Superseded** includes entries marked as "Superseded by …" in the table above.
 
 ---
 
-*Last updated: 2026-05-12* (ADR 0090 flipped to Implemented: container timezone via TZ env var)
+*Last updated: 2026-07-24* (added ADR 0104 and backfilled the missing 0091–0100 rows)

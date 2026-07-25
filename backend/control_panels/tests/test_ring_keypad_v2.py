@@ -3,6 +3,7 @@ from __future__ import annotations
 from unittest.mock import patch
 
 from django.test import TestCase
+from django.utils import timezone
 
 from accounts.models import User
 from accounts.use_cases.user_codes import create_user_code
@@ -12,7 +13,7 @@ from alarm.tests.settings_test_utils import set_profile_settings
 from control_panels.models import ControlPanelDevice, ControlPanelIntegrationType, ControlPanelKind
 from control_panels.sync_worker import panel_sync_worker
 from control_panels.zwave_ring_keypad_v2 import (
-    _BURGLAR_SIREN_SECONDS,
+    _desired_indicator_writes,
     handle_zwavejs_ring_keypad_v2_event,
     sync_ring_keypad_v2_devices_state,
 )
@@ -186,7 +187,8 @@ class RingKeypadV2ControlPanelTests(TestCase):
         )
 
     def test_sync_triggered_sounds_sustained_burglar_siren(self):
-        # Arm, then force TRIGGERED. The burglar siren must sound (non-zero Indicator CC timeout).
+        # Arm, then force TRIGGERED. The burglar siren must sound continuously until disarmed,
+        # which on this device means a single 0-write to the Indicator CC timeout register.
         arm(target_state=AlarmState.ARMED_AWAY, user=None, code=None, reason="test")
         trigger(user=None, reason="test")
 
@@ -197,24 +199,24 @@ class RingKeypadV2ControlPanelTests(TestCase):
             sync_ring_keypad_v2_devices_state()
 
         calls = [kwargs for _args, kwargs in set_value.call_args_list]
-        # Burglar alarm indicator = property 13. The tone starts on any value-CHANGING write to the
-        # Indicator CC timeout (property_key 7) — ADR-0100. With no tracked register value (fresh
-        # device), the sync must write 0 then the duration: both orderings sound the siren no matter
-        # what the physical register held (writing only the duration risks a same-value no-op = the
-        # silent siren of ADR-0099).
-        self.assertGreater(_BURGLAR_SIREN_SECONDS, 0)
+        # Burglar alarm indicator = property 13. A 0-write to the Indicator CC timeout register
+        # (property_key 7) is hardware-verified to sound the siren with no auto-stop.
         key7_values = [
             call.get("value") for call in calls if call.get("property") == 13 and call.get("property_key") == 7
         ]
-        self.assertIn(0, key7_values, "unknown-register trigger must reset-then-set to guarantee a value change")
-        self.assertIn(_BURGLAR_SIREN_SECONDS, key7_values)
-        self.assertLess(
-            key7_values.index(0),
-            key7_values.index(_BURGLAR_SIREN_SECONDS),
-            "burglar key 7 must go 0 -> duration (reset before activate)",
+        self.assertEqual(key7_values, [0], "the siren is sounded by exactly one 0-write")
+        # REGRESSION GUARD (2026-07-24, ADR-0104): a non-zero 13:7 write landing after the
+        # activation silences the tone one Z-Wave round-trip later. ADR-0100's reset-then-set
+        # wrote 0 then 240 and produced a 184 ms siren in prod. Nothing may follow the 0.
+        self.assertNotIn(
+            240,
+            key7_values,
+            "a trailing duration write cuts the siren short — see ADR-0104",
         )
-        # The FINAL burglar key-7 write must be non-zero so the tone auto-stops after the duration.
-        self.assertEqual(key7_values[-1], _BURGLAR_SIREN_SECONDS)
+        self.assertTrue(
+            all(value == 0 for value in key7_values),
+            "13:7 must never be written non-zero: it would restore a device auto-stop",
+        )
         # No multilevel/key 1 write — indicator 13 does not support it (it was silently ignored).
         self.assertFalse(any(call.get("property") == 13 and call.get("property_key") == 1 for call in calls))
         # Minutes timeout pinned to 0 so the play duration is exactly the seconds value.
@@ -237,7 +239,8 @@ class RingKeypadV2ControlPanelTests(TestCase):
         # burglar timeout register OUTSIDE the triggered state activates the siren when the value
         # changes (the ADR-0099 "teardown clear" wrote 240 -> 0 on arming and sounded it). The
         # register must therefore never be written while the alarm is not triggered.
-        self.device.last_written_indicators = {"13:7": _BURGLAR_SIREN_SECONDS, "state": "triggered"}
+        # 240 is the stale register value prod devices carry over from the pre-ADR-0104 build.
+        self.device.last_written_indicators = {"13:7": 240, "state": "triggered"}
         self.device.save(update_fields=["last_written_indicators"])
         snapshot = get_current_snapshot(process_timers=False)
         self.assertEqual(snapshot.current_state, AlarmState.DISARMED)
@@ -253,11 +256,11 @@ class RingKeypadV2ControlPanelTests(TestCase):
         # Leaving triggered still silences the tone by re-selecting the mode indicator.
         self.assertTrue(any(call.get("property") == 2 and call.get("property_key") == 1 for call in calls))
 
-    def test_sync_second_trigger_uses_reset_then_set(self):
-        # Every trigger sounds the siren via reset-then-set (0 then the duration): a 0-write is
-        # hardware-verified to ALWAYS activate (even over an already-0 register) and 0 -> 240 is a
-        # verified activator, so the sequence works regardless of what the register holds. No
-        # single-write alternation: that would depend on unverified same-value/dedupe semantics.
+    def test_sync_second_trigger_re_sounds_the_siren(self):
+        # Every trigger sounds the siren, including ones where the register already reads 0 from
+        # the previous trigger: a 0-write is hardware-verified to ALWAYS activate, even over an
+        # already-0 register. This is what makes a single write sufficient — no value change is
+        # needed, so there is nothing to reset first.
         arm(target_state=AlarmState.ARMED_AWAY, user=None, code=None, reason="test")
         trigger(user=None, reason="test")
         with patch("alarm.gateways.zwavejs.DefaultZwavejsGateway.set_value"):
@@ -278,8 +281,36 @@ class RingKeypadV2ControlPanelTests(TestCase):
         ]
         self.assertEqual(
             key7_values,
-            [0, _BURGLAR_SIREN_SECONDS],
-            "every trigger must re-activate the siren via reset-then-set",
+            [0],
+            "every trigger must re-activate the siren with a single 0-write",
+        )
+
+    def test_siren_reassert_while_already_triggered_still_sounds(self):
+        # The watchdog (resync_ring_keypad_siren) re-asserts with force_siren_edge=True while
+        # tracked["state"] is ALREADY "triggered", so `entering_triggered` is False and the plain
+        # diff computes nothing. This path had no driver-level test before ADR-0104, yet it is
+        # the only thing that repairs a siren silenced by a failed write or an external override.
+        arm(target_state=AlarmState.ARMED_AWAY, user=None, code=None, reason="test")
+        trigger(user=None, reason="test")
+        snapshot = get_current_snapshot(process_timers=False)
+        tracked = {"13:7": 0, "13:6": 0, "13:9": 77, "state": AlarmState.TRIGGERED}
+
+        without_force = _desired_indicator_writes(
+            snapshot=snapshot, now=timezone.now(), device=self.device, tracked=tracked
+        )
+        self.assertEqual(without_force, [], "re-syncing an already-triggered state is a no-op")
+
+        with_force = _desired_indicator_writes(
+            snapshot=snapshot,
+            now=timezone.now(),
+            device=self.device,
+            tracked=tracked,
+            force_siren_edge=True,
+        )
+        self.assertEqual(
+            [(write.property_key, write.value) for write in with_force if write.property_id == 13],
+            [(7, 0)],
+            "the watchdog re-assert must re-sound the siren with a single 0-write",
         )
 
     def test_sync_same_state_twice_is_a_no_op(self):
@@ -302,7 +333,7 @@ class RingKeypadV2ControlPanelTests(TestCase):
 
         self.device.refresh_from_db()
         tracked = self.device.last_written_indicators
-        self.assertEqual(tracked.get("13:7"), _BURGLAR_SIREN_SECONDS)
+        self.assertEqual(tracked.get("13:7"), 0)
         self.assertEqual(tracked.get("13:9"), 77)
         self.assertEqual(tracked.get("13:6"), 0)
         self.assertEqual(tracked.get("state"), "triggered")

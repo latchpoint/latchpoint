@@ -41,27 +41,28 @@ _IND_ENTRY_DELAY = 17
 _IND_EXIT_DELAY = 18
 _IND_SOUND_DOUBLE_BEEP = 96
 
-# Burglar-siren play duration — Indicator CC "Timeout: Seconds" (property_key 7). One byte,
-# capped at 255. A disarm/arm transition re-selects a mode indicator and silences it early.
+# Burglar-siren activation — Indicator CC "Timeout: Seconds" (property_key 7).
 #
-# ADR-0100 semantic model, hardware-verified 2026-07-10 (supersedes the ADR-0097 "0 = silent"
-# and ADR-0099 "rising edge" readings):
+# ADR-0100 semantic model, hardware-verified 2026-07-10:
 # - Writing 0 ALWAYS sounds the siren with no auto-stop — even over an already-0 register.
-#   (This is why the ADR-0099 teardown clear sounded the siren on BOTH arm tests on 7/10.)
 # - Writing a non-zero value over a DIFFERENT register value sounds it for that many seconds.
 # - Writing the same NON-ZERO value as the register is a device no-op (the silent 7/7 + 7/9
 #   triggers, register stuck at 240).
 # - Selecting a mode indicator silences the tone; the register does NOT self-reset.
-# Therefore: the register is NEVER written outside TRIGGERED, and sounding the siren always
-# uses reset-then-set (0, then the duration) — every step of which is verified to activate
-# regardless of what the register holds.
-_BURGLAR_SIREN_SECONDS = 240
-
-# Bell cutoff for the periodic siren re-assert (ADR-0098): total time since the triggered
-# transition after which `resync_ring_keypad_siren` stops re-sounding the tone. The final
-# re-send still plays out its full _BURGLAR_SIREN_SECONDS, so the effective ceiling is
-# roughly this value plus one tone duration.
-_BURGLAR_SIREN_MAX_TOTAL_SECONDS = 900
+#
+# ADR-0104 amendment: register 13:7 is BOTH the activation trigger and the duration, so a
+# single write cannot carry both a guaranteed activation and an auto-stop. ADR-0100 tried to
+# get both by writing 0 (activate) then 240 (duration) back-to-back — a pairing its test matrix
+# never covered. On 2026-07-24 the recorder caught the result: the tone started on the 0 and
+# died 184 ms later when the 240 landed, twice, with nothing else touching the keypad.
+#
+# The siren must sound CONTINUOUSLY until disarmed, so the duration write is gone. Sounding is
+# a single 0-write (verified to always activate) and silencing is mode-indicator selection
+# (verified), which every disarm/arm already performs. There is deliberately NO device-side
+# auto-stop and NO bell cutoff: if nobody disarms, the siren does not stop.
+#
+# Do NOT reintroduce a non-zero write to 13:7 or a non-zero 13:6 (minutes) — either one restores
+# an auto-stop, and a non-zero 13:7 landing after the activation is the 2026-07-24 bug verbatim.
 
 
 @dataclass(frozen=True)
@@ -373,15 +374,14 @@ def _desired_indicator_writes(
     device's last_written_indicators mapping — keys "property:property_key" for register values,
     "mode" for the last mode indicator selected, "state" for the last alarm state fully synced.
 
-    Burglar-siren policy (ADR-0100, hardware-verified 2026-07-10): a write of 0 to the
-    "Timeout: Seconds" register (13:7) ALWAYS sounds the siren with no auto-stop — even over an
-    already-0 register — and a 0 -> non-zero write sounds it for that duration; mode-indicator
-    selection silences it. Therefore:
+    Burglar-siren policy (ADR-0104): a write of 0 to the "Timeout: Seconds" register (13:7)
+    ALWAYS sounds the siren with no auto-stop — even over an already-0 register — and
+    mode-indicator selection silences it (both hardware-verified 2026-07-10). Therefore:
     - The register is written ONLY while TRIGGERED (any 0-write outside triggered sounds the
-      siren — the 2026-07-10 arm regression this replaces).
-    - Sounding it always uses reset-then-set (0, then _BURGLAR_SIREN_SECONDS): both writes are
-      verified activators, so the siren sounds regardless of what the register holds — no
-      dependence on same-value/dedupe semantics.
+      siren — the 2026-07-10 arm regression).
+    - Sounding it is a SINGLE 0-write, which is the last write of the batch. Nothing may follow
+      it: a trailing duration write cuts the tone off after one round-trip (2026-07-24).
+    - The siren then sounds until a mode indicator is selected, i.e. until someone disarms.
     """
     state = snapshot.current_state
     volume = _clamped_beep_volume(device)
@@ -394,8 +394,9 @@ def _desired_indicator_writes(
             writes.append(IndicatorWrite(_IND_BURGLAR_ALARM, 6, 0, log_failures=True))
         entering_triggered = tracked.get("state") != AlarmState.TRIGGERED
         if entering_triggered or force_siren_edge:
+            # Activation, and the LAST write of the batch. Appending anything to 13:7 after this
+            # silences the tone ~one Z-Wave round-trip later (ADR-0104).
             writes.append(IndicatorWrite(_IND_BURGLAR_ALARM, 7, 0, log_failures=True))
-            writes.append(IndicatorWrite(_IND_BURGLAR_ALARM, 7, _BURGLAR_SIREN_SECONDS, log_failures=True))
         return writes
 
     if state == AlarmState.ARMING:
