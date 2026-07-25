@@ -69,6 +69,29 @@ def _build_url(*, base_url: str, path: str) -> str:
     return f"{base}{path}"
 
 
+def build_client_api_url(base_url: str) -> str:
+    """Return the ``api_url`` to hand `homeassistant_api.Client`, given our stored base URL.
+
+    The library's first constructor argument is named ``api_url`` and it is used verbatim
+    as the prefix for every endpoint path — it never inserts ``/api`` itself. Passing our
+    bare ``base_url`` therefore aimed the client at Home Assistant's *frontend*: a
+    ``get_config()`` became ``GET {base_url}/config``, which is a Single Page App route
+    that answers 200 with ``text/html``, so the library raised
+    ``ProcessorNotFoundError: No response processor found for mimetype 'text/html'`` on
+    every call and every request silently fell back to raw HTTP.
+
+    Settings hold the browser-facing base URL (e.g. ``http://ha.local:8123``), which is
+    what the raw-HTTP path wants, so the ``/api`` suffix is added here rather than stored.
+    A ``base_url`` that already ends in ``/api`` is accepted and not doubled.
+    """
+    base = (base_url or "").strip().rstrip("/")
+    if not base:
+        return ""
+    if base.endswith("/api"):
+        return base
+    return f"{base}/api"
+
+
 def get_status(
     *,
     base_url: str,

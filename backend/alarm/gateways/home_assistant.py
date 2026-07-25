@@ -97,7 +97,9 @@ class DefaultHomeAssistantGateway:
         token = (token or "").strip()
         if not base_url or not token:
             return None
-        return client_cls(base_url, token)
+        # The library's first argument is `api_url`, used verbatim as the endpoint prefix —
+        # passing the bare base_url aimed it at HA's frontend. See build_client_api_url.
+        return client_cls(ha_impl.build_client_api_url(base_url), token)
 
     def _resolve_connection(self) -> tuple[str, str, float, str | None]:
         """
