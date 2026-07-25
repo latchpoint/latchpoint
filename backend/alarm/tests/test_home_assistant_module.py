@@ -60,9 +60,8 @@ class HomeAssistantModuleTests(SimpleTestCase):
         self.assertFalse(status.reachable)
         self.assertIsNone(status.base_url)
 
-    @patch("integrations_home_assistant.api._get_client", return_value=None)
     @patch("integrations_home_assistant.api.urlopen")
-    def test_get_status_raw_http_success_json_content_type(self, mock_urlopen, _mock_client):
+    def test_get_status_raw_http_success_json_content_type(self, mock_urlopen):
         self._set_configured_connection(base_url="http://ha:8123/", token="token")
         mock_urlopen.return_value = _DummyResponse(
             status=200,
@@ -76,9 +75,8 @@ class HomeAssistantModuleTests(SimpleTestCase):
         request = mock_urlopen.call_args.args[0]
         self.assertTrue(request.full_url.endswith("/api/"))
 
-    @patch("integrations_home_assistant.api._get_client", return_value=None)
     @patch("integrations_home_assistant.api.urlopen")
-    def test_get_status_raw_http_non_json_content_type_marks_unreachable(self, mock_urlopen, _mock_client):
+    def test_get_status_raw_http_non_json_content_type_marks_unreachable(self, mock_urlopen):
         self._set_configured_connection(base_url="http://ha:8123", token="token")
         mock_urlopen.return_value = _DummyResponse(
             status=200,
@@ -90,9 +88,8 @@ class HomeAssistantModuleTests(SimpleTestCase):
         self.assertFalse(status.reachable)
         self.assertIn("Unexpected content-type", status.error or "")
 
-    @patch("integrations_home_assistant.api._get_client", return_value=None)
     @patch("integrations_home_assistant.api.urlopen")
-    def test_get_status_raw_http_http_error_sets_http_code(self, mock_urlopen, _mock_client):
+    def test_get_status_raw_http_http_error_sets_http_code(self, mock_urlopen):
         self._set_configured_connection(base_url="http://ha:8123", token="token")
         error = HTTPError(
             "http://ha:8123/api/",
@@ -107,9 +104,8 @@ class HomeAssistantModuleTests(SimpleTestCase):
         self.assertFalse(status.reachable)
         self.assertEqual(status.error, "HTTP 401")
 
-    @patch("integrations_home_assistant.api._get_client", return_value=None)
     @patch("integrations_home_assistant.api.urlopen")
-    def test_get_status_raw_http_url_error_sets_reason(self, mock_urlopen, _mock_client):
+    def test_get_status_raw_http_url_error_sets_reason(self, mock_urlopen):
         self._set_configured_connection(base_url="http://ha:8123", token="token")
         mock_urlopen.side_effect = URLError("no route")
         status = home_assistant.get_status(timeout_seconds=0.01)
@@ -136,9 +132,8 @@ class HomeAssistantModuleTests(SimpleTestCase):
     def test_list_entities_returns_empty_when_not_configured(self):
         self.assertEqual(home_assistant.list_entities(), [])
 
-    @patch("integrations_home_assistant.api._get_client", return_value=None)
     @patch("integrations_home_assistant.api.urlopen")
-    def test_list_entities_raw_http_parses_entities(self, mock_urlopen, _mock_client):
+    def test_list_entities_raw_http_parses_entities(self, mock_urlopen):
         self._set_configured_connection(base_url="http://ha:8123", token="token")
         payload = [
             {
@@ -161,9 +156,8 @@ class HomeAssistantModuleTests(SimpleTestCase):
         request = mock_urlopen.call_args.args[0]
         self.assertTrue(request.full_url.endswith("/api/states"))
 
-    @patch("integrations_home_assistant.api._get_client", return_value=None)
     @patch("integrations_home_assistant.api.urlopen")
-    def test_list_entities_raw_http_non_list_payload_returns_empty(self, mock_urlopen, _mock_client):
+    def test_list_entities_raw_http_non_list_payload_returns_empty(self, mock_urlopen):
         self._set_configured_connection(base_url="http://ha:8123", token="token")
         mock_urlopen.return_value = _DummyResponse(
             status=200,
@@ -176,17 +170,15 @@ class HomeAssistantModuleTests(SimpleTestCase):
         with self.assertRaises(RuntimeError):
             home_assistant.call_service(domain="alarm_control_panel", service="alarm_arm_home")
 
-    @patch("integrations_home_assistant.api._get_client", return_value=None)
     @patch("integrations_home_assistant.api.urlopen")
-    def test_call_service_raw_http_raises_on_non_2xx(self, mock_urlopen, _mock_client):
+    def test_call_service_raw_http_raises_on_non_2xx(self, mock_urlopen):
         self._set_configured_connection(base_url="http://ha:8123", token="token")
         mock_urlopen.return_value = _DummyResponse(status=500, headers={"Content-Type": "application/json"})
         with self.assertRaises(RuntimeError):
             home_assistant.call_service(domain="alarm_control_panel", service="alarm_arm_home", timeout_seconds=0.01)
 
-    @patch("integrations_home_assistant.api._get_client", return_value=None)
     @patch("integrations_home_assistant.api.urlopen")
-    def test_call_service_raw_http_sends_top_level_payload(self, mock_urlopen, _mock_client):
+    def test_call_service_raw_http_sends_top_level_payload(self, mock_urlopen):
         self._set_configured_connection(base_url="http://ha:8123", token="token")
         mock_urlopen.return_value = _DummyResponse(status=200, headers={"Content-Type": "application/json"})
 
