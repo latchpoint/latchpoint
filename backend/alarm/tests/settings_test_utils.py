@@ -46,6 +46,31 @@ DEPRECATED_SETTINGS = {
 }
 
 
+def reset_cached_settings_snapshots() -> None:
+    """Clear the process-local settings snapshots so the next read hits the DB.
+
+    Production invalidates these via the ``settings_profile_changed`` signal, which the
+    settings views and profile use cases fire on commit. Tests that write settings rows
+    directly bypass that path, so a snapshot warmed by an earlier test would otherwise
+    leak across tests and make assertions depend on execution order (ADR-0103).
+
+    Deliberately does not fire the signal: ``alarm.system_status``'s receiver re-reads the
+    DB and broadcasts over the channel layer, which would add queries to every test that
+    touches settings and break ``assertNumQueries`` assertions.
+    """
+    from integrations_frigate import runtime as frigate_runtime
+    from integrations_zigbee2mqtt import runtime as z2m_runtime
+
+    from alarm import system_status
+
+    with system_status._settings_lock:
+        system_status._settings_snapshot = None
+    with frigate_runtime._settings_lock:
+        frigate_runtime._settings_snapshot = None
+    with z2m_runtime._settings_lock:
+        z2m_runtime._settings_snapshot = None
+
+
 def _apply_arming_time(
     profile: AlarmSettingsProfile,
     value: int,
@@ -90,6 +115,7 @@ def set_profile_setting(profile: AlarmSettingsProfile, key: str, value):
     )
     if hasattr(profile, "_settings_cache"):
         delattr(profile, "_settings_cache")
+    reset_cached_settings_snapshots()
 
 
 def set_profile_settings(profile: AlarmSettingsProfile, **values):

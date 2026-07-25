@@ -4,6 +4,7 @@ from django.test import TestCase
 
 from alarm.models import AlarmSettingsEntry
 from alarm.signals import settings_profile_changed
+from alarm.tests.settings_test_utils import set_profile_setting
 from alarm.use_cases.settings_profile import ensure_active_settings_profile
 from integrations_zigbee2mqtt import runtime
 
@@ -40,4 +41,12 @@ class Zigbee2mqttSettingsCacheTests(TestCase):
         # Stale cache still reports the old value until the signal invalidates it.
         self.assertTrue(runtime.get_settings().enabled)
         settings_profile_changed.send(sender=None, profile_id=self.profile.id, reason="test")
+        self.assertFalse(runtime.get_settings().enabled)
+
+    def test_test_helper_write_invalidates_cache(self) -> None:
+        """Tests write settings rows directly, bypassing the signal, so
+        `set_profile_setting` clears the snapshot itself — otherwise a value warmed by an
+        earlier test would leak in and make assertions order-dependent."""
+        self.assertTrue(runtime.get_settings().enabled)  # warm with enabled=True
+        set_profile_setting(self.profile, "zigbee2mqtt", {"enabled": False, "base_topic": "zigbee2mqtt"})
         self.assertFalse(runtime.get_settings().enabled)

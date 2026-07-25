@@ -7,7 +7,7 @@ from unittest.mock import patch
 from django.test import TestCase
 
 from alarm.models import Entity
-from alarm.tests.settings_test_utils import set_profile_setting
+from alarm.tests.settings_test_utils import reset_cached_settings_snapshots, set_profile_setting
 from alarm.use_cases.settings_profile import ensure_active_settings_profile
 
 
@@ -60,6 +60,11 @@ class _FakeMqttManager:
 
 
 class Zigbee2mqttSyncDevicesTests(TestCase):
+    # `sync_devices_via_mqtt` warms the module settings snapshot; clear it so the cached
+    # value does not leak into tests that read settings without writing them (ADR-0103).
+    def tearDown(self) -> None:
+        reset_cached_settings_snapshots()
+
     def test_sync_devices_upserts_entities(self):
         profile = ensure_active_settings_profile()
         set_profile_setting(profile, "mqtt", {"enabled": True, "host": "mqtt.local", "port": 1883})

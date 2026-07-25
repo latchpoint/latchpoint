@@ -8,6 +8,7 @@ from django.core.cache import cache
 from django.test import TestCase
 
 from alarm.models import AlarmSettingsEntry, Entity
+from alarm.tests.settings_test_utils import reset_cached_settings_snapshots
 from alarm.use_cases.settings_profile import ensure_active_settings_profile
 from integrations_zigbee2mqtt.runtime import (
     _CACHE_KEY_FRIENDLY_TO_IEEE,
@@ -19,6 +20,15 @@ from integrations_zigbee2mqtt.runtime import (
 
 @patch.dict(os.environ, {"ZIGBEE2MQTT_ENABLED": "true", "ZIGBEE2MQTT_BASE_TOPIC": "zigbee2mqtt"})
 class Zigbee2mqttRuntimeIngestTests(TestCase):
+    # These tests write the settings row directly, which does not fire
+    # `settings_profile_changed`, so `get_settings()` would otherwise serve a snapshot
+    # warmed by an earlier test (ADR-0103).
+    def setUp(self) -> None:
+        reset_cached_settings_snapshots()
+
+    def tearDown(self) -> None:
+        reset_cached_settings_snapshots()
+
     def test_ingest_updates_only_known_entity_ids(self):
         profile = ensure_active_settings_profile()
         AlarmSettingsEntry.objects.update_or_create(
