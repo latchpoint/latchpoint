@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { rulesService } from '@/services'
 import type { Entity, RuleSimulateResult } from '@/types'
@@ -36,7 +36,9 @@ export function useRulesTestPageModel() {
   const [result, setResult] = useState<SimulationResult | null>(null)
   const [baselineResult, setBaselineResult] = useState<SimulationResult | null>(null)
   const [scenarioName, setScenarioName] = useState('')
-  const [savedScenarios, setSavedScenarios] = useState<SavedScenario[]>([])
+  // Lazy initializer reads localStorage once on first render, so the list is
+  // populated in the initial paint instead of flashing empty for one frame.
+  const [savedScenarios, setSavedScenarios] = useState<SavedScenario[]>(loadSavedScenarios)
   const [selectedScenario, setSelectedScenario] = useState<string>('')
 
   const entityIdOptions = useMemo(() => entities.map((e) => e.entityId), [entities])
@@ -45,10 +47,6 @@ export function useRulesTestPageModel() {
     for (const e of entities) map.set(e.entityId, e)
     return map
   }, [entities])
-
-  useEffect(() => {
-    setSavedScenarios(loadSavedScenarios())
-  }, [])
 
   const syncEntitiesMutation = useSyncEntitiesMutation()
   const syncZwavejsEntitiesMutation = useSyncZwavejsEntitiesMutation()
