@@ -57,9 +57,8 @@ class HomeAssistantStatusCacheWarmupTests(EncryptionTestMixin, APITestCase):
         )
 
     @override_settings(ALLOW_HOME_ASSISTANT_IN_TESTS=True)
-    @patch("alarm.gateways.home_assistant.DefaultHomeAssistantGateway._import_client", return_value=None)
     @patch("alarm.gateways.home_assistant.urlopen")
-    def test_status_endpoint_warms_cache_from_active_profile(self, mock_urlopen, _mock_import_client):
+    def test_status_endpoint_warms_cache_from_active_profile(self, mock_urlopen):
         clear_cached_connection()
         mock_urlopen.return_value = _DummyResponse(
             status=200,

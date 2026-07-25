@@ -77,28 +77,6 @@ class DefaultHomeAssistantGateway:
     - If no cached settings are available, treat Home Assistant as not configured.
     """
 
-    def _import_client(self):
-        """Best-effort import of the Home Assistant API client, handling versioned import paths."""
-        try:
-            from homeassistant_api import Client as HomeAssistantClient  # type: ignore
-        except ImportError:
-            try:
-                from homeassistant_api.client import Client as HomeAssistantClient  # type: ignore
-            except ImportError:
-                return None
-        return HomeAssistantClient
-
-    def _get_client(self, *, base_url: str, token: str):
-        """Instantiate a Home Assistant client if inputs are present and the dependency is installed."""
-        client_cls = self._import_client()
-        if not client_cls:
-            return None
-        base_url = (base_url or "").strip()
-        token = (token or "").strip()
-        if not base_url or not token:
-            return None
-        return client_cls(base_url, token)
-
     def _resolve_connection(self) -> tuple[str, str, float, str | None]:
         """
         Returns (base_url, token, connect_timeout_seconds, error).
@@ -137,7 +115,6 @@ class DefaultHomeAssistantGateway:
         return ha_impl.get_status(
             base_url=base_url,
             token=token,
-            get_client=lambda: self._get_client(base_url=base_url, token=token),
             urlopen=urlopen,
             timeout_seconds=float(timeout_seconds or default_timeout),
         )
@@ -151,7 +128,6 @@ class DefaultHomeAssistantGateway:
             return ha_impl.ensure_available(
                 base_url=base_url,
                 token=token,
-                get_client=lambda: self._get_client(base_url=base_url, token=token),
                 urlopen=urlopen,
                 timeout_seconds=float(timeout_seconds or default_timeout),
             )
@@ -168,7 +144,6 @@ class DefaultHomeAssistantGateway:
         return ha_impl.list_entities(
             base_url=base_url,
             token=token,
-            get_client=lambda: self._get_client(base_url=base_url, token=token),
             urlopen=urlopen,
             timeout_seconds=timeout_seconds,
         )

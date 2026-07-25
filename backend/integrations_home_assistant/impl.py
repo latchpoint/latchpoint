@@ -1,3 +1,28 @@
+"""Home Assistant transport: REST only.
+
+Every call here goes over HA's REST API. Earlier revisions also carried
+``homeassistant_api`` client branches that were meant to be preferred, with REST as a
+fallback — but not one of them ever worked, and each failure was swallowed by a broad
+``except``, so REST was always the real path:
+
+- ``call_service`` called ``client.call_service()``, which does not exist (the library
+  exposes ``trigger_service``), so it raised ``AttributeError`` every time. Removed in #78.
+- ``get_status`` and ``list_entities`` passed our bare ``base_url`` as the library's
+  ``api_url``. That argument is used verbatim as the endpoint prefix, so ``get_config()``
+  requested ``{base_url}/config`` — Home Assistant's Single Page App route, which answers
+  200 with ``text/html``. The library has no processor for that mimetype, so every call
+  raised ``ProcessorNotFoundError`` and logged a warning on the way to REST.
+
+Correcting that URL was tried and rejected: it would have *activated* a second, never-executed
+parser in ``list_entities`` whose ``last_changed`` is a ``datetime`` where the REST path yields
+an ISO string, silently changing the shape of rows that feed ``sync_entity_states`` and the
+``Entity`` table the alarm's sensors read. The branches were deleted instead.
+
+Adopting ``homeassistant_api`` properly remains reasonable — it is more capable than the
+above suggests, e.g. ``trigger_service`` does return the states it changed — but it is a
+deliberate migration needing a pinned version and a field-by-field audit, not a drive-by.
+"""
+
 from __future__ import annotations
 
 import json
@@ -73,7 +98,6 @@ def get_status(
     *,
     base_url: str,
     token: str,
-    get_client,
     urlopen,
     timeout_seconds: float = 2.0,
     logger_obj: logging.Logger | None = None,
@@ -85,29 +109,6 @@ def get_status(
     if not base_url or not token:
         log.info("HA status: not configured (missing url/token)")
         return HomeAssistantStatus(configured=False, reachable=False, base_url=base_url or None)
-
-    client = None
-    try:
-        client = get_client()
-    except Exception:
-        client = None
-
-    if client is not None:
-        try:
-            log.debug("HA status: checking via homeassistant_api client.get_config() (base_url=%s)", base_url)
-            client.get_config()
-            log.info("HA status: reachable via client (base_url=%s)", base_url)
-            return HomeAssistantStatus(configured=True, reachable=True, base_url=base_url)
-        except Exception as exc:
-            client_error = str(exc)
-            log.warning(
-                "HA status: client check failed; falling back to raw HTTP (base_url=%s, error=%s: %s)",
-                base_url,
-                exc.__class__.__name__,
-                client_error,
-            )
-    else:
-        client_error = None
 
     url = _build_url(base_url=base_url, path="/api/")
     request = Request(url, headers=_ha_headers(token), method="GET")
@@ -174,7 +175,7 @@ def get_status(
             configured=True,
             reachable=False,
             base_url=base_url,
-            error=str(exc) if client_error is None else f"{exc}; client_error={client_error}",
+            error=str(exc),
         )
 
 
@@ -182,7 +183,6 @@ def ensure_available(
     *,
     base_url: str,
     token: str,
-    get_client,
     urlopen,
     timeout_seconds: float = 2.0,
     logger_obj: logging.Logger | None = None,
@@ -191,7 +191,6 @@ def ensure_available(
     status_obj = get_status(
         base_url=base_url,
         token=token,
-        get_client=get_client,
         urlopen=urlopen,
         timeout_seconds=timeout_seconds,
         logger_obj=logger_obj,
@@ -207,70 +206,17 @@ def list_entities(
     *,
     base_url: str,
     token: str,
-    get_client,
     urlopen,
     timeout_seconds: float = 5.0,
     logger_obj: logging.Logger | None = None,
 ) -> list[dict[str, Any]]:
-    """List entities from Home Assistant, using the client if available and falling back to raw HTTP."""
+    """List entities from Home Assistant via the REST API."""
     log = logger_obj or logger
     base_url = (base_url or "").strip()
     token = (token or "").strip()
     if not base_url or not token:
         log.info("HA entities: not configured (missing url/token)")
         return []
-
-    client = None
-    try:
-        client = get_client()
-    except Exception:
-        client = None
-
-    if client is not None:
-        try:
-            log.debug("HA entities: fetching via homeassistant_api client.get_states() (base_url=%s)", base_url)
-            states = client.get_states()
-        except Exception:
-            log.warning("HA entities: client.get_states() failed; falling back to raw HTTP (base_url=%s)", base_url)
-            states = None
-        if states is not None:
-            entities: list[dict[str, Any]] = []
-            for item in states:
-                entity_id = getattr(item, "entity_id", None)
-                state = getattr(item, "state", None)
-                attributes = getattr(item, "attributes", None)
-                last_changed = getattr(item, "last_changed", None)
-                if not isinstance(entity_id, str) or not isinstance(state, str):
-                    continue
-                if not isinstance(attributes, dict):
-                    attributes = {}
-
-                zwavejs: dict[str, Any] = {}
-                node_id = attributes.get("node_id") or attributes.get("nodeId") or attributes.get("nodeID")
-                if isinstance(node_id, str) and node_id.isdigit():
-                    node_id = int(node_id)
-                if isinstance(node_id, int):
-                    zwavejs["node_id"] = node_id
-                home_id = attributes.get("home_id") or attributes.get("homeId") or attributes.get("homeID")
-                if isinstance(home_id, str) and home_id.isdigit():
-                    home_id = int(home_id)
-                if isinstance(home_id, int):
-                    zwavejs["home_id"] = home_id
-
-                domain = entity_id.split(".", 1)[0] if "." in entity_id else "unknown"
-                row: dict[str, Any] = {
-                    "entity_id": entity_id,
-                    "domain": domain,
-                    "state": state,
-                    "name": attributes.get("friendly_name") or entity_id,
-                    "device_class": attributes.get("device_class"),
-                    "unit_of_measurement": attributes.get("unit_of_measurement"),
-                    "last_changed": last_changed,
-                }
-                if zwavejs:
-                    row["zwavejs"] = zwavejs
-                entities.append(row)
-            return entities
 
     url = _build_url(base_url=base_url, path="/api/states")
     request = Request(url, headers=_ha_headers(token), method="GET")
@@ -387,11 +333,10 @@ def call_service(
 ) -> None:
     """Call a Home Assistant service via the REST API.
 
-    We POST directly rather than via the ``homeassistant_api`` client: its ``Client`` exposes
-    ``trigger_service`` (not ``call_service``), so the old client branch here raised ``AttributeError``
-    on every call and silently fell through to REST anyway. HA's service endpoint returns the list of
-    states it changed, so a call that changes nothing is logged as a likely no-op (e.g. an optimistic
-    or script-backed light that never actuated).
+    REST is this module's single transport for every Home Assistant call — see the module
+    docstring for why the ``homeassistant_api`` client branches were removed. HA's service
+    endpoint returns the list of states it changed, so a call that changes nothing is logged
+    as a likely no-op (e.g. an optimistic or script-backed light that never actuated).
     """
     base_url = (base_url or "").strip()
     token = (token or "").strip()
