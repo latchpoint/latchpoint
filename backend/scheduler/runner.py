@@ -259,7 +259,16 @@ def _run_task_loop(*, task: ScheduledTask, stop_event: threading.Event) -> None:
                 status["consecutive_failures"] = 0
 
             if telemetry is not None:
-                if persist_health:
+                # A throttled run still persists its finish when it was slow or overdue,
+                # so a supervisor-escalated is_running=True always gets cleared (ADR-0103).
+                persist_finish = persist_health
+                if not persist_finish:
+                    try:
+                        persist_finish = telemetry.should_persist_finish(task=task, duration_seconds=duration)
+                    except Exception:
+                        logger.debug("should_persist_finish failed for task %s", task.name, exc_info=True)
+                        persist_finish = True
+                if persist_finish:
                     _safe_telemetry(
                         telemetry.update_task_health_finished_success,
                         task=task,
@@ -389,6 +398,16 @@ def _run_watchdog() -> None:
                                 task_name=name,
                                 runtime_seconds=runtime_seconds,
                                 max_runtime_seconds=int(task.max_runtime_seconds),
+                            )
+                            # ADR-0103: the throttle usually skips this run's `started`
+                            # write, which would leave the DB-derived running/stuck status
+                            # in scheduler/views.py blind to the hang. Persist it now that
+                            # we know the run is overdue; `should_persist_finish` writes
+                            # the matching is_running=False when the run ends.
+                            _safe_telemetry(
+                                telemetry.persist_running_now,
+                                task=task,
+                                started_at=started_at,
                             )
                 except Exception:
                     logger.debug("Stuck detection failed for task %s", name, exc_info=True)

@@ -78,7 +78,11 @@ A code trace re-attributed the measured rates:
   single-process deployment. Multi-replica deployments already accept this
   for status broadcasting.
 - The scheduler status UI reads `SchedulerTaskHealth`; throttled writes may
-  make its data up to ~60s stale for fast healthy tasks.
+  make its data up to ~60s stale for fast healthy tasks (up to ~2 windows for
+  intervals just under 60s, since the window is stamped when the run is
+  scheduled rather than when it finishes). Unhealthy runs must stay accurate:
+  a hung task has to remain visible as `running`/`stuck`, which is why the
+  throttle escalates on overdue runs rather than skipping their writes.
 
 ## Options Considered
 
@@ -166,6 +170,15 @@ benefit. Option C answers neither the read load nor the issue's intent.
    (in-process last-persisted map); always persist immediately on failure,
    slow run, or first run after startup. `update_task_health_finished_failure`
    stays unconditional.
+   - **Escalate on overdue runs.** Skipping the `started` write would leave the
+     DB-derived `running`/`stuck` status in `scheduler/views.py` blind to a hung
+     sub-minute task, because both are gated on the row's `is_running`. The
+     supervisor's existing stuck detector therefore also calls
+     `persist_running_now()` once a run passes `max_runtime_seconds`, and
+     `should_persist_finish()` forces the matching finished write for any run
+     that was slow or overdue — so an escalated `is_running=True` is always
+     cleared, and healthy fast runs still write nothing. The in-process
+     watchdog (ERROR log + `scheduler_task_stuck` event) was already unaffected.
 4. **Log demotion** — the three per-run lines in
    `backend/scheduler/runner.py` ("scheduled for", "starting",
    "completed in") drop from INFO to DEBUG. Failure/slow logging unchanged.
@@ -210,10 +223,19 @@ benefit. Option C answers neither the read load nor the issue's intent.
 
 ### Negative
 
-- Scheduler status UI data may be up to ~60s stale for fast healthy tasks.
+- Scheduler status UI data may be up to ~60s stale for fast healthy tasks
+  (~2 windows for intervals just under 60s). Sub-minute tasks will rarely
+  render as `running`, since their `started` write is usually throttled away —
+  their runs are milliseconds, so the badge was near-unobservable regardless.
+  Overdue runs escalate, so `stuck` stays accurate.
 - Ingest settings caches add one more place where settings changes depend
   on the `settings_profile_changed` signal firing (precedented; direct DB
-  edits via shell already bypass the existing snapshot cache the same way).
+  edits via shell or Django admin already bypass the existing snapshot cache
+  the same way, and now also change ingest behavior until restart).
+- Tests that write settings rows directly bypass the signal, so
+  `alarm/tests/settings_test_utils.set_profile_setting` clears the snapshots on
+  write. Without that, a snapshot warmed by one test leaks into the next and
+  makes assertions depend on execution order.
 
 ### Risks & Mitigations
 
@@ -222,6 +244,8 @@ benefit. Option C answers neither the read load nor the issue's intent.
 | A settings write path that doesn't fire `settings_profile_changed` leaves ingest caches stale | Low | Medium | Sender coverage verified (use cases + all five integration views, all via `on_commit`); document the signal contract in the cache docstring |
 | Multi-replica deployment: another replica's settings write doesn't invalidate this replica's cache | Low | Medium | Same limitation as the existing `_settings_snapshot`; shipped deployment is single-process; note in docs |
 | Telemetry throttle hides a fast task that silently stops running | Low | Low | Failures always persist; watchdog thread-liveness checks are in-process and unaffected; throttle window is only ~60s |
+| Throttled `started` write hides a *hung* sub-minute task from the DB-derived `running`/`stuck` status in `scheduler/views.py` (both gated on `is_running`) | Medium | Medium | Supervisor calls `persist_running_now()` once a run passes `max_runtime_seconds`; `should_persist_finish()` forces the paired finish write so the row never sticks at `is_running=True`; in-process ERROR log + `scheduler_task_stuck` event were never gated on the throttle |
+| Module snapshot warmed by one test leaks into another, making assertions order-dependent | Medium | Low | `set_profile_setting` clears the snapshots on write; tests that write rows directly reset them in `setUp`/`tearDown` |
 | `exists()` guard adds a third query when work IS pending | High | Negligible | One extra LIMIT-1 scan on a tiny table only on active ticks |
 
 ## Implementation Plan
