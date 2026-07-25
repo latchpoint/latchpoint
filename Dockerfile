@@ -41,9 +41,18 @@ RUN apt-get update && \
         tzdata \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Python dependencies
-COPY requirements.txt /app/requirements.txt
-RUN pip install --no-cache-dir -r requirements.txt
+# Install Python dependencies from the uv lockfile.
+# uv.lock is the single source of truth -- CI already resolves with `uv sync --frozen`,
+# so exporting the same lock here keeps image builds byte-identical to CI. The export is
+# fully hash-pinned, which also gates the supply chain (the old floating `>=` ranges in
+# requirements.txt had no integrity check). Installing with --system keeps packages in the
+# system interpreter, so bare `python`/`daphne` in the entrypoint and supervisord configs
+# resolve exactly as before -- and nothing can be shadowed by the dev `.:/app` bind mount.
+COPY --from=ghcr.io/astral-sh/uv:0.11.26 /uv /bin/uv
+COPY pyproject.toml uv.lock /app/
+RUN uv export --frozen --no-dev --no-emit-project -o /tmp/requirements.lock && \
+    uv pip install --system --no-cache -r /tmp/requirements.lock && \
+    rm /tmp/requirements.lock
 
 # =============================================================================
 # Stage 3: Development image
@@ -89,7 +98,6 @@ COPY --from=frontend-builder /app/frontend/dist /app/frontend/dist
 
 # Copy backend code
 COPY backend /app/backend
-COPY requirements.txt /app/
 
 # Copy configuration files
 COPY docker/nginx.conf /etc/nginx/nginx.conf
