@@ -7,6 +7,7 @@ from unittest.mock import patch
 from django.core.cache import cache
 from django.test import TestCase
 
+from alarm.dispatcher.dispatcher import get_dispatcher
 from alarm.models import AlarmSettingsEntry, Entity
 from alarm.tests.settings_test_utils import reset_cached_settings_snapshots
 from alarm.use_cases.settings_profile import ensure_active_settings_profile
@@ -25,6 +26,14 @@ class Zigbee2mqttRuntimeIngestTests(TestCase):
     # warmed by an earlier test (ADR-0103).
     def setUp(self) -> None:
         reset_cached_settings_snapshots()
+        # `_handle_z2m_message` notifies the rule dispatcher, and RuleDispatcher's
+        # constructor reads the `dispatcher` SystemConfig row. Build the module-level
+        # singleton up front so that one-time query cannot land inside the
+        # assertNumQueries blocks below — without this these tests pass only when some
+        # earlier test in the same process happened to construct it first, and they fail
+        # when this module is run on its own. Construction starts no threads (the worker
+        # pool is created lazily).
+        get_dispatcher()
 
     def tearDown(self) -> None:
         reset_cached_settings_snapshots()
