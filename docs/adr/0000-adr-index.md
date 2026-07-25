@@ -119,6 +119,7 @@ This document tracks all Architecture Decision Records (ADRs) and their implemen
 | [0102](0102-change-only-entity-sync-writes.md) | Change-Only Entity Sync Writes with Coarse last_seen Refresh | **Proposed** |
 | [0103](0103-idle-scheduler-and-ingest-quiet-down.md) | Idle Scheduler and Ingest Quiet-Down | **Proposed** |
 | [0104](0104-burglar-siren-continuous-until-disarmed.md) | Burglar Siren Sounds Continuously Until Disarmed | **Accepted** |
+| [0105](0105-adopt-homeassistant-api-as-ha-transport.md) | Adopt `homeassistant-api` as the Home Assistant Transport | **Proposed** |
 
 ---
 
@@ -129,12 +130,12 @@ This document tracks all Architecture Decision Records (ADRs) and their implemen
 | **Implemented** | 69 |
 | **Partially Implemented** | 0 |
 | **Accepted** | 3 |
-| **Proposed** | 12 |
+| **Proposed** | 13 |
 | **Superseded** | 17 |
-| **Total** | 101 |
+| **Total** | 102 |
 
 Note: **Superseded** includes entries marked as "Superseded by …" in the table above.
 
 ---
 
-*Last updated: 2026-07-24* (added ADR 0104 and backfilled the missing 0091–0100 rows)
+*Last updated: 2026-07-25* (added ADR 0105)

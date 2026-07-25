@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from unittest.mock import patch
 
 from django.test import override_settings
@@ -14,22 +13,18 @@ from alarm.settings_registry import ALARM_PROFILE_SETTINGS_BY_KEY
 from alarm.tests.settings_test_utils import EncryptionTestMixin
 
 
-class _DummyResponse:
-    def __init__(self, *, status: int, headers: dict[str, str] | None = None, body: bytes = b""):
-        self.status = status
-        self.headers = headers or {}
-        self._body = body
+class _FakeStatusClient:
+    """Stands in for ``impl._StatusClient``: a reachable Home Assistant."""
 
-    def read(self, n: int = -1) -> bytes:
-        if n == -1:
-            return self._body
-        return self._body[:n]
+    last_status_code = 200
+    last_content_type = "application/json"
+    last_body_preview = ""
 
-    def __enter__(self):
-        return self
+    def check_api_running(self) -> bool:
+        return True
 
-    def __exit__(self, exc_type, exc, tb):
-        return False
+    def close(self) -> None:
+        return None
 
 
 class HomeAssistantStatusCacheWarmupTests(EncryptionTestMixin, APITestCase):
@@ -57,14 +52,10 @@ class HomeAssistantStatusCacheWarmupTests(EncryptionTestMixin, APITestCase):
         )
 
     @override_settings(ALLOW_HOME_ASSISTANT_IN_TESTS=True)
-    @patch("alarm.gateways.home_assistant.urlopen")
-    def test_status_endpoint_warms_cache_from_active_profile(self, mock_urlopen):
+    @patch("integrations_home_assistant.impl._build_status_client")
+    def test_status_endpoint_warms_cache_from_active_profile(self, mock_build_client):
         clear_cached_connection()
-        mock_urlopen.return_value = _DummyResponse(
-            status=200,
-            headers={"Content-Type": "application/json; charset=utf-8"},
-            body=json.dumps({"message": "API running."}).encode("utf-8"),
-        )
+        mock_build_client.return_value = _FakeStatusClient()
 
         response = self.client.get(reverse("ha-status"))
         self.assertEqual(response.status_code, 200)
