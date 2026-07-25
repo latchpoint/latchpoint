@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 
 import { getErrorMessage } from '@/lib/errors'
@@ -82,9 +82,15 @@ export function useImportSensorsModel() {
 
   const bannerError = error ?? entitiesLoadError
 
-  useEffect(() => {
+  // Reset pagination whenever the filter changes. Adjusting state during render
+  // (rather than in an effect) means the list never paints one frame carrying the
+  // previous view's scroll depth before snapping back to the first page.
+  const filterKey = `${viewMode}:${query}`
+  const [prevFilterKey, setPrevFilterKey] = useState(filterKey)
+  if (filterKey !== prevFilterKey) {
+    setPrevFilterKey(filterKey)
     setVisibleCount(50)
-  }, [query, viewMode])
+  }
 
   const allSensorEntities = useMemo(() => {
     return entities.filter((e) => e.domain.endsWith('sensor'))

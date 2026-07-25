@@ -38,13 +38,20 @@ export function CountdownTimer({
   onComplete,
 }: CountdownTimerProps) {
   const [displaySeconds, setDisplaySeconds] = useState(remainingSeconds)
+
+  // Sync with prop changes. Adjusting state during render (rather than in an effect)
+  // lets React discard the in-progress render and immediately retry with the new
+  // value, so the DOM is never committed showing a stale count. An effect would
+  // commit the stale value first and force a second render pass -- once per second
+  // for the whole countdown.
+  const [prevRemainingSeconds, setPrevRemainingSeconds] = useState(remainingSeconds)
+  if (remainingSeconds !== prevRemainingSeconds) {
+    setPrevRemainingSeconds(remainingSeconds)
+    setDisplaySeconds(remainingSeconds)
+  }
+
   const config = typeConfig[type]
   const progress = totalSeconds > 0 ? ((totalSeconds - displaySeconds) / totalSeconds) * 100 : 0
-
-  // Sync with prop changes
-  useEffect(() => {
-    setDisplaySeconds(remainingSeconds)
-  }, [remainingSeconds])
 
   // Local countdown for smooth animation
   useEffect(() => {
