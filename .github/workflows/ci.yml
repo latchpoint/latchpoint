@@ -21,6 +21,7 @@ jobs:
         API_RESPONSE_ENVELOPE_ENABLED=True
         LOG_LEVEL=INFO
         ALLOWED_HOSTS=localhost,127.0.0.1
+      node-version: "24"
       frontend-working-directory: frontend
       frontend-test-command: "npm test"
       codecov-frontend-flags: frontend

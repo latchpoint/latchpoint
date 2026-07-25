@@ -1,7 +1,7 @@
 # =============================================================================
 # Stage 1: Frontend build (production only)
 # =============================================================================
-FROM node:20-slim AS frontend-builder
+FROM node:24-slim AS frontend-builder
 
 WORKDIR /app/frontend
 COPY frontend/package*.json ./
@@ -51,7 +51,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 FROM base AS development
 
 # Install Node.js for Vite dev server
-RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
+RUN curl -fsSL https://deb.nodesource.com/setup_24.x | bash - && \
     apt-get install -y nodejs && \
     rm -rf /var/lib/apt/lists/*
 
