@@ -72,7 +72,8 @@ HTTP error mapping, and per-field type guarding.
 
 1. Home Assistant status, entity listing, service calls, service catalog, and
    notify-service discovery must keep working with no behavior change observable
-   by the alarm, the rules engine, or the UI.
+   by the alarm, the rules engine, or the UI — with one intended exception, the
+   tightened reachability contract carved out in AC-3.
 2. Row shapes returned to callers must remain byte-identical until a change is
    explicitly intended and verified — the `Entity` table feeds sensors, which
    arm and trigger the alarm.
@@ -194,7 +195,16 @@ HTTP as the fallback it was written to be. This was PR #85.
 - [x] **AC-3**: `get_status` via the library returns a `HomeAssistantStatus` equal
   to the REST implementation's for each case: reachable, unreachable, HTTP error,
   and not-configured; and still raises `HomeAssistantNotConfigured` /
-  `HomeAssistantNotReachable` at the same boundaries.
+  `HomeAssistantNotReachable` at the same boundaries. **One intended exception:** a
+  2xx JSON answer on `/api/` whose body is not Home Assistant's
+  `{"message": "API running."}` is now reported unreachable, where the REST path
+  called it reachable. REST never read the body, so anything answering 2xx with a
+  JSON content-type — a reverse proxy, an auth gateway, an unrelated service on a
+  recycled port — passed as a healthy Home Assistant. The library's
+  `check_api_running()` checks the sentinel, and an unrecognised answer is reported
+  rather than assumed good. This narrows reachability deliberately; it reaches
+  callers through `ensure_available`, which raises `HomeAssistantNotReachable` in
+  the newly-caught case.
 - [ ] **AC-4**: The service catalog and notify-service lists produced via
   `get_domains()` are equal to the REST implementation's output for the same HA
   instance, including the slimmed field shape the rules UI consumes.

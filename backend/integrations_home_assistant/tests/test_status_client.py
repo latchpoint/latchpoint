@@ -223,7 +223,7 @@ class HomeAssistantApiUrlTests(SimpleTestCase):
             ("  http://ha:8123//  ", "http://ha:8123/api/"),
             ("http://ha:8123/api", "http://ha:8123/api/"),
             ("http://ha:8123/api/", "http://ha:8123/api/"),
-            ("http://ha:8123/API", "http://ha:8123/API/"),
+            ("http://ha:8123/API", "http://ha:8123/api/"),
             ("https://ha.example.com/hass", "https://ha.example.com/hass/api/"),
         ]
         for base_url, expected in cases:
@@ -399,4 +399,16 @@ class HomeAssistantStatusTimeoutTests(SimpleTestCase):
 
         self.assertFalse(status.reachable)
         self.assertTrue(status.configured)
-        self.assertLess(elapsed, 5.0, msg=f"timeout was not enforced: took {elapsed:.2f}s")
+        # Bound the elapsed time on both sides. The floor proves the call actually waited out
+        # the configured timeout rather than failing fast for some unrelated reason (the
+        # listener accepts, so there is no connection refused to short-circuit it). The ceiling
+        # sits below ``get_status``'s own 2.0s default, so this fails if the configured value
+        # is ever silently dropped and the default is used instead — a loose bound would let
+        # that regress unnoticed.
+        self.assertGreaterEqual(elapsed, 0.4, msg=f"gave up before the timeout: took {elapsed:.2f}s")
+        self.assertLess(elapsed, 1.5, msg=f"configured timeout was not enforced: took {elapsed:.2f}s")
+        self.assertIn(
+            "timeout",
+            (status.error or "").lower(),
+            msg=f"failure was not reported as a timeout: {status.error!r}",
+        )

@@ -115,11 +115,13 @@ def _api_url(base_url: str) -> str:
     (``http://ha.local:8123``), so the suffix has to be added here; without it every call
     lands on Home Assistant's Single Page App route and comes back as ``text/html``. That was
     the defect behind the dead client branches (see the module docstring), so it is pinned by
-    a test. A ``base_url`` that already ends in ``/api`` is not doubled.
+    a test. A ``base_url`` that already ends in ``/api`` is not doubled, and the suffix is
+    normalized to lower case — Home Assistant's route is ``/api/``, so echoing back a ``/API``
+    the operator typed would 404 the reachability check.
     """
     base = (base_url or "").strip().rstrip("/")
     if base.lower().endswith("/api"):
-        return f"{base}/"
+        return f"{base[:-4]}/api/"
     return f"{base}/api/"
 
 
