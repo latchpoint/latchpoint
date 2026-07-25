@@ -4,49 +4,41 @@ from __future__ import annotations
 
 import logging
 
-from django.utils import timezone
-
-from alarm.models import AlarmEvent, AlarmEventType, AlarmState
+from alarm.models import AlarmState
 from alarm.state_machine.transitions import get_current_snapshot
 from control_panels.sync_worker import panel_sync_worker
-from control_panels.zwave_ring_keypad_v2 import _BURGLAR_SIREN_MAX_TOTAL_SECONDS
 from scheduler import Every, register
 
 logger = logging.getLogger(__name__)
 
-# Must stay below _BURGLAR_SIREN_SECONDS (240) so each re-send lands while the
-# previous tone is still playing and the siren sounds continuously.
+# Watchdog cadence. This is NOT what keeps the siren going — since ADR-0104 the tone has no
+# device-side auto-stop and sounds until a mode indicator is selected — so the interval is not
+# coupled to any tone duration and can be tuned freely.
 _SIREN_RESYNC_INTERVAL_SECONDS = 120
 
 
 @register(
     "resync_ring_keypad_siren",
     schedule=Every(seconds=_SIREN_RESYNC_INTERVAL_SECONDS),
-    description="Keeps the keypad siren sounding while the alarm stays triggered (ADR-0098).",
+    description="Watchdog that re-sounds the keypad siren if it stopped while still triggered (ADR-0104).",
 )
 def resync_ring_keypad_siren() -> dict:
     """
     Re-assert the Ring Keypad v2 burglar siren while the alarm is triggered.
 
-    The Indicator CC tone is one-shot with a 255 s ceiling and the keypad only
-    re-syncs on alarm state changes (ADR-0097), so a long `triggered` state goes
-    silent after ~4 minutes. This task re-sends the siren command until the
-    bell cutoff (`_BURGLAR_SIREN_MAX_TOTAL_SECONDS`) elapses; leaving the
-    triggered state silences the keypad via the normal state-change sync.
+    Since ADR-0104 the siren sounds continuously until a disarm/arm selects a mode indicator, so
+    this task is no longer load-bearing for continuity — it is pure recovery. It repairs the
+    cases the state-change sync cannot see: the initial activation write failed, an external
+    HA/zwave-js write silenced the tone, or the keypad rebooted mid-alarm.
 
-    The blocking Z-Wave writes happen on the panel-sync worker (ADR-0100), which makes
-    the value-CHANGING key-7 write needed to actually restart the tone — re-writing the
-    same duration does nothing on this keypad (the ADR-0099 silent-re-assert bug).
+    There is deliberately no bell cutoff. ADR-0098 added one that worked by declining to
+    re-assert and letting the device's 240 s timeout expire; with no auto-stop left, declining to
+    re-assert would not silence anything, and the alarm is required to sound until disarmed.
+    Re-asserting writes 0 over 0, which is hardware-verified to sound the siren.
     """
     snapshot = get_current_snapshot(process_timers=False)
     if snapshot is None or snapshot.current_state != AlarmState.TRIGGERED:
         return {"resynced": False, "reason": "not_triggered"}
-
-    triggered_event = AlarmEvent.objects.filter(event_type=AlarmEventType.TRIGGERED).order_by("-timestamp").first()
-    if triggered_event is not None:
-        elapsed_seconds = (timezone.now() - triggered_event.timestamp).total_seconds()
-        if elapsed_seconds > _BURGLAR_SIREN_MAX_TOTAL_SECONDS:
-            return {"resynced": False, "reason": "bell_cutoff", "elapsed_seconds": int(elapsed_seconds)}
 
     logger.info("Ring Keypad v2 siren re-assert: alarm still triggered")
     panel_sync_worker.request_siren_reassert()
