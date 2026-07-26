@@ -265,6 +265,22 @@ Track A step 2, when Rolldown replaces it.
 **Deliverable:** one PR — exact-pin `@hookform/resolvers`, `npm update`, refreshed
 lockfile. No source changes.
 
+**Measured outcome (PR #93):** advisories **14 → 7**, critical **1 → 0**, moderate and
+low **→ 0**. `npm install` exits 0. Suite went from 7 failures to 1 (a C4 timeout);
+`eslint .` unchanged at 0 errors / 63 warnings; `tsc -b` and `vite build` exit 0.
+
+**Residual after Phase 0 — 7 HIGH in two groups, neither fixable in range:**
+
+| Group | Count | Fix |
+|---|---|---|
+| ESLint chain — `brace-expansion` DoS (GHSA-mh99-v99m-4gvg) via `minimatch` via `@eslint/eslintrc` / `@eslint/config-array` | 5 | **`eslint@10.8.0` — Track C** |
+| `react-router` / `react-router-dom` — RSC-mode CSRF (GHSA-qwww-vcr4-c8h2) | 2 | react-router v8; accepted risk, see *Not sequenced here* |
+
+Note the ordering effect: these five were **not visible as an ESLint problem before
+Phase 0**. `npm audit` reports one fix path per chain, and while the `vitest`/`vite`
+subtrees carried their own advisories the chain surfaced under those names instead.
+Closing CVEs changes which CVEs are reportable.
+
 ### Upgrade order and per-step evidence
 
 Only one dependency edge in the held-back set is real. The rest are independent:
@@ -356,10 +372,17 @@ conflicts on rebase, which regenerate rather than requiring manual merge.
 - `vite.config.ts` sets no `test.environmentOptions.jsdom`, so jsdom 29's removed
   `ResourceLoader` / `VirtualConsole.sendTo` call sites are never reached.
 
-**Track C — ESLint 10 bundle**
+**Track C — ESLint 10 bundle** *(highest priority of the four tracks — see below)*
 
-- `eslint` 9.39.2 → 10.8.0 and `@eslint/js` → 10.0.1. The version-line skew is expected;
+- `eslint` 9.39.5 → 10.8.0 and `@eslint/js` → 10.0.1. The version-line skew is expected;
   10.0.1 peers `eslint ^10.0.0`.
+- **This is security work, not currency work.** After Phase 0, five of the seven
+  remaining HIGH advisories are the `brace-expansion` DoS chain
+  (GHSA-mh99-v99m-4gvg → `minimatch` → `@eslint/eslintrc` / `@eslint/config-array` →
+  `eslint`), and `npm audit` reports `fixAvailable: {"name":"eslint","version":"10.8.0"}`
+  for every one. No in-range fix exists — the vulnerable `eslint` span runs to
+  `10.0.0-rc.2`. Track C should therefore be scheduled **before** Tracks A, B and D,
+  none of which close an advisory.
 - **Both blocking peers are already satisfied by #89** — `typescript-eslint` 8.65.0
   (peers `eslint: "^8.57.0 || ^9.0.0 || ^10.0.0"`) and `eslint-plugin-react-hooks` 7.1.1.
 - **Measured: exactly 2 errors, 63 warnings** — against a baseline of 0 errors,
@@ -477,7 +500,11 @@ scoping note. v8 adoption remains out of scope for this ADR and should get its o
   Track D is a one-line diff.
 - Phase 0 restores `npm install`, which unblocks not just these tracks but any future
   dependency work at all, including the freshness automation of Option 4.
-- The reachable CVEs close in Phase 0 without waiting on any major upgrade.
+- The CVEs fixable without a major close in Phase 0, immediately and independently
+  (measured: 14 advisories → 7, critical → 0).
+- Track C acquires a concrete security justification: it is the sole remaining fix for
+  5 HIGH advisories, which makes it schedulable on its own merits rather than on
+  "we should stay current."
 - Recognizing B, C and D as independent removes most of the serialization the first draft
   booked as a cost, without weakening R2.
 - Vite 8 measurably improves the build (7.50 s → 765 ms) and slightly *reduces* the C4
@@ -527,17 +554,23 @@ scoping note. v8 adoption remains out of scope for this ADR and should get its o
 
 ## Implementation Plan
 
+Ordered by priority. Only the A.1 → A.2 edge is technically binding; the rest is
+scheduling judgment, and Track C leads because it is the only remaining advisory fix.
+
 - [ ] **Phase 0** *(blocks everything)*: pin `@hookform/resolvers` to exact `5.4.0`,
-      `npm update` (vitest → 3.2.7, vite → 7.3.6), refresh lockfile (AC-0)
+      `npm update` (vitest → 3.2.7, vite → 7.3.6), refresh lockfile (AC-0) —
+      **PR #93 open, not yet merged**
+- [ ] **Track C** *(independent, security)*: `eslint` 10.8.0 + `@eslint/js` 10.0.1, fix the
+      2 named errors; optionally `eslint-plugin-react-refresh` 0.5.3. Closes 5 HIGH
+      advisories (AC-3)
 - [ ] **Track A.1**: `vitest` 3 → 4.1.10 on Vite 7 (AC-1)
 - [ ] **Track A.2** *(after A.1)*: `vite` 8.1.5 + `@vitejs/plugin-react` 6.0.4, atomically
       (AC-4, AC-8)
-- [ ] **Track B** *(independent)*: `jsdom` 29.1.1 + `@testing-library/jest-dom` 7.0.0 +
-      raise `testTimeout` (AC-2)
-- [ ] **Track C** *(independent)*: `eslint` 10.8.0 + `@eslint/js` 10.0.1, fix the 2 named
-      errors; optionally `eslint-plugin-react-refresh` 0.5.3 (AC-3)
 - [ ] **Track D** *(independent)*: `typescript` 6.0.3, delete `baseUrl` from
       `tsconfig.app.json` (AC-5)
+- [ ] **Track B** *(independent, lowest)*: `jsdom` 29.1.1 + `@testing-library/jest-dom`
+      7.0.0 + raise `testTimeout` (AC-2). Scheduled last: the only track with a negative
+      measured outcome (+29% wall clock, no behavioral gain)
 - [ ] **Anytime, decoupled**: `react-router-dom` → `react-router` import prep, 29 sites
 - [ ] **Separate ADR**: react-router v8 adoption (closes GHSA-qwww-vcr4-c8h2)
 - [ ] **Separate ADR**: dependency freshness/governance policy (see Related ADRs)
