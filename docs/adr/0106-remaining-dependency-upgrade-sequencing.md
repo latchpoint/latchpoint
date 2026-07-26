@@ -315,6 +315,9 @@ conflicts on rebase, which regenerate rather than requiring manual merge.
   obsolete-snapshots-fail-CI changes are inert.
 - **The `basic` reporter is removed in Vitest 4.** `--reporter=basic` is now a startup
   error. No `package.json` script or CI config uses it; check any local scripts.
+- **Measured outcome (PR #96):** suite 6 failed / 573 passed, every failure a C4 timeout,
+  zero assertion or type errors. Zero config edits, zero test-file edits, single
+  `vite@7.3.6` deduped. `tsc -b`, `eslint .` and `vite build` all exit 0.
 
 **Track A, step 2 — `vite` 7 → 8.1.5 with `@vitejs/plugin-react` 5.1.2 → 6.0.4 (atomic)**
 
@@ -352,6 +355,23 @@ conflicts on rebase, which regenerate rather than requiring manual merge.
   auto-adds `react`/`react-dom` to `resolve.dedupe`. Add that manually if duplicate React
   copies appear.
 - Node is **not** a blocker: Vite 8 wants `^20.19.0 || >=22.12.0`; #90 put CI on 24.
+- **AC-8 resolved (PR #97):** the new browser floor is **accepted**. Safari 16.4 is the
+  binding constraint (it implies iOS 16.4+).
+- **Measured outcome (PR #97):** `npm run build` exit 0 in 958 ms vs 7.50 s on Vite 7
+  (~8×). Single `vite@8.1.5`, all consumers deduped. React deduped at 19.2.8 with **no**
+  manual `resolve.dedupe` needed. `rollup` leaves the tree entirely, closing its HIGH
+  advisory as a side effect. Suite 2 failed / 577 passed, both C4 timeouts.
+- **Known cosmetic regression — a 457 kB orphan chunk.** Rolldown emits
+  `dist/assets/demo-*.js` even though nothing references it. Both bundlers correctly
+  eliminate the `if (DEMO_MODE)` branch in `src/main.tsx` — the built entry contains zero
+  `initDemoMode` references under either. They differ in what becomes of the module that
+  branch *pointed at*: Rollup drops it from the output graph, Rolldown still writes it.
+  Verified unreachable — no `modulepreload` link in `index.html`, and no chunk in `dist/`
+  references it. `du -sh dist/` therefore grows **1.75M → 2.2M** and gzip totals read
+  **+44%**, but **zero of those bytes reach a browser**; the effect is Docker image size
+  only. The fix, if wanted, is to inline `import.meta.env.VITE_DEMO_MODE === 'true'` at
+  the `main.tsx` branch rather than importing the constant across a module boundary from
+  `src/demo/flag.ts`, so Rolldown can fold it locally.
 
 ---
 
@@ -371,6 +391,10 @@ conflicts on rebase, which regenerate rather than requiring manual merge.
   devDependency is hygiene, not a requirement.
 - `vite.config.ts` sets no `test.environmentOptions.jsdom`, so jsdom 29's removed
   `ResourceLoader` / `VirtualConsole.sendTo` call sites are never reached.
+- **Measured outcome (PR #98):** `testTimeout` raised 5000 → 15000. Suite 281/281 files
+  and 579/579 tests passing with **zero timeouts at either threshold**, 113.77 s wall
+  against a 103.67 s baseline that itself carried 7 failures. `tsc -b`, `eslint .` and
+  `vite build` all exit 0.
 
 **Track C — ESLint 10 bundle** *(highest priority of the four tracks — see below)*
 
@@ -400,6 +424,9 @@ conflicts on rebase, which regenerate rather than requiring manual merge.
   objects.
 - Everything else (`.eslintrc` removal, config-lookup change, removed `FlatESLint` /
   `context.getCwd` APIs) is inert — flat config only, no custom rules.
+- **Measured outcome (PR #94):** both errors fixed in 2 source lines. `eslint .` exit 0
+  with 0 errors / 63 warnings — the exact predicted numbers. **Advisories 7 → 2**, the
+  remaining two being the react-router pair. Suite 281/281 files, 579/579 tests passing.
 
 **Track D — `typescript` 5.9.3 → 6.0.3 (explicitly *not* 7.x)**
 
@@ -430,6 +457,10 @@ conflicts on rebase, which regenerate rather than requiring manual merge.
 - `tsc -b` build mode and project references **are** supported, so the solution-style
   `tsconfig.json` layout survives.
 - Note C6: `tsc -b` excludes the test files, so this green result covers `src/` only.
+- **Measured outcome (PR #95):** one deleted line. `tsc -b` exit 0; `npm ls typescript`
+  reports 6.0.3 with nothing ≥ 6.1.0; `eslint .` exit 0 with 0 errors / 63 warnings,
+  confirming `typescript-eslint` 8.65.0 handles 6.0.3; suite 281/281 files and 579/579
+  tests passing.
 - Revisit 7.x only after `typescript-eslint` ships TS 7.1 compatibility. That will warrant
   its own ADR — TS 7 is the Go-native rewrite with no stable programmatic API.
 
@@ -484,9 +515,11 @@ scoping note. v8 adoption remains out of scope for this ADR and should get its o
       are triaged, then each is classified as either a genuine regression or a C4 flake by
       re-running the failing file in isolation, and the classification is recorded in the
       PR (R6).
-- [ ] **AC-8**: After the Vite 8 PR, the browser-target change (Chrome 111 / Firefox 114 /
+- [x] **AC-8**: After the Vite 8 PR, the browser-target change (Chrome 111 / Firefox 114 /
       Safari 16.4) has been explicitly confirmed as acceptable for the alarm UI's supported
       browsers, and that confirmation is recorded in the PR description.
+      **Resolved: accepted** (PR #97). Safari 16.4 is the binding constraint — it implies
+      iOS 16.4+, so a device left on iOS 15 or early 16 would stop loading the UI.
 
 ## Consequences
 
@@ -547,30 +580,42 @@ scoping note. v8 adoption remains out of scope for this ADR and should get its o
 | ESLint 10's new error rules exceed the 0-error gate | **Low** (measured: 2) | Low | Both sites named in AC-3; fix in the same PR. |
 | Vite 8 browser-target rise drops a browser the alarm UI must support | Low | High | AC-8 forces explicit confirmation before merge. |
 | `jsdom` 29's +29% wall clock pushes C4 flakes into CI | Medium | Medium | Raise `testTimeout` in the same PR (AC-2). |
-| Vite 8 leaves duplicate React copies (auto-dedupe removed) | Low | Medium | AC-4 checks `npm ls`; add `resolve.dedupe: ['react','react-dom']` if needed. |
+| Vite 8 leaves duplicate React copies (auto-dedupe removed) | **None** (measured: all deduped at 19.2.8) | Medium | AC-4 checks `npm ls`. No `resolve.dedupe` needed. |
+| Rolldown's 457 kB orphan chunk is mistaken for a bundle-size regression users pay for | Medium | Low | Verified unreachable — no `modulepreload`, no importing chunk. Docker image size only. Documented in Track A.2 and PR #97 with the one-line fix if wanted. |
 | `react-router` RSC advisory turns out to be reachable | Low | High | Reassess if the app ever adopts RSC or a framework mode; the fix is v8 and needs its own ADR. |
 | A stale CI result is mistaken for verification of a new commit | Medium | High | AC-6 requires SHA-level verification. This occurred during the #88 work: `gh pr checks` reported green from a prior commit. |
 | Someone batches two tracks "since they're both small" | Medium | Medium | This ADR is the record; PR descriptions should reference the AC they satisfy. |
 
 ## Implementation Plan
 
-Ordered by priority. Only the A.1 → A.2 edge is technically binding; the rest is
-scheduling judgment, and Track C leads because it is the only remaining advisory fix.
+All tracks are implemented and open as PRs. Ordered by merge priority — only the
+A.1 → A.2 edge is technically binding; the rest is scheduling judgment, and Track C
+leads because it is the only remaining advisory fix.
 
-- [ ] **Phase 0** *(blocks everything)*: pin `@hookform/resolvers` to exact `5.4.0`,
-      `npm update` (vitest → 3.2.7, vite → 7.3.6), refresh lockfile (AC-0) —
-      **PR #93 open, not yet merged**
-- [ ] **Track C** *(independent, security)*: `eslint` 10.8.0 + `@eslint/js` 10.0.1, fix the
-      2 named errors; optionally `eslint-plugin-react-refresh` 0.5.3. Closes 5 HIGH
-      advisories (AC-3)
-- [ ] **Track A.1**: `vitest` 3 → 4.1.10 on Vite 7 (AC-1)
-- [ ] **Track A.2** *(after A.1)*: `vite` 8.1.5 + `@vitejs/plugin-react` 6.0.4, atomically
-      (AC-4, AC-8)
-- [ ] **Track D** *(independent)*: `typescript` 6.0.3, delete `baseUrl` from
-      `tsconfig.app.json` (AC-5)
-- [ ] **Track B** *(independent, lowest)*: `jsdom` 29.1.1 + `@testing-library/jest-dom`
-      7.0.0 + raise `testTimeout` (AC-2). Scheduled last: the only track with a negative
-      measured outcome (+29% wall clock, no behavioral gain)
+```
+main
+├── #92  docs/adr-0106                      this ADR (docs only)
+└── #93  chore/phase0-restore-npm-install   Phase 0 — blocks everything
+     ├── #94  track-c-eslint-10             independent
+     ├── #95  track-d-typescript-6          independent
+     ├── #96  track-a1-vitest-4             independent
+     │    └── #97  track-a2-vite-8          the one real serial edge
+     └── #98  track-b-jsdom-29              independent
+```
+
+- [ ] **Phase 0** *(blocks everything)* — **PR #93**. Pin `@hookform/resolvers` to exact
+      `5.4.0`, `npm update` (vitest → 3.2.7, vite → 7.3.6). Advisories 14 → 7,
+      critical 1 → 0 (AC-0)
+- [ ] **Track C** *(independent, security)* — **PR #94**. `eslint` 10.8.0 +
+      `@eslint/js` 10.0.1, 2 one-line source fixes. Advisories 7 → 2 (AC-3)
+- [ ] **Track A.1** — **PR #96**. `vitest` 3.2.7 → 4.1.10 on Vite 7. Zero edits (AC-1)
+- [ ] **Track A.2** *(after A.1)* — **PR #97**. `vite` 8.1.5 +
+      `@vitejs/plugin-react` 6.0.4, atomically. Build 7.50 s → 958 ms (AC-4, AC-8)
+- [ ] **Track D** *(independent)* — **PR #95**. `typescript` 6.0.3, one deleted line
+      (AC-5)
+- [ ] **Track B** *(independent, lowest)* — **PR #98**. `jsdom` 29.1.1 +
+      `@testing-library/jest-dom` 7.0.0 + `testTimeout` 5000 → 15000 (AC-2). Last: the
+      only track with a negative measured outcome, and it closes no advisory
 - [ ] **Anytime, decoupled**: `react-router-dom` → `react-router` import prep, 29 sites
 - [ ] **Separate ADR**: react-router v8 adoption (closes GHSA-qwww-vcr4-c8h2)
 - [ ] **Separate ADR**: dependency freshness/governance policy (see Related ADRs)
