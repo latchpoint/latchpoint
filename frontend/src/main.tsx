@@ -2,10 +2,15 @@ import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import './index.css'
 import App from './App.tsx'
-import { DEMO_MODE } from './demo/flag'
 
 async function bootstrap() {
-  if (DEMO_MODE) {
+  // Read the env flag inline rather than importing DEMO_MODE from './demo/flag'.
+  // Rolldown folds `import.meta.env.VITE_DEMO_MODE` at this call site, so a
+  // non-demo build drops the dynamic import below AND the module it points at.
+  // Importing the constant across a module boundary defeated that: the branch
+  // was still eliminated, but the demo module was emitted as an unreachable
+  // ~457 kB chunk. See ADR-0106, Track A.2.
+  if (import.meta.env.VITE_DEMO_MODE === 'true') {
     try {
       const { initDemoMode } = await import('./demo')
       await initDemoMode()
