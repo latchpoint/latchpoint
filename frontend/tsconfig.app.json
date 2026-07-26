@@ -24,8 +24,8 @@
     "noFallthroughCasesInSwitch": true,
     "noUncheckedSideEffectImports": true,
 
-    /* Path alias */
-    "baseUrl": ".",
+    /* Path alias — paths are resolved relative to this file, so no baseUrl.
+       baseUrl is deprecated in TS 6.0 (TS5101) and stops working in TS 7.0. */
     "paths": {
       "@/*": ["./src/*"]
     }
