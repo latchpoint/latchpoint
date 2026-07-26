@@ -1,4 +1,4 @@
-import { Navigate } from 'react-router-dom'
+import { Navigate } from 'react-router'
 
 export function DebugIndexRedirect() {
   return <Navigate to="entities" replace />

@@ -1,5 +1,5 @@
 import { useEffect, useMemo } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate } from 'react-router'
 import { Routes } from '@/lib/constants'
 import type { LoginCredentials, User } from '@/types'
 import {

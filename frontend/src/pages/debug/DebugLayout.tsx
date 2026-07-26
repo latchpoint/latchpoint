@@ -1,4 +1,4 @@
-import { NavLink, Outlet } from 'react-router-dom'
+import { NavLink, Outlet } from 'react-router'
 
 import { Page } from '@/components/layout'
 import { cn } from '@/lib/utils'

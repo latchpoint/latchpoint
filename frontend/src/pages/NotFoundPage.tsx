@@ -1,4 +1,4 @@
-import { Link } from 'react-router-dom'
+import { Link } from 'react-router'
 import { Home } from 'lucide-react'
 import { Routes } from '@/lib/constants'
 import { Button } from '@/components/ui/button'

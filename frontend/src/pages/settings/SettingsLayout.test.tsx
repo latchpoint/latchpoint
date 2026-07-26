@@ -1,7 +1,7 @@
 import React from 'react'
 import { describe, expect, it } from 'vitest'
 import { render, screen } from '@testing-library/react'
-import { MemoryRouter, Routes, Route } from 'react-router-dom'
+import { MemoryRouter, Routes, Route } from 'react-router'
 import { SettingsLayout } from '@/pages/settings/SettingsLayout'
 
 describe('SettingsLayout', () => {

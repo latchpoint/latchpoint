@@ -1,5 +1,5 @@
 import { Bell, User, LogOut, Moon, Sun, Monitor, House } from 'lucide-react'
-import { Link } from 'react-router-dom'
+import { Link } from 'react-router'
 import { useQuery } from '@tanstack/react-query'
 import { useThemeStore } from '@/stores/themeStore'
 import { alarmService } from '@/services'

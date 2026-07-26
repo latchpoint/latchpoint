@@ -1,4 +1,4 @@
-import { useNavigate } from 'react-router-dom'
+import { useNavigate } from 'react-router'
 import { Routes } from '@/lib/constants'
 import { SetupWizardCard } from '@/features/setupWizard/components/SetupWizardCard'
 import { useSetupWizardModel } from '@/features/setupWizard/hooks/useSetupWizardModel'

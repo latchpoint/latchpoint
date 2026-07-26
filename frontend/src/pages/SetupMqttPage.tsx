@@ -1,4 +1,4 @@
-import { useNavigate } from 'react-router-dom'
+import { useNavigate } from 'react-router'
 import { Routes } from '@/lib/constants'
 import { SetupMqttCard } from '@/features/setupMqtt/components/SetupMqttCard'
 import { useSetupMqttModel } from '@/features/setupMqtt/hooks/useSetupMqttModel'
