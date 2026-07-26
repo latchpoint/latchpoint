@@ -1,4 +1,4 @@
-import { Link, useLocation } from 'react-router-dom'
+import { Link, useLocation } from 'react-router'
 import { ChevronLeft, ChevronRight, GitCommit } from 'lucide-react'
 import { useLayoutStore } from '@/stores/layoutStore'
 import { cn } from '@/lib/utils'

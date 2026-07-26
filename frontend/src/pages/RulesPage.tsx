@@ -2,7 +2,7 @@
  * Rules Page - Visual rule builder using React Query Builder
  */
 import { useState, useCallback } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { useSearchParams } from 'react-router'
 import { useQueryClient } from '@tanstack/react-query'
 import { Copy } from 'lucide-react'
 import { Page } from '@/components/layout'

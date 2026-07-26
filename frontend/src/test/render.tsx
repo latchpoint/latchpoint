@@ -1,7 +1,7 @@
 import React, { type PropsWithChildren } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { render, type RenderOptions } from '@testing-library/react'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter } from 'react-router'
 
 function createTestQueryClient(): QueryClient {
   return new QueryClient({

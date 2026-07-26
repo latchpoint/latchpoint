@@ -1,6 +1,6 @@
 import { Button } from '@/components/ui/button'
 import { Tooltip } from '@/components/ui/tooltip'
-import { Link } from 'react-router-dom'
+import { Link } from 'react-router'
 import { Routes } from '@/lib/constants'
 
 type Props = {

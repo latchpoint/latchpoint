@@ -1,5 +1,5 @@
 import { lazy, Suspense } from 'react'
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
+import { BrowserRouter, Routes, Route, Navigate } from 'react-router'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { ONE_MINUTE_MS, Routes as AppRoutes } from '@/lib/constants'
 import { AppShell, ProtectedRoute, SetupGate } from '@/components/layout'

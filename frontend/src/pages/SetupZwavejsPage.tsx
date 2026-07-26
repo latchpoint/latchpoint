@@ -1,4 +1,4 @@
-import { useNavigate } from 'react-router-dom'
+import { useNavigate } from 'react-router'
 import { Routes } from '@/lib/constants'
 import { SetupZwavejsCard } from '@/features/setupZwavejs/components/SetupZwavejsCard'
 import { useSetupZwavejsModel } from '@/features/setupZwavejs/hooks/useSetupZwavejsModel'

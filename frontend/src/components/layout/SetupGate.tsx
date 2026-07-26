@@ -1,4 +1,4 @@
-import { Navigate, useLocation } from 'react-router-dom'
+import { Navigate, useLocation } from 'react-router'
 import { Routes } from '@/lib/constants'
 import { Spinner } from '@/components/ui/spinner'
 import { useAuthSessionQuery } from '@/hooks/useAuthQueries'

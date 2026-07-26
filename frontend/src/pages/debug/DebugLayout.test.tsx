@@ -1,7 +1,7 @@
 import React from 'react'
 import { describe, expect, it } from 'vitest'
 import { render, screen } from '@testing-library/react'
-import { MemoryRouter, Routes, Route, Navigate } from 'react-router-dom'
+import { MemoryRouter, Routes, Route, Navigate } from 'react-router'
 import { DebugLayout } from '@/pages/debug/DebugLayout'
 
 describe('DebugLayout', () => {

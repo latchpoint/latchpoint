@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { screen } from '@testing-library/react'
-import { Routes as RouterRoutes, Route, Outlet } from 'react-router-dom'
+import { Routes as RouterRoutes, Route, Outlet } from 'react-router'
 import { http, HttpResponse } from 'msw'
 import { server } from '@/test/msw/server'
 import { Routes, UserRole } from '@/lib/constants'
