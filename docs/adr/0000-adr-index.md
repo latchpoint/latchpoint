@@ -120,6 +120,7 @@ This document tracks all Architecture Decision Records (ADRs) and their implemen
 | [0103](0103-idle-scheduler-and-ingest-quiet-down.md) | Idle Scheduler and Ingest Quiet-Down | **Proposed** |
 | [0104](0104-burglar-siren-continuous-until-disarmed.md) | Burglar Siren Sounds Continuously Until Disarmed | **Accepted** |
 | [0105](0105-adopt-homeassistant-api-as-ha-transport.md) | Adopt `homeassistant-api` as the Home Assistant Transport | **Proposed** |
+| [0106](0106-remaining-dependency-upgrade-sequencing.md) | Sequencing the Remaining Held-Back Dependency Upgrades | **Proposed** |
 
 ---
 
@@ -138,4 +139,4 @@ Note: **Superseded** includes entries marked as "Superseded by …" in the table
 
 ---
 
-*Last updated: 2026-07-25* (added ADR 0105)
+*Last updated: 2026-07-25* (added ADR 0106)
