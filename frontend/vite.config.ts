@@ -58,6 +58,12 @@ export default defineConfig(({ mode }) => {
       include: ['src/**/*.test.{ts,tsx}'],
       clearMocks: true,
       restoreMocks: true,
+      // The `await import(...)` smoke tests are load-sensitive: under parallel
+      // execution a cold module graph can exceed the 5000ms default on an
+      // arbitrary file, while the same file passes in isolation. jsdom 29 adds
+      // ~29% wall clock, which makes that more likely. 15s is headroom, not a
+      // masked hang -- a genuinely stuck import still fails, just later.
+      testTimeout: 15000,
     },
     build: isDemo ? { outDir: 'dist-demo' } : undefined,
     server: {
