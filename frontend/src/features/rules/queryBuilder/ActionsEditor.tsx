@@ -856,7 +856,7 @@ function ZwavejsSetValueFields({
   const handleValueChange = (text: string) => {
     setValueText(text)
     // Try to parse as JSON, otherwise use as string/boolean/number
-    let parsedValue: unknown = text
+    let parsedValue: unknown
     if (text === 'true') parsedValue = true
     else if (text === 'false') parsedValue = false
     else if (!isNaN(Number(text)) && text.trim() !== '') parsedValue = Number(text)

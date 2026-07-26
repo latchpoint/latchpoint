@@ -83,7 +83,7 @@ export function parseJsonAs<T>(
     return parsed
   } catch (error) {
     if (error instanceof SyntaxError) {
-      throw new Error(`Invalid JSON: ${error.message}`)
+      throw new Error(`Invalid JSON: ${error.message}`, { cause: error })
     }
     throw error
   }
