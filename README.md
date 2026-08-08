@@ -8,6 +8,16 @@
 </p>
 
 <p align="center">
+<img src="https://img.shields.io/github/stars/latchpoint/latchpoint?style=for-the-badge&label=Stars&color=orange" alt="Stars">
+<a href="https://github.com/latchpoint/latchpoint/releases/latest"><img src="https://img.shields.io/github/v/release/latchpoint/latchpoint?style=for-the-badge&color=purple" alt="Version"></a>
+<a href="https://github.com/latchpoint/latchpoint/actions/workflows/build-and-push.yml"><img src="https://img.shields.io/github/actions/workflow/status/latchpoint/latchpoint/build-and-push.yml?style=for-the-badge&label=Build" alt="Build"></a>
+</p>
+
+<p align="center">
+<a href="https://www.buymeacoffee.com/JMISm06AD"><img src="https://img.shields.io/badge/Buy%20Me%20A%20Coffee-FFDD00?style=for-the-badge&logo=buy-me-a-coffee&logoColor=black" alt="Buy Me A Coffee"></a>
+</p>
+
+<p align="center">
   <img src="docs/screenshots/dashboard-dark-desktop.png" alt="Latchpoint dashboard (dark mode)" width="900" />
 </p>
 
