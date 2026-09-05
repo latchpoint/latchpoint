@@ -148,3 +148,10 @@ class ChangedSinceAlarmTransitionRunRulesTests(TestCase):
                 trace = out["non_matching_rules"][0]["trace"]
                 door_trace = trace["children"][1]
                 self.assertEqual(door_trace["reason"], "changed_before_alarm_transition")
+
+    def test_ac_12_rules_without_the_flag_keep_todays_arm_edge_semantics(self):
+        """AC-12 (regression guard, green by construction): an unflagged rule still fires on the arm edge
+        even when the door's ``last_changed`` predates ``entered_at``."""
+        self._entity(DOOR_A, "on", self.stale)
+        self._rule({"op": "all", "children": [_armed_away(), _door(DOOR_A, flag=False)]})
+        self.assertEqual(self._run(self.entered_at + timedelta(seconds=1)).fired, 1)
