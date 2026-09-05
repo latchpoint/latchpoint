@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime
+
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 
@@ -26,7 +28,12 @@ def sync_entities_from_home_assistant(*, items: list[dict], now=None) -> dict:
             name = entity_id
 
         last_changed_raw = item.get("last_changed")
-        last_changed = parse_datetime(last_changed_raw) if isinstance(last_changed_raw, str) else None
+        if isinstance(last_changed_raw, datetime):
+            # ADR-0105's WebSocket transport yields datetimes here; NULLing last_changed would
+            # blind every ADR-0108 flagged condition until the entity changes again.
+            last_changed = last_changed_raw
+        else:
+            last_changed = parse_datetime(last_changed_raw) if isinstance(last_changed_raw, str) else None
 
         attributes: dict = {
             "unit_of_measurement": item.get("unit_of_measurement"),

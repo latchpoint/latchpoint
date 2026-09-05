@@ -5,13 +5,22 @@
 import { useId } from 'react'
 import type { ValueEditorProps } from 'react-querybuilder'
 import type { EntitySource, EntityStateValue, ValueEditorContext } from '../types'
+import { Checkbox } from '@/components/ui/checkbox'
 import { DatalistInput } from '@/components/ui/datalist-input'
+import { HelpTip } from '@/components/ui/help-tip'
 import { EntityPicker } from '../EntityPicker'
 import { getSuggestionsForDomain } from './domainStateSuggestions'
 
 interface EntityStateValueEditorProps extends ValueEditorProps {
   context?: ValueEditorContext
   sourceFilter?: EntitySource
+}
+
+// ADR-0108 (revision): only Home Assistant keeps a change-only `last_changed`
+// (Zigbee2MQTT stamps it on every report, Z-Wave JS live updates never write
+// it), so the option is offered for HA entities only.
+function supportsChangedSince(sourceFilter: EntitySource, entitySource: string | undefined): boolean {
+  return sourceFilter === 'home_assistant' || (sourceFilter === 'all' && entitySource === 'home_assistant')
 }
 
 export function EntityStateValueEditor({
@@ -26,14 +35,31 @@ export function EntityStateValueEditor({
 
   const selectedEntity = entities.find((e) => e.entityId === currentValue.entityId)
   const equalsListId = useId()
+  const changedSinceId = useId()
   const suggestions = getSuggestionsForDomain(selectedEntity?.domain)
 
+  // A flag already stored on a non-HA entity (picker switched, field changed, or a
+  // rule authored via the API) must stay visible so it can be cleared.
+  const showChangedSince =
+    supportsChangedSince(sourceFilter, selectedEntity?.source) || currentValue.changedSinceAlarmTransition === true
+
   const handleEntityChange = (entityId: string) => {
-    handleOnChange({ ...currentValue, entityId } as EntityStateValue)
+    const next: EntityStateValue = { ...currentValue, entityId }
+    // ADR-0108: the flag only means something for HA entities; drop it when switching away.
+    const nextSource = entities.find((e) => e.entityId === entityId)?.source
+    if (!supportsChangedSince(sourceFilter, nextSource)) {
+      delete next.changedSinceAlarmTransition
+    }
+    handleOnChange(next)
   }
 
   const handleEqualsChange = (equals: string) => {
     handleOnChange({ ...currentValue, equals } as EntityStateValue)
+  }
+
+  // ADR-0108: opt this condition into "ignore state set before the alarm's last transition".
+  const handleChangedSinceChange = (changedSinceAlarmTransition: boolean) => {
+    handleOnChange({ ...currentValue, changedSinceAlarmTransition } as EntityStateValue)
   }
 
   return (
@@ -61,6 +87,34 @@ export function EntityStateValueEditor({
         placeholder="on"
         className="h-8 w-44"
       />
+
+      {showChangedSince && (
+        <>
+          <label
+            htmlFor={changedSinceId}
+            className="flex items-center gap-1.5 whitespace-nowrap text-sm text-muted-foreground"
+          >
+            <Checkbox
+              id={changedSinceId}
+              checked={currentValue.changedSinceAlarmTransition === true}
+              onChange={(e) => handleChangedSinceChange(e.target.checked)}
+              disabled={disabled}
+            />
+            Only after alarm state change
+          </label>
+          <HelpTip
+            label="About 'Only after alarm state change'"
+            content={
+              <span className="block max-w-xs">
+                When ticked, this condition ignores a sensor that was already in this state when the alarm
+                entered its current state (for example a door left open before arming), so arming does not
+                trigger immediately. The sensor counts again the next time it changes into this state.
+                Available for Home Assistant entities only.
+              </span>
+            }
+          />
+        </>
+      )}
     </div>
   )
 }

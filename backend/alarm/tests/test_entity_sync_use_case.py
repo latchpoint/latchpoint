@@ -108,3 +108,17 @@ class EntitySyncUseCaseTests(TestCase):
         ]
         result = sync_entities_from_home_assistant(items=items, now=now)
         self.assertEqual(result["timestamp"], now)
+
+    def test_sync_entities_keeps_datetime_last_changed(self):
+        """ADR-0108 hardening: a datetime `last_changed` (ADR-0105 WS transport) must not be NULLed."""
+        changed_at = timezone.now()
+        items = [
+            {
+                "entity_id": "binary_sensor.side_fence_door",
+                "name": "Side fence door",
+                "state": "on",
+                "last_changed": changed_at,
+            },
+        ]
+        sync_entities_from_home_assistant(items=items)
+        self.assertEqual(Entity.objects.get(entity_id="binary_sensor.side_fence_door").last_changed, changed_at)

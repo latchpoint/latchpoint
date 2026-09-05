@@ -30,6 +30,12 @@ export interface EntityStateNode {
    * is created via rule refs before an integration sync has populated it.
    */
   source?: 'home_assistant' | 'zwavejs' | 'zigbee2mqtt' | 'all'
+  /**
+   * ADR-0108: when true the condition only matches if the entity's last state
+   * change happened after the alarm entered its current state — a door that
+   * was already open at arming time is ignored until it changes again.
+   */
+  changed_since_alarm_transition?: boolean
 }
 
 export type FrigateAggregation = 'latest' | 'max' | 'percentile'
@@ -231,12 +237,13 @@ export interface RuleDefinition {
  * Check if node is an EntityStateNode
  */
 export function isEntityStateNode(node: unknown): node is EntityStateNode {
-  return (
-    isRecord(node) &&
-    node.op === 'entity_state' &&
-    typeof node.entity_id === 'string' &&
-    typeof node.equals === 'string'
-  )
+  if (!isRecord(node)) return false
+  if (node.op !== 'entity_state') return false
+  if (typeof node.entity_id !== 'string' || typeof node.equals !== 'string') return false
+  if ('changed_since_alarm_transition' in node && node.changed_since_alarm_transition != null) {
+    if (typeof node.changed_since_alarm_transition !== 'boolean') return false
+  }
+  return true
 }
 
 export function isFrigatePersonDetectedNode(node: unknown): node is FrigatePersonDetectedNode {

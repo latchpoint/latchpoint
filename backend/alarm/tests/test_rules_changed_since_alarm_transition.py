@@ -1,0 +1,234 @@
+"""ADR-0108: per-condition ``changed_since_alarm_transition`` flag on ``entity_state``.
+
+Evaluator, explain-trace and validation contract. Uses a fake repositories
+object so these run as ``SimpleTestCase`` (no DB).
+"""
+
+from __future__ import annotations
+
+from datetime import timedelta
+from types import SimpleNamespace
+
+from django.test import SimpleTestCase
+from django.utils import timezone
+
+from alarm.rules.conditions import (
+    eval_condition_explain_with_context,
+    eval_condition_with_context,
+    validate_when_node,
+    when_uses_changed_since_alarm_transition,
+)
+
+DOOR = "binary_sensor.side_fence_door_sensor_door"
+
+
+def _node(flag: bool | None = True) -> dict:
+    """Build an ``entity_state`` node; ``flag=None`` omits the key entirely."""
+    node = {"op": "entity_state", "entity_id": DOOR, "equals": "on"}
+    if flag is not None:
+        node["changed_since_alarm_transition"] = flag
+    return node
+
+
+def _repos(entered_at):
+    """Minimal repositories double exposing only what the evaluator reads."""
+    return SimpleNamespace(
+        get_alarm_state=lambda: "armed_away",
+        get_alarm_state_entered_at=lambda: entered_at,
+    )
+
+
+class ChangedSinceAlarmTransitionConditionTests(SimpleTestCase):
+    def setUp(self):
+        self.entered_at = timezone.now()
+        self.stale = self.entered_at - timedelta(minutes=10)
+        self.fresh = self.entered_at + timedelta(seconds=1)
+
+    def test_ac_1_stale_entity_is_false_with_flag_and_true_without(self):
+        """AC-1: entity already ``on`` before ``entered_at`` → flagged node is false, unflagged is true."""
+        state = {DOOR: "on"}
+        changed = {DOOR: self.stale}
+        self.assertFalse(
+            eval_condition_with_context(
+                _node(True),
+                entity_state=state,
+                now=self.entered_at,
+                repos=_repos(self.entered_at),
+                entity_last_changed=changed,
+            )
+        )
+        self.assertTrue(
+            eval_condition_with_context(
+                _node(None),
+                entity_state=state,
+                now=self.entered_at,
+                repos=_repos(self.entered_at),
+                entity_last_changed=changed,
+            )
+        )
+
+    def test_ac_2_fresh_change_is_true_and_equal_timestamp_is_false(self):
+        """AC-2: ``last_changed > entered_at`` matches; ``last_changed == entered_at`` does not (strict)."""
+        state = {DOOR: "on"}
+        self.assertTrue(
+            eval_condition_with_context(
+                _node(True),
+                entity_state=state,
+                now=self.fresh,
+                repos=_repos(self.entered_at),
+                entity_last_changed={DOOR: self.fresh},
+            )
+        )
+        self.assertFalse(
+            eval_condition_with_context(
+                _node(True),
+                entity_state=state,
+                now=self.entered_at,
+                repos=_repos(self.entered_at),
+                entity_last_changed={DOOR: self.entered_at},
+            )
+        )
+
+    def test_ac_3_missing_timestamps_are_false_with_trace_reason(self):
+        """AC-3: no ``last_changed`` or no ``entered_at`` → false, and the trace names which one."""
+        state = {DOOR: "on"}
+
+        self.assertFalse(
+            eval_condition_with_context(
+                _node(True),
+                entity_state=state,
+                now=self.fresh,
+                repos=_repos(self.entered_at),
+                entity_last_changed={},
+            )
+        )
+        ok, trace = eval_condition_explain_with_context(
+            _node(True),
+            entity_state=state,
+            now=self.fresh,
+            repos=_repos(self.entered_at),
+            entity_last_changed={},
+        )
+        self.assertFalse(ok)
+        self.assertEqual(trace["reason"], "missing_last_changed")
+
+        self.assertFalse(
+            eval_condition_with_context(
+                _node(True),
+                entity_state=state,
+                now=self.fresh,
+                repos=_repos(None),
+                entity_last_changed={DOOR: self.fresh},
+            )
+        )
+        ok, trace = eval_condition_explain_with_context(
+            _node(True),
+            entity_state=state,
+            now=self.fresh,
+            repos=_repos(None),
+            entity_last_changed={DOOR: self.fresh},
+        )
+        self.assertFalse(ok)
+        self.assertEqual(trace["reason"], "missing_alarm_entered_at")
+
+    def test_ac_6_flag_must_be_boolean_when_present(self):
+        """AC-6: non-boolean flag is rejected; ``true``/``false``/absent are accepted."""
+        bad = dict(_node(None), changed_since_alarm_transition="yes")
+        self.assertEqual(
+            validate_when_node(bad),
+            {"changed_since_alarm_transition": ["must be a boolean"]},
+        )
+        self.assertIsNone(validate_when_node(_node(True)))
+        self.assertIsNone(validate_when_node(_node(False)))
+        self.assertIsNone(validate_when_node(_node(None)))
+
+    def test_ac_7_explain_trace_reports_flag_timestamps_and_ignore_reason(self):
+        """AC-7: trace carries the flag, both timestamps (ISO) and ``changed_before_alarm_transition``."""
+        state = {DOOR: "on"}
+        ok, trace = eval_condition_explain_with_context(
+            _node(True),
+            entity_state=state,
+            now=self.entered_at,
+            repos=_repos(self.entered_at),
+            entity_last_changed={DOOR: self.stale},
+        )
+        self.assertFalse(ok)
+        self.assertIs(trace["changed_since_alarm_transition"], True)
+        self.assertEqual(trace["last_changed"], self.stale.isoformat())
+        self.assertEqual(trace["alarm_entered_at"], self.entered_at.isoformat())
+        self.assertEqual(trace["reason"], "changed_before_alarm_transition")
+        self.assertEqual(trace["actual"], "on")
+
+        ok, trace = eval_condition_explain_with_context(
+            _node(True),
+            entity_state=state,
+            now=self.fresh,
+            repos=_repos(self.entered_at),
+            entity_last_changed={DOOR: self.fresh},
+        )
+        self.assertTrue(ok)
+        self.assertIs(trace["changed_since_alarm_transition"], True)
+        self.assertEqual(trace["last_changed"], self.fresh.isoformat())
+        self.assertNotIn("reason", trace)
+
+        # Unflagged nodes keep today's trace shape untouched.
+        _, plain = eval_condition_explain_with_context(_node(None), entity_state=state)
+        self.assertNotIn("changed_since_alarm_transition", plain)
+
+        # State mismatch: flag + entity timestamp only; no snapshot read, no timestamp `reason`.
+        reads: list[str] = []
+
+        def _counting_entered_at():
+            reads.append("entered_at")
+            return self.entered_at
+
+        counting_repos = SimpleNamespace(
+            get_alarm_state=lambda: "armed_away", get_alarm_state_entered_at=_counting_entered_at
+        )
+        ok, trace = eval_condition_explain_with_context(
+            _node(True),
+            entity_state={DOOR: "off"},
+            now=self.fresh,
+            repos=counting_repos,
+            entity_last_changed={DOOR: self.fresh},
+        )
+        self.assertFalse(ok)
+        self.assertIs(trace["changed_since_alarm_transition"], True)
+        self.assertEqual(trace["last_changed"], self.fresh.isoformat())
+        self.assertNotIn("alarm_entered_at", trace)
+        self.assertNotIn("reason", trace)
+        self.assertEqual(reads, [])
+
+    def test_walker_detects_flag_anywhere_in_the_tree(self):
+        """`when_uses_changed_since_alarm_transition` gates the entity last_changed scan (self-review finding 6)."""
+        nested = {"op": "all", "children": [{"op": "not", "child": {"op": "for", "seconds": 5, "child": _node(True)}}]}
+        self.assertTrue(when_uses_changed_since_alarm_transition(nested))
+        self.assertFalse(
+            when_uses_changed_since_alarm_transition({"op": "all", "children": [_node(None), _node(False)]})
+        )
+        self.assertFalse(when_uses_changed_since_alarm_transition(None))
+
+
+class ChangedSinceAlarmTransitionSerializerTests(SimpleTestCase):
+    def test_serializer_nests_boolean_error_under_definition_when(self):
+        """Self-review finding 4: the rules API surfaces the boolean check at its nested `when` path."""
+        from alarm.serializers.rules import RuleUpsertSerializer
+
+        serializer = RuleUpsertSerializer(
+            data={
+                "name": "bad flag",
+                "definition": {
+                    "when": {
+                        "op": "all",
+                        "children": [
+                            {"op": "alarm_state_in", "states": ["armed_away"]},
+                            dict(_node(None), changed_since_alarm_transition="yes"),
+                        ],
+                    },
+                    "then": [{"type": "alarm_trigger"}],
+                },
+            }
+        )
+        self.assertFalse(serializer.is_valid())
+        child = serializer.errors["definition"]["when"]["children"][1]
+        self.assertEqual([str(e) for e in child["changed_since_alarm_transition"]], ["must be a boolean"])

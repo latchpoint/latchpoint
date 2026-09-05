@@ -16,6 +16,7 @@ from .rules.conditions import (
     eval_condition_with_context,
     extract_for,
     extract_when_entity_ids,
+    when_uses_changed_since_alarm_transition,
 )
 from .rules.repositories import RuleEngineRepositories, default_rule_engine_repositories
 from .rules.runtime_state import cooldown_active
@@ -60,6 +61,28 @@ def _build_trigger_context(
     )
 
 
+def _entity_last_changed_from(repos: Any) -> dict[str, Any]:
+    """Read the ADR-0108 last_changed map; duck-typed repositories (tests) may predate it."""
+    getter = getattr(repos, "entity_last_changed_map", None)
+    return getter() if callable(getter) else {}
+
+
+def _rules_use_changed_since(rules: list[Any]) -> bool:
+    """Only pay for the entity last_changed scan when some rule actually carries the ADR-0108 flag."""
+    for rule in rules:
+        definition = rule.definition or {}
+        when_node = definition.get("when") if isinstance(definition, dict) else None
+        if when_uses_changed_since_alarm_transition(when_node):
+            return True
+    return False
+
+
+def _alarm_entered_at_getter(repos: Any) -> Callable[[], Any]:
+    """Return the repo's `get_alarm_state_entered_at`, or a no-data stand-in for duck-typed repos."""
+    getter = getattr(repos, "get_alarm_state_entered_at", None)
+    return getter if callable(getter) else (lambda: None)
+
+
 @dataclass(frozen=True)
 class RuleRunResult:
     evaluated: int
@@ -102,6 +125,7 @@ def run_rules(
     now = now or timezone.now()
     rules = repos.list_enabled_rules()
     entity_state = repos.entity_state_map()
+    entity_last_changed = _entity_last_changed_from(repos) if _rules_use_changed_since(rules) else {}
     triggering_set = set(triggering_entity_ids or ())
 
     fired = 0
@@ -128,7 +152,9 @@ def run_rules(
             runtime_due = due_map.get(rule.id)
             if runtime_due:
                 # Timer is due — evaluate condition and potentially fire.
-                matched = eval_condition_with_context(child, entity_state=entity_state, now=now, repos=repos)
+                matched = eval_condition_with_context(
+                    child, entity_state=entity_state, now=now, repos=repos, entity_last_changed=entity_last_changed
+                )
                 if not matched:
                     runtime_due.scheduled_for = None
                     runtime_due.became_true_at = None
@@ -188,7 +214,9 @@ def run_rules(
             else:
                 # Timer not yet due — handle scheduling lifecycle.
                 runtime = repos.ensure_runtime(rule)
-                matched = eval_condition_with_context(child, entity_state=entity_state, now=now, repos=repos)
+                matched = eval_condition_with_context(
+                    child, entity_state=entity_state, now=now, repos=repos, entity_last_changed=entity_last_changed
+                )
                 if not matched:
                     if runtime.became_true_at or runtime.scheduled_for:
                         runtime.became_true_at = None
@@ -221,7 +249,9 @@ def run_rules(
             stale_runtime.became_true_at = None
             stale_runtime.save(update_fields=["scheduled_for", "became_true_at", "updated_at"])
 
-        matched = eval_condition_with_context(when_node, entity_state=entity_state, now=now, repos=repos)
+        matched = eval_condition_with_context(
+            when_node, entity_state=entity_state, now=now, repos=repos, entity_last_changed=entity_last_changed
+        )
         if not matched:
             runtime = repos.ensure_runtime(rule)
             if runtime.last_when_matched is not False:
@@ -325,6 +355,8 @@ def simulate_rules(
             frigate_is_available=original.frigate_is_available,
             list_frigate_detections=original.list_frigate_detections,
             get_alarm_state=_get_alarm_state_override,
+            entity_last_changed_map=lambda: _entity_last_changed_from(original),
+            get_alarm_state_entered_at=_alarm_entered_at_getter(original),
         )
     assume_for_seconds = assume_for_seconds if isinstance(assume_for_seconds, int) else None
     if assume_for_seconds is not None and assume_for_seconds < 0:
@@ -333,6 +365,11 @@ def simulate_rules(
     rules = repos.list_enabled_rules()
     db_entities = repos.entity_state_map()
     merged_state: dict[str, str | None] = {**db_entities, **entity_states}
+    # ADR-0108: simulated overrides are fresh changes stamped `now`; DB rows keep their real last_changed.
+    merged_last_changed: dict[str, Any] = {
+        **(_entity_last_changed_from(repos) if _rules_use_changed_since(rules) else {}),
+        **dict.fromkeys(entity_states, now),
+    }
 
     matched: list[dict[str, Any]] = []
     not_matched: list[dict[str, Any]] = []
@@ -363,7 +400,7 @@ def simulate_rules(
 
         if seconds:
             ok_child, trace = eval_condition_explain_with_context(
-                child, entity_state=merged_state, now=now, repos=repos
+                child, entity_state=merged_state, now=now, repos=repos, entity_last_changed=merged_last_changed
             )
             if not ok_child:
                 not_matched.append(
@@ -413,7 +450,9 @@ def simulate_rules(
                 stopped_groups[rule.stop_group] = rule.id
             continue
 
-        ok, trace = eval_condition_explain_with_context(when_node, entity_state=merged_state, now=now, repos=repos)
+        ok, trace = eval_condition_explain_with_context(
+            when_node, entity_state=merged_state, now=now, repos=repos, entity_last_changed=merged_last_changed
+        )
         payload = {
             "id": rule.id,
             "name": rule.name,

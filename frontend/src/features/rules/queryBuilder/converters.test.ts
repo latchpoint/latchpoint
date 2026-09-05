@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { RuleGroupType, RuleType } from 'react-querybuilder'
 import type { WhenNode } from '@/types/ruleDefinition'
 import { alarmDslToRqbWithFor, rqbToAlarmDsl } from './converters'
+import type { EntityStateValue } from './types'
 
 describe('converters', () => {
   it('imports', async () => {
@@ -176,5 +177,47 @@ describe('converters', () => {
     const rule = roundTrip.query.rules[0] as RuleType
     expect(rule.value.tz).toBe('America/New_York')
     expect(rule.value.days).toEqual(['mon', 'tue'])
+  })
+
+  it('AC-10: round-trips changed_since_alarm_transition and omits it when unset or false', () => {
+    const when: WhenNode = {
+      op: 'all',
+      children: [
+        {
+          op: 'entity_state',
+          entity_id: 'binary_sensor.side_fence_door_sensor_door',
+          equals: 'on',
+          source: 'home_assistant',
+          changed_since_alarm_transition: true,
+        },
+      ],
+    }
+    const rqb = alarmDslToRqbWithFor(when)
+    const rule = rqb.query.rules[0] as RuleType
+    expect((rule.value as EntityStateValue).changedSinceAlarmTransition).toBe(true)
+    expect(JSON.stringify(rqbToAlarmDsl(rqb.query))).toContain('"changed_since_alarm_transition":true')
+
+    // API client camel-cases stored definitions on read; support that shape too.
+    const camel = alarmDslToRqbWithFor({
+      op: 'all',
+      children: [
+        { op: 'entity_state', entityId: 'binary_sensor.x', equals: 'on', changedSinceAlarmTransition: true },
+      ],
+    } as unknown as WhenNode)
+    expect(((camel.query.rules[0] as RuleType).value as EntityStateValue).changedSinceAlarmTransition).toBe(true)
+
+    const build = (value: EntityStateValue): RuleGroupType => ({
+      id: 'g1',
+      combinator: 'and',
+      rules: [{ id: 'r1', field: 'entity_state_ha', operator: '=', value }],
+    })
+    expect(JSON.stringify(rqbToAlarmDsl(build({ entityId: 'binary_sensor.x', equals: 'on' })))).not.toContain(
+      'changed_since_alarm_transition'
+    )
+    expect(
+      JSON.stringify(
+        rqbToAlarmDsl(build({ entityId: 'binary_sensor.x', equals: 'on', changedSinceAlarmTransition: false }))
+      )
+    ).not.toContain('changed_since_alarm_transition')
   })
 })

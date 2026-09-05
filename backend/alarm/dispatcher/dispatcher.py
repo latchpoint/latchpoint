@@ -253,7 +253,9 @@ class RuleDispatcher:
 
             # Snapshot only the entity states required to evaluate the impacted rules.
             snapshot_started = perf_counter()
-            entity_state_map = self._get_entity_state_map_for_rules(rules=rules, changed_entity_ids=batch.entity_ids)
+            entity_state_map, entity_last_changed_map = self._get_entity_maps_for_rules(
+                rules=rules, changed_entity_ids=batch.entity_ids
+            )
             snapshot_ms = (perf_counter() - snapshot_started) * 1000.0
             self._stats.record_entity_state_snapshot(size=len(entity_state_map), query_ms=snapshot_ms)
 
@@ -263,7 +265,9 @@ class RuleDispatcher:
                     logger.debug("Rule %s skipped: stop_group %s stopped", rule.id, rule.stop_group)
                     self._stats.record_stopped()
                     continue
-                did_stop = self._evaluate_rule_with_lock(rule, entity_state_map, batch)
+                did_stop = self._evaluate_rule_with_lock(
+                    rule, entity_state_map, batch, entity_last_changed_map=entity_last_changed_map
+                )
                 if did_stop and rule.stop_group:
                     stopped_groups.add(rule.stop_group)
 
@@ -395,17 +399,18 @@ class RuleDispatcher:
 
         return dict(Entity.objects.values_list("entity_id", "last_state"))
 
-    def _get_entity_state_map_for_rules(
+    def _get_entity_maps_for_rules(
         self,
         *,
         rules: list[Rule],
         changed_entity_ids: set[str],
-    ) -> dict[str, str | None]:
+    ) -> tuple[dict[str, str | None], dict[str, datetime | None]]:
         """
-        Build an entity-state snapshot for evaluating the given rules.
+        Build entity-state and entity-last_changed snapshots for evaluating the given rules.
 
         Optimization (ADR 0061): fetch only the entity IDs required by impacted rules,
-        rather than loading the full Entity table on every batch.
+        rather than loading the full Entity table on every batch. ADR-0108 reads
+        ``last_changed`` from the same query so the hot path gains no extra round-trip.
         """
         from alarm.models import Entity, RuleEntityRef
 
@@ -431,16 +436,25 @@ class RuleDispatcher:
                 continue
 
         if not required:
-            return {}
+            return {}, {}
 
-        qs = Entity.objects.filter(entity_id__in=sorted(required)).values_list("entity_id", "last_state")
-        return dict(qs)
+        rows = Entity.objects.filter(entity_id__in=sorted(required)).values_list(
+            "entity_id", "last_state", "last_changed"
+        )
+        state_map: dict[str, str | None] = {}
+        last_changed_map: dict[str, datetime | None] = {}
+        for entity_id, last_state, last_changed in rows:
+            state_map[entity_id] = last_state
+            last_changed_map[entity_id] = last_changed
+        return state_map, last_changed_map
 
     def _evaluate_rule_with_lock(
         self,
         rule: Rule,
         entity_state_map: dict[str, str | None],
         batch: EntityChangeBatch,
+        *,
+        entity_last_changed_map: dict[str, datetime | None],
     ) -> bool:
         """
         Evaluate a single rule with per-rule locking.
@@ -509,6 +523,8 @@ class RuleDispatcher:
                 frigate_is_available=base_repos.frigate_is_available,
                 list_frigate_detections=base_repos.list_frigate_detections,
                 get_alarm_state=base_repos.get_alarm_state,
+                entity_last_changed_map=lambda: entity_last_changed_map,
+                get_alarm_state_entered_at=base_repos.get_alarm_state_entered_at,
             )
 
             # Run evaluation. Forward the batch's entity_ids so ADR-0088
