@@ -15,6 +15,7 @@ from django.utils import timezone
 from alarm.rules.conditions import (
     eval_condition_explain_with_context,
     eval_condition_with_context,
+    validate_when_node,
 )
 
 DOOR = "binary_sensor.side_fence_door_sensor_door"
@@ -128,3 +129,14 @@ class ChangedSinceAlarmTransitionConditionTests(SimpleTestCase):
         )
         self.assertFalse(ok)
         self.assertEqual(trace["reason"], "missing_alarm_entered_at")
+
+    def test_ac_6_flag_must_be_boolean_when_present(self):
+        """AC-6: non-boolean flag is rejected; ``true``/``false``/absent are accepted."""
+        bad = dict(_node(None), changed_since_alarm_transition="yes")
+        self.assertEqual(
+            validate_when_node(bad),
+            {"changed_since_alarm_transition": ["must be a boolean"]},
+        )
+        self.assertIsNone(validate_when_node(_node(True)))
+        self.assertIsNone(validate_when_node(_node(False)))
+        self.assertIsNone(validate_when_node(_node(None)))
