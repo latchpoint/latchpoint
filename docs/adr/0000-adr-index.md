@@ -122,6 +122,7 @@ This document tracks all Architecture Decision Records (ADRs) and their implemen
 | [0105](0105-adopt-homeassistant-api-as-ha-transport.md) | Adopt `homeassistant-api` as the Home Assistant Transport | **Proposed** |
 | [0106](0106-remaining-dependency-upgrade-sequencing.md) | Sequencing the Remaining Held-Back Dependency Upgrades | **Proposed** |
 | [0107](0107-react-router-v8-adoption.md) | Adopting React Router v8 and Retiring `react-router-dom` | **Proposed** |
+| [0108](0108-entity-state-changed-since-alarm-transition.md) | Per-Condition "Changed Since Alarm Transition" Flag for `entity_state` Rule Conditions | **Proposed** |
 
 ---
 
@@ -132,12 +133,12 @@ This document tracks all Architecture Decision Records (ADRs) and their implemen
 | **Implemented** | 69 |
 | **Partially Implemented** | 0 |
 | **Accepted** | 3 |
-| **Proposed** | 14 |
+| **Proposed** | 15 |
 | **Superseded** | 17 |
-| **Total** | 103 |
+| **Total** | 104 |
 
 Note: **Superseded** includes entries marked as "Superseded by …" in the table above.
 
 ---
 
-*Last updated: 2026-07-26* (added ADR 0107)
+*Last updated: 2026-09-04* (added ADR 0108)
