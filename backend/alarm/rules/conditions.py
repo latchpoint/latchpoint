@@ -537,6 +537,7 @@ def eval_condition_explain_with_context(
     entity_state: dict[str, str | None],
     now=None,
     repos: Any = None,
+    entity_last_changed: dict[str, Any] | None = None,
 ) -> tuple[bool, dict[str, Any]]:
     """Evaluate and return (ok, trace), including diagnostics for repository-backed operators."""
     op = _get_op(node)
@@ -554,7 +555,7 @@ def eval_condition_explain_with_context(
             ok_all = True
             for child in children:
                 ok_child, trace = eval_condition_explain_with_context(
-                    child, entity_state=entity_state, now=now, repos=repos
+                    child, entity_state=entity_state, now=now, repos=repos, entity_last_changed=entity_last_changed
                 )
                 explained.append(trace)
                 if not ok_child:
@@ -563,7 +564,7 @@ def eval_condition_explain_with_context(
         ok_any = False
         for child in children:
             ok_child, trace = eval_condition_explain_with_context(
-                child, entity_state=entity_state, now=now, repos=repos
+                child, entity_state=entity_state, now=now, repos=repos, entity_last_changed=entity_last_changed
             )
             explained.append(trace)
             if ok_child:
@@ -574,7 +575,7 @@ def eval_condition_explain_with_context(
         if not _is_mapping(node):
             return False, {"op": "not", "ok": False, "reason": "invalid_node"}
         ok_child, trace = eval_condition_explain_with_context(
-            node.get("child"), entity_state=entity_state, now=now, repos=repos
+            node.get("child"), entity_state=entity_state, now=now, repos=repos, entity_last_changed=entity_last_changed
         )
         return (not ok_child), {"op": "not", "ok": (not ok_child), "child": trace}
 
@@ -645,13 +646,22 @@ def eval_condition_explain_with_context(
             return False, {"op": "entity_state", "ok": False, "reason": "missing_fields"}
         current = entity_state.get(entity_id)
         ok = current == equals
-        return ok, {
+        trace = {
             "op": "entity_state",
             "ok": ok,
             "entity_id": entity_id,
             "expected": equals,
             "actual": current,
         }
+        if node.get("changed_since_alarm_transition") is True:
+            trace["changed_since_alarm_transition"] = True
+            if ok:
+                ok, details = _changed_since_alarm_transition(
+                    entity_id, entity_last_changed=entity_last_changed, repos=repos
+                )
+                trace.update(details)
+                trace["ok"] = ok
+        return ok, trace
 
     if op == "alarm_state_in":
         if not _is_mapping(node):
