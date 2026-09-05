@@ -140,3 +140,36 @@ class ChangedSinceAlarmTransitionConditionTests(SimpleTestCase):
         self.assertIsNone(validate_when_node(_node(True)))
         self.assertIsNone(validate_when_node(_node(False)))
         self.assertIsNone(validate_when_node(_node(None)))
+
+    def test_ac_7_explain_trace_reports_flag_timestamps_and_ignore_reason(self):
+        """AC-7: trace carries the flag, both timestamps (ISO) and ``changed_before_alarm_transition``."""
+        state = {DOOR: "on"}
+        ok, trace = eval_condition_explain_with_context(
+            _node(True),
+            entity_state=state,
+            now=self.entered_at,
+            repos=_repos(self.entered_at),
+            entity_last_changed={DOOR: self.stale},
+        )
+        self.assertFalse(ok)
+        self.assertIs(trace["changed_since_alarm_transition"], True)
+        self.assertEqual(trace["last_changed"], self.stale.isoformat())
+        self.assertEqual(trace["alarm_entered_at"], self.entered_at.isoformat())
+        self.assertEqual(trace["reason"], "changed_before_alarm_transition")
+        self.assertEqual(trace["actual"], "on")
+
+        ok, trace = eval_condition_explain_with_context(
+            _node(True),
+            entity_state=state,
+            now=self.fresh,
+            repos=_repos(self.entered_at),
+            entity_last_changed={DOOR: self.fresh},
+        )
+        self.assertTrue(ok)
+        self.assertIs(trace["changed_since_alarm_transition"], True)
+        self.assertEqual(trace["last_changed"], self.fresh.isoformat())
+        self.assertNotIn("reason", trace)
+
+        # Unflagged nodes keep today's trace shape untouched.
+        _, plain = eval_condition_explain_with_context(_node(None), entity_state=state)
+        self.assertNotIn("changed_since_alarm_transition", plain)
