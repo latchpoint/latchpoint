@@ -109,3 +109,26 @@ class ChangedSinceAlarmTransitionRunRulesTests(TestCase):
         self._set(door_a, "on", self.entered_at + timedelta(minutes=4))
         self.assertEqual(self._run(t + timedelta(minutes=4)).fired, 1, "door A re-opened after arm fires")
         self.assertEqual(len(self.executed), 2)
+
+    def test_ac_5_unflagged_level_condition_in_same_rule_is_unaffected(self):
+        """AC-5: a stale, unflagged ``input_boolean`` stays level; only the flagged door is edge-gated."""
+        guest = self._entity(GUEST, "on", self.stale)
+        door_a = self._entity(DOOR_A, "on", self.stale)
+        self._rule(
+            {
+                "op": "all",
+                "children": [
+                    _armed_away(),
+                    {"op": "entity_state", "entity_id": GUEST, "equals": "on", "source": "home_assistant"},
+                    _door(DOOR_A),
+                ],
+            }
+        )
+        t = self.entered_at + timedelta(seconds=1)
+        self.assertEqual(self._run(t).fired, 0, "stale flagged door blocks the rule")
+
+        self._set(door_a, "off", self.entered_at + timedelta(minutes=1))
+        self._run(t + timedelta(minutes=1))
+        self._set(door_a, "on", self.entered_at + timedelta(minutes=2))
+        self.assertEqual(self._run(t + timedelta(minutes=2)).fired, 1, "stale unflagged guest_mode still counts")
+        self.assertEqual(Entity.objects.get(pk=guest.pk).last_changed, self.stale)
