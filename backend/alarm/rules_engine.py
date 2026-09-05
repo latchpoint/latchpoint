@@ -332,6 +332,8 @@ def simulate_rules(
             frigate_is_available=original.frigate_is_available,
             list_frigate_detections=original.list_frigate_detections,
             get_alarm_state=_get_alarm_state_override,
+            entity_last_changed_map=original.entity_last_changed_map,
+            get_alarm_state_entered_at=original.get_alarm_state_entered_at,
         )
     assume_for_seconds = assume_for_seconds if isinstance(assume_for_seconds, int) else None
     if assume_for_seconds is not None and assume_for_seconds < 0:
@@ -340,6 +342,11 @@ def simulate_rules(
     rules = repos.list_enabled_rules()
     db_entities = repos.entity_state_map()
     merged_state: dict[str, str | None] = {**db_entities, **entity_states}
+    # ADR-0108: simulated overrides are fresh changes stamped `now`; DB rows keep their real last_changed.
+    merged_last_changed: dict[str, Any] = {
+        **repos.entity_last_changed_map(),
+        **dict.fromkeys(entity_states, now),
+    }
 
     matched: list[dict[str, Any]] = []
     not_matched: list[dict[str, Any]] = []
@@ -370,7 +377,7 @@ def simulate_rules(
 
         if seconds:
             ok_child, trace = eval_condition_explain_with_context(
-                child, entity_state=merged_state, now=now, repos=repos
+                child, entity_state=merged_state, now=now, repos=repos, entity_last_changed=merged_last_changed
             )
             if not ok_child:
                 not_matched.append(
@@ -420,7 +427,9 @@ def simulate_rules(
                 stopped_groups[rule.stop_group] = rule.id
             continue
 
-        ok, trace = eval_condition_explain_with_context(when_node, entity_state=merged_state, now=now, repos=repos)
+        ok, trace = eval_condition_explain_with_context(
+            when_node, entity_state=merged_state, now=now, repos=repos, entity_last_changed=merged_last_changed
+        )
         payload = {
             "id": rule.id,
             "name": rule.name,
