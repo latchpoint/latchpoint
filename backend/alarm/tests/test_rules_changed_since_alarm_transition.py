@@ -63,3 +63,25 @@ class ChangedSinceAlarmTransitionConditionTests(SimpleTestCase):
                 entity_last_changed=changed,
             )
         )
+
+    def test_ac_2_fresh_change_is_true_and_equal_timestamp_is_false(self):
+        """AC-2: ``last_changed > entered_at`` matches; ``last_changed == entered_at`` does not (strict)."""
+        state = {DOOR: "on"}
+        self.assertTrue(
+            eval_condition_with_context(
+                _node(True),
+                entity_state=state,
+                now=self.fresh,
+                repos=_repos(self.entered_at),
+                entity_last_changed={DOOR: self.fresh},
+            )
+        )
+        self.assertFalse(
+            eval_condition_with_context(
+                _node(True),
+                entity_state=state,
+                now=self.entered_at,
+                repos=_repos(self.entered_at),
+                entity_last_changed={DOOR: self.entered_at},
+            )
+        )
