@@ -13,6 +13,7 @@ from django.test import SimpleTestCase
 from django.utils import timezone
 
 from alarm.rules.conditions import (
+    eval_condition_explain_with_context,
     eval_condition_with_context,
 )
 
@@ -85,3 +86,45 @@ class ChangedSinceAlarmTransitionConditionTests(SimpleTestCase):
                 entity_last_changed={DOOR: self.entered_at},
             )
         )
+
+    def test_ac_3_missing_timestamps_are_false_with_trace_reason(self):
+        """AC-3: no ``last_changed`` or no ``entered_at`` → false, and the trace names which one."""
+        state = {DOOR: "on"}
+
+        self.assertFalse(
+            eval_condition_with_context(
+                _node(True),
+                entity_state=state,
+                now=self.fresh,
+                repos=_repos(self.entered_at),
+                entity_last_changed={},
+            )
+        )
+        ok, trace = eval_condition_explain_with_context(
+            _node(True),
+            entity_state=state,
+            now=self.fresh,
+            repos=_repos(self.entered_at),
+            entity_last_changed={},
+        )
+        self.assertFalse(ok)
+        self.assertEqual(trace["reason"], "missing_last_changed")
+
+        self.assertFalse(
+            eval_condition_with_context(
+                _node(True),
+                entity_state=state,
+                now=self.fresh,
+                repos=_repos(None),
+                entity_last_changed={DOOR: self.fresh},
+            )
+        )
+        ok, trace = eval_condition_explain_with_context(
+            _node(True),
+            entity_state=state,
+            now=self.fresh,
+            repos=_repos(None),
+            entity_last_changed={DOOR: self.fresh},
+        )
+        self.assertFalse(ok)
+        self.assertEqual(trace["reason"], "missing_alarm_entered_at")
