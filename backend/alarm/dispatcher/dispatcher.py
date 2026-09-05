@@ -453,7 +453,8 @@ class RuleDispatcher:
         rule: Rule,
         entity_state_map: dict[str, str | None],
         batch: EntityChangeBatch,
-        entity_last_changed_map: dict[str, datetime | None] | None = None,
+        *,
+        entity_last_changed_map: dict[str, datetime | None],
     ) -> bool:
         """
         Evaluate a single rule with per-rule locking.
@@ -522,7 +523,7 @@ class RuleDispatcher:
                 frigate_is_available=base_repos.frigate_is_available,
                 list_frigate_detections=base_repos.list_frigate_detections,
                 get_alarm_state=base_repos.get_alarm_state,
-                entity_last_changed_map=lambda: entity_last_changed_map or {},
+                entity_last_changed_map=lambda: entity_last_changed_map,
                 get_alarm_state_entered_at=base_repos.get_alarm_state_entered_at,
             )
 
