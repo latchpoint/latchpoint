@@ -122,4 +122,37 @@ describe('EntityStateValueEditor', () => {
       'stopped',
     ])
   })
+
+  it('AC-11: toggling "Only after alarm state change" reports changedSinceAlarmTransition and keeps entity/equals', () => {
+    const handleOnChange = vi.fn()
+    const entities = [makeEntityOption('binary_sensor.front_door', 'binary_sensor')]
+    const { getByLabelText } = renderEditor({
+      value: { entityId: 'binary_sensor.front_door', equals: 'on' },
+      entities,
+      handleOnChange,
+    })
+    const box = getByLabelText('Only after alarm state change') as HTMLInputElement
+    expect(box.checked).toBe(false)
+    fireEvent.click(box)
+    expect(handleOnChange).toHaveBeenCalledWith({
+      entityId: 'binary_sensor.front_door',
+      equals: 'on',
+      changedSinceAlarmTransition: true,
+    })
+
+    const onChangeAgain = vi.fn()
+    const second = renderEditor({
+      value: { entityId: 'binary_sensor.front_door', equals: 'on', changedSinceAlarmTransition: true },
+      entities,
+      handleOnChange: onChangeAgain,
+    })
+    const checked = second.getByLabelText('Only after alarm state change') as HTMLInputElement
+    expect(checked.checked).toBe(true)
+    fireEvent.click(checked)
+    expect(onChangeAgain).toHaveBeenCalledWith({
+      entityId: 'binary_sensor.front_door',
+      equals: 'on',
+      changedSinceAlarmTransition: false,
+    })
+  })
 })
