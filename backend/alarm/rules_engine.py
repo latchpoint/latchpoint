@@ -60,6 +60,12 @@ def _build_trigger_context(
     )
 
 
+def _entity_last_changed_from(repos: Any) -> dict[str, Any]:
+    """Read the ADR-0108 last_changed map; duck-typed repositories (tests) may predate it."""
+    getter = getattr(repos, "entity_last_changed_map", None)
+    return getter() if callable(getter) else {}
+
+
 @dataclass(frozen=True)
 class RuleRunResult:
     evaluated: int
@@ -102,7 +108,7 @@ def run_rules(
     now = now or timezone.now()
     rules = repos.list_enabled_rules()
     entity_state = repos.entity_state_map()
-    entity_last_changed = repos.entity_last_changed_map()
+    entity_last_changed = _entity_last_changed_from(repos)
     triggering_set = set(triggering_entity_ids or ())
 
     fired = 0
@@ -344,7 +350,7 @@ def simulate_rules(
     merged_state: dict[str, str | None] = {**db_entities, **entity_states}
     # ADR-0108: simulated overrides are fresh changes stamped `now`; DB rows keep their real last_changed.
     merged_last_changed: dict[str, Any] = {
-        **repos.entity_last_changed_map(),
+        **_entity_last_changed_from(repos),
         **dict.fromkeys(entity_states, now),
     }
 
