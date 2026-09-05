@@ -48,6 +48,8 @@ export interface AlarmStateValue {
 export interface EntityStateValue {
   entityId: string
   equals: string
+  /** ADR-0108: mirrors `changed_since_alarm_transition` on the DSL node. */
+  changedSinceAlarmTransition?: boolean
 }
 
 export interface FrigatePersonValue {

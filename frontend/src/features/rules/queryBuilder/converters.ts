@@ -183,12 +183,15 @@ function conditionNodeToRqbRule(node: ConditionNode | LogicalNode, entities?: En
     const esNode = node as EntityStateNode & {
       // API client camel-cases response keys; support both shapes on read.
       entityId?: string
+      changedSinceAlarmTransition?: boolean
     }
     const entityId = (esNode.entity_id || esNode.entityId || '').trim()
     const equals = (esNode.equals || '').trim()
+    const changedSince = esNode.changed_since_alarm_transition ?? esNode.changedSinceAlarmTransition
     const value: EntityStateValue = {
       entityId,
       equals,
+      ...(changedSince === true ? { changedSinceAlarmTransition: true } : {}),
     }
     // Prefer explicitly saved rule source (preserves UI dropdown selection),
     // otherwise fall back to entity registry lookup.
@@ -346,6 +349,10 @@ function rqbRuleToConditionNode(rule: RuleType): ConditionNode | null {
       entity_id: esValue.entityId.trim(),
       equals: esValue.equals?.trim() || 'on',
       source: fieldNameToSource(field) as EntityStateNode['source'],
+    }
+    // ADR-0108: emit the key only when set so existing rule JSON stays byte-identical.
+    if (esValue.changedSinceAlarmTransition === true) {
+      baseNode.changed_since_alarm_transition = true
     }
 
     if (isNegated) {
