@@ -16,6 +16,13 @@ interface EntityStateValueEditorProps extends ValueEditorProps {
   sourceFilter?: EntitySource
 }
 
+// ADR-0108 (revision): only Home Assistant keeps a change-only `last_changed`
+// (Zigbee2MQTT stamps it on every report, Z-Wave JS live updates never write
+// it), so the option is offered for HA entities only.
+function supportsChangedSince(sourceFilter: EntitySource, entitySource: string | undefined): boolean {
+  return sourceFilter === 'home_assistant' || (sourceFilter === 'all' && entitySource === 'home_assistant')
+}
+
 export function EntityStateValueEditor({
   value,
   handleOnChange,
@@ -31,15 +38,19 @@ export function EntityStateValueEditor({
   const changedSinceId = useId()
   const suggestions = getSuggestionsForDomain(selectedEntity?.domain)
 
-  // ADR-0108 (revision): only Home Assistant keeps a change-only `last_changed`
-  // (Zigbee2MQTT stamps it on every report, Z-Wave JS live updates never write
-  // it), so the option is offered for HA entities only.
-  const supportsChangedSince =
-    sourceFilter === 'home_assistant' ||
-    (sourceFilter === 'all' && selectedEntity?.source === 'home_assistant')
+  // A flag already stored on a non-HA entity (picker switched, field changed, or a
+  // rule authored via the API) must stay visible so it can be cleared.
+  const showChangedSince =
+    supportsChangedSince(sourceFilter, selectedEntity?.source) || currentValue.changedSinceAlarmTransition === true
 
   const handleEntityChange = (entityId: string) => {
-    handleOnChange({ ...currentValue, entityId } as EntityStateValue)
+    const next: EntityStateValue = { ...currentValue, entityId }
+    // ADR-0108: the flag only means something for HA entities; drop it when switching away.
+    const nextSource = entities.find((e) => e.entityId === entityId)?.source
+    if (!supportsChangedSince(sourceFilter, nextSource)) {
+      delete next.changedSinceAlarmTransition
+    }
+    handleOnChange(next)
   }
 
   const handleEqualsChange = (equals: string) => {
@@ -77,7 +88,7 @@ export function EntityStateValueEditor({
         className="h-8 w-44"
       />
 
-      {supportsChangedSince && (
+      {showChangedSince && (
         <>
           <label
             htmlFor={changedSinceId}

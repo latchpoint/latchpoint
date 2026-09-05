@@ -186,4 +186,39 @@ describe('EntityStateValueEditor', () => {
     const unresolved = renderEditor({ value: { entityId: '', equals: 'on' }, entities: [] })
     expect(within(unresolved.container).queryByLabelText(label)).toBeNull()
   })
+
+  it('drops the flag when the picker switches to a non-HA entity, and keeps a stored flag visible', () => {
+    const label = 'Only after alarm state change'
+    const entities: EntityOption[] = [
+      makeEntityOption('binary_sensor.front_door', 'binary_sensor'),
+      { entityId: 'zwavejs.node_5_door', name: 'Z-Wave door', domain: 'binary_sensor', source: 'zwavejs' },
+    ]
+    const handleOnChange = vi.fn()
+    const { container } = renderEditor({
+      value: { entityId: 'binary_sensor.front_door', equals: 'on', changedSinceAlarmTransition: true },
+      entities,
+      handleOnChange,
+    })
+    const trigger = container.querySelector<HTMLButtonElement>('button[aria-haspopup="listbox"]')
+    if (!trigger) throw new Error('entity picker trigger not found')
+    fireEvent.click(trigger)
+    fireEvent.click(within(container).getByRole('option', { name: /zwavejs\.node_5_door/ }))
+    expect(handleOnChange).toHaveBeenCalledWith({ entityId: 'zwavejs.node_5_door', equals: 'on' })
+
+    // A flag already stored on a non-HA entity stays visible and can be cleared.
+    const onClear = vi.fn()
+    const stored = renderEditor({
+      value: { entityId: 'zwavejs.node_5_door', equals: 'on', changedSinceAlarmTransition: true },
+      entities,
+      handleOnChange: onClear,
+    })
+    const box = within(stored.container).getByLabelText(label) as HTMLInputElement
+    expect(box.checked).toBe(true)
+    fireEvent.click(box)
+    expect(onClear).toHaveBeenCalledWith({
+      entityId: 'zwavejs.node_5_door',
+      equals: 'on',
+      changedSinceAlarmTransition: false,
+    })
+  })
 })
