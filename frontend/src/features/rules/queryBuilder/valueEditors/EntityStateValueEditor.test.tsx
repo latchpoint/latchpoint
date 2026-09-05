@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, within } from '@testing-library/react'
 
 import { EntityStateValueEditor } from './EntityStateValueEditor'
-import type { EntityOption, EntityStateValue, ValueEditorContext } from '../types'
+import type { EntityOption, EntitySource, EntityStateValue, ValueEditorContext } from '../types'
 
 function makeEntityOption(entityId: string, domain: string): EntityOption {
   return { entityId, name: entityId, domain, source: 'home_assistant' }
@@ -13,10 +13,12 @@ function renderEditor({
   value,
   entities,
   handleOnChange = () => {},
+  sourceFilter,
 }: {
   value: EntityStateValue
   entities: EntityOption[]
   handleOnChange?: (v: EntityStateValue) => void
+  sourceFilter?: EntitySource
 }) {
   const context: ValueEditorContext = { entities }
   // EntityStateValueEditor extends react-querybuilder's ValueEditorProps but
@@ -27,6 +29,7 @@ function renderEditor({
     handleOnChange,
     disabled: false,
     context,
+    ...(sourceFilter ? { sourceFilter } : {}),
   } as unknown as ComponentProps<typeof EntityStateValueEditor>
   return render(<EntityStateValueEditor {...props} />)
 }
@@ -155,5 +158,32 @@ describe('EntityStateValueEditor', () => {
       equals: 'on',
       changedSinceAlarmTransition: false,
     })
+  })
+
+  it('offers "Only after alarm state change" for Home Assistant entities only', () => {
+    const label = 'Only after alarm state change'
+    const ha = renderEditor({
+      value: { entityId: '', equals: 'on' },
+      entities: [],
+      sourceFilter: 'home_assistant',
+    })
+    expect(within(ha.container).queryByLabelText(label)).not.toBeNull()
+    expect(within(ha.container).getByLabelText("About 'Only after alarm state change'")).toBeTruthy()
+
+    const zwave = renderEditor({
+      value: { entityId: 'zwavejs.node_5_door', equals: 'on' },
+      entities: [{ entityId: 'zwavejs.node_5_door', name: 'Door', domain: 'binary_sensor', source: 'zwavejs' }],
+    })
+    expect(within(zwave.container).queryByLabelText(label)).toBeNull()
+
+    const z2m = renderEditor({
+      value: { entityId: 'z2m_binary_sensor.abc_contact', equals: 'on' },
+      entities: [],
+      sourceFilter: 'zigbee2mqtt',
+    })
+    expect(within(z2m.container).queryByLabelText(label)).toBeNull()
+
+    const unresolved = renderEditor({ value: { entityId: '', equals: 'on' }, entities: [] })
+    expect(within(unresolved.container).queryByLabelText(label)).toBeNull()
   })
 })

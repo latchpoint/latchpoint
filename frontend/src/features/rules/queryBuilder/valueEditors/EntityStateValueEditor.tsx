@@ -31,6 +31,13 @@ export function EntityStateValueEditor({
   const changedSinceId = useId()
   const suggestions = getSuggestionsForDomain(selectedEntity?.domain)
 
+  // ADR-0108 (revision): only Home Assistant keeps a change-only `last_changed`
+  // (Zigbee2MQTT stamps it on every report, Z-Wave JS live updates never write
+  // it), so the option is offered for HA entities only.
+  const supportsChangedSince =
+    sourceFilter === 'home_assistant' ||
+    (sourceFilter === 'all' && selectedEntity?.source === 'home_assistant')
+
   const handleEntityChange = (entityId: string) => {
     handleOnChange({ ...currentValue, entityId } as EntityStateValue)
   }
@@ -70,22 +77,33 @@ export function EntityStateValueEditor({
         className="h-8 w-44"
       />
 
-      <label
-        htmlFor={changedSinceId}
-        className="flex items-center gap-1.5 whitespace-nowrap text-sm text-muted-foreground"
-      >
-        <Checkbox
-          id={changedSinceId}
-          checked={currentValue.changedSinceAlarmTransition === true}
-          onChange={(e) => handleChangedSinceChange(e.target.checked)}
-          disabled={disabled}
-        />
-        Only after alarm state change
-      </label>
-      <HelpTip
-        label="About 'Only after alarm state change'"
-        content="Ignore this sensor if it was already in this state when the alarm entered its current state (for example a door left open before arming). It counts again the next time it changes into this state."
-      />
+      {supportsChangedSince && (
+        <>
+          <label
+            htmlFor={changedSinceId}
+            className="flex items-center gap-1.5 whitespace-nowrap text-sm text-muted-foreground"
+          >
+            <Checkbox
+              id={changedSinceId}
+              checked={currentValue.changedSinceAlarmTransition === true}
+              onChange={(e) => handleChangedSinceChange(e.target.checked)}
+              disabled={disabled}
+            />
+            Only after alarm state change
+          </label>
+          <HelpTip
+            label="About 'Only after alarm state change'"
+            content={
+              <span className="block max-w-xs">
+                When ticked, this condition ignores a sensor that was already in this state when the alarm
+                entered its current state (for example a door left open before arming), so arming does not
+                trigger immediately. The sensor counts again the next time it changes into this state.
+                Available for Home Assistant entities only.
+              </span>
+            }
+          />
+        </>
+      )}
     </div>
   )
 }
