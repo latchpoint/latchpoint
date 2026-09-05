@@ -173,3 +173,17 @@ class ChangedSinceAlarmTransitionConditionTests(SimpleTestCase):
         # Unflagged nodes keep today's trace shape untouched.
         _, plain = eval_condition_explain_with_context(_node(None), entity_state=state)
         self.assertNotIn("changed_since_alarm_transition", plain)
+
+        # State mismatch: same key set (flag + timestamps), no timestamp `reason`, ok stays False.
+        ok, trace = eval_condition_explain_with_context(
+            _node(True),
+            entity_state={DOOR: "off"},
+            now=self.fresh,
+            repos=_repos(self.entered_at),
+            entity_last_changed={DOOR: self.fresh},
+        )
+        self.assertFalse(ok)
+        self.assertIs(trace["changed_since_alarm_transition"], True)
+        self.assertEqual(trace["last_changed"], self.fresh.isoformat())
+        self.assertEqual(trace["alarm_entered_at"], self.entered_at.isoformat())
+        self.assertNotIn("reason", trace)

@@ -657,13 +657,17 @@ def eval_condition_explain_with_context(
             "actual": current,
         }
         if node.get("changed_since_alarm_transition") is True:
-            trace["changed_since_alarm_transition"] = True
+            changed_ok, details = _changed_since_alarm_transition(
+                entity_id, entity_last_changed=entity_last_changed, repos=repos
+            )
             if ok:
-                ok, details = _changed_since_alarm_transition(
-                    entity_id, entity_last_changed=entity_last_changed, repos=repos
-                )
+                ok = changed_ok
                 trace.update(details)
                 trace["ok"] = ok
+            else:
+                # The state mismatch already decides `ok`; still surface the timestamps so the
+                # rules test page shows the same key set for every flagged node.
+                trace.update({k: v for k, v in details.items() if k != "reason"})
         return ok, trace
 
     if op == "alarm_state_in":
