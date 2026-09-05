@@ -102,6 +102,7 @@ def run_rules(
     now = now or timezone.now()
     rules = repos.list_enabled_rules()
     entity_state = repos.entity_state_map()
+    entity_last_changed = repos.entity_last_changed_map()
     triggering_set = set(triggering_entity_ids or ())
 
     fired = 0
@@ -128,7 +129,9 @@ def run_rules(
             runtime_due = due_map.get(rule.id)
             if runtime_due:
                 # Timer is due — evaluate condition and potentially fire.
-                matched = eval_condition_with_context(child, entity_state=entity_state, now=now, repos=repos)
+                matched = eval_condition_with_context(
+                    child, entity_state=entity_state, now=now, repos=repos, entity_last_changed=entity_last_changed
+                )
                 if not matched:
                     runtime_due.scheduled_for = None
                     runtime_due.became_true_at = None
@@ -188,7 +191,9 @@ def run_rules(
             else:
                 # Timer not yet due — handle scheduling lifecycle.
                 runtime = repos.ensure_runtime(rule)
-                matched = eval_condition_with_context(child, entity_state=entity_state, now=now, repos=repos)
+                matched = eval_condition_with_context(
+                    child, entity_state=entity_state, now=now, repos=repos, entity_last_changed=entity_last_changed
+                )
                 if not matched:
                     if runtime.became_true_at or runtime.scheduled_for:
                         runtime.became_true_at = None
@@ -221,7 +226,9 @@ def run_rules(
             stale_runtime.became_true_at = None
             stale_runtime.save(update_fields=["scheduled_for", "became_true_at", "updated_at"])
 
-        matched = eval_condition_with_context(when_node, entity_state=entity_state, now=now, repos=repos)
+        matched = eval_condition_with_context(
+            when_node, entity_state=entity_state, now=now, repos=repos, entity_last_changed=entity_last_changed
+        )
         if not matched:
             runtime = repos.ensure_runtime(rule)
             if runtime.last_when_matched is not False:

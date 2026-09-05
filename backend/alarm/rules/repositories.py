@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Callable
 
@@ -21,6 +21,16 @@ class Detection:
     observed_at: datetime
 
 
+def _no_last_changed() -> dict[str, datetime | None]:
+    """Default `entity_last_changed_map`: no data, so flagged conditions evaluate False (ADR-0108)."""
+    return {}
+
+
+def _no_entered_at() -> datetime | None:
+    """Default `get_alarm_state_entered_at`: unknown, so flagged conditions evaluate False (ADR-0108)."""
+    return None
+
+
 @dataclass(frozen=True)
 class RuleEngineRepositories:
     list_enabled_rules: Callable[[], list[Rule]]
@@ -30,6 +40,9 @@ class RuleEngineRepositories:
     frigate_is_available: Callable[[object], bool]
     list_frigate_detections: Callable[[str, list[str], object], list[Detection]]
     get_alarm_state: Callable[[], str | None]
+    # ADR-0108: defaulted so pre-existing constructors (dispatcher, simulate, tests) keep working.
+    entity_last_changed_map: Callable[[], dict[str, datetime | None]] = field(default=_no_last_changed)
+    get_alarm_state_entered_at: Callable[[], datetime | None] = field(default=_no_entered_at)
 
 
 def default_rule_engine_repositories() -> RuleEngineRepositories:
@@ -97,6 +110,18 @@ def default_rule_engine_repositories() -> RuleEngineRepositories:
             for row in qs
         ]
 
+    def _entity_last_changed_map() -> dict[str, datetime | None]:
+        """Return a map of entity_id -> last_changed for all entities (ADR-0108)."""
+        return dict(Entity.objects.values_list("entity_id", "last_changed"))
+
+    def _get_alarm_state_entered_at() -> datetime | None:
+        """Return when the current alarm state was entered (same row `_get_alarm_state` reads)."""
+        try:
+            snapshot = AlarmStateSnapshot.objects.order_by("-entered_at", "-id").first()
+            return snapshot.entered_at if snapshot else None
+        except Exception:
+            return None
+
     def _get_alarm_state() -> str | None:
         """Return the current alarm state from the active snapshot, if any.
 
@@ -119,4 +144,6 @@ def default_rule_engine_repositories() -> RuleEngineRepositories:
         frigate_is_available=_frigate_is_available,
         list_frigate_detections=_list_frigate_detections,
         get_alarm_state=_get_alarm_state,
+        entity_last_changed_map=_entity_last_changed_map,
+        get_alarm_state_entered_at=_get_alarm_state_entered_at,
     )
