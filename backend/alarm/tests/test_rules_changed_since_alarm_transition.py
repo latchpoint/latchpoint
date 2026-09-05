@@ -175,19 +175,29 @@ class ChangedSinceAlarmTransitionConditionTests(SimpleTestCase):
         _, plain = eval_condition_explain_with_context(_node(None), entity_state=state)
         self.assertNotIn("changed_since_alarm_transition", plain)
 
-        # State mismatch: same key set (flag + timestamps), no timestamp `reason`, ok stays False.
+        # State mismatch: flag + entity timestamp only; no snapshot read, no timestamp `reason`.
+        reads: list[str] = []
+
+        def _counting_entered_at():
+            reads.append("entered_at")
+            return self.entered_at
+
+        counting_repos = SimpleNamespace(
+            get_alarm_state=lambda: "armed_away", get_alarm_state_entered_at=_counting_entered_at
+        )
         ok, trace = eval_condition_explain_with_context(
             _node(True),
             entity_state={DOOR: "off"},
             now=self.fresh,
-            repos=_repos(self.entered_at),
+            repos=counting_repos,
             entity_last_changed={DOOR: self.fresh},
         )
         self.assertFalse(ok)
         self.assertIs(trace["changed_since_alarm_transition"], True)
         self.assertEqual(trace["last_changed"], self.fresh.isoformat())
-        self.assertEqual(trace["alarm_entered_at"], self.entered_at.isoformat())
+        self.assertNotIn("alarm_entered_at", trace)
         self.assertNotIn("reason", trace)
+        self.assertEqual(reads, [])
 
     def test_walker_detects_flag_anywhere_in_the_tree(self):
         """`when_uses_changed_since_alarm_transition` gates the entity last_changed scan (self-review finding 6)."""
@@ -220,6 +230,5 @@ class ChangedSinceAlarmTransitionSerializerTests(SimpleTestCase):
             }
         )
         self.assertFalse(serializer.is_valid())
-        children = serializer.errors["definition"]["when"]["children"]
-        child = children.get(1, children.get("1"))
+        child = serializer.errors["definition"]["when"]["children"][1]
         self.assertEqual([str(e) for e in child["changed_since_alarm_transition"]], ["must be a boolean"])

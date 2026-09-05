@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import logging
 import math
 import re
 from typing import Any
 from zoneinfo import ZoneInfo
 
 from django.utils import timezone
+
+logger = logging.getLogger(__name__)
 
 
 def _nearest_rank_percentile(scores: list[float], *, p: int) -> float | None:
@@ -332,11 +335,11 @@ def _changed_since_alarm_transition(
         "last_changed": last_changed.isoformat() if last_changed is not None else None,
         "alarm_entered_at": entered_at.isoformat() if entered_at is not None else None,
     }
-    if last_changed is None:
-        details["reason"] = "missing_last_changed"
-        return False, details
-    if entered_at is None:
-        details["reason"] = "missing_alarm_entered_at"
+    if last_changed is None or entered_at is None:
+        details["reason"] = "missing_last_changed" if last_changed is None else "missing_alarm_entered_at"
+        # last_changed is a security-critical input here: a flagged trigger condition that can
+        # never fire must leave a trace outside the rules test page.
+        logger.warning("entity_state %s: changed_since_alarm_transition suppressed (%s)", entity_id, details["reason"])
         return False, details
     if last_changed <= entered_at:
         details["reason"] = "changed_before_alarm_transition"
@@ -672,17 +675,18 @@ def eval_condition_explain_with_context(
             "actual": current,
         }
         if node.get("changed_since_alarm_transition") is True:
-            changed_ok, details = _changed_since_alarm_transition(
-                entity_id, entity_last_changed=entity_last_changed, repos=repos
-            )
+            trace["changed_since_alarm_transition"] = True
             if ok:
-                ok = changed_ok
+                ok, details = _changed_since_alarm_transition(
+                    entity_id, entity_last_changed=entity_last_changed, repos=repos
+                )
                 trace.update(details)
                 trace["ok"] = ok
             else:
-                # The state mismatch already decides `ok`; still surface the timestamps so the
-                # rules test page shows the same key set for every flagged node.
-                trace.update({k: v for k, v in details.items() if k != "reason"})
+                # The state mismatch already decides `ok`: skip the snapshot read (one query per
+                # call) and only surface the entity timestamp, which is free from the map.
+                last_changed = (entity_last_changed or {}).get(entity_id)
+                trace["last_changed"] = last_changed.isoformat() if last_changed is not None else None
         return ok, trace
 
     if op == "alarm_state_in":
