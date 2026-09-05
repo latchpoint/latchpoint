@@ -234,6 +234,9 @@ def _validate_when_node(node: Any, *, is_root: bool) -> dict[str, Any] | None:
             errors["entity_id"] = ["required"]
         if not isinstance(equals, str) or not equals.strip():
             errors["equals"] = ["required"]
+        changed_since = node.get("changed_since_alarm_transition")
+        if changed_since is not None and not isinstance(changed_since, bool):
+            errors["changed_since_alarm_transition"] = ["must be a boolean"]
 
     elif op == "alarm_state_in":
         states_raw = node.get("states")
