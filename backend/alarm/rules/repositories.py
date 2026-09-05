@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Callable
@@ -8,6 +9,8 @@ from django.utils import timezone
 
 from alarm.models import AlarmStateSnapshot, Entity, Rule, RuleRuntimeState
 from alarm.rules.runtime_state import ensure_runtime
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -120,6 +123,9 @@ def default_rule_engine_repositories() -> RuleEngineRepositories:
             snapshot = AlarmStateSnapshot.objects.order_by("-entered_at", "-id").first()
             return snapshot.entered_at if snapshot else None
         except Exception:
+            # Surfaces as `missing_alarm_entered_at` in traces; log so an outage is not mistaken
+            # for "no snapshot yet".
+            logger.warning("Could not read alarm snapshot entered_at", exc_info=True)
             return None
 
     def _get_alarm_state() -> str | None:
