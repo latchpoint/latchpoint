@@ -289,6 +289,43 @@ def _validate_when_node(node: Any, *, is_root: bool) -> dict[str, Any] | None:
     return errors or None
 
 
+def _changed_since_alarm_transition(
+    entity_id: str,
+    *,
+    entity_last_changed: dict[str, Any] | None,
+    repos: Any,
+) -> tuple[bool, dict[str, Any]]:
+    """ADR-0108: is the entity's last state change strictly after the alarm entered its current state?
+
+    Returns ``(ok, details)``. ``details`` carries the flag, both timestamps as ISO
+    strings, and a ``reason`` whenever ``ok`` is False. Missing data on either side
+    is a definite False — a trigger condition must never fire on unknown timestamps.
+    """
+    last_changed = (entity_last_changed or {}).get(entity_id)
+    entered_at = None
+    try:
+        if repos is not None and hasattr(repos, "get_alarm_state_entered_at"):
+            entered_at = repos.get_alarm_state_entered_at()
+    except Exception:
+        entered_at = None
+
+    details: dict[str, Any] = {
+        "changed_since_alarm_transition": True,
+        "last_changed": last_changed.isoformat() if last_changed is not None else None,
+        "alarm_entered_at": entered_at.isoformat() if entered_at is not None else None,
+    }
+    if last_changed is None:
+        details["reason"] = "missing_last_changed"
+        return False, details
+    if entered_at is None:
+        details["reason"] = "missing_alarm_entered_at"
+        return False, details
+    if last_changed <= entered_at:
+        details["reason"] = "changed_before_alarm_transition"
+        return False, details
+    return True, details
+
+
 def eval_condition(node: Any, *, entity_state: dict[str, str | None]) -> bool:
     """Evaluate a condition node using only an entity-state map (no repository context)."""
     return eval_condition_with_context(node, entity_state=entity_state, now=None, repos=None)
@@ -300,8 +337,13 @@ def eval_condition_with_context(
     entity_state: dict[str, str | None],
     now=None,
     repos: Any = None,
+    entity_last_changed: dict[str, Any] | None = None,
 ) -> bool:
-    """Evaluate a condition node, optionally using repositories for alarm/frigate context."""
+    """Evaluate a condition node, optionally using repositories for alarm/frigate context.
+
+    ``entity_last_changed`` (entity_id -> datetime) is only consulted by
+    ``entity_state`` nodes carrying ``changed_since_alarm_transition`` (ADR-0108).
+    """
     op = _get_op(node)
     if not op:
         return False
@@ -313,7 +355,10 @@ def eval_condition_with_context(
         if not isinstance(children, list) or not children:
             return False
         return all(
-            eval_condition_with_context(child, entity_state=entity_state, now=now, repos=repos) for child in children
+            eval_condition_with_context(
+                child, entity_state=entity_state, now=now, repos=repos, entity_last_changed=entity_last_changed
+            )
+            for child in children
         )
 
     if op == "any":
@@ -323,13 +368,18 @@ def eval_condition_with_context(
         if not isinstance(children, list) or not children:
             return False
         return any(
-            eval_condition_with_context(child, entity_state=entity_state, now=now, repos=repos) for child in children
+            eval_condition_with_context(
+                child, entity_state=entity_state, now=now, repos=repos, entity_last_changed=entity_last_changed
+            )
+            for child in children
         )
 
     if op == "not":
         if not _is_mapping(node):
             return False
-        return not eval_condition_with_context(node.get("child"), entity_state=entity_state, now=now, repos=repos)
+        return not eval_condition_with_context(
+            node.get("child"), entity_state=entity_state, now=now, repos=repos, entity_last_changed=entity_last_changed
+        )
 
     if op == "entity_state":
         if not _is_mapping(node):
@@ -339,7 +389,12 @@ def eval_condition_with_context(
         if not isinstance(entity_id, str) or not isinstance(equals, str):
             return False
         current = entity_state.get(entity_id)
-        return current == equals
+        if current != equals:
+            return False
+        if node.get("changed_since_alarm_transition") is not True:
+            return True
+        ok, _ = _changed_since_alarm_transition(entity_id, entity_last_changed=entity_last_changed, repos=repos)
+        return ok
 
     if op == "alarm_state_in":
         if not _is_mapping(node):
