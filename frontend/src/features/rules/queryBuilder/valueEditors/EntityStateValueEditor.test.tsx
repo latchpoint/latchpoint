@@ -1,6 +1,6 @@
 import type { ComponentProps } from 'react'
 import { describe, expect, it, vi } from 'vitest'
-import { fireEvent, render } from '@testing-library/react'
+import { fireEvent, render, within } from '@testing-library/react'
 
 import { EntityStateValueEditor } from './EntityStateValueEditor'
 import type { EntityOption, EntityStateValue, ValueEditorContext } from '../types'
@@ -146,7 +146,8 @@ describe('EntityStateValueEditor', () => {
       entities,
       handleOnChange: onChangeAgain,
     })
-    const checked = second.getByLabelText('Only after alarm state change') as HTMLInputElement
+    // Scope to this render's container: the first editor is still mounted in document.body.
+    const checked = within(second.container).getByLabelText('Only after alarm state change') as HTMLInputElement
     expect(checked.checked).toBe(true)
     fireEvent.click(checked)
     expect(onChangeAgain).toHaveBeenCalledWith({
