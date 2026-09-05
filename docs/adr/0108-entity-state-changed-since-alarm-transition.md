@@ -389,6 +389,27 @@ conditions in each. Leave the `input_boolean.*` conditions unticked.
 - [ ] Phase 3 — Frontend: `types/ruleDefinition.ts`, `queryBuilder/types.ts`, `converters.ts` (+ tests, AC-10), `EntityStateValueEditor.tsx` (+ test, AC-11).
 - [ ] Phase 4 — Lint/format/type-check, full suites (AC-12), PR, deploy `:main`, then tick the flag on prod rules 2 and 3 and confirm via the rules test page and the next real arm (`alarm_ruleactionlog` shows no fire within seconds of `armed`).
 
+## Revision (2026-09-04, during implementation)
+
+The hostile self-review found that only Home Assistant keeps a change-only
+`Entity.last_changed`: the Zigbee2MQTT runtime stamps `last_changed = now` on
+**every** device report (`backend/integrations_zigbee2mqtt/runtime.py`,
+battery/linkquality reports included), and Z-Wave JS live value updates never
+write `last_changed` at all (only the manual inventory sync does, and it too
+stamps unconditionally). With the flag, a stale-open Zigbee contact would be
+ignored at arm and then un-ignored by the next periodic report; a Z-Wave
+contact would never count as changed.
+
+Decision (owner): **the checkbox is offered for Home Assistant entities only**
+(`entity_state_ha`, or `entity_state` with an HA-sourced entity selected).
+The backend keeps accepting the flag for any entity so the API contract is
+unchanged; the UI gate plus the tooltip ("Available for Home Assistant
+entities only") carry the guarantee. Lifting the gate requires change-only
+`last_changed` writers for Zigbee2MQTT and Z-Wave JS (mirror ADR-0102) — a
+follow-up, not part of this ADR.
+
+The `unavailable → on` blip risk (Risks table) stays a follow-up as well.
+
 ## Related ADRs
 
 - [ADR-0004](./0004-rules-engine-entity-registry-remove-zones.md) — rules engine + entity registry; this ADR keeps the engine zone-free.
