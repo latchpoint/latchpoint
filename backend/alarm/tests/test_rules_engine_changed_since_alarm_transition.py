@@ -132,3 +132,19 @@ class ChangedSinceAlarmTransitionRunRulesTests(TestCase):
         self._set(door_a, "on", self.entered_at + timedelta(minutes=2))
         self.assertEqual(self._run(t + timedelta(minutes=2)).fired, 1, "stale unflagged guest_mode still counts")
         self.assertEqual(Entity.objects.get(pk=guest.pk).last_changed, self.stale)
+
+    def test_ac_9_simulate_treats_overrides_as_fresh_and_db_rows_as_is(self):
+        """AC-9: an ``entity_states`` override counts as changed now; a stale DB row without override does not."""
+        self._entity(DOOR_A, "on", self.stale)
+        rule = self._rule({"op": "all", "children": [_armed_away(), _door(DOOR_A)]})
+
+        for alarm_state in (None, AlarmState.ARMED_AWAY):
+            with self.subTest(alarm_state=alarm_state, override=True):
+                out = rules_engine.simulate_rules(entity_states={DOOR_A: "on"}, alarm_state=alarm_state)
+                self.assertEqual([r["id"] for r in out["matched_rules"]], [rule.id])
+            with self.subTest(alarm_state=alarm_state, override=False):
+                out = rules_engine.simulate_rules(entity_states={}, alarm_state=alarm_state)
+                self.assertEqual([r["id"] for r in out["non_matching_rules"]], [rule.id])
+                trace = out["non_matching_rules"][0]["trace"]
+                door_trace = trace["children"][1]
+                self.assertEqual(door_trace["reason"], "changed_before_alarm_transition")
