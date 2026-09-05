@@ -66,6 +66,12 @@ def _entity_last_changed_from(repos: Any) -> dict[str, Any]:
     return getter() if callable(getter) else {}
 
 
+def _alarm_entered_at_getter(repos: Any) -> Callable[[], Any]:
+    """Return the repo's `get_alarm_state_entered_at`, or a no-data stand-in for duck-typed repos."""
+    getter = getattr(repos, "get_alarm_state_entered_at", None)
+    return getter if callable(getter) else (lambda: None)
+
+
 @dataclass(frozen=True)
 class RuleRunResult:
     evaluated: int
@@ -338,8 +344,8 @@ def simulate_rules(
             frigate_is_available=original.frigate_is_available,
             list_frigate_detections=original.list_frigate_detections,
             get_alarm_state=_get_alarm_state_override,
-            entity_last_changed_map=original.entity_last_changed_map,
-            get_alarm_state_entered_at=original.get_alarm_state_entered_at,
+            entity_last_changed_map=lambda: _entity_last_changed_from(original),
+            get_alarm_state_entered_at=_alarm_entered_at_getter(original),
         )
     assume_for_seconds = assume_for_seconds if isinstance(assume_for_seconds, int) else None
     if assume_for_seconds is not None and assume_for_seconds < 0:
