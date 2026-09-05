@@ -16,6 +16,7 @@ from alarm.rules.conditions import (
     eval_condition_explain_with_context,
     eval_condition_with_context,
     validate_when_node,
+    when_uses_changed_since_alarm_transition,
 )
 
 DOOR = "binary_sensor.side_fence_door_sensor_door"
@@ -187,3 +188,12 @@ class ChangedSinceAlarmTransitionConditionTests(SimpleTestCase):
         self.assertEqual(trace["last_changed"], self.fresh.isoformat())
         self.assertEqual(trace["alarm_entered_at"], self.entered_at.isoformat())
         self.assertNotIn("reason", trace)
+
+    def test_walker_detects_flag_anywhere_in_the_tree(self):
+        """`when_uses_changed_since_alarm_transition` gates the entity last_changed scan (self-review finding 6)."""
+        nested = {"op": "all", "children": [{"op": "not", "child": {"op": "for", "seconds": 5, "child": _node(True)}}]}
+        self.assertTrue(when_uses_changed_since_alarm_transition(nested))
+        self.assertFalse(
+            when_uses_changed_since_alarm_transition({"op": "all", "children": [_node(None), _node(False)]})
+        )
+        self.assertFalse(when_uses_changed_since_alarm_transition(None))

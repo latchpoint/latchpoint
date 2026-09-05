@@ -16,6 +16,7 @@ from .rules.conditions import (
     eval_condition_with_context,
     extract_for,
     extract_when_entity_ids,
+    when_uses_changed_since_alarm_transition,
 )
 from .rules.repositories import RuleEngineRepositories, default_rule_engine_repositories
 from .rules.runtime_state import cooldown_active
@@ -66,6 +67,16 @@ def _entity_last_changed_from(repos: Any) -> dict[str, Any]:
     return getter() if callable(getter) else {}
 
 
+def _rules_use_changed_since(rules: list[Any]) -> bool:
+    """Only pay for the entity last_changed scan when some rule actually carries the ADR-0108 flag."""
+    for rule in rules:
+        definition = rule.definition or {}
+        when_node = definition.get("when") if isinstance(definition, dict) else None
+        if when_uses_changed_since_alarm_transition(when_node):
+            return True
+    return False
+
+
 def _alarm_entered_at_getter(repos: Any) -> Callable[[], Any]:
     """Return the repo's `get_alarm_state_entered_at`, or a no-data stand-in for duck-typed repos."""
     getter = getattr(repos, "get_alarm_state_entered_at", None)
@@ -114,7 +125,7 @@ def run_rules(
     now = now or timezone.now()
     rules = repos.list_enabled_rules()
     entity_state = repos.entity_state_map()
-    entity_last_changed = _entity_last_changed_from(repos)
+    entity_last_changed = _entity_last_changed_from(repos) if _rules_use_changed_since(rules) else {}
     triggering_set = set(triggering_entity_ids or ())
 
     fired = 0
@@ -356,7 +367,7 @@ def simulate_rules(
     merged_state: dict[str, str | None] = {**db_entities, **entity_states}
     # ADR-0108: simulated overrides are fresh changes stamped `now`; DB rows keep their real last_changed.
     merged_last_changed: dict[str, Any] = {
-        **_entity_last_changed_from(repos),
+        **(_entity_last_changed_from(repos) if _rules_use_changed_since(rules) else {}),
         **dict.fromkeys(entity_states, now),
     }
 

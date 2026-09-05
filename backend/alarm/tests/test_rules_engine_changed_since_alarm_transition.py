@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import timedelta
 
 from django.test import TestCase
@@ -9,6 +10,7 @@ from django.test import TestCase
 from accounts.models import User
 from alarm import rules_engine
 from alarm.models import AlarmSettingsProfile, AlarmState, Entity, Rule
+from alarm.rules.repositories import default_rule_engine_repositories
 from alarm.state_machine.transitions import arm, get_current_snapshot
 from alarm.tests.settings_test_utils import set_profile_settings
 
@@ -155,3 +157,23 @@ class ChangedSinceAlarmTransitionRunRulesTests(TestCase):
         self._entity(DOOR_A, "on", self.stale)
         self._rule({"op": "all", "children": [_armed_away(), _door(DOOR_A, flag=False)]})
         self.assertEqual(self._run(self.entered_at + timedelta(seconds=1)).fired, 1)
+
+    def test_last_changed_scan_is_skipped_when_no_rule_uses_the_flag(self):
+        """Self-review finding 6: unflagged rule sets must not pay for the extra Entity scan."""
+        self._entity(DOOR_A, "on", self.stale)
+        rule = self._rule({"op": "all", "children": [_armed_away(), _door(DOOR_A, flag=False)]})
+
+        def _boom():
+            raise AssertionError("entity_last_changed_map must not be called without a flagged rule")
+
+        repos = replace(default_rule_engine_repositories(), entity_last_changed_map=_boom)
+        result = rules_engine.run_rules(
+            now=self.entered_at + timedelta(seconds=1),
+            actor_user=self.user,
+            repos=repos,
+            execute_actions_func=self._fake_execute,
+            log_action_func=self._fake_log,
+        )
+        self.assertEqual(result.fired, 1)
+        out = rules_engine.simulate_rules(entity_states={}, repos=repos)
+        self.assertEqual([r["id"] for r in out["matched_rules"]], [rule.id])

@@ -164,6 +164,21 @@ def _when_has_triggerable_condition(node: Any) -> bool:
     return False
 
 
+def when_uses_changed_since_alarm_transition(node: Any) -> bool:
+    """Return True if any ``entity_state`` node in the tree carries the ADR-0108 flag."""
+    if not isinstance(node, dict):
+        return False
+    op = node.get("op")
+    if op == "entity_state":
+        return node.get("changed_since_alarm_transition") is True
+    if op in {"all", "any"}:
+        children = node.get("children", [])
+        return isinstance(children, list) and any(when_uses_changed_since_alarm_transition(c) for c in children)
+    if op in {"not", "for"}:
+        return when_uses_changed_since_alarm_transition(node.get("child"))
+    return False
+
+
 def _when_has_time_in_range(node: Any) -> bool:
     if not isinstance(node, dict):
         return False
