@@ -197,3 +197,29 @@ class ChangedSinceAlarmTransitionConditionTests(SimpleTestCase):
             when_uses_changed_since_alarm_transition({"op": "all", "children": [_node(None), _node(False)]})
         )
         self.assertFalse(when_uses_changed_since_alarm_transition(None))
+
+
+class ChangedSinceAlarmTransitionSerializerTests(SimpleTestCase):
+    def test_serializer_nests_boolean_error_under_definition_when(self):
+        """Self-review finding 4: the rules API surfaces the boolean check at its nested `when` path."""
+        from alarm.serializers.rules import RuleUpsertSerializer
+
+        serializer = RuleUpsertSerializer(
+            data={
+                "name": "bad flag",
+                "definition": {
+                    "when": {
+                        "op": "all",
+                        "children": [
+                            {"op": "alarm_state_in", "states": ["armed_away"]},
+                            dict(_node(None), changed_since_alarm_transition="yes"),
+                        ],
+                    },
+                    "then": [{"type": "alarm_trigger"}],
+                },
+            }
+        )
+        self.assertFalse(serializer.is_valid())
+        children = serializer.errors["definition"]["when"]["children"]
+        child = children.get(1, children.get("1"))
+        self.assertEqual([str(e) for e in child["changed_since_alarm_transition"]], ["must be a boolean"])
