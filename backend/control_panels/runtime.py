@@ -65,6 +65,10 @@ def initialize() -> None:
         except Exception:
             return
 
-    alarm_state_change_committed.connect(_on_alarm_state_change, dispatch_uid="control_panels_alarm_state_changed")
+    # weak=False: `_on_alarm_state_change` is a closure local to this function; a weak ref would
+    # let it be garbage-collected on return, silently dropping every keypad sync.
+    alarm_state_change_committed.connect(
+        _on_alarm_state_change, dispatch_uid="control_panels_alarm_state_changed", weak=False
+    )
     panel_sync_worker.start()
     logger.info("Control panels: registered alarm_state_change_committed handler + panel-sync worker.")

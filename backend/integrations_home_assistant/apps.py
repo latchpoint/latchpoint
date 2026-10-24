@@ -46,7 +46,7 @@ class IntegrationsHomeAssistantConfig(AppConfig):
                 return
 
         alarm_state_change_committed.connect(
-            _on_alarm_state_change_committed, dispatch_uid="ha_mqtt_alarm_entity_state"
+            _on_alarm_state_change_committed, dispatch_uid="ha_mqtt_alarm_entity_state", weak=False
         )
 
         def _on_settings_profile_changed(sender, *, profile_id: int, reason: str, **_kwargs) -> None:
@@ -64,7 +64,7 @@ class IntegrationsHomeAssistantConfig(AppConfig):
                 return
 
         settings_profile_changed.connect(
-            _on_settings_profile_changed, dispatch_uid="ha_mqtt_alarm_entity_profile_changed"
+            _on_settings_profile_changed, dispatch_uid="ha_mqtt_alarm_entity_profile_changed", weak=False
         )
 
         # Warm-up HA connection cache from env vars.

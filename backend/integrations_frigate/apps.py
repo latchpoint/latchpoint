@@ -28,6 +28,7 @@ class IntegrationsFrigateConfig(AppConfig):
         settings_profile_changed.connect(
             _on_settings_profile_changed,
             dispatch_uid="frigate_profile_changed",
+            weak=False,
         )
 
         # Import tasks to register them with the scheduler

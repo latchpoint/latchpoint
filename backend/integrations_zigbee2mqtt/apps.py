@@ -31,4 +31,5 @@ class IntegrationsZigbee2mqttConfig(AppConfig):
         settings_profile_changed.connect(
             _on_settings_profile_changed,
             dispatch_uid="zigbee2mqtt_profile_changed",
+            weak=False,
         )
