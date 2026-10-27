@@ -18,6 +18,8 @@ logger = logging.getLogger("integrations_home_assistant")
 _CACHE_LEADER_KEY = "integrations_home_assistant:state_stream:leader"
 _LEADER_TTL_SECONDS = 60
 _LEADER_HEARTBEAT_SECONDS = 20
+_RECONNECT_BACKOFF_INITIAL_SECONDS = 1.0
+_RECONNECT_BACKOFF_MAX_SECONDS = 30.0
 
 
 def _build_ws_url(base_url: str) -> str:
@@ -143,7 +145,7 @@ class HomeAssistantStateStream:
             return True
 
     def _run(self) -> None:
-        backoff_seconds = 1.0
+        backoff_seconds = _RECONNECT_BACKOFF_INITIAL_SECONDS
         last_leader_refresh = 0.0
 
         while not self._stop.is_set():
@@ -163,14 +165,22 @@ class HomeAssistantStateStream:
 
             ws_url = _build_ws_url(settings.base_url)
             try:
-                self._connect_and_listen(ws_url=ws_url, token=settings.token)
-                backoff_seconds = 1.0
+                authed = self._connect_and_listen(ws_url=ws_url, token=settings.token)
             except Exception as exc:
                 logger.warning("HA state stream disconnected: %s", exc)
-                time.sleep(backoff_seconds)
-                backoff_seconds = min(30.0, backoff_seconds * 2.0)
+                authed = False
 
-    def _connect_and_listen(self, *, ws_url: str, token: str) -> None:
+            # `run_forever` returns (rather than raises) on a refused connection, so back off after
+            # every attempt. Only a connection that reached auth_ok resets the delay.
+            if authed:
+                backoff_seconds = _RECONNECT_BACKOFF_INITIAL_SECONDS
+            if self._stop.wait(backoff_seconds):
+                return
+            if not authed:
+                backoff_seconds = min(_RECONNECT_BACKOFF_MAX_SECONDS, backoff_seconds * 2.0)
+
+    def _connect_and_listen(self, *, ws_url: str, token: str) -> bool:
+        """Run one websocket session until it closes; return whether it reached `auth_ok`."""
         import websocket
 
         authed = {"ok": False}
@@ -252,6 +262,7 @@ class HomeAssistantStateStream:
             with self._lock:
                 if self._ws_app is ws_app:
                     self._ws_app = None
+        return authed["ok"]
 
     def _handle_state_changed(self, *, event: dict[str, Any], data: dict[str, Any]) -> None:
         close_old_connections()
