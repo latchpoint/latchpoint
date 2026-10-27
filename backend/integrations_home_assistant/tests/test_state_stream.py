@@ -109,6 +109,44 @@ class StateStreamBackoffTests(SimpleTestCase):
         self.assertEqual(connect.call_count, 1)
 
 
+@patch.object(HomeAssistantStateStream, "_is_leader", return_value=False)
+class StateStreamNonLeaderWaitTests(SimpleTestCase):
+    """A non-leader polls for leadership (#113); that wait has to wake on `stop()` too."""
+
+    def test_non_leader_waits_on_stop_event_not_sleep(self, _leader):
+        stream, stop = _make_stream(max_waits=3)
+        with (
+            patch.object(stream, "_connect_and_listen") as connect,
+            patch.object(state_stream.time, "sleep") as sleep,
+        ):
+            stream._run()
+
+        sleep.assert_not_called()
+        self.assertEqual(stop.waits, [1.0, 1.0, 1.0])
+        connect.assert_not_called()
+
+    def test_stop_while_waiting_for_leadership_exits_promptly(self, leader):
+        stream = HomeAssistantStateStream()
+        stream._settings = _SETTINGS
+        checked = threading.Event()
+
+        def _not_leader() -> bool:
+            checked.set()
+            return False
+
+        leader.side_effect = _not_leader
+        with patch.object(stream, "_connect_and_listen") as connect:
+            thread = threading.Thread(target=stream._run, daemon=True)
+            thread.start()
+            self.assertTrue(checked.wait(timeout=5))
+            stream.stop()
+            # The leadership poll is 1s, so a wait that ignores stop() would still be alive here.
+            thread.join(timeout=0.5)
+
+        self.assertFalse(thread.is_alive())
+        connect.assert_not_called()
+
+
 class _FakeWebSocketApp:
     """Mimics ``websocket.WebSocketApp``: ``run_forever`` replays scripted messages, then returns."""
 
