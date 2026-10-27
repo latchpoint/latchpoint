@@ -20,6 +20,8 @@ _LEADER_TTL_SECONDS = 60
 _LEADER_HEARTBEAT_SECONDS = 20
 _RECONNECT_BACKOFF_INITIAL_SECONDS = 1.0
 _RECONNECT_BACKOFF_MAX_SECONDS = 30.0
+# An authed session has to stay up this long before its drop resets the backoff (#114).
+_RECONNECT_HEALTHY_SESSION_SECONDS = 30.0
 
 
 def _build_ws_url(base_url: str) -> str:
@@ -166,25 +168,27 @@ class HomeAssistantStateStream:
 
             ws_url = _build_ws_url(settings.base_url)
             try:
-                authed = self._connect_and_listen(ws_url=ws_url, token=settings.token)
+                authed_at = self._connect_and_listen(ws_url=ws_url, token=settings.token)
             except Exception as exc:
                 logger.warning("HA state stream disconnected: %s", exc)
-                authed = False
+                authed_at = None
 
             # `run_forever` returns (rather than raises) on a refused connection, so back off after
-            # every attempt. Only a connection that reached auth_ok resets the delay.
-            if authed:
+            # every attempt. Only a session that stayed up for a while after auth_ok resets the delay,
+            # so HA (or a proxy) dropping the connection right after auth keeps backing off.
+            healthy = authed_at is not None and time.monotonic() - authed_at >= _RECONNECT_HEALTHY_SESSION_SECONDS
+            if healthy:
                 backoff_seconds = _RECONNECT_BACKOFF_INITIAL_SECONDS
             if self._stop.wait(backoff_seconds):
                 return
-            if not authed:
+            if not healthy:
                 backoff_seconds = min(_RECONNECT_BACKOFF_MAX_SECONDS, backoff_seconds * 2.0)
 
-    def _connect_and_listen(self, *, ws_url: str, token: str) -> bool:
-        """Run one websocket session until it closes; return whether it reached `auth_ok`."""
+    def _connect_and_listen(self, *, ws_url: str, token: str) -> float | None:
+        """Run one websocket session until it closes; return the `time.monotonic()` of `auth_ok`, or None."""
         import websocket
 
-        authed = {"ok": False}
+        authed = {"at": None}
 
         def _on_open(_ws) -> None:
             logger.info("HA state stream connected (ws_url=%s)", ws_url)
@@ -203,7 +207,7 @@ class HomeAssistantStateStream:
                 return
 
             if msg_type == "auth_ok":
-                authed["ok"] = True
+                authed["at"] = time.monotonic()
                 sub_id = self._next_subscribe_id
                 self._next_subscribe_id += 1
                 ws.send(
@@ -240,7 +244,7 @@ class HomeAssistantStateStream:
             logger.debug("HA state stream error: %s", error)
 
         def _on_close(_ws, status_code, msg) -> None:
-            if authed["ok"]:
+            if authed["at"] is not None:
                 logger.info("HA state stream closed (code=%s, msg=%s)", status_code, msg)
             else:
                 logger.warning("HA state stream closed before auth (code=%s, msg=%s)", status_code, msg)
@@ -263,7 +267,7 @@ class HomeAssistantStateStream:
             with self._lock:
                 if self._ws_app is ws_app:
                     self._ws_app = None
-        return authed["ok"]
+        return authed["at"]
 
     def _handle_state_changed(self, *, event: dict[str, Any], data: dict[str, Any]) -> None:
         close_old_connections()
