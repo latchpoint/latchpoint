@@ -8,6 +8,9 @@ from rest_framework.test import APIClient, APITestCase
 from accounts.models import Role, User, UserRoleAssignment
 from alarm.models import AlarmSettingsProfile
 from alarm.tests.settings_test_utils import EncryptionTestMixin
+from integrations_home_assistant import state_stream
+from integrations_home_assistant.connection import clear_cached_connection
+from integrations_home_assistant.state_stream import HomeAssistantStateStream, _RuntimeSettings
 
 
 class HomeAssistantEntitiesApiTests(APITestCase):
@@ -169,3 +172,26 @@ class HomeAssistantSettingsApiPermissionTests(EncryptionTestMixin, APITestCase):
         url = reverse("ha-settings")
         response = client.patch(url, data={"connect_timeout_seconds": 5}, format="json")
         self.assertEqual(response.status_code, 200)
+
+    def test_patch_settings_reapplies_state_stream_settings(self):
+        client = APIClient()
+        client.force_authenticate(self.admin)
+        url = reverse("ha-settings")
+        stream = HomeAssistantStateStream()
+        self.addCleanup(clear_cached_connection)
+        with (
+            patch.object(state_stream, "_stream", stream),
+            patch.object(stream, "restart") as restart,
+            self.captureOnCommitCallbacks(execute=True),
+        ):
+            response = client.patch(
+                url,
+                data={"enabled": True, "base_url": "http://ha-new:8123", "token": "new-token"},
+                format="json",
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            stream._settings, _RuntimeSettings(enabled=True, base_url="http://ha-new:8123", token="new-token")
+        )
+        restart.assert_called_once_with()
