@@ -18,6 +18,7 @@ from integrations_home_assistant import state_stream
 from integrations_home_assistant.state_stream import HomeAssistantStateStream, _RuntimeSettings
 
 _SETTINGS = _RuntimeSettings(enabled=True, base_url="http://ha:8123", token="token")
+_NEW_SETTINGS = _RuntimeSettings(enabled=True, base_url="http://ha-new:8123", token="new-token")
 
 
 class _RecordingStopEvent:
@@ -266,3 +267,149 @@ class ConnectAndListenAuthResultTests(SimpleTestCase):
         with patch.object(state_stream.time, "monotonic", return_value=123.0):
             authed_at = self._run_session([{"type": "auth_required"}, {"type": "auth_ok"}])
         self.assertEqual(authed_at, 123.0)
+
+
+class StateStreamRestartTests(SimpleTestCase):
+    """``restart()`` must leave exactly one thread on the new settings (#112)."""
+
+    def setUp(self):
+        self.stream = HomeAssistantStateStream()
+        self.calls: list[tuple[threading.Thread, str]] = []
+        self.attempts = threading.Semaphore(0)
+        self.release_old = threading.Event()
+        self.block_old_connect = False
+        for patcher in (
+            patch.object(HomeAssistantStateStream, "_is_leader", return_value=True),
+            # Park each thread in its backoff wait after an attempt, until it is stopped.
+            patch.object(state_stream, "_RECONNECT_BACKOFF_INITIAL_SECONDS", 60.0),
+            patch.object(self.stream, "_connect_and_listen", side_effect=self._connect),
+        ):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self.addCleanup(self._stop_all)
+
+    def _connect(self, *, ws_url, token, **_kwargs) -> float | None:
+        self.calls.append((threading.current_thread(), token))
+        self.attempts.release()
+        if self.block_old_connect and token == _SETTINGS.token:
+            # A blocking TCP connect: `ws.close()` can't interrupt it, only the test can.
+            self.release_old.wait(timeout=5)
+        return None
+
+    def _stop_all(self):
+        self.release_old.set()
+        self.stream.stop()
+        for thread, _token in self.calls:
+            thread.join(timeout=5)
+
+    def _apply(self, settings: _RuntimeSettings) -> None:
+        with patch.object(state_stream, "_get_runtime_settings", return_value=settings):
+            self.stream.apply_runtime_settings_from_active_profile()
+        self.assertTrue(self.attempts.acquire(timeout=5))
+
+    def test_restart_mid_backoff_leaves_one_thread_on_new_settings(self):
+        self._apply(_SETTINGS)
+        old_thread = self.stream._thread
+
+        # The join is only an upper bound; a thread waiting in backoff exits straight away.
+        with patch.object(state_stream, "_RESTART_JOIN_TIMEOUT_SECONDS", 5.0):
+            self._apply(_NEW_SETTINGS)
+        new_thread = self.stream._thread
+
+        self.assertIsNot(new_thread, old_thread)
+        self.assertFalse(old_thread.is_alive())
+        self.assertTrue(new_thread.is_alive())
+        self.assertEqual([t for t in threading.enumerate() if t.name == "ha-state-stream"], [new_thread])
+        self.assertEqual(self.calls, [(old_thread, "token"), (new_thread, "new-token")])
+
+    def test_restart_when_join_times_out_starts_new_thread_and_old_one_exits(self):
+        self.block_old_connect = True
+        self._apply(_SETTINGS)
+        old_thread = self.stream._thread
+        old_stop = self.stream._stop
+
+        with patch.object(state_stream, "_RESTART_JOIN_TIMEOUT_SECONDS", 0.01):
+            self._apply(_NEW_SETTINGS)
+        new_thread = self.stream._thread
+
+        # The old thread is still stuck, but a new one is already running on the new settings.
+        self.assertIsNot(new_thread, old_thread)
+        self.assertTrue(old_thread.is_alive())
+        self.assertTrue(new_thread.is_alive())
+        self.assertTrue(old_stop.is_set())
+        self.assertFalse(self.stream._stop.is_set())
+
+        # Once unstuck, the old thread exits on its own stop event instead of reconnecting.
+        self.release_old.set()
+        old_thread.join(timeout=5)
+        self.assertFalse(old_thread.is_alive())
+        self.assertTrue(new_thread.is_alive())
+        self.assertEqual(self.calls, [(old_thread, "token"), (new_thread, "new-token")])
+
+
+class _LateStopWebSocketApp:
+    """Calls ``stream.stop()`` at the top of ``run_forever``, after ``_ws_app`` is set.
+
+    websocket-client 1.9.0 loses a ``close()`` made there: there's no socket to close yet, and
+    ``run_forever`` sets ``keep_running`` back to True and connects anyway. This fake does the same,
+    so ``close()`` only records the call.
+    """
+
+    stream: HomeAssistantStateStream
+    instances: list[_LateStopWebSocketApp] = []
+
+    def __init__(self, url, *, on_open, on_message, on_error, on_close):
+        self._on_open = on_open
+        self._on_message = on_message
+        self._on_close = on_close
+        self.sent: list[str] = []
+        self.close_calls = 0
+        self.instances.append(self)
+
+    def send(self, data: str) -> None:
+        self.sent.append(data)
+
+    def close(self) -> None:
+        self.close_calls += 1
+
+    def run_forever(self, **_kwargs) -> bool:
+        self.stream.stop()
+        self._on_open(self)
+        self._on_message(self, json.dumps({"type": "auth_required"}))
+        self._on_message(self, json.dumps({"type": "auth_ok"}))
+        self._on_close(self, None, None)
+        return True
+
+
+class _MustNotRunWebSocketApp(_FakeWebSocketApp):
+    def run_forever(self, **_kwargs) -> bool:
+        raise AssertionError("run_forever called after stop()")
+
+
+class ConnectAndListenStopRaceTests(SimpleTestCase):
+    """A ``stop()`` that lands while ``_connect_and_listen`` is setting up must still end the session."""
+
+    def test_stop_before_ws_app_is_set_skips_the_session(self):
+        stream = HomeAssistantStateStream()
+        # stop() ran after `_run` checked the event, before `_connect_and_listen` set `_ws_app`.
+        stream.stop()
+        with patch("websocket.WebSocketApp", _MustNotRunWebSocketApp):
+            authed_at = stream._connect_and_listen(ws_url="ws://ha:8123/api/websocket", token="token")
+
+        self.assertIsNone(authed_at)
+        self.assertIsNone(stream._ws_app)
+
+    def test_stop_before_run_forever_never_authenticates(self):
+        stream = HomeAssistantStateStream()
+        with (
+            patch.object(_LateStopWebSocketApp, "stream", stream, create=True),
+            patch.object(_LateStopWebSocketApp, "instances", []),
+            patch("websocket.WebSocketApp", _LateStopWebSocketApp),
+        ):
+            authed_at = stream._connect_and_listen(ws_url="ws://ha:8123/api/websocket", token="token")
+            (ws_app,) = _LateStopWebSocketApp.instances
+
+        self.assertIsNone(authed_at)
+        self.assertEqual(ws_app.sent, [])
+        # stop()'s close was lost, so the session closes itself once it opens.
+        self.assertGreaterEqual(ws_app.close_calls, 2)

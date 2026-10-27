@@ -22,6 +22,9 @@ _RECONNECT_BACKOFF_INITIAL_SECONDS = 1.0
 _RECONNECT_BACKOFF_MAX_SECONDS = 30.0
 # An authed session has to stay up this long before its drop resets the backoff (#114).
 _RECONNECT_HEALTHY_SESSION_SECONDS = 30.0
+# How long `restart()` waits for the old thread before starting the new one anyway. Kept short because
+# it runs in the settings PATCH request, and a stopped thread can't keep a session open (see `restart`).
+_RESTART_JOIN_TIMEOUT_SECONDS = 1.0
 
 
 def _build_ws_url(base_url: str) -> str:
@@ -106,24 +109,42 @@ class HomeAssistantStateStream:
 
     def start(self) -> None:
         with self._lock:
-            if self._thread and self._thread.is_alive():
+            if self._thread and self._thread.is_alive() and not self._stop.is_set():
                 return
-            self._stop.clear()
-            self._thread = threading.Thread(target=self._run, name="ha-state-stream", daemon=True)
+            # Each thread gets its own stop event. A thread still on its way out after `stop()` keeps its
+            # event set, so starting a new one here can't revive it.
+            stop = threading.Event()
+            self._stop = stop
+            self._thread = threading.Thread(target=self._run, args=(stop,), name="ha-state-stream", daemon=True)
             self._thread.start()
 
-    def stop(self) -> None:
-        self._stop.set()
+    def stop(self) -> threading.Thread | None:
+        """Signal the current thread to stop and close its websocket. Returns the thread without joining it."""
         with self._lock:
+            self._stop.set()
+            thread = self._thread
             ws = self._ws_app
         try:
             if ws is not None:
                 ws.close()
         except Exception:
             logger.debug("WebSocket close failed", exc_info=True)
+        return thread
 
     def restart(self) -> None:
-        self.stop()
+        """
+        Stop the current thread and start a new one that picks up the latest settings.
+
+        The join is bounded. If the old thread hasn't exited in time (stuck in a blocking connect, or a
+        live session that takes a few seconds to notice the close), the new thread starts anyway. The old
+        thread keeps its own stop event set, so it exits as soon as it unblocks, and any session it opens
+        in the meantime is closed before it authenticates (see `_connect_and_listen`).
+        """
+        old_thread = self.stop()
+        if old_thread is not None and old_thread is not threading.current_thread():
+            old_thread.join(timeout=_RESTART_JOIN_TIMEOUT_SECONDS)
+            if old_thread.is_alive():
+                logger.info("HA state stream: previous thread still exiting, starting the new one anyway")
         self.start()
 
     def _is_leader(self) -> bool:
@@ -146,11 +167,14 @@ class HomeAssistantStateStream:
             # No cache / cache error: fall back to per-process behavior.
             return True
 
-    def _run(self) -> None:
+    def _run(self, stop: threading.Event | None = None) -> None:
+        # `start()` passes the thread's own stop event. Called without one, use the current event.
+        if stop is None:
+            stop = self._stop
         backoff_seconds = _RECONNECT_BACKOFF_INITIAL_SECONDS
         last_leader_refresh = 0.0
 
-        while not self._stop.is_set():
+        while not stop.is_set():
             with self._lock:
                 settings = self._settings
 
@@ -162,13 +186,13 @@ class HomeAssistantStateStream:
             if now_monotonic - last_leader_refresh >= _LEADER_HEARTBEAT_SECONDS:
                 last_leader_refresh = now_monotonic
             if not self._is_leader():
-                if self._stop.wait(1.0):
+                if stop.wait(1.0):
                     return
                 continue
 
             ws_url = _build_ws_url(settings.base_url)
             try:
-                authed_at = self._connect_and_listen(ws_url=ws_url, token=settings.token)
+                authed_at = self._connect_and_listen(ws_url=ws_url, token=settings.token, stop=stop)
             except Exception as exc:
                 logger.warning("HA state stream disconnected: %s", exc)
                 authed_at = None
@@ -179,21 +203,32 @@ class HomeAssistantStateStream:
             healthy = authed_at is not None and time.monotonic() - authed_at >= _RECONNECT_HEALTHY_SESSION_SECONDS
             if healthy:
                 backoff_seconds = _RECONNECT_BACKOFF_INITIAL_SECONDS
-            if self._stop.wait(backoff_seconds):
+            if stop.wait(backoff_seconds):
                 return
             if not healthy:
                 backoff_seconds = min(_RECONNECT_BACKOFF_MAX_SECONDS, backoff_seconds * 2.0)
 
-    def _connect_and_listen(self, *, ws_url: str, token: str) -> float | None:
+    def _connect_and_listen(self, *, ws_url: str, token: str, stop: threading.Event | None = None) -> float | None:
         """Run one websocket session until it closes; return the `time.monotonic()` of `auth_ok`, or None."""
         import websocket
 
+        if stop is None:
+            stop = self._stop
         authed = {"at": None}
 
-        def _on_open(_ws) -> None:
+        def _on_open(ws) -> None:
+            # `stop()` can land after `_ws_app` is set but before `run_forever` starts. Its `close()` is lost
+            # then (`run_forever` resets `keep_running` and there's no socket yet), so check again here.
+            if stop.is_set():
+                ws.close()
+                return
             logger.info("HA state stream connected (ws_url=%s)", ws_url)
 
         def _on_message(ws, message: str) -> None:
+            if stop.is_set():
+                # A stopped session never authenticates or handles events.
+                ws.close()
+                return
             try:
                 obj = json.loads(message) if message else None
             except Exception:
@@ -258,6 +293,10 @@ class HomeAssistantStateStream:
         )
 
         with self._lock:
+            # `stop()` sets the event under this lock, so either it sees `_ws_app` and closes it, or we see
+            # the event here and don't connect.
+            if stop.is_set():
+                return None
             self._ws_app = ws_app
 
         try:

@@ -18,6 +18,7 @@ from alarm.settings_registry import ALARM_PROFILE_SETTINGS_BY_KEY, coerce_settin
 from alarm.signals import settings_profile_changed
 from alarm.use_cases.settings_profile import ensure_active_settings_profile
 from config.domain_exceptions import ServiceUnavailableError, ValidationError
+from integrations_home_assistant import state_stream
 from integrations_home_assistant.connection import set_cached_connection
 
 ha_gateway: HomeAssistantGateway = default_home_assistant_gateway
@@ -85,6 +86,8 @@ class HomeAssistantSettingsView(APIView):
         entry.set_value_with_encryption(data)
 
         set_cached_connection()
+        # Reconnect the state stream if the URL, token or enabled flag changed.
+        transaction.on_commit(state_stream.apply_runtime_settings_from_active_profile, robust=True)
         transaction.on_commit(
             lambda: settings_profile_changed.send(sender=None, profile_id=profile.id, reason="updated")
         )
