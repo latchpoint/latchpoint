@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, time, timedelta, timezone
 from typing import TYPE_CHECKING
 
+from django.db import IntegrityError, transaction
 from django.utils import timezone as django_timezone
 from integrations_zwavejs.manager import (
     ZwavejsClientUnavailable,
@@ -112,8 +113,14 @@ def _enumerate_free_slot(
     zwavejs: ZwavejsGateway,
     node_id: int,
     timeout_seconds: float,
+    claimed_slots: set[int] | frozenset[int] = frozenset(),
 ) -> int:
-    """Return the lowest free user-code slot on the node. Raises :class:`LockSlotsFull`."""
+    """Return the lowest free user-code slot on the node. Raises :class:`LockSlotsFull`.
+
+    ``claimed_slots`` are slots the DB already has a ``DoorCodeLockAssignment`` for
+    on this lock. They are skipped even when the Z-Wave JS value cache still reads
+    them as Available, which it does for a while after a CC 99 ``set``.
+    """
     value_ids = zwavejs.node_get_defined_value_ids(node_id=node_id, timeout_seconds=timeout_seconds)
     if not isinstance(value_ids, list):
         value_ids = []
@@ -149,6 +156,8 @@ def _enumerate_free_slot(
         raise LockPushFailed("Unable to determine lock user-code slot count.")
 
     for slot_index in range(1, int(max_slots) + 1):
+        if slot_index in claimed_slots:
+            continue
         status_vid = {
             "commandClass": CC_USER_CODE,
             "property": "userIdStatus",
@@ -164,6 +173,27 @@ def _enumerate_free_slot(
             return slot_index
 
     raise LockSlotsFull("All user-code slots on this lock are occupied.")
+
+
+def _refresh_user_code_slot(
+    *,
+    zwavejs: ZwavejsGateway,
+    node_id: int,
+    slot_index: int,
+    timeout_seconds: float,
+) -> object:
+    """Send CC 99 ``get`` for one slot so Z-Wave JS re-reads it from the lock.
+
+    Returns whatever the CC API call returns (the slot's status/code report).
+    Gateway errors propagate; callers decide whether a failed refresh matters.
+    """
+    return zwavejs.invoke_cc_api(
+        node_id=node_id,
+        command_class=CC_USER_CODE,
+        method_name="get",
+        args=[slot_index],
+        timeout_seconds=timeout_seconds,
+    )
 
 
 # CC 78 daily-repeating schedules are time-based, so "all day" is the widest
@@ -327,11 +357,17 @@ def push_door_code_to_lock(
         raise LockUnreachable("Another sync is in progress for this lock; will retry.")
 
     try:
+        claimed_slots = set(
+            DoorCodeLockAssignment.objects.filter(lock_entity_id=lock_entity_id, slot_index__isnull=False)
+            .exclude(door_code=door_code)
+            .values_list("slot_index", flat=True)
+        )
         try:
             slot_index = _enumerate_free_slot(
                 zwavejs=zwavejs,
                 node_id=node_id,
                 timeout_seconds=timeout_seconds,
+                claimed_slots=claimed_slots,
             )
         except (ZwavejsNotConfigured, ZwavejsClientUnavailable, ZwavejsCommandValidationError) as exc:
             _record_push_failure(door_code=door_code, error_message=str(exc), terminal=True)
@@ -389,9 +425,19 @@ def push_door_code_to_lock(
         # Success — claim the slot and stamp pushed state. Resetting the attempt
         # counter is important: the cap is on *consecutive* failures, so a single
         # successful push must zero the meter.
-        DoorCodeLockAssignment.objects.filter(door_code=door_code, lock_entity_id=lock_entity_id).update(
-            slot_index=slot_index
-        )
+        try:
+            # Savepoint so a unique-constraint hit doesn't poison an outer transaction.
+            with transaction.atomic():
+                DoorCodeLockAssignment.objects.filter(door_code=door_code, lock_entity_id=lock_entity_id).update(
+                    slot_index=slot_index
+                )
+        except IntegrityError as exc:
+            # Another writer recorded this slot after we enumerated, so the lock
+            # may now hold this PIN over that code's. Retrying would only park the
+            # PIN in a second slot, so fail terminally for the operator to check.
+            message = f"Slot {slot_index} on {lock_entity_id} was recorded for another door code during the push."
+            _record_push_failure(door_code=door_code, error_message=message, terminal=True)
+            raise LockPushFailed(message) from exc
         door_code.push_state = DoorCode.PushState.PUSHED
         door_code.last_push_attempt_at = django_timezone.now()
         door_code.last_push_error = ""
@@ -405,6 +451,19 @@ def push_door_code_to_lock(
                 "updated_at",
             ]
         )
+
+        # Best-effort: re-read the slot so the Z-Wave JS value cache stops
+        # reporting it as Available. The DB-held skip in _enumerate_free_slot is
+        # what keeps the next push off this slot, so a failed refresh is only logged.
+        try:
+            _refresh_user_code_slot(
+                zwavejs=zwavejs,
+                node_id=node_id,
+                slot_index=slot_index,
+                timeout_seconds=timeout_seconds,
+            )
+        except Exception:
+            logger.warning("Failed to refresh slot %d on %s after push", slot_index, lock_entity_id, exc_info=True)
 
         schedule_applied = bool(weekdays_pushed)
         DoorCodeEvent.objects.create(

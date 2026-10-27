@@ -23,6 +23,7 @@ from locks.use_cases.lock_push import (
     LockPushFailed,
     LockSlotsFull,
     LockUnreachable,
+    push_door_code_to_assigned_locks,
     push_door_code_to_lock,
     sanitize_push_error_for_storage,
 )
@@ -829,3 +830,170 @@ class DoorCodePushRetryViewTests(EncryptionTestMixin, APITestCase):
         response = self.client.post(url)
 
         self.assertEqual(response.status_code, 404)
+
+
+class PushSlotClaimRaceTests(EncryptionTestMixin, TestCase):
+    """Issue #106: back-to-back pushes must not land in the same slot.
+
+    ``FakeGateway`` never updates ``slot_status`` after a ``set``, which is the
+    stale Z-Wave JS value cache the bug depends on.
+    """
+
+    LOCK_ENTITY_ID = "lock.front_door"
+
+    def setUp(self):
+        self.user = User.objects.create_user(email="user@example.com", password="pass")
+        Entity.objects.create(
+            entity_id=self.LOCK_ENTITY_ID,
+            domain="lock",
+            name="Front Door",
+            attributes={"zwavejs": {"node_id": 7}},
+            source="home_assistant",
+        )
+
+    def _make_code(self, *, pin: str, slot_index: int | None = None, **kwargs) -> DoorCode:
+        code = DoorCode.objects.create(
+            user=self.user,
+            encrypted_pin=SettingsEncryption.get().encrypt(pin),
+            pin_length=len(pin),
+            code_type=kwargs.pop("code_type", DoorCode.CodeType.PERMANENT),
+            is_active=True,
+            **kwargs,
+        )
+        DoorCodeLockAssignment.objects.create(door_code=code, lock_entity_id=self.LOCK_ENTITY_ID, slot_index=slot_index)
+        return code
+
+    def _slot_of(self, code: DoorCode) -> int | None:
+        return DoorCodeLockAssignment.objects.get(door_code=code, lock_entity_id=self.LOCK_ENTITY_ID).slot_index
+
+    def _set_slots(self, gateway: FakeGateway) -> list[int]:
+        return [c["args"][0] for c in gateway.invoke_calls if c["command_class"] == 99 and c["method_name"] == "set"]
+
+    def test_back_to_back_pushes_pick_different_slots_while_cache_is_stale(self):
+        gateway = FakeGateway(usersNumber=5, slot_status=dict.fromkeys(range(1, 6), 0))
+        codes = [self._make_code(pin=pin) for pin in ("1111", "2222", "3333")]
+
+        for code in codes:
+            successes, failures = push_door_code_to_assigned_locks(door_code=code, zwavejs=gateway)
+            self.assertEqual(failures, [])
+            self.assertEqual(len(successes), 1)
+
+        self.assertEqual(self._set_slots(gateway), [1, 2, 3])
+        self.assertEqual([self._slot_of(code) for code in codes], [1, 2, 3])
+
+    def test_skips_slot_already_assigned_in_db(self):
+        # The cache says slot 1 is Available but another code owns it in the DB.
+        self._make_code(pin="9999", slot_index=1)
+        gateway = FakeGateway(usersNumber=3, slot_status={1: 0, 2: 0, 3: 0})
+        code = self._make_code(pin="1234")
+
+        result = push_door_code_to_lock(door_code=code, lock_entity_id=self.LOCK_ENTITY_ID, zwavejs=gateway)
+
+        self.assertEqual(result.slot_index, 2)
+        self.assertEqual(self._set_slots(gateway), [2])
+
+    def test_slots_full_when_every_free_cache_slot_is_claimed_in_db(self):
+        self._make_code(pin="9999", slot_index=1)
+        self._make_code(pin="8888", slot_index=2)
+        gateway = FakeGateway(usersNumber=2, slot_status={1: 0, 2: 0})
+        code = self._make_code(pin="1234")
+
+        with self.assertRaises(LockSlotsFull):
+            push_door_code_to_lock(door_code=code, lock_entity_id=self.LOCK_ENTITY_ID, zwavejs=gateway)
+
+        self.assertEqual(self._set_slots(gateway), [])
+
+    def test_push_interrupted_mid_set_leaves_slot_unassigned_for_retry(self):
+        # A process killed mid-push (redeploy, OOM, Ctrl-C) must not leave a slot
+        # recorded, or the scheduler's slot_index IS NULL filter never retries it.
+        class InterruptingGateway(FakeGateway):
+            def invoke_cc_api(self, *, node_id, command_class, method_name, args=None, timeout_seconds=10.0):
+                if command_class == 99 and method_name == "set":
+                    raise KeyboardInterrupt
+                return super().invoke_cc_api(
+                    node_id=node_id,
+                    command_class=command_class,
+                    method_name=method_name,
+                    args=args,
+                    timeout_seconds=timeout_seconds,
+                )
+
+        gateway = InterruptingGateway(usersNumber=3, slot_status={1: 0, 2: 0, 3: 0})
+        code = self._make_code(pin="1234")
+
+        with self.assertRaises(KeyboardInterrupt):
+            push_door_code_to_lock(door_code=code, lock_entity_id=self.LOCK_ENTITY_ID, zwavejs=gateway)
+
+        self.assertIsNone(self._slot_of(code))
+        self.assertTrue(
+            DoorCodeLockAssignment.objects.filter(
+                door_code=code, lock_entity_id=self.LOCK_ENTITY_ID, slot_index__isnull=True
+            ).exists()
+        )
+
+    def test_slot_recorded_for_another_code_during_push_fails_terminally(self):
+        # Another writer records the same slot while our CC 99 set is in flight.
+        # The success-path write must not double-book it or blow up unhandled.
+        lock_entity_id = self.LOCK_ENTITY_ID
+        other = self._make_code(pin="9999")
+
+        class ConcurrentWriterGateway(FakeGateway):
+            def invoke_cc_api(self, *, node_id, command_class, method_name, args=None, timeout_seconds=10.0):
+                if command_class == 99 and method_name == "set":
+                    DoorCodeLockAssignment.objects.filter(door_code=other, lock_entity_id=lock_entity_id).update(
+                        slot_index=args[0]
+                    )
+                return super().invoke_cc_api(
+                    node_id=node_id,
+                    command_class=command_class,
+                    method_name=method_name,
+                    args=args,
+                    timeout_seconds=timeout_seconds,
+                )
+
+        gateway = ConcurrentWriterGateway(usersNumber=3, slot_status={1: 0, 2: 0, 3: 0})
+        code = self._make_code(pin="1234")
+
+        with self.assertRaises(LockPushFailed):
+            push_door_code_to_lock(door_code=code, lock_entity_id=self.LOCK_ENTITY_ID, zwavejs=gateway)
+
+        self.assertIsNone(self._slot_of(code))
+        self.assertEqual(self._slot_of(other), 1)
+        code.refresh_from_db()
+        self.assertEqual(code.push_state, DoorCode.PushState.FAILED)
+        self.assertIn("recorded for another door code", code.last_push_error)
+
+    def test_refreshes_slot_with_cc_99_get_after_set(self):
+        gateway = FakeGateway(usersNumber=3, slot_status={1: 1, 2: 0, 3: 0})
+        code = self._make_code(pin="1234")
+
+        push_door_code_to_lock(door_code=code, lock_entity_id=self.LOCK_ENTITY_ID, zwavejs=gateway)
+
+        cc99 = [(c["method_name"], c["args"]) for c in gateway.invoke_calls if c["command_class"] == 99]
+        self.assertEqual(cc99, [("set", [2, 1, "1234"]), ("get", [2])])
+
+    def test_refresh_failure_does_not_fail_push(self):
+        from integrations_zwavejs.manager import ZwavejsCommandError
+
+        class GetFailsGateway(FakeGateway):
+            def invoke_cc_api(self, *, node_id, command_class, method_name, args=None, timeout_seconds=10.0):
+                result = super().invoke_cc_api(
+                    node_id=node_id,
+                    command_class=command_class,
+                    method_name=method_name,
+                    args=args,
+                    timeout_seconds=timeout_seconds,
+                )
+                if command_class == 99 and method_name == "get":
+                    raise ZwavejsCommandError("driver TimeoutError after 5.0s")
+                return result
+
+        gateway = GetFailsGateway(usersNumber=3, slot_status={1: 0, 2: 0, 3: 0})
+        code = self._make_code(pin="1234")
+
+        result = push_door_code_to_lock(door_code=code, lock_entity_id=self.LOCK_ENTITY_ID, zwavejs=gateway)
+
+        self.assertEqual(result.slot_index, 1)
+        self.assertEqual(self._slot_of(code), 1)
+        code.refresh_from_db()
+        self.assertEqual(code.push_state, DoorCode.PushState.PUSHED)
