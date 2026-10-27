@@ -56,6 +56,9 @@ CC_API_CONTRACTS: dict[tuple[int, str], tuple[tuple[str, ArgRule], ...]] = {
         ("userIdStatus", _T_INT),
         ("userCode", _T_STR),
     ),
+    # CC 99 (User Code) — UserCodeCCAPI.get(userId). Used to read a slot back
+    # after a set; the optional ``multiple`` flag is never sent.
+    (99, "get"): (("userId", _T_INT),),
     # CC 99 (User Code) — UserCodeCCAPI.clear(userId).
     (99, "clear"): (("userId", _T_INT),),
     # CC 78 (Schedule Entry Lock) — setDailyRepeatingSchedule(slot, schedule).

@@ -3,8 +3,9 @@
 The companion to ``lock_config_sync.sync_lock_config`` (pull-sync). Whereas
 pull-sync reads the lock and reconciles into the DB, ``push_door_code_to_lock``
 takes a saved ``DoorCode`` row, picks the lowest free slot on the target lock,
-sends CC 99 ``set`` (user code) + an optional CC 78 ``setDailyRepeatingSchedule``
-per weekday, and records the slot assignment + push state.
+sends CC 99 ``set`` (user code), reads the slot back with CC 99 ``get`` to confirm
+the lock stored it, then an optional CC 78 ``setDailyRepeatingSchedule`` per
+weekday, and records the slot assignment + push state.
 
 The use case is intended to be called synchronously from the create/update API
 paths. It commits as much progress as it makes; transient failures land the row
@@ -15,6 +16,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time as _time
 from dataclasses import dataclass, field
 from datetime import datetime, time, timedelta, timezone
 from typing import TYPE_CHECKING
@@ -33,6 +35,8 @@ from locks.models import DoorCode, DoorCodeEvent, DoorCodeLockAssignment
 from locks.use_cases.lock_config_sync import (
     CC_SCHEDULE_ENTRY_LOCK,
     CC_USER_CODE,
+    _coerce_int,
+    _normalize_pin,
     _parse_user_code_status,
     _release_sync_lock,
     _resolve_lock_node_id,
@@ -78,6 +82,16 @@ class LockUnreachable(ConflictError):
 
 class LockPushFailed(GatewayError):
     """The lock returned a terminal error or push retries are exhausted."""
+
+    gateway_name = "zwavejs"
+
+
+class LockRejectedCode(LockPushFailed):
+    """The lock will not or did not store the PIN (admin-code clash, or the slot reads back without it)."""
+
+
+class LockCodeUnverified(GatewayError):
+    """The slot could not be read back after the ``set``; transient, the scheduler retries."""
 
     gateway_name = "zwavejs"
 
@@ -194,6 +208,189 @@ def _refresh_user_code_slot(
         args=[slot_index],
         timeout_seconds=timeout_seconds,
     )
+
+
+def _raise_if_pin_matches_admin_code(
+    *,
+    zwavejs: ZwavejsGateway,
+    node_id: int,
+    pin: str,
+    timeout_seconds: float,
+) -> None:
+    """Raise :class:`LockRejectedCode` when ``pin`` equals the lock's CC 99 ``adminCode``.
+
+    Yale locks silently drop a user code that matches the admin code while the
+    ``set`` call still returns normally (issue #107). Only checked when the lock
+    exposes a readable ``adminCode`` value; any read problem skips the check and
+    leaves it to the post-set readback.
+    """
+    try:
+        value_ids = zwavejs.node_get_defined_value_ids(node_id=node_id, timeout_seconds=timeout_seconds)
+        admin_vid = next(
+            (
+                vid
+                for vid in (value_ids if isinstance(value_ids, list) else [])
+                if isinstance(vid, dict)
+                and vid.get("commandClass") == CC_USER_CODE
+                and vid.get("property") == "adminCode"
+            ),
+            None,
+        )
+        if admin_vid is None:
+            return
+        raw = zwavejs.node_get_value(node_id=node_id, value_id=admin_vid, timeout_seconds=timeout_seconds)
+    except Exception:
+        logger.debug("Could not read adminCode for node %d; skipping admin-code check", node_id, exc_info=True)
+        return
+
+    known, admin_code = _normalize_pin(raw)
+    if known and admin_code == pin:
+        raise LockRejectedCode("PIN matches this lock's admin code. Choose a different PIN.")
+
+
+# Delays between CC 99 ``get`` readback attempts after a ``set``. Battery locks
+# can be slow to answer right after a write, so one timeout is not a verdict.
+_READBACK_RETRY_DELAYS_SECONDS: tuple[float, ...] = (1.0, 2.0)
+
+# CC 99 userIdStatus "Available": the slot is definitively empty.
+_USER_ID_STATUS_AVAILABLE = 0
+
+
+def _verify_user_code_slot(
+    *,
+    zwavejs: ZwavejsGateway,
+    node_id: int,
+    slot_index: int,
+    pin: str,
+    timeout_seconds: float,
+) -> None:
+    """Read ``slot_index`` back with CC 99 ``get`` and confirm it holds ``pin``.
+
+    Raises :class:`LockRejectedCode` (terminal) when the lock answers and the slot
+    is empty, holds a different code, or holds the code disabled, and
+    :class:`LockCodeUnverified` (transient) when no attempt gets a usable answer.
+    An empty answer is asked once more before it counts, since a lock still
+    committing the write can report Available right after the set. Terminal
+    config errors propagate unchanged. A slot that reads back occupied with a
+    masked/unreadable code is accepted (with a warning), since that's all such a
+    lock lets us confirm.
+    """
+    empty_message = f"Lock did not store the code: slot {slot_index} reads back empty."
+    attempts = len(_READBACK_RETRY_DELAYS_SECONDS) + 1
+    last_reason = "no response"
+    empty_answers = 0
+    for attempt in range(attempts):
+        if attempt:
+            _time.sleep(_READBACK_RETRY_DELAYS_SECONDS[attempt - 1])
+        try:
+            response = _refresh_user_code_slot(
+                zwavejs=zwavejs,
+                node_id=node_id,
+                slot_index=slot_index,
+                timeout_seconds=timeout_seconds,
+            )
+        except (ZwavejsNotConfigured, ZwavejsClientUnavailable):
+            raise
+        except GatewayError as exc:
+            last_reason = f"{exc.__class__.__name__}: {exc}"
+            continue
+
+        if isinstance(response, dict) and "response" in response:
+            response = response["response"]
+        if not isinstance(response, dict):
+            last_reason = "lock returned no user code report"
+            continue
+
+        status = response.get("userIdStatus")
+        if _coerce_int(status) == _USER_ID_STATUS_AVAILABLE:
+            empty_answers += 1
+            if empty_answers >= 2:
+                raise LockRejectedCode(empty_message)
+            last_reason = "slot reads back empty"
+            continue
+        occupied, is_active = _parse_user_code_status(status)
+        if not occupied:
+            # e.g. 254 "status not available" — not a verdict, ask again.
+            last_reason = f"unknown userIdStatus {status!r}"
+            continue
+        if is_active is False:
+            # We always send userIdStatus=1 (enabled); a disabled code won't open the door.
+            raise LockRejectedCode(f"Lock stored the code in slot {slot_index} but reports it disabled.")
+
+        known, stored = _normalize_pin(response.get("userCode"))
+        if not known:
+            logger.warning(
+                "Slot %d on node %d reads back occupied but userCode is %s; accepting without comparing",
+                slot_index,
+                node_id,
+                "masked or unreadable" if "userCode" in response else "missing from the report",
+            )
+            return
+        if stored != pin:
+            raise LockRejectedCode(f"Lock did not store the code: slot {slot_index} holds a different code.")
+        return
+
+    if empty_answers:
+        # The lock did answer "empty" and never said otherwise.
+        raise LockRejectedCode(empty_message)
+    raise LockCodeUnverified(f"Could not read back slot {slot_index} after {attempts} attempts ({last_reason}).")
+
+
+def _find_verified_slot_holding_pin(
+    *,
+    zwavejs: ZwavejsGateway,
+    node_id: int,
+    pin: str,
+    timeout_seconds: float,
+    claimed_slots: set[int] | frozenset[int] = frozenset(),
+) -> int | None:
+    """Return a slot that already holds ``pin`` on this lock, confirmed by a readback.
+
+    Covers a code that landed on an earlier attempt whose readback never got an
+    answer: the slot wasn't claimed, so a retry would otherwise write the PIN to
+    a new slot, the lock would drop it as a duplicate, and the original slot would
+    keep working with nothing tracking it. Matches on Z-Wave JS's cached
+    ``userCode`` values, so locks that mask codes can't be matched here.
+    ``claimed_slots`` (the same DB-held set ``_enumerate_free_slot`` skips) are
+    never adopted. A candidate whose readback disagrees with the cache is
+    ignored; :class:`LockCodeUnverified` propagates.
+    """
+    value_ids = zwavejs.node_get_defined_value_ids(node_id=node_id, timeout_seconds=timeout_seconds)
+    code_vids = sorted(
+        (
+            vid
+            for vid in (value_ids if isinstance(value_ids, list) else [])
+            if isinstance(vid, dict)
+            and vid.get("commandClass") == CC_USER_CODE
+            and vid.get("property") == "userCode"
+            and isinstance(vid.get("propertyKey"), int)
+            and vid.get("propertyKey") > 0
+        ),
+        key=lambda vid: vid["propertyKey"],
+    )
+    for vid in code_vids:
+        slot_index = int(vid["propertyKey"])
+        if slot_index in claimed_slots:
+            continue
+        try:
+            cached = zwavejs.node_get_value(node_id=node_id, value_id=vid, timeout_seconds=timeout_seconds)
+        except Exception:
+            continue
+        known, cached_pin = _normalize_pin(cached)
+        if not known or cached_pin != pin:
+            continue
+        try:
+            _verify_user_code_slot(
+                zwavejs=zwavejs,
+                node_id=node_id,
+                slot_index=slot_index,
+                pin=pin,
+                timeout_seconds=timeout_seconds,
+            )
+        except LockRejectedCode:
+            continue
+        return slot_index
+    return None
 
 
 # CC 78 daily-repeating schedules are time-based, so "all day" is the widest
@@ -331,9 +528,15 @@ def push_door_code_to_lock(
 
     Allocates the lowest-free slot, sends CC 99 ``set`` (and CC 78 schedule when
     the code carries a daily window), and persists the slot index + push state.
+    If the lock already holds the PIN in an unclaimed slot (an earlier attempt
+    landed but couldn't be confirmed), that slot is verified and adopted instead
+    of writing a new one.
 
     Errors:
       * :class:`InvalidPin` / :class:`LockSlotsFull` raise before any network call.
+      * :class:`LockRejectedCode` — terminal; the PIN matches the lock's admin
+        code (checked before the ``set``) or the post-set readback shows the
+        lock didn't store it. The row is flipped to ``failed``.
       * :class:`LockUnreachable` — transient; the row stays ``pending`` and the
         scheduler will retry.
       * :class:`LockPushFailed` — terminal; the row is flipped to ``failed`` and a
@@ -363,16 +566,34 @@ def push_door_code_to_lock(
             .values_list("slot_index", flat=True)
         )
         try:
-            slot_index = _enumerate_free_slot(
+            _raise_if_pin_matches_admin_code(
                 zwavejs=zwavejs,
                 node_id=node_id,
+                pin=pin,
+                timeout_seconds=timeout_seconds,
+            )
+            slot_index = _find_verified_slot_holding_pin(
+                zwavejs=zwavejs,
+                node_id=node_id,
+                pin=pin,
                 timeout_seconds=timeout_seconds,
                 claimed_slots=claimed_slots,
             )
+            adopted_existing_slot = slot_index is not None
+            if slot_index is None:
+                slot_index = _enumerate_free_slot(
+                    zwavejs=zwavejs,
+                    node_id=node_id,
+                    timeout_seconds=timeout_seconds,
+                    claimed_slots=claimed_slots,
+                )
         except (ZwavejsNotConfigured, ZwavejsClientUnavailable, ZwavejsCommandValidationError) as exc:
             _record_push_failure(door_code=door_code, error_message=str(exc), terminal=True)
             raise LockPushFailed(str(exc)) from exc
         except LockSlotsFull:
+            raise
+        except LockRejectedCode as exc:
+            _record_push_failure(door_code=door_code, error_message=str(exc), terminal=True)
             raise
         except LockPushFailed:
             raise
@@ -385,7 +606,8 @@ def push_door_code_to_lock(
             raise LockUnreachable("Lock is not reachable right now; will retry.") from exc
 
         logger.info(
-            "Pushing door code id=%d to %s (node=%d slot=%d)",
+            "%s door code id=%d to %s (node=%d slot=%d)",
+            "Adopting existing slot for" if adopted_existing_slot else "Pushing",
             door_code.id,
             lock_entity_id,
             node_id,
@@ -393,17 +615,29 @@ def push_door_code_to_lock(
         )
 
         try:
-            # Z-Wave JS CC 99 set signature is (userId, userIdStatus, userCode).
-            # userIdStatus = 1 means "Occupied" (the code is active on the lock).
-            # The server validator rejects 2-arg calls; passing only [slot, pin]
-            # makes the PIN land where userIdStatus is expected.
-            zwavejs.invoke_cc_api(
-                node_id=node_id,
-                command_class=CC_USER_CODE,
-                method_name="set",
-                args=[slot_index, 1, pin],
-                timeout_seconds=timeout_seconds,
-            )
+            if not adopted_existing_slot:
+                # Z-Wave JS CC 99 set signature is (userId, userIdStatus, userCode).
+                # userIdStatus = 1 means "Occupied" (the code is active on the lock).
+                # The server validator rejects 2-arg calls; passing only [slot, pin]
+                # makes the PIN land where userIdStatus is expected.
+                zwavejs.invoke_cc_api(
+                    node_id=node_id,
+                    command_class=CC_USER_CODE,
+                    method_name="set",
+                    args=[slot_index, 1, pin],
+                    timeout_seconds=timeout_seconds,
+                )
+                # The set returning is not proof the lock kept the code (issue #107);
+                # read the slot back before claiming it or pushing schedules to it.
+                # That get also makes Z-Wave JS re-read the slot, so it doubles as
+                # the cache refresh #106 added; no second get after the success stamp.
+                _verify_user_code_slot(
+                    zwavejs=zwavejs,
+                    node_id=node_id,
+                    slot_index=slot_index,
+                    pin=pin,
+                    timeout_seconds=timeout_seconds,
+                )
             weekdays_pushed = _push_daily_repeating_schedule(
                 zwavejs=zwavejs,
                 node_id=node_id,
@@ -414,6 +648,9 @@ def push_door_code_to_lock(
         except (ZwavejsNotConfigured, ZwavejsClientUnavailable, ZwavejsCommandValidationError) as exc:
             _record_push_failure(door_code=door_code, error_message=str(exc), terminal=True)
             raise LockPushFailed(str(exc)) from exc
+        except LockRejectedCode as exc:
+            _record_push_failure(door_code=door_code, error_message=str(exc), terminal=True)
+            raise
         except GatewayError as exc:
             _record_push_failure(
                 door_code=door_code,
@@ -451,19 +688,6 @@ def push_door_code_to_lock(
                 "updated_at",
             ]
         )
-
-        # Best-effort: re-read the slot so the Z-Wave JS value cache stops
-        # reporting it as Available. The DB-held skip in _enumerate_free_slot is
-        # what keeps the next push off this slot, so a failed refresh is only logged.
-        try:
-            _refresh_user_code_slot(
-                zwavejs=zwavejs,
-                node_id=node_id,
-                slot_index=slot_index,
-                timeout_seconds=timeout_seconds,
-            )
-        except Exception:
-            logger.warning("Failed to refresh slot %d on %s after push", slot_index, lock_entity_id, exc_info=True)
 
         schedule_applied = bool(weekdays_pushed)
         DoorCodeEvent.objects.create(
@@ -518,14 +742,24 @@ def push_door_code_to_assigned_locks(
     ``only_unassigned=True`` (the default) skips assignments that already carry a
     ``slot_index`` — used by the scheduler retry path to avoid re-pushing locks that
     succeeded in a previous attempt.
+
+    ``push_state`` / ``last_push_error`` live on the shared DoorCode row, so each
+    lock's push overwrites the previous lock's. The final state is derived after
+    the loop instead: ``failed`` if any lock failed terminally (keeping that
+    error), else ``pending`` if any lock failed or is still without a slot, else
+    ``pushed``. One lock's success never hides another lock's failure.
     """
     assignments = list(door_code.lock_assignments.all())
     successes: list[PushResult] = []
     failures: list[tuple[str, str]] = []
+    terminal_error: str | None = None
+    pending_error: str | None = None
 
+    door_code.refresh_from_db(fields=["push_state", "last_push_attempt_at", "last_push_error"])
     for assignment in assignments:
         if only_unassigned and assignment.slot_index is not None:
             continue
+        attempt_marker = door_code.last_push_attempt_at
         try:
             result = push_door_code_to_lock(
                 door_code=door_code,
@@ -537,11 +771,29 @@ def push_door_code_to_assigned_locks(
             successes.append(result)
         except (LockUnreachable, LockSlotsFull, LockPushFailed, InvalidPin) as exc:
             failures.append((assignment.lock_entity_id, str(exc)))
+            door_code.refresh_from_db(fields=["push_state", "last_push_attempt_at", "last_push_error"])
+            # Capture what this lock's failure recorded before a later lock overwrites it.
+            # Some failures (slots full, invalid PIN) don't record anything.
+            recorded = door_code.last_push_attempt_at != attempt_marker
+            if recorded and door_code.push_state == DoorCode.PushState.FAILED:
+                terminal_error = terminal_error or door_code.last_push_error or str(exc)
+            else:
+                pending_error = pending_error or (door_code.last_push_error if recorded else "") or str(exc)
         # Refresh push_state from DB — each push may have updated it.
         door_code.refresh_from_db(fields=["push_state", "last_push_attempt_at", "last_push_error"])
 
-    if successes and not failures:
-        door_code.push_state = DoorCode.PushState.PUSHED
-        door_code.last_push_error = ""
+    if terminal_error is not None:
+        final_state, final_error = DoorCode.PushState.FAILED, terminal_error
+    elif not successes:
+        # Nothing succeeded and nothing failed terminally: the per-lock records stand.
+        return successes, failures
+    elif pending_error is not None or door_code.lock_assignments.filter(slot_index__isnull=True).exists():
+        final_state, final_error = DoorCode.PushState.PENDING, pending_error or ""
+    else:
+        final_state, final_error = DoorCode.PushState.PUSHED, ""
+
+    if door_code.push_state != final_state or door_code.last_push_error != final_error:
+        door_code.push_state = final_state
+        door_code.last_push_error = final_error
         door_code.save(update_fields=["push_state", "last_push_error", "updated_at"])
     return successes, failures
