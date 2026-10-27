@@ -1,7 +1,9 @@
-"""Reconnect backoff for the HA state stream (#108).
+"""Reconnect backoff for the HA state stream (#108, #114).
 
 websocket-client's ``run_forever`` returns instead of raising when the connection is refused,
-so ``_run`` has to back off after every session, not only after an exception.
+so ``_run`` has to back off after every session, not only after an exception. A session that
+reaches ``auth_ok`` only resets the backoff once it has stayed up for a while, so a connection
+HA drops right after auth keeps backing off too.
 """
 
 from __future__ import annotations
@@ -49,6 +51,34 @@ class _RecordingStopEvent:
         return self._set
 
 
+class _FakeClock:
+    """Replaces ``time.monotonic`` so session lengths don't need real time to pass."""
+
+    def __init__(self):
+        self.now = 1000.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+def _sessions(clock: _FakeClock, durations: list[float | None]):
+    """Fake ``_connect_and_listen``: each entry is how long the session stayed up after ``auth_ok``.
+
+    ``None`` is a session that never authed. Runs out to ``None`` once the list is used up.
+    """
+    remaining = iter(durations)
+
+    def _connect(**_kwargs) -> float | None:
+        duration = next(remaining, None)
+        if duration is None:
+            return None
+        authed_at = clock.now
+        clock.now += duration
+        return authed_at
+
+    return _connect
+
+
 def _make_stream(*, max_waits: int) -> tuple[HomeAssistantStateStream, _RecordingStopEvent]:
     stream = HomeAssistantStateStream()
     stream._settings = _SETTINGS
@@ -61,7 +91,7 @@ def _make_stream(*, max_waits: int) -> tuple[HomeAssistantStateStream, _Recordin
 class StateStreamBackoffTests(SimpleTestCase):
     def test_return_without_auth_ok_backs_off_and_grows_to_cap(self, _leader):
         stream, stop = _make_stream(max_waits=7)
-        with patch.object(stream, "_connect_and_listen", return_value=False) as connect:
+        with patch.object(stream, "_connect_and_listen", return_value=None) as connect:
             stream._run()
 
         self.assertEqual(stop.waits, [1.0, 2.0, 4.0, 8.0, 16.0, 30.0, 30.0])
@@ -69,11 +99,57 @@ class StateStreamBackoffTests(SimpleTestCase):
 
     def test_connection_that_reached_auth_ok_resets_backoff(self, _leader):
         stream, stop = _make_stream(max_waits=5)
-        results = iter([False, False, False, True])
-        with patch.object(stream, "_connect_and_listen", side_effect=lambda **_: next(results, False)):
+        clock = _FakeClock()
+        sessions = _sessions(clock, [None, None, None, state_stream._RECONNECT_HEALTHY_SESSION_SECONDS])
+        with (
+            patch.object(state_stream.time, "monotonic", clock),
+            patch.object(stream, "_connect_and_listen", side_effect=sessions),
+        ):
             stream._run()
 
         self.assertEqual(stop.waits, [1.0, 2.0, 4.0, 1.0, 1.0])
+
+    def test_authed_session_shorter_than_threshold_keeps_backing_off_to_cap(self, _leader):
+        # The #114 flap: HA sends auth_ok and drops the connection 0.2s later, every time.
+        stream, stop = _make_stream(max_waits=7)
+        clock = _FakeClock()
+        with (
+            patch.object(state_stream.time, "monotonic", clock),
+            patch.object(stream, "_connect_and_listen", side_effect=_sessions(clock, [0.2] * 7)) as connect,
+        ):
+            stream._run()
+
+        self.assertEqual(stop.waits, [1.0, 2.0, 4.0, 8.0, 16.0, 30.0, 30.0])
+        self.assertEqual(connect.call_count, 7)
+
+    def test_authed_session_resets_backoff_only_at_or_over_threshold(self, _leader):
+        threshold = state_stream._RECONNECT_HEALTHY_SESSION_SECONDS
+        # Halves keep the fake clock's float math exact right at the boundary.
+        for duration in (threshold, threshold + 0.5, 3600.0):
+            with self.subTest(duration=duration):
+                stream, stop = _make_stream(max_waits=6)
+                clock = _FakeClock()
+                sessions = _sessions(clock, [None, None, threshold - 0.5, None, duration])
+                with (
+                    patch.object(state_stream.time, "monotonic", clock),
+                    patch.object(stream, "_connect_and_listen", side_effect=sessions),
+                ):
+                    stream._run()
+
+                # Just under the threshold counts as a failed attempt, at or over it resets.
+                self.assertEqual(stop.waits, [1.0, 2.0, 4.0, 8.0, 1.0, 1.0])
+
+    def test_healthy_session_threshold_is_patchable(self, _leader):
+        stream, stop = _make_stream(max_waits=4)
+        clock = _FakeClock()
+        with (
+            patch.object(state_stream, "_RECONNECT_HEALTHY_SESSION_SECONDS", 0.5),
+            patch.object(state_stream.time, "monotonic", clock),
+            patch.object(stream, "_connect_and_listen", side_effect=_sessions(clock, [None, None, 0.25, 0.5])),
+        ):
+            stream._run()
+
+        self.assertEqual(stop.waits, [1.0, 2.0, 4.0, 1.0])
 
     def test_exception_still_backs_off(self, _leader):
         stream, stop = _make_stream(max_waits=3)
@@ -91,9 +167,9 @@ class StateStreamBackoffTests(SimpleTestCase):
         stream._settings = _SETTINGS
         attempted = threading.Event()
 
-        def _refused(**_kwargs) -> bool:
+        def _refused(**_kwargs) -> float | None:
             attempted.set()
-            return False
+            return None
 
         with (
             patch.object(state_stream, "_RECONNECT_BACKOFF_INITIAL_SECONDS", 60.0),
@@ -175,16 +251,18 @@ class _FakeWebSocketApp:
 
 
 class ConnectAndListenAuthResultTests(SimpleTestCase):
-    def _run_session(self, messages: list[dict]) -> bool:
+    def _run_session(self, messages: list[dict]) -> float | None:
         stream = HomeAssistantStateStream()
         with patch.object(_FakeWebSocketApp, "messages", messages), patch("websocket.WebSocketApp", _FakeWebSocketApp):
             return stream._connect_and_listen(ws_url="ws://ha:8123/api/websocket", token="token")
 
-    def test_refused_connection_returns_false(self):
-        self.assertFalse(self._run_session([]))
+    def test_refused_connection_returns_none(self):
+        self.assertIsNone(self._run_session([]))
 
-    def test_auth_invalid_returns_false(self):
-        self.assertFalse(self._run_session([{"type": "auth_required"}, {"type": "auth_invalid", "message": "bad"}]))
+    def test_auth_invalid_returns_none(self):
+        self.assertIsNone(self._run_session([{"type": "auth_required"}, {"type": "auth_invalid", "message": "bad"}]))
 
-    def test_auth_ok_returns_true(self):
-        self.assertTrue(self._run_session([{"type": "auth_required"}, {"type": "auth_ok"}]))
+    def test_auth_ok_returns_monotonic_time_of_auth_ok(self):
+        with patch.object(state_stream.time, "monotonic", return_value=123.0):
+            authed_at = self._run_session([{"type": "auth_required"}, {"type": "auth_ok"}])
+        self.assertEqual(authed_at, 123.0)
