@@ -160,7 +160,8 @@ class HomeAssistantStateStream:
             if now_monotonic - last_leader_refresh >= _LEADER_HEARTBEAT_SECONDS:
                 last_leader_refresh = now_monotonic
             if not self._is_leader():
-                time.sleep(1.0)
+                if self._stop.wait(1.0):
+                    return
                 continue
 
             ws_url = _build_ws_url(settings.base_url)
