@@ -341,13 +341,40 @@ describe('DoorCodeEditContainer', () => {
     expect(req.code).toBe('2468')
   })
 
+  it("doesn't bring the PIN notice back once the server's PIN was typed", async () => {
+    const { serverChanges } = renderForm(makeCode())
+    expect(await screen.findByDisplayValue('Front')).toBeTruthy()
+
+    fireEvent.change(newCodeInput(), { target: { value: '2468' } })
+    await serverChanges(makeCode({ pin: '97531', pinLength: 5 }))
+    await waitFor(() => expect(notice()).toHaveTextContent(`New code changed on the server. ${KEPT}`))
+
+    fireEvent.change(newCodeInput(), { target: { value: '97531' } })
+    expect(notice()).toBeEmptyDOMElement()
+
+    // The server hasn't changed again, so another PIN is just an edit.
+    fireEvent.change(newCodeInput(), { target: { value: '1111' } })
+    expect(notice()).toBeEmptyDOMElement()
+  })
+
   describe('saving', () => {
-    it('sends only the password when nothing was edited', async () => {
+    it('sends only the password when nothing was edited on an active code', async () => {
       const onUpdate = vi.fn().mockResolvedValue(undefined)
       renderForm(makeCode(), { onUpdate })
       expect(await screen.findByDisplayValue('Front')).toBeTruthy()
 
-      expect(await savedRequest(onUpdate)).toEqual({ reauthPassword: 'pw' })
+      const req = await savedRequest(onUpdate)
+      expect(req).toEqual({ reauthPassword: 'pw' })
+      expect(req).not.toHaveProperty('isActive')
+    })
+
+    it('always sends off for an inactive code so the save can clear its PIN from the lock', async () => {
+      const onUpdate = vi.fn().mockResolvedValue(undefined)
+      renderForm(makeCode({ isActive: false }), { onUpdate })
+      expect(await screen.findByDisplayValue('Front')).toBeTruthy()
+      expect(activeSwitch()).toHaveAttribute('aria-checked', 'false')
+
+      expect(await savedRequest(onUpdate)).toEqual({ reauthPassword: 'pw', isActive: false })
     })
 
     it('sends only the edited fields, even when they conflicted', async () => {
@@ -356,11 +383,11 @@ describe('DoorCodeEditContainer', () => {
       expect(await screen.findByDisplayValue('Front')).toBeTruthy()
 
       fireEvent.change(labelInput(), { target: { value: 'Back door' } })
-      // Turned off elsewhere, along with a label change.
+      // Turned off elsewhere, along with a label change. Off is always sent.
       await serverChanges(makeCode({ label: 'Garage', isActive: false }))
       await waitFor(() => expect(notice()).toHaveTextContent(KEPT))
 
-      expect(await savedRequest(onUpdate)).toEqual({ reauthPassword: 'pw', label: 'Back door' })
+      expect(await savedRequest(onUpdate)).toEqual({ reauthPassword: 'pw', label: 'Back door', isActive: false })
     })
 
     it("doesn't send the active state from a tab that never saw it change", async () => {

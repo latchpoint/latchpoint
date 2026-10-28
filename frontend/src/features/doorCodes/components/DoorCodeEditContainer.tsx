@@ -183,7 +183,8 @@ export function DoorCodeEditContainer({ code, locks, locksIsLoading, locksError,
     setSyncedPinKey(serverPinKey)
     if (typedPin && typedPin !== code.pin) setPinConflict(true)
   }
-  if (pinConflict && !typedPin) setPinConflict(false)
+  // Like the other fields, clearing the PIN or typing the server's resolves it.
+  if (pinConflict && (!typedPin || typedPin === code.pin)) setPinConflict(false)
   const hasPinConflict = pinConflict && typedPin !== '' && typedPin !== code.pin
 
   const conflictedFieldNames = serverFields.filter(({ field }) => field.hasConflict).map(({ name }) => name)
@@ -266,7 +267,11 @@ export function DoorCodeEditContainer({ code, locks, locksIsLoading, locksError,
       return
     }
 
-    if (isActiveField.isEdited) req.isActive = editIsActive
+    // Off is always sent. The backend uses it to clear a PIN an inactive code
+    // may still have on a lock, which nothing else in the UI can trigger, and it
+    // can never push the code. On still needs a real edit, so a stale tab can't
+    // turn a code back on.
+    if (isActiveField.isEdited || !editIsActive) req.isActive = editIsActive
     if (maxUsesField.isEdited) req.maxUses = maxUses
     // The manual ids stand in for the picker when it's empty, so compare what
     // would be saved with the server's locks.
