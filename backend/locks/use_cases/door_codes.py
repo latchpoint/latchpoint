@@ -1,17 +1,17 @@
 from __future__ import annotations
 
-import contextlib
 import logging
 from typing import TYPE_CHECKING
 
 from django.db import transaction
 from django.db.models import Exists, OuterRef, Q, QuerySet
 from django.utils import timezone as django_timezone
+from django.utils.dateparse import parse_time
 
 from accounts.models import User
 from accounts.policies import is_admin
 from alarm.crypto import SettingsEncryption
-from config.domain_exceptions import ForbiddenError, NotFoundError, ValidationError
+from config.domain_exceptions import ConflictError, ForbiddenError, NotFoundError, ValidationError
 from locks.models import DoorCode, DoorCodeEvent, DoorCodeLockAssignment
 
 logger = logging.getLogger(__name__)
@@ -33,6 +33,10 @@ class ReauthRequired(ValidationError):
 
 
 class ReauthFailed(ForbiddenError):
+    pass
+
+
+class DoorCodeInactive(ConflictError):
     pass
 
 
@@ -166,6 +170,68 @@ def create_door_code(
 _PUSH_TRIGGER_FIELDS = frozenset({"code", "is_active", "days_of_week", "window_start", "window_end"})
 
 
+def _as_time(value):
+    return parse_time(value) if isinstance(value, str) else value
+
+
+def _changed_push_trigger_fields(*, code: DoorCode, changes: dict, old_pin: str | None) -> set[str]:
+    """Return the push trigger fields in ``changes`` whose value differs from ``code``'s.
+
+    The edit form sends every field on every save, so a key being present doesn't
+    mean it changed (issue #139). Call before ``changes`` is applied.
+    """
+    changed: set[str] = set()
+    for field in _PUSH_TRIGGER_FIELDS & changes.keys():
+        new = changes.get(field)
+        if field == "code":
+            # Encrypted at rest, so compare plaintext. An empty code isn't applied.
+            if new and str(new).strip() != old_pin:
+                changed.add(field)
+        elif field == "is_active":
+            # Sending false for a code that's already inactive but still holds a
+            # slot (a used one-time code) still clears it, like before.
+            if bool(new) != code.is_active or (
+                not new and DoorCodeLockAssignment.objects.filter(door_code=code, slot_index__isnull=False).exists()
+            ):
+                changed.add(field)
+        elif field in ("window_start", "window_end"):
+            if _as_time(new) != _as_time(getattr(code, field)):
+                changed.add(field)
+        elif new != getattr(code, field):
+            changed.add(field)
+    return changed
+
+
+def _slot_clear_failure(*, lock_entity_id: str, slot_index: int, exc: Exception) -> dict[str, object]:
+    from locks.use_cases.lock_push import sanitize_push_error_for_storage
+
+    logger.warning(
+        "Could not clear slot %d on %s; it may still hold the door code's PIN",
+        slot_index,
+        lock_entity_id,
+        exc_info=True,
+    )
+    return {
+        "lock_entity_id": lock_entity_id,
+        "slot_index": slot_index,
+        "reason": sanitize_push_error_for_storage(f"{exc.__class__.__name__}: {exc}")[:200],
+    }
+
+
+def _record_slot_clear_failures(*, code: DoorCode, failures: list[dict[str, object]]) -> None:
+    """Mark ``code`` failed with the slots it couldn't clear, which stay tracked."""
+    from locks.use_cases.lock_push import sanitize_push_error_for_storage
+
+    message = "; ".join(
+        f"Couldn't clear slot {f['slot_index']} on {f['lock_entity_id']}, it may still hold the PIN ({f['reason']})"
+        for f in failures
+    )
+    code.push_state = DoorCode.PushState.FAILED
+    code.last_push_error = sanitize_push_error_for_storage(message)[:500]
+    code.last_push_attempt_at = django_timezone.now()
+    code.save(update_fields=["push_state", "last_push_error", "last_push_attempt_at", "updated_at"])
+
+
 def update_door_code(
     *,
     code: DoorCode,
@@ -176,18 +242,23 @@ def update_door_code(
     """Update a door code and its lock assignments, emitting a `DoorCodeEvent` when changed.
 
     When ``zwavejs`` is provided, dropped locks' slots are CC 99 ``clear``-ed. A
-    push-relevant field change clears and re-pushes every lock; a lock-list-only
-    change keeps the surviving locks' slots and pushes only locks without one.
+    change to a push-relevant field's value clears and re-pushes every lock; a
+    lock-list-only change keeps the surviving locks' slots and pushes only locks
+    without one. An inactive code is never pushed. A slot whose clear fails stays
+    tracked (a dropped lock keeps its assignment) and the code is marked failed.
     """
     updated_fields = []
 
     # Snapshot the PIN before it can be overwritten: a still-pending push may have
     # left it in a slot that only the recorded unconfirmed attempts know about.
     old_pin: str | None = None
+    push_trigger_changes: set[str] = set()
     if zwavejs is not None:
+        from locks.use_cases.lock_config_sync import clear_lock_user_code_slot
         from locks.use_cases.lock_push import decrypt_pin_or_none
 
         old_pin = decrypt_pin_or_none(code)
+        push_trigger_changes = _changed_push_trigger_fields(code=code, changes=changes, old_pin=old_pin)
 
     if "code" in changes and changes.get("code"):
         raw_code = str(changes.get("code") or "").strip()
@@ -230,28 +301,42 @@ def update_door_code(
     # Diff the lock set. Locks that stay keep their assignment and slot_index;
     # recreating them would forget a slot the lock still holds the PIN in, and the
     # re-push would write it into a second slot (issue #133).
-    dropped_slot_clears: list[dict[str, object]] = []
     dropped_lock_entity_ids: list[str] = []
+    removed_lock_entity_ids: list[str] = []
     added_lock_entity_ids: list[str] = []
+    failed_slot_clears: list[dict[str, object]] = []
     if "lock_entity_ids" in changes:
         new_entity_ids = list(dict.fromkeys(changes.get("lock_entity_ids") or []))
         old_assignments = list(DoorCodeLockAssignment.objects.filter(door_code=code))
         old_entity_ids = {assignment.lock_entity_id for assignment in old_assignments}
-        dropped_assignment_ids: list[int] = []
+        removed_assignment_ids: list[int] = []
         for assignment in old_assignments:
             if assignment.lock_entity_id in new_entity_ids:
                 continue
-            dropped_assignment_ids.append(assignment.id)
             dropped_lock_entity_ids.append(assignment.lock_entity_id)
-            if assignment.slot_index is None:
-                continue
-            dropped_slot_clears.append(
-                {"lock_entity_id": assignment.lock_entity_id, "slot_index": int(assignment.slot_index)}
-            )
+            if zwavejs is not None and assignment.slot_index is not None:
+                # An offline lock doesn't fail the PATCH, but its assignment and slot
+                # stay until a clear works, so the PIN isn't left on the lock with
+                # nothing tracking it (issue #139). Dropping the lock again retries.
+                try:
+                    clear_lock_user_code_slot(
+                        lock_entity_id=assignment.lock_entity_id,
+                        slot_index=int(assignment.slot_index),
+                        zwavejs=zwavejs,
+                    )
+                except Exception as exc:
+                    failed_slot_clears.append(
+                        _slot_clear_failure(
+                            lock_entity_id=assignment.lock_entity_id, slot_index=int(assignment.slot_index), exc=exc
+                        )
+                    )
+                    continue
+            removed_assignment_ids.append(assignment.id)
+            removed_lock_entity_ids.append(assignment.lock_entity_id)
         added_lock_entity_ids = [entity_id for entity_id in new_entity_ids if entity_id not in old_entity_ids]
 
-        if dropped_assignment_ids:
-            DoorCodeLockAssignment.objects.filter(id__in=dropped_assignment_ids).delete()
+        if removed_assignment_ids:
+            DoorCodeLockAssignment.objects.filter(id__in=removed_assignment_ids).delete()
 
         if added_lock_entity_ids:
             DoorCodeLockAssignment.objects.bulk_create(
@@ -266,13 +351,14 @@ def update_door_code(
             )
         updated_fields.append("lock_entity_ids")
 
+    updated_event: DoorCodeEvent | None = None
     if updated_fields:
         metadata: dict[str, object] = {"updated_fields": updated_fields}
         if added_lock_entity_ids:
             metadata["added_lock_entity_ids"] = added_lock_entity_ids
-        if dropped_lock_entity_ids:
-            metadata["removed_lock_entity_ids"] = dropped_lock_entity_ids
-        DoorCodeEvent.objects.create(
+        if removed_lock_entity_ids:
+            metadata["removed_lock_entity_ids"] = removed_lock_entity_ids
+        updated_event = DoorCodeEvent.objects.create(
             door_code=code,
             user=actor_user,
             event_type=DoorCodeEvent.EventType.CODE_UPDATED,
@@ -280,26 +366,13 @@ def update_door_code(
         )
 
     if zwavejs is not None:
-        from locks.use_cases.lock_config_sync import clear_lock_user_code_slot
-
-        for clear_info in dropped_slot_clears:
-            # Best-effort: a dropped lock that's currently offline shouldn't fail
-            # the PATCH. The slot will hang until pull-sync reconciles, which is
-            # acceptable.
-            with contextlib.suppress(Exception):
-                clear_lock_user_code_slot(
-                    lock_entity_id=str(clear_info["lock_entity_id"]),
-                    slot_index=int(clear_info["slot_index"]),
-                    zwavejs=zwavejs,
-                )
-
         # A pending code's PIN may sit in a slot recorded only as an unconfirmed
         # attempt. Clear it where the code no longer belongs there with that PIN:
         # dropped locks always, surviving locks when the PIN changes or the code is
         # deactivated. (A schedule-only change re-pushes and adopts it instead.)
-        deactivating = "is_active" in changes and not bool(changes.get("is_active"))
+        deactivating = "is_active" in push_trigger_changes and not code.is_active
         unconfirmed_lock_ids = list(dropped_lock_entity_ids)
-        if "code" in updated_fields or deactivating:
+        if "code" in push_trigger_changes or deactivating:
             unconfirmed_lock_ids.extend(
                 DoorCodeLockAssignment.objects.filter(door_code=code).values_list("lock_entity_id", flat=True)
             )
@@ -313,51 +386,55 @@ def update_door_code(
                 zwavejs=zwavejs,
             )
 
-        push_relevant_change = bool(_PUSH_TRIGGER_FIELDS & set(changes.keys()))
+        push_relevant_change = bool(push_trigger_changes)
         if push_relevant_change or "lock_entity_ids" in changes:
-            now_inactive = "is_active" in changes and not bool(changes.get("is_active"))
-
-            stale_slot_clears: list[dict[str, object]] = []
             if push_relevant_change:
                 # PIN, schedule, or is_active changed. The lock still holds the OLD
                 # PIN at the OLD slot; pushing fresh would pick a *different* slot
                 # and strand the old PIN — breaking the ADR's "Created in the UI =
-                # works on the door" guarantee. Snapshot the existing programmed
-                # slots so we can clear them before the re-push runs.
-                existing_pushed = DoorCodeLockAssignment.objects.filter(door_code=code, slot_index__isnull=False)
+                # works on the door" guarantee. Clear the existing programmed slots
+                # before the re-push runs. A dropped lock whose clear just failed
+                # keeps its slot and isn't tried again here.
+                existing_pushed = DoorCodeLockAssignment.objects.filter(
+                    door_code=code, slot_index__isnull=False
+                ).exclude(lock_entity_id__in=dropped_lock_entity_ids)
                 for assignment in existing_pushed:
-                    stale_slot_clears.append(
-                        {
-                            "lock_entity_id": assignment.lock_entity_id,
-                            "slot_index": int(assignment.slot_index),
-                        }
-                    )
-                # Force a re-push by zeroing slots + counter; surviving assignments
-                # are treated as unassigned by the use case.
-                DoorCodeLockAssignment.objects.filter(door_code=code).update(slot_index=None)
+                    try:
+                        clear_lock_user_code_slot(
+                            lock_entity_id=assignment.lock_entity_id,
+                            slot_index=int(assignment.slot_index),
+                            zwavejs=zwavejs,
+                        )
+                    except Exception as exc:
+                        # Keep the slot. Forgetting it would leave the old PIN on the
+                        # lock untracked (issue #139), and the re-push skips it.
+                        failed_slot_clears.append(
+                            _slot_clear_failure(
+                                lock_entity_id=assignment.lock_entity_id,
+                                slot_index=int(assignment.slot_index),
+                                exc=exc,
+                            )
+                        )
+                        continue
+                    # Cleared, so the re-push treats this lock as unassigned.
+                    DoorCodeLockAssignment.objects.filter(id=assignment.id).update(slot_index=None)
                 code.push_state = DoorCode.PushState.PENDING
                 code.last_push_error = ""
                 code.push_attempt_count = 0
                 code.save(update_fields=["push_state", "last_push_error", "push_attempt_count", "updated_at"])
 
-            for clear_info in stale_slot_clears:
-                with contextlib.suppress(Exception):
-                    clear_lock_user_code_slot(
-                        lock_entity_id=str(clear_info["lock_entity_id"]),
-                        slot_index=int(clear_info["slot_index"]),
-                        zwavejs=zwavejs,
-                    )
-
-            if now_inactive:
-                # Deactivation: stop here. The lock holds no programmed slots for
-                # this code anymore, so a re-push would just program it back on.
-                code.push_state = DoorCode.PushState.PUSHED
-                code.last_push_attempt_at = django_timezone.now()
-                code.save(update_fields=["push_state", "last_push_attempt_at", "updated_at"])
+            if not code.is_active:
+                # An inactive code is never pushed (issue #138).
+                if push_relevant_change:
+                    # Deactivation (or a change to an inactive code): the lock holds
+                    # no programmed slots for this code anymore, so stop here.
+                    code.push_state = DoorCode.PushState.PUSHED
+                    code.last_push_attempt_at = django_timezone.now()
+                    code.save(update_fields=["push_state", "last_push_attempt_at", "updated_at"])
             else:
                 code = DoorCode.objects.prefetch_related("lock_assignments").get(id=code.id)
                 _push_to_assigned_locks_best_effort(code=code, zwavejs=zwavejs, actor_user=actor_user)
-                if dropped_lock_entity_ids and not push_relevant_change:
+                if dropped_lock_entity_ids and not push_relevant_change and not failed_slot_clears:
                     # Locks that stay aren't re-pushed, so when they all hold a slot
                     # nothing recomputes push_state and a failure left by a dropped
                     # lock would stick.
@@ -371,6 +448,13 @@ def update_door_code(
                             code.save(
                                 update_fields=["push_state", "last_push_error", "push_attempt_count", "updated_at"]
                             )
+
+        if failed_slot_clears:
+            # Last so neither the push's derived state nor the pushed stamps above hide it.
+            _record_slot_clear_failures(code=code, failures=failed_slot_clears)
+            if updated_event is not None:
+                updated_event.metadata["failed_slot_clears"] = failed_slot_clears
+                updated_event.save(update_fields=["metadata"])
 
     return code
 
@@ -407,6 +491,7 @@ def delete_door_code(
             from locks.use_cases.lock_config_sync import clear_lock_user_code_slot
 
             cleared: list[dict[str, object]] = []
+            failed: list[dict[str, object]] = []
             for slot_info in slots_to_clear:
                 try:
                     clear_lock_user_code_slot(
@@ -415,13 +500,24 @@ def delete_door_code(
                         zwavejs=zwavejs,
                     )
                     cleared.append(slot_info)
-                except Exception:
+                except Exception as exc:
                     if code.source == DoorCode.Source.SYNCED:
                         # Synced codes still fail-fast (ADR 0082 contract).
                         raise
+                    failed.append(
+                        _slot_clear_failure(
+                            lock_entity_id=str(slot_info["lock_entity_id"]),
+                            slot_index=int(slot_info["slot_index"]),
+                            exc=exc,
+                        )
+                    )
             if cleared:
                 extra_metadata["cleared_from_lock"] = True
                 extra_metadata["cleared_slots"] = cleared
+            if failed:
+                # The code still goes, but the slots that may still hold its PIN
+                # are recorded instead of silently forgotten (issue #139).
+                extra_metadata["failed_slot_clears"] = failed
 
     # A still-pending push may have left the PIN in a slot recorded only as an
     # unconfirmed attempt; those events cascade away with the row, so check now.
@@ -500,10 +596,15 @@ def retry_push_door_code(
     """Admin-triggered manual retry — runs the push pipeline for every unassigned lock."""
     assert_admin(user=actor_user) if actor_user is not None else None
 
+    if not code.is_active:
+        raise DoorCodeInactive("Door code is inactive. Turn it on before pushing it to its locks.")
+
     # Failed codes were intentionally retired by the scheduler; an explicit retry
     # is the operator saying "yes, try again," so re-arm pending state and zero
-    # the cap counter.
-    if code.push_state == DoorCode.PushState.FAILED:
+    # the cap counter. A code with no lock left to push (e.g. a slot clear failed)
+    # stays failed, since the push wouldn't touch it and the error would be lost.
+    has_unassigned = DoorCodeLockAssignment.objects.filter(door_code=code, slot_index__isnull=True).exists()
+    if code.push_state == DoorCode.PushState.FAILED and has_unassigned:
         code.push_state = DoorCode.PushState.PENDING
         code.last_push_error = ""
         code.push_attempt_count = 0

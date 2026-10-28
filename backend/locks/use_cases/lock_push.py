@@ -942,6 +942,9 @@ def push_door_code_to_assigned_locks(
     the loop instead: ``failed`` if any lock failed terminally (keeping that
     error), else ``pending`` if any lock failed or is still without a slot, else
     ``pushed``. One lock's success never hides another lock's failure.
+
+    An inactive code is never pushed: it returns ``([], [])`` without touching the
+    locks or the row (issue #138).
     """
     # Sorted in Python so the prefetch is kept and the push order is deterministic.
     assignments = sorted(door_code.lock_assignments.all(), key=lambda assignment: assignment.pk)
@@ -950,7 +953,10 @@ def push_door_code_to_assigned_locks(
     terminal_error: str | None = None
     pending_error: str | None = None
 
-    door_code.refresh_from_db(fields=["push_state", "last_push_attempt_at", "last_push_error"])
+    door_code.refresh_from_db(fields=["is_active", "push_state", "last_push_attempt_at", "last_push_error"])
+    if not door_code.is_active:
+        logger.info("Not pushing inactive door code id=%s", door_code.id)
+        return successes, failures
     for assignment in assignments:
         if only_unassigned and assignment.slot_index is not None:
             continue
