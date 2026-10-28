@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react'
 
 import { Alert, AlertDescription } from '@/components/ui/alert'
+import { Button } from '@/components/ui/button'
 import { ReauthPasswordField } from '@/features/codes/components/ReauthPasswordField'
 import { DoorCodeActiveToggle } from '@/features/doorCodes/components/DoorCodeActiveToggle'
 import { DoorCodeEditActions } from '@/features/doorCodes/components/DoorCodeEditActions'
@@ -62,6 +63,9 @@ type Props = {
   onEditReauthPasswordChange: (next: string) => void
 
   editError: string | null
+  /** The code changed on the server under a field the user has edited. */
+  hasServerConflict: boolean
+  onDiscardChanges: () => void
   onCancel: () => void
   onSave: () => void
   onDelete: () => void
@@ -93,6 +97,8 @@ export function DoorCodeEditPanel({
   editReauthPassword,
   onEditReauthPasswordChange,
   editError,
+  hasServerConflict,
+  onDiscardChanges,
   onCancel,
   onSave,
   onDelete,
@@ -161,6 +167,17 @@ export function DoorCodeEditPanel({
         disabled={isBusy}
         helpTip="Required to save changes or delete this code."
       />
+
+      {hasServerConflict && (
+        <Alert variant="warning" layout="inline" role="status">
+          <AlertDescription className="flex flex-wrap items-center justify-between gap-2">
+            <span>This code changed on the server. Your unsaved changes are kept.</span>
+            <Button type="button" variant="outline" size="sm" onClick={onDiscardChanges} disabled={isBusy}>
+              Discard changes and reload
+            </Button>
+          </AlertDescription>
+        </Alert>
+      )}
 
       {editError && (
         <Alert variant="error" layout="inline">

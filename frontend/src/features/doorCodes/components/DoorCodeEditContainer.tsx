@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 import type { DoorCode, Entity, UpdateDoorCodeRequest } from '@/types'
 import { getErrorMessage } from '@/types/errors'
 import { DoorCodeEditPanel } from '@/features/doorCodes/components/DoorCodeEditPanel'
@@ -34,41 +34,89 @@ function parseManualLockIds(raw: string): string[] {
   )
 }
 
+function sameSet<T>(a: Set<T>, b: Set<T>): boolean {
+  return a.size === b.size && [...a].every((item) => b.has(item))
+}
+
+function sameDays(a: Set<number>, b: Set<number>): boolean {
+  return daysSetToMask(a) === daysSetToMask(b)
+}
+
+/**
+ * A form field seeded from the server. It follows the server until the user
+ * edits it, then keeps their value. If the server value changes under an edit
+ * the field is flagged as a conflict instead of being overwritten.
+ */
+function useServerField<T>(serverValue: T, isEqual: (a: T, b: T) => boolean = Object.is) {
+  const [value, setValue] = useState<T>(serverValue)
+  // The server value the field last took. The field is edited while value
+  // differs from it.
+  const [synced, setSynced] = useState<T>(serverValue)
+  const [conflict, setConflict] = useState(false)
+
+  if (!isEqual(serverValue, synced)) {
+    setSynced(serverValue)
+    if (isEqual(value, synced) || isEqual(value, serverValue)) {
+      setValue(serverValue)
+      setConflict(false)
+    } else {
+      setConflict(true)
+    }
+  }
+  // Editing back to what the server has resolves the conflict.
+  const isEdited = !isEqual(value, synced)
+  if (conflict && !isEdited) setConflict(false)
+
+  const reset = () => {
+    setValue(synced)
+    setConflict(false)
+  }
+
+  return { value, setValue, hasConflict: conflict && isEdited, reset }
+}
+
 export function DoorCodeEditContainer({ code, locks, locksIsLoading, locksError, isSaving, isDeleting, onClose, onUpdate, onDelete }: Props) {
-  const [editLabel, setEditLabel] = useState<string>('')
+  // The code refetches whenever it changes on the server (a scheduler retry, a
+  // Retry or refused delete from another tab, a lock sync). Only the fields the
+  // user hasn't edited take the new values.
+  const label = useServerField(code.label || '')
+  const isActive = useServerField(code.isActive)
+  const startAtLocal = useServerField(toDatetimeLocalValue(code.startAt))
+  const endAtLocal = useServerField(toDatetimeLocalValue(code.endAt))
+  const days = useServerField(daysMaskToSet(code.daysOfWeek ?? 127), sameDays)
+  const windowStart = useServerField(code.windowStart || '')
+  const windowEnd = useServerField(code.windowEnd || '')
+  const maxUses = useServerField(code.maxUses == null ? '' : String(code.maxUses))
+  const selectedLocks = useServerField(new Set(code.lockEntityIds || []), sameSet)
+  const serverFields = [label, isActive, startAtLocal, endAtLocal, days, windowStart, windowEnd, maxUses, selectedLocks]
+  const hasServerConflict = serverFields.some((field) => field.hasConflict)
+
+  const { value: editLabel, setValue: setEditLabel } = label
+  const { value: editIsActive, setValue: setEditIsActive } = isActive
+  const { value: editStartAtLocal, setValue: setEditStartAtLocal } = startAtLocal
+  const { value: editEndAtLocal, setValue: setEditEndAtLocal } = endAtLocal
+  const { value: editDays, setValue: setEditDays } = days
+  const { value: editWindowStart, setValue: setEditWindowStart } = windowStart
+  const { value: editWindowEnd, setValue: setEditWindowEnd } = windowEnd
+  const { value: editMaxUses, setValue: setEditMaxUses } = maxUses
+  const { value: editSelectedLocks, setValue: setEditSelectedLocks } = selectedLocks
+
+  // Not from the server, so a refetch leaves them alone.
   const [editNewCode, setEditNewCode] = useState<string>('')
-  const [editIsActive, setEditIsActive] = useState<boolean>(true)
-  const [editStartAtLocal, setEditStartAtLocal] = useState<string>('')
-  const [editEndAtLocal, setEditEndAtLocal] = useState<string>('')
-  const [editDays, setEditDays] = useState<Set<number>>(() => daysMaskToSet(127))
-  const [editWindowStart, setEditWindowStart] = useState<string>('')
-  const [editWindowEnd, setEditWindowEnd] = useState<string>('')
-  const [editMaxUses, setEditMaxUses] = useState<string>('')
-  const [editSelectedLocks, setEditSelectedLocks] = useState<Set<string>>(() => new Set())
   const [editManualLockIds, setEditManualLockIds] = useState<string>('')
   const [editLockSearch, setEditLockSearch] = useState<string>('')
   const [editReauthPassword, setEditReauthPassword] = useState<string>('')
+  // A refused delete refetches the code (it's now off), and its error has to
+  // outlive that. It's cleared on the next submit.
   const [editError, setEditError] = useState<string | null>(null)
 
-  /* eslint-disable react-hooks/set-state-in-effect */
-  useEffect(() => {
-    setEditLabel(code.label || '')
+  // Puts the form back to what the server has. The password stays so the user
+  // can still save or delete.
+  const discardChanges = () => {
+    serverFields.forEach((field) => field.reset())
     setEditNewCode('')
-    setEditIsActive(code.isActive)
-    setEditStartAtLocal(toDatetimeLocalValue(code.startAt))
-    setEditEndAtLocal(toDatetimeLocalValue(code.endAt))
-    setEditDays(daysMaskToSet(code.daysOfWeek ?? 127))
-    setEditWindowStart(code.windowStart || '')
-    setEditWindowEnd(code.windowEnd || '')
-    setEditMaxUses(code.maxUses == null ? '' : String(code.maxUses))
-    setEditSelectedLocks(new Set(code.lockEntityIds || []))
     setEditManualLockIds('')
-    setEditLockSearch('')
-    setEditReauthPassword('')
-    // editError is left alone: a refused delete refetches the code (it's now
-    // off), and its error has to outlive that. It's cleared on the next submit.
-  }, [code])
-  /* eslint-enable react-hooks/set-state-in-effect */
+  }
 
   const resolvedLockEntityIds = useMemo(() => {
     const locksFromPicker = Array.from(editSelectedLocks)
@@ -221,6 +269,8 @@ export function DoorCodeEditContainer({ code, locks, locksIsLoading, locksError,
       editReauthPassword={editReauthPassword}
       onEditReauthPasswordChange={setEditReauthPassword}
       editError={editError}
+      hasServerConflict={hasServerConflict}
+      onDiscardChanges={discardChanges}
       onCancel={onClose}
       onSave={submitEdit}
       onDelete={() => void submitDelete()}
