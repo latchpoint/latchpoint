@@ -30,6 +30,17 @@ _RESTART_JOIN_TIMEOUT_SECONDS = 1.0
 _monotonic = time.monotonic
 
 
+def _healthy_session_seconds() -> float:
+    """
+    How long an authed session has to stay up before its drop resets the backoff.
+
+    Never below the backoff cap (#119). A session that resets the delay reconnects 1s after it drops, so
+    with a lower threshold something that cuts the connection right after it would reconnect faster than
+    the capped failure rate forever (#114 again).
+    """
+    return max(_RECONNECT_HEALTHY_SESSION_SECONDS, _RECONNECT_BACKOFF_MAX_SECONDS)
+
+
 def _build_ws_url(base_url: str) -> str:
     base_url = (base_url or "").strip().rstrip("/")
     if base_url.startswith("https://"):
@@ -203,11 +214,7 @@ class HomeAssistantStateStream:
             # `run_forever` returns (rather than raises) on a refused connection, so back off after
             # every attempt. Only a session that stayed up for a while after auth_ok resets the delay,
             # so HA (or a proxy) dropping the connection right after auth keeps backing off.
-            # The threshold never goes below the backoff cap (#119). A session that resets the delay
-            # reconnects 1s after it drops, so with a lower threshold something that cuts the connection
-            # right after it would reconnect faster than the capped failure rate forever (#114 again).
-            healthy_after = max(_RECONNECT_HEALTHY_SESSION_SECONDS, _RECONNECT_BACKOFF_MAX_SECONDS)
-            healthy = authed_at is not None and _monotonic() - authed_at >= healthy_after
+            healthy = authed_at is not None and _monotonic() - authed_at >= _healthy_session_seconds()
             if healthy:
                 backoff_seconds = _RECONNECT_BACKOFF_INITIAL_SECONDS
             if stop.wait(backoff_seconds):

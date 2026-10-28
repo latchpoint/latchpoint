@@ -9,8 +9,10 @@ HA drops right after auth keeps backing off too.
 from __future__ import annotations
 
 import json
+import os
 import socket
 import threading
+import time
 from unittest.mock import patch
 
 from django.test import SimpleTestCase
@@ -58,6 +60,20 @@ class _OtherThreadsStopEvent:
 
     def __getattr__(self, name: str):
         raise AssertionError(f"_run used self._stop.{name} instead of the stop event it was started with")
+
+
+class _NoSleepTime:
+    """Stands in for ``state_stream.time`` so only the stream's own sleeps are caught, not the whole process's."""
+
+    def __init__(self):
+        self.sleeps: list[float] = []
+
+    def sleep(self, seconds: float) -> None:
+        self.sleeps.append(seconds)
+        raise AssertionError("blocking time.sleep in the state stream")
+
+    def __getattr__(self, name: str):
+        return getattr(time, name)
 
 
 class _FakeClock:
@@ -110,7 +126,7 @@ class StateStreamBackoffTests(SimpleTestCase):
     def test_connection_that_reached_auth_ok_resets_backoff(self, _leader):
         stream, stop = _make_stream(max_waits=5)
         clock = _FakeClock()
-        sessions = _sessions(clock, [None, None, None, state_stream._RECONNECT_HEALTHY_SESSION_SECONDS])
+        sessions = _sessions(clock, [None, None, None, state_stream._healthy_session_seconds()])
         with (
             patch.object(state_stream, "_monotonic", clock),
             patch.object(stream, "_connect_and_listen", side_effect=sessions),
@@ -133,7 +149,7 @@ class StateStreamBackoffTests(SimpleTestCase):
         self.assertEqual(connect.call_count, 7)
 
     def test_authed_session_resets_backoff_only_at_or_over_threshold(self, _leader):
-        threshold = state_stream._RECONNECT_HEALTHY_SESSION_SECONDS
+        threshold = state_stream._healthy_session_seconds()
         # Halves keep the fake clock's float math exact right at the boundary.
         for duration in (threshold, threshold + 0.5, 3600.0):
             with self.subTest(duration=duration):
@@ -183,13 +199,15 @@ class StateStreamBackoffTests(SimpleTestCase):
 
     def test_exception_still_backs_off(self, _leader):
         stream, stop = _make_stream(max_waits=3)
+        no_sleep = _NoSleepTime()
         with (
             patch.object(stream, "_connect_and_listen", side_effect=RuntimeError("boom")),
             # The backoff must go through the stop event, never a blocking sleep.
-            patch.object(state_stream.time, "sleep", side_effect=AssertionError("blocking sleep in backoff")),
+            patch.object(state_stream, "time", no_sleep),
         ):
             stream._run(stop)
 
+        self.assertEqual(no_sleep.sleeps, [])
         self.assertEqual(stop.waits, [1.0, 2.0, 4.0])
 
     def test_stop_during_backoff_exits_promptly(self, _leader):
@@ -221,13 +239,14 @@ class StateStreamNonLeaderWaitTests(SimpleTestCase):
 
     def test_non_leader_waits_on_stop_event_not_sleep(self, _leader):
         stream, stop = _make_stream(max_waits=3)
+        no_sleep = _NoSleepTime()
         with (
             patch.object(stream, "_connect_and_listen") as connect,
-            patch.object(state_stream.time, "sleep") as sleep,
+            patch.object(state_stream, "time", no_sleep),
         ):
             stream._run(stop)
 
-        sleep.assert_not_called()
+        self.assertEqual(no_sleep.sleeps, [])
         self.assertEqual(stop.waits, [1.0, 1.0, 1.0])
         connect.assert_not_called()
 
@@ -293,17 +312,33 @@ class ConnectAndListenAuthResultTests(SimpleTestCase):
 
     def test_real_websocket_client_returns_none_on_refused_connection(self):
         # #108: the real websocket-client `run_forever` returns instead of raising when nothing is listening.
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        stream = HomeAssistantStateStream()
+        result: dict[str, object] = {}
+
+        def _connect() -> None:
+            try:
+                result["authed_at"] = stream._connect_and_listen(
+                    ws_url=f"ws://127.0.0.1:{port}/api/websocket", token="token", stop=threading.Event()
+                )
+            except BaseException as exc:
+                result["error"] = exc
+
+        # websocket-client 1.9.0 sends 127.0.0.1 through `http_proxy` too, so make sure it connects directly.
+        proxy_env = {"no_proxy": "*", "NO_PROXY": "*"}
+        with patch.dict(os.environ, proxy_env), socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            for name in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"):
+                os.environ.pop(name, None)
+            # Bound but never listening: the connect is refused straight away and nothing else can take the port.
             sock.bind(("127.0.0.1", 0))
             port = sock.getsockname()[1]
-        self.assertFalse(5000 <= port <= 5010)
+            thread = threading.Thread(target=_connect, daemon=True)
+            thread.start()
+            # A regression that hangs (or a proxy that never answers) fails here instead of hanging the run.
+            thread.join(timeout=5)
 
-        stream = HomeAssistantStateStream()
-        authed_at = stream._connect_and_listen(
-            ws_url=f"ws://127.0.0.1:{port}/api/websocket", token="token", stop=threading.Event()
-        )
-
-        self.assertIsNone(authed_at)
+        self.assertFalse(thread.is_alive(), "_connect_and_listen didn't return on a refused connection")
+        self.assertNotIn("error", result)
+        self.assertIsNone(result["authed_at"])
         self.assertIsNone(stream._ws_app)
 
     def test_auth_invalid_returns_none(self):
@@ -410,14 +445,14 @@ class StateStreamRestartTests(SimpleTestCase):
 
 
 class _LateStopWebSocketApp:
-    """Calls ``stream.stop()`` at the top of ``run_forever``, after ``_ws_app`` is set.
+    """Sets the session's stop event at the top of ``run_forever``, after ``_ws_app`` is set.
 
-    websocket-client 1.9.0 loses a ``close()`` made there: there's no socket to close yet, and
-    ``run_forever`` sets ``keep_running`` back to True and connects anyway. This fake does the same,
-    so ``close()`` only records the call.
+    That's a ``stop()`` landing there. websocket-client 1.9.0 loses the ``close()`` it makes at that
+    point (there's no socket to close yet, and ``run_forever`` sets ``keep_running`` back to True and
+    connects anyway), so only the session's own stop checks can end it. ``close()`` only records the call.
     """
 
-    stream: HomeAssistantStateStream
+    stop: threading.Event
     instances: list[_LateStopWebSocketApp] = []
 
     def __init__(self, url, *, on_open, on_message, on_error, on_close):
@@ -426,6 +461,7 @@ class _LateStopWebSocketApp:
         self._on_close = on_close
         self.sent: list[str] = []
         self.close_calls = 0
+        self.close_calls_after_open: int | None = None
         self.instances.append(self)
 
     def send(self, data: str) -> None:
@@ -435,8 +471,9 @@ class _LateStopWebSocketApp:
         self.close_calls += 1
 
     def run_forever(self, **_kwargs) -> bool:
-        self.stream.stop()
+        self.stop.set()
         self._on_open(self)
+        self.close_calls_after_open = self.close_calls
         self._on_message(self, json.dumps({"type": "auth_required"}))
         self._on_message(self, json.dumps({"type": "auth_ok"}))
         self._on_close(self, None, None)
@@ -453,33 +490,34 @@ class ConnectAndListenStopRaceTests(SimpleTestCase):
 
     def test_stop_before_ws_app_is_set_skips_the_session(self):
         stream = HomeAssistantStateStream()
-        # stop() ran after `_run` checked the event, before `_connect_and_listen` set `_ws_app`.
-        stream.stop()
+        # This thread was stopped after `_run` checked the event, before `_connect_and_listen` set `_ws_app`.
+        # `stream._stop` stays clear, so only a check on the session's own event skips the connect.
+        stop = threading.Event()
+        stop.set()
         with patch("websocket.WebSocketApp", _MustNotRunWebSocketApp):
-            authed_at = stream._connect_and_listen(
-                ws_url="ws://ha:8123/api/websocket", token="token", stop=stream._stop
-            )
+            authed_at = stream._connect_and_listen(ws_url="ws://ha:8123/api/websocket", token="token", stop=stop)
 
         self.assertIsNone(authed_at)
         self.assertIsNone(stream._ws_app)
+        self.assertFalse(stream._stop.is_set())
 
     def test_stop_before_run_forever_never_authenticates(self):
         stream = HomeAssistantStateStream()
+        # The fake sets this event, not `stream._stop`, so only checks on the session's own event end it.
+        stop = threading.Event()
         with (
-            patch.object(_LateStopWebSocketApp, "stream", stream, create=True),
+            patch.object(_LateStopWebSocketApp, "stop", stop, create=True),
             patch.object(_LateStopWebSocketApp, "instances", []),
             patch("websocket.WebSocketApp", _LateStopWebSocketApp),
         ):
-            # The fake's `stream.stop()` sets this event, like a real `stop()` would for this thread.
-            authed_at = stream._connect_and_listen(
-                ws_url="ws://ha:8123/api/websocket", token="token", stop=stream._stop
-            )
+            authed_at = stream._connect_and_listen(ws_url="ws://ha:8123/api/websocket", token="token", stop=stop)
             (ws_app,) = _LateStopWebSocketApp.instances
 
         self.assertIsNone(authed_at)
         self.assertEqual(ws_app.sent, [])
-        # stop()'s close was lost, so the session closes itself once it opens.
-        self.assertGreaterEqual(ws_app.close_calls, 2)
+        # stop()'s close was lost, so the session closes itself as soon as it opens, before HA says anything.
+        self.assertEqual(ws_app.close_calls_after_open, 1)
+        self.assertFalse(stream._stop.is_set())
 
 
 class ApplyRuntimeSettingsTests(SimpleTestCase):
