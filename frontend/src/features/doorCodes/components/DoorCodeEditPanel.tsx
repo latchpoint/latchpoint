@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react'
 
 import { Alert, AlertDescription } from '@/components/ui/alert'
+import { Button } from '@/components/ui/button'
 import { ReauthPasswordField } from '@/features/codes/components/ReauthPasswordField'
 import { DoorCodeActiveToggle } from '@/features/doorCodes/components/DoorCodeActiveToggle'
 import { DoorCodeEditActions } from '@/features/doorCodes/components/DoorCodeEditActions'
@@ -62,6 +63,9 @@ type Props = {
   onEditReauthPasswordChange: (next: string) => void
 
   editError: string | null
+  /** Names the edited fields the server changed, ie "Label changed on the server.", or null. */
+  serverConflictMessage: string | null
+  onDiscardChanges: () => void
   onCancel: () => void
   onSave: () => void
   onDelete: () => void
@@ -93,6 +97,8 @@ export function DoorCodeEditPanel({
   editReauthPassword,
   onEditReauthPasswordChange,
   editError,
+  serverConflictMessage,
+  onDiscardChanges,
   onCancel,
   onSave,
   onDelete,
@@ -161,6 +167,21 @@ export function DoorCodeEditPanel({
         disabled={isBusy}
         helpTip="Required to save changes or delete this code."
       />
+
+      {/* Always rendered so screen readers announce the notice when it fills in.
+          sr-only keeps the empty region out of the layout. */}
+      <div role="status" className={serverConflictMessage ? undefined : 'sr-only'}>
+        {serverConflictMessage ? (
+          <Alert variant="warning" layout="inline" role="none">
+            <AlertDescription className="flex flex-wrap items-center justify-between gap-2">
+              <span>{serverConflictMessage} Your unsaved changes are kept.</span>
+              <Button type="button" variant="outline" size="sm" onClick={onDiscardChanges} disabled={isBusy}>
+                Discard changes and reload
+              </Button>
+            </AlertDescription>
+          </Alert>
+        ) : null}
+      </div>
 
       {editError && (
         <Alert variant="error" layout="inline">

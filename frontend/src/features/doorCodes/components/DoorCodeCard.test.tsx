@@ -196,6 +196,8 @@ describe('DoorCodeCard', () => {
       await settle()
       expect(screen.getByText(refusal)).toBeTruthy()
       expect(screen.getByText('Inactive')).toBeTruthy()
+      // The Active toggle wasn't touched, so it follows the server.
+      expect(screen.getByRole('switch', { name: 'Active' })).toHaveAttribute('aria-checked', 'false')
     } finally {
       confirmSpy.mockRestore()
     }
