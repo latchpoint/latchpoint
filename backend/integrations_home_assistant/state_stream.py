@@ -10,7 +10,7 @@ from typing import Any
 from uuid import uuid4
 
 from django.core.cache import cache
-from django.db import close_old_connections
+from django.db import close_old_connections, connections
 from django.utils import timezone
 
 logger = logging.getLogger("integrations_home_assistant")
@@ -23,7 +23,7 @@ _RECONNECT_BACKOFF_MAX_SECONDS = 30.0
 # An authed session has to stay up this long before its drop resets the backoff (#114).
 _RECONNECT_HEALTHY_SESSION_SECONDS = 30.0
 # How long `restart()` waits for the old thread before starting the new one anyway. Kept short because
-# it runs in the settings PATCH request, and a stopped thread can't keep a session open (see `restart`).
+# it holds up the next apply for that long, and a stopped thread can't keep a session open (see `restart`).
 _RESTART_JOIN_TIMEOUT_SECONDS = 1.0
 
 # The stream reads the clock through this hook so tests can swap it without patching `time` process-wide.
@@ -100,6 +100,16 @@ class HomeAssistantStateStream:
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
+        # Held for a whole apply (read, compare, store, then stop/restart/start), so two applies can't
+        # interleave and leave the stream stopped while enabled (#121). Taken before `_lock`, never while
+        # holding it.
+        self._apply_lock = threading.Lock()
+        # Guards the background apply worker (see `apply_runtime_settings_in_background`).
+        self._apply_worker_lock = threading.Lock()
+        self._apply_worker: threading.Thread | None = None
+        self._apply_requested = False
+        self._apply_idle = threading.Event()
+        self._apply_idle.set()
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
         self._leader_id = uuid4().hex
@@ -108,19 +118,68 @@ class HomeAssistantStateStream:
         self._next_subscribe_id = 1
 
     def apply_runtime_settings_from_active_profile(self) -> None:
-        """Start/stop the stream based on the current cached HA connection settings."""
-        with self._lock:
-            # Read under the lock too, so two applies at once can't store the older settings last (#132).
+        """
+        Start/stop the stream based on the current cached HA connection settings.
+
+        Runs on the caller's thread and can take a few seconds when there's a live session to close (see
+        `restart`), so requests should use `apply_runtime_settings_in_background()` instead.
+        """
+        with self._apply_lock:
+            # The read happens under `_apply_lock` so whichever apply reads last is the one stored (#132), but
+            # not under `_lock`, since a cold cache reads the DB and `stop()` and the stream thread need `_lock`.
             settings = _get_runtime_settings()
-            changed = settings != self._settings
-            self._settings = settings
-        if not settings.enabled:
-            self.stop()
-            return
-        if changed:
-            self.restart()
-            return
-        self.start()
+            with self._lock:
+                changed = settings != self._settings
+                self._settings = settings
+            if not settings.enabled:
+                self.stop()
+            elif changed:
+                self.restart()
+            else:
+                self.start()
+
+    def apply_runtime_settings_in_background(self) -> None:
+        """
+        Run `apply_runtime_settings_from_active_profile()` on a short lived thread and return right away.
+
+        Requests that land while an apply is running are coalesced into one more apply after it, which
+        reads the newest settings. Use `wait_for_background_apply()` to wait for it.
+        """
+        with self._apply_worker_lock:
+            self._apply_requested = True
+            if self._apply_worker is not None and self._apply_worker.is_alive():
+                return
+            self._apply_idle.clear()
+            self._apply_worker = threading.Thread(
+                target=self._apply_worker_loop, name="ha-state-stream-apply", daemon=True
+            )
+            self._apply_worker.start()
+
+    def wait_for_background_apply(self, timeout: float | None = None) -> bool:
+        """Wait until no background apply is queued or running. Returns False if `timeout` ran out first."""
+        return self._apply_idle.wait(timeout)
+
+    def _take_apply_request(self) -> bool:
+        with self._apply_worker_lock:
+            if self._apply_requested:
+                self._apply_requested = False
+                return True
+            self._apply_worker = None
+            self._apply_idle.set()
+            return False
+
+    def _apply_worker_loop(self) -> None:
+        try:
+            while self._take_apply_request():
+                # A cold cache reads the DB on this thread, so don't reuse a connection that went stale.
+                close_old_connections()
+                try:
+                    self.apply_runtime_settings_from_active_profile()
+                except Exception:
+                    logger.warning("HA state stream apply failed", exc_info=True)
+        finally:
+            # This thread is about to exit, so close its DB connections instead of leaving them open.
+            connections.close_all()
 
     def start(self) -> None:
         with self._lock:
@@ -393,6 +452,14 @@ _stream = HomeAssistantStateStream()
 
 def apply_runtime_settings_from_active_profile() -> None:
     _stream.apply_runtime_settings_from_active_profile()
+
+
+def apply_runtime_settings_in_background() -> None:
+    _stream.apply_runtime_settings_in_background()
+
+
+def wait_for_background_apply(timeout: float | None = None) -> bool:
+    return _stream.wait_for_background_apply(timeout)
 
 
 def shutdown() -> None:

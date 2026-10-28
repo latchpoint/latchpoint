@@ -19,6 +19,9 @@ class HomeAssistantRuntimeConnection:
 
 _lock = Lock()
 _cached: HomeAssistantRuntimeConnection | None = None
+# Held for a whole `set_cached_connection()` (read, then store). Separate from `_lock` so readers of the cache
+# don't wait on the DB read. Taken before `_lock`, never while holding it.
+_refresh_lock = Lock()
 _warmup_lock = Lock()
 _last_warmup_attempt_at: float = 0.0
 
@@ -60,25 +63,30 @@ def set_cached_connection() -> None:
     """
     from integrations_home_assistant.views import get_ha_settings
 
-    try:
-        cfg = get_ha_settings()
-    except Exception:
-        return
+    # Read under the lock too, so two saves close together can't store the older read last (#141). Comparing
+    # the entry's `updated_at` wouldn't work, since activating a profile switches to another profile's entry.
+    with _refresh_lock:
+        try:
+            cfg = get_ha_settings()
+        except Exception:
+            return
 
-    defaults = {"enabled": False, "base_url": "", "token": "", "connect_timeout_seconds": 2}
-    try:
-        obj = HomeAssistantRuntimeConnection(
-            enabled=bool(cfg.get("enabled", defaults["enabled"])),
-            base_url=str(cfg.get("base_url") or defaults["base_url"]),
-            token=str(cfg.get("token") or defaults["token"]),
-            connect_timeout_seconds=float(cfg.get("connect_timeout_seconds") or defaults["connect_timeout_seconds"]),
-        )
-    except (TypeError, ValueError):
-        obj = HomeAssistantRuntimeConnection(**defaults)
+        defaults = {"enabled": False, "base_url": "", "token": "", "connect_timeout_seconds": 2}
+        try:
+            obj = HomeAssistantRuntimeConnection(
+                enabled=bool(cfg.get("enabled", defaults["enabled"])),
+                base_url=str(cfg.get("base_url") or defaults["base_url"]),
+                token=str(cfg.get("token") or defaults["token"]),
+                connect_timeout_seconds=float(
+                    cfg.get("connect_timeout_seconds") or defaults["connect_timeout_seconds"]
+                ),
+            )
+        except (TypeError, ValueError):
+            obj = HomeAssistantRuntimeConnection(**defaults)
 
-    with _lock:
-        global _cached
-        _cached = obj
+        with _lock:
+            global _cached
+            _cached = obj
 
 
 def warm_up_cached_connection_if_needed(*, min_interval_seconds: float = 2.0) -> None:

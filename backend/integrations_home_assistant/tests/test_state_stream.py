@@ -19,9 +19,11 @@ from django.test import SimpleTestCase
 
 from integrations_home_assistant import state_stream
 from integrations_home_assistant.state_stream import HomeAssistantStateStream, _RuntimeSettings
+from integrations_home_assistant.tests.stream_test_utils import FakeSessionStream, RecordingLock
 
 _SETTINGS = _RuntimeSettings(enabled=True, base_url="http://ha:8123", token="token")
 _NEW_SETTINGS = _RuntimeSettings(enabled=True, base_url="http://ha-new:8123", token="new-token")
+_DISABLED = _RuntimeSettings(enabled=False, base_url="", token="")
 
 
 class _RecordingStopEvent:
@@ -521,13 +523,15 @@ class ConnectAndListenStopRaceTests(SimpleTestCase):
 
 
 class ApplyRuntimeSettingsTests(SimpleTestCase):
-    def test_settings_are_read_under_the_lock(self):
-        # #132: read outside `_lock` and stored inside it, two applies at once could store the older read last.
+    def test_settings_are_read_under_the_apply_lock_but_not_the_stream_lock(self):
+        # #132: read outside the lock and stored inside it, two applies at once could store the older read last.
+        # #121: the read can hit the DB on a cold cache, so it stays out of `_lock`, which `stop()` and the
+        # stream thread use.
         stream = HomeAssistantStateStream()
-        held: list[bool] = []
+        held: list[tuple[bool, bool]] = []
 
         def _read() -> _RuntimeSettings:
-            held.append(stream._lock.locked())
+            held.append((stream._apply_lock.locked(), stream._lock.locked()))
             return _SETTINGS
 
         with (
@@ -536,6 +540,159 @@ class ApplyRuntimeSettingsTests(SimpleTestCase):
         ):
             stream.apply_runtime_settings_from_active_profile()
 
-        self.assertEqual(held, [True])
+        self.assertEqual(held, [(True, False)])
         self.assertEqual(stream._settings, _SETTINGS)
         restart.assert_called_once_with()
+
+    def test_stop_restart_and_start_run_under_the_apply_lock(self):
+        stream = HomeAssistantStateStream()
+        held: list[tuple[str, bool]] = []
+
+        def _record(method: str):
+            return lambda: held.append((method, stream._apply_lock.locked()))
+
+        for settings, method in ((_SETTINGS, "restart"), (_SETTINGS, "start"), (_DISABLED, "stop")):
+            with (
+                self.subTest(method=method),
+                patch.object(state_stream, "_get_runtime_settings", return_value=settings),
+                patch.object(stream, method, side_effect=_record(method)),
+            ):
+                stream.apply_runtime_settings_from_active_profile()
+
+        self.assertEqual(held, [("restart", True), ("start", True), ("stop", True)])
+
+
+class ConcurrentApplyTests(SimpleTestCase):
+    """Two applies at once must end with the stream running on the newer settings (#121)."""
+
+    def test_older_apply_cant_stop_the_stream_after_a_newer_one_restarts_it(self):
+        fake = FakeSessionStream(self)
+        stream = fake.stream
+        stream._apply_lock = RecordingLock()
+        with patch.object(state_stream, "_get_runtime_settings", return_value=_SETTINGS):
+            stream.apply_runtime_settings_from_active_profile()
+        fake.wait_for_session()
+
+        # Apply A reads "disabled" and is about to stop the stream when apply B reads the newer, enabled settings.
+        reads = iter([_DISABLED, _NEW_SETTINGS])
+        a_stopping = threading.Event()
+        release_a = threading.Event()
+        real_stop = stream.stop
+
+        def _stop():
+            if threading.current_thread() is apply_a:
+                a_stopping.set()
+                release_a.wait(timeout=5)
+            return real_stop()
+
+        apply_a = threading.Thread(target=stream.apply_runtime_settings_from_active_profile, daemon=True)
+        apply_b = threading.Thread(target=stream.apply_runtime_settings_from_active_profile, daemon=True)
+        with (
+            patch.object(state_stream, "_get_runtime_settings", side_effect=lambda: next(reads)),
+            patch.object(stream, "stop", side_effect=_stop),
+        ):
+            apply_a.start()
+            self.assertTrue(a_stopping.wait(timeout=5))
+            apply_b.start()
+            # Without the apply lock B restarts the stream here, and A's stop then lands on B's new thread.
+            stream._apply_lock.wait_until_tried(apply_b)
+            release_a.set()
+            apply_a.join(timeout=5)
+            apply_b.join(timeout=5)
+            self.assertFalse(apply_a.is_alive())
+            self.assertFalse(apply_b.is_alive())
+
+        thread, ws_url, token, stop = fake.wait_for_session()
+        self.assertEqual(stream._settings, _NEW_SETTINGS)
+        self.assertIs(thread, stream._thread)
+        self.assertTrue(thread.is_alive())
+        self.assertFalse(stop.is_set())
+        self.assertEqual((ws_url, token), ("ws://ha-new:8123/api/websocket", "new-token"))
+
+
+class BackgroundApplyTests(SimpleTestCase):
+    def test_returns_right_away_and_coalesces_requests_into_one_more_apply(self):
+        fake = FakeSessionStream(self)
+        stream = fake.stream
+        current = {"settings": _SETTINGS}
+        reads: list[_RuntimeSettings] = []
+        first_read_started = threading.Event()
+        release_first_read = threading.Event()
+
+        def _read() -> _RuntimeSettings:
+            settings = current["settings"]
+            reads.append(settings)
+            if len(reads) == 1:
+                first_read_started.set()
+                release_first_read.wait(timeout=5)
+            return settings
+
+        with patch.object(state_stream, "_get_runtime_settings", side_effect=_read):
+            stream.apply_runtime_settings_in_background()
+            # The call returned while the apply it queued is still blocked.
+            self.assertTrue(first_read_started.wait(timeout=5))
+            current["settings"] = _NEW_SETTINGS
+            for _ in range(3):
+                stream.apply_runtime_settings_in_background()
+            self.assertFalse(stream.wait_for_background_apply(timeout=0))
+            release_first_read.set()
+            self.assertTrue(stream.wait_for_background_apply(timeout=5))
+
+        # The three requests made during the first apply ran as one more apply, on the newest settings.
+        self.assertEqual(reads, [_SETTINGS, _NEW_SETTINGS])
+        self.assertEqual(stream._settings, _NEW_SETTINGS)
+        self.assertIsNone(stream._apply_worker)
+        # The first apply's thread may already have seen the new settings or been stopped before connecting,
+        # so only the current thread's session is checked.
+        thread, _, token, stop = fake.wait_for_current_session()
+        self.assertEqual(token, "new-token")
+        self.assertTrue(thread.is_alive())
+        self.assertFalse(stop.is_set())
+
+    def test_request_after_the_worker_finishes_starts_a_new_apply(self):
+        stream = HomeAssistantStateStream()
+        with patch.object(stream, "apply_runtime_settings_from_active_profile") as apply:
+            stream.apply_runtime_settings_in_background()
+            self.assertTrue(stream.wait_for_background_apply(timeout=5))
+            stream.apply_runtime_settings_in_background()
+            self.assertTrue(stream.wait_for_background_apply(timeout=5))
+
+        self.assertEqual(apply.call_count, 2)
+
+    def test_closes_db_connections_around_the_apply(self):
+        stream = HomeAssistantStateStream()
+        calls: list[str] = []
+        applying = threading.Event()
+        release = threading.Event()
+
+        def _apply() -> None:
+            calls.append("apply")
+            applying.set()
+            release.wait(timeout=5)
+
+        with (
+            patch.object(state_stream, "close_old_connections", side_effect=lambda: calls.append("close_old")),
+            patch.object(state_stream, "connections") as connections,
+            patch.object(stream, "apply_runtime_settings_from_active_profile", side_effect=_apply),
+        ):
+            connections.close_all.side_effect = lambda: calls.append("close_all")
+            stream.apply_runtime_settings_in_background()
+            self.assertTrue(applying.wait(timeout=5))
+            worker = stream._apply_worker
+            release.set()
+            worker.join(timeout=5)
+
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(calls, ["close_old", "apply", "close_all"])
+
+    def test_failed_apply_is_logged_and_the_worker_still_finishes(self):
+        stream = HomeAssistantStateStream()
+        with (
+            patch.object(stream, "apply_runtime_settings_from_active_profile", side_effect=RuntimeError("boom")),
+            self.assertLogs("integrations_home_assistant", level="WARNING") as logs,
+        ):
+            stream.apply_runtime_settings_in_background()
+            self.assertTrue(stream.wait_for_background_apply(timeout=5))
+
+        self.assertIn("HA state stream apply failed", logs.output[0])
+        self.assertIsNone(stream._apply_worker)
