@@ -26,6 +26,9 @@ _RECONNECT_HEALTHY_SESSION_SECONDS = 30.0
 # it runs in the settings PATCH request, and a stopped thread can't keep a session open (see `restart`).
 _RESTART_JOIN_TIMEOUT_SECONDS = 1.0
 
+# The stream reads the clock through this hook so tests can swap it without patching `time` process-wide.
+_monotonic = time.monotonic
+
 
 def _build_ws_url(base_url: str) -> str:
     base_url = (base_url or "").strip().rstrip("/")
@@ -95,8 +98,9 @@ class HomeAssistantStateStream:
 
     def apply_runtime_settings_from_active_profile(self) -> None:
         """Start/stop the stream based on the current cached HA connection settings."""
-        settings = _get_runtime_settings()
         with self._lock:
+            # Read under the lock too, so two applies at once can't store the older settings last (#132).
+            settings = _get_runtime_settings()
             changed = settings != self._settings
             self._settings = settings
         if not settings.enabled:
@@ -167,10 +171,9 @@ class HomeAssistantStateStream:
             # No cache / cache error: fall back to per-process behavior.
             return True
 
-    def _run(self, stop: threading.Event | None = None) -> None:
-        # `start()` passes the thread's own stop event. Called without one, use the current event.
-        if stop is None:
-            stop = self._stop
+    def _run(self, stop: threading.Event) -> None:
+        # `stop` is this thread's own event from `start()`. Never use `self._stop` here, after a restart
+        # that's the new thread's event.
         backoff_seconds = _RECONNECT_BACKOFF_INITIAL_SECONDS
         last_leader_refresh = 0.0
 
@@ -182,7 +185,7 @@ class HomeAssistantStateStream:
                 return
 
             # Leadership gating.
-            now_monotonic = time.monotonic()
+            now_monotonic = _monotonic()
             if now_monotonic - last_leader_refresh >= _LEADER_HEARTBEAT_SECONDS:
                 last_leader_refresh = now_monotonic
             if not self._is_leader():
@@ -200,7 +203,11 @@ class HomeAssistantStateStream:
             # `run_forever` returns (rather than raises) on a refused connection, so back off after
             # every attempt. Only a session that stayed up for a while after auth_ok resets the delay,
             # so HA (or a proxy) dropping the connection right after auth keeps backing off.
-            healthy = authed_at is not None and time.monotonic() - authed_at >= _RECONNECT_HEALTHY_SESSION_SECONDS
+            # The threshold never goes below the backoff cap (#119). A session that resets the delay
+            # reconnects 1s after it drops, so with a lower threshold something that cuts the connection
+            # right after it would reconnect faster than the capped failure rate forever (#114 again).
+            healthy_after = max(_RECONNECT_HEALTHY_SESSION_SECONDS, _RECONNECT_BACKOFF_MAX_SECONDS)
+            healthy = authed_at is not None and _monotonic() - authed_at >= healthy_after
             if healthy:
                 backoff_seconds = _RECONNECT_BACKOFF_INITIAL_SECONDS
             if stop.wait(backoff_seconds):
@@ -208,12 +215,10 @@ class HomeAssistantStateStream:
             if not healthy:
                 backoff_seconds = min(_RECONNECT_BACKOFF_MAX_SECONDS, backoff_seconds * 2.0)
 
-    def _connect_and_listen(self, *, ws_url: str, token: str, stop: threading.Event | None = None) -> float | None:
-        """Run one websocket session until it closes; return the `time.monotonic()` of `auth_ok`, or None."""
+    def _connect_and_listen(self, *, ws_url: str, token: str, stop: threading.Event) -> float | None:
+        """Run one websocket session until it closes; return the `_monotonic()` of `auth_ok`, or None."""
         import websocket
 
-        if stop is None:
-            stop = self._stop
         authed = {"at": None}
 
         def _on_open(ws) -> None:
@@ -242,7 +247,7 @@ class HomeAssistantStateStream:
                 return
 
             if msg_type == "auth_ok":
-                authed["at"] = time.monotonic()
+                authed["at"] = _monotonic()
                 sub_id = self._next_subscribe_id
                 self._next_subscribe_id += 1
                 ws.send(
