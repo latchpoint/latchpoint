@@ -19,7 +19,7 @@ function describeSlots(code: DoorCode, lockNameByEntityId: Map<string, string>):
 }
 
 // The backend never pushes an inactive code, and it only leaves one pushed once
-// no slot clear is outstanding (#144). So for an inactive code, pending or
+// no slot clear is outstanding (#144). So for an inactive manual code, pending or
 // failed means a clear that may have left the PIN on a lock is still being
 // retried, and Retry retries that clear.
 export function DoorCodePushStatusBadge({ code, lockNameByEntityId, canRetry, isRetrying, onRetry }: Props) {
@@ -46,7 +46,12 @@ export function DoorCodePushStatusBadge({ code, lockNameByEntityId, canRetry, is
     )
   }
 
-  const clearing = !code.isActive
+  // Synced codes don't count. Lock sync creates them at the default pending and
+  // turns them off without touching push_state, so for those pending says
+  // nothing about a clear (#149). An inactive synced code gets the plain badge
+  // with no Retry, since Retry would only come back with a 409.
+  const clearing = !code.isActive && code.source !== 'synced'
+  const showRetry = canRetry && (code.isActive || clearing)
 
   if (code.pushState === 'failed') {
     return (
@@ -55,7 +60,7 @@ export function DoorCodePushStatusBadge({ code, lockNameByEntityId, canRetry, is
           {clearing ? 'Clear failed' : 'Push failed'}
           {code.lastPushError ? `: ${code.lastPushError.slice(0, 80)}` : ''}
         </Badge>
-        {canRetry ? (
+        {showRetry ? (
           <Button size="sm" variant="secondary" disabled={isRetrying} onClick={onRetry}>
             {isRetrying ? 'Retrying…' : 'Retry'}
           </Button>
@@ -75,7 +80,7 @@ export function DoorCodePushStatusBadge({ code, lockNameByEntityId, canRetry, is
       <Badge variant="outline" title={code.lastPushError || 'Waiting for the lock to accept the code.'}>
         {clearing ? 'Pending clear' : 'Pending sync'}
       </Badge>
-      {canRetry ? (
+      {showRetry ? (
         <Button size="sm" variant="ghost" disabled={isRetrying} onClick={onRetry}>
           {isRetrying ? 'Retrying…' : 'Retry now'}
         </Button>
