@@ -1,5 +1,7 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Eye, EyeOff } from 'lucide-react'
+import { useQueryClient } from '@tanstack/react-query'
+import { queryKeys } from '@/types'
 import type { DoorCode, Entity, UpdateDoorCodeRequest } from '@/types'
 import { getErrorMessage } from '@/types/errors'
 import { Alert, AlertDescription } from '@/components/ui/alert'
@@ -25,6 +27,11 @@ type Props = {
   onUpdate: (id: number, req: UpdateDoorCodeRequest) => Promise<unknown>
   onDelete: (id: number, reauthPassword: string) => Promise<unknown>
   onRetryPush: (id: number) => Promise<unknown>
+}
+
+// What a Retry error is about. When this changes the error is out of date.
+function pushStateKeyOf(code: DoorCode): string {
+  return `${code.isActive}|${code.pushState}|${code.lastPushAttemptAt ?? ''}`
 }
 
 function LockBadges({ lockEntityIds, lockNameByEntityId }: { lockEntityIds: string[]; lockNameByEntityId: Map<string, string> }) {
@@ -57,15 +64,56 @@ export function DoorCodeCard({
   onDelete,
   onRetryPush,
 }: Props) {
+  const queryClient = useQueryClient()
   const [pinVisible, setPinVisible] = useState(false)
-  const [retryError, setRetryError] = useState<string | null>(null)
+  // stateKey is the push state the error belongs to. caughtUp turns true once
+  // this card's props show that state.
+  const [retryError, setRetryError] = useState<{ message: string; stateKey: string; caughtUp: boolean } | null>(
+    null,
+  )
+  const alertRef = useRef<HTMLDivElement>(null)
+  const retryFocusRef = useRef<Element | null>(null)
+
+  const pushStateKey = pushStateKeyOf(code)
+
+  // Once the card shows the state the error belongs to, any change after that
+  // (the code is turned back on, the scheduler pushes it) means it no longer applies.
+  if (retryError) {
+    if (retryError.stateKey === pushStateKey) {
+      if (!retryError.caughtUp) setRetryError({ ...retryError, caughtUp: true })
+    } else if (retryError.caughtUp) {
+      setRetryError(null)
+    }
+  }
+  const visibleRetryError =
+    retryError && (!retryError.caughtUp || retryError.stateKey === pushStateKey) ? retryError.message : null
+
+  // A refused Retry refetches the code, which can remove the focused Retry
+  // button. Move focus to the error instead of dropping it on the page.
+  useEffect(() => {
+    if (!visibleRetryError || !retryFocusRef.current || retryFocusRef.current.isConnected) return
+    retryFocusRef.current = null
+    alertRef.current?.focus()
+  })
 
   const handleRetryPush = async () => {
+    retryFocusRef.current = document.activeElement
     setRetryError(null)
     try {
       await onRetryPush(code.id)
     } catch (err) {
-      setRetryError(getErrorMessage(err) || 'Failed to retry push')
+      // The Retry mutation refetches the codes before it rejects, so the cache
+      // already has the state this error belongs to (e.g. the code turned off
+      // elsewhere) even though this card's props haven't caught up yet.
+      const latest =
+        queryClient
+          .getQueryData<DoorCode[]>(queryKeys.doorCodes.byUser(code.userId))
+          ?.find((c) => c.id === code.id) ?? code
+      setRetryError({
+        message: getErrorMessage(err) || 'Failed to retry push',
+        stateKey: pushStateKeyOf(latest),
+        caughtUp: false,
+      })
     }
   }
 
@@ -127,9 +175,9 @@ export function DoorCodeCard({
               onRetry={handleRetryPush}
             />
           </div>
-          {retryError ? (
-            <Alert variant="error" layout="inline" className="mt-2">
-              <AlertDescription>{retryError}</AlertDescription>
+          {visibleRetryError ? (
+            <Alert ref={alertRef} tabIndex={-1} variant="error" layout="inline" className="mt-2">
+              <AlertDescription>{visibleRetryError}</AlertDescription>
             </Alert>
           ) : null}
         </div>

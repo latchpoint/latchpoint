@@ -135,7 +135,7 @@ describe('DoorCodePushStatusBadge', () => {
     expect(screen.queryByRole('button', { name: /Retry/ })).toBeNull()
   })
 
-  it('shows Removed from lock instead of On lock for an inactive code with no slots', () => {
+  it('shows Not on lock instead of On lock for an inactive code with no slots', () => {
     // What deactivating leaves behind: slots cleared, pushState still pushed.
     const code = makeCode({ isActive: false, pushState: 'pushed' })
 
@@ -149,12 +149,31 @@ describe('DoorCodePushStatusBadge', () => {
       />,
     )
 
-    expect(screen.getByText('Removed from lock')).toBeTruthy()
-    expect(screen.queryByText(/On lock/)).toBeNull()
+    expect(screen.getByText('Not on lock')).toBeTruthy()
+    // The explanation is visible text, not only a hover title.
+    expect(screen.getByText('(inactive, no slot on any of its locks)')).toBeVisible()
+    expect(screen.queryByText(/^On lock/)).toBeNull()
     expect(screen.queryByRole('button', { name: /Retry/ })).toBeNull()
   })
 
-  it('shows Removed from lock for an inactive failed code with no slots', () => {
+  it('shows Not on lock for an inactive pending code that never got a slot', () => {
+    const code = makeCode({ isActive: false, pushState: 'pending' })
+
+    renderWithProviders(
+      <DoorCodePushStatusBadge
+        code={code}
+        lockNameByEntityId={lockNames}
+        canRetry
+        isRetrying={false}
+        onRetry={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByText('Not on lock')).toBeTruthy()
+    expect(screen.queryByText('Pending sync')).toBeNull()
+  })
+
+  it('keeps Push failed without Retry for an inactive failed code with no slots', () => {
     const code = makeCode({ isActive: false, pushState: 'failed', lastPushError: 'boom' })
 
     renderWithProviders(
@@ -167,9 +186,43 @@ describe('DoorCodePushStatusBadge', () => {
       />,
     )
 
-    expect(screen.getByText('Removed from lock')).toBeTruthy()
-    expect(screen.queryByText(/Push failed/)).toBeNull()
+    expect(screen.getByText('Push failed: boom')).toBeTruthy()
+    expect(screen.getByText('(saving it as off again or deleting it retries the clear)')).toBeVisible()
+    expect(screen.queryByText('Not on lock')).toBeNull()
     expect(screen.queryByRole('button', { name: /Retry/ })).toBeNull()
+  })
+
+  it('does not show Not on lock when the code has no slot assignments to check', () => {
+    const code = makeCode({ isActive: false, pushState: 'pushed', lockSlotAssignments: [] })
+
+    renderWithProviders(
+      <DoorCodePushStatusBadge
+        code={code}
+        lockNameByEntityId={lockNames}
+        canRetry
+        isRetrying={false}
+        onRetry={vi.fn()}
+      />,
+    )
+
+    expect(screen.queryByText('Not on lock')).toBeNull()
+    expect(screen.getByText('On lock')).toBeTruthy()
+  })
+
+  it('does not show the clear hint for an active failed code', () => {
+    const code = makeCode({ pushState: 'failed', lastPushError: 'boom' })
+
+    renderWithProviders(
+      <DoorCodePushStatusBadge
+        code={code}
+        lockNameByEntityId={lockNames}
+        canRetry
+        isRetrying={false}
+        onRetry={vi.fn()}
+      />,
+    )
+
+    expect(screen.queryByText(/retries the clear/)).toBeNull()
   })
 
   it('keeps On lock for an inactive code that still holds a slot', () => {
@@ -190,7 +243,7 @@ describe('DoorCodePushStatusBadge', () => {
     )
 
     expect(screen.getByText(/On lock:.*Front Door.*slot 3/)).toBeTruthy()
-    expect(screen.queryByText('Removed from lock')).toBeNull()
+    expect(screen.queryByText('Not on lock')).toBeNull()
   })
 
   it('hides Retry for an inactive failed code that still holds a slot', () => {

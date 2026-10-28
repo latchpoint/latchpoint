@@ -21,12 +21,19 @@ function describeSlots(code: DoorCode, lockNameByEntityId: Map<string, string>):
 export function DoorCodePushStatusBadge({ code, lockNameByEntityId, canRetry, isRetrying, onRetry }: Props) {
   if (!code.lockEntityIds?.length) return null
 
-  // An inactive code that holds no slot isn't on any of its locks, whatever pushState says.
-  if (!code.isActive && code.lockSlotAssignments.every((a) => a.slotIndex == null)) {
+  // An inactive code that holds no slot isn't on any of its locks. A failed one
+  // falls through so a failed slot clear still shows as Push failed.
+  if (
+    !code.isActive &&
+    code.pushState !== 'failed' &&
+    code.lockSlotAssignments.length > 0 &&
+    code.lockSlotAssignments.every((a) => a.slotIndex == null)
+  ) {
     return (
-      <Badge variant="outline" title="This code is inactive and doesn't hold a slot on any of its locks.">
-        Removed from lock
-      </Badge>
+      <div className="flex items-center gap-2">
+        <Badge variant="outline">Not on lock</Badge>
+        <span className="text-xs text-muted-foreground">(inactive, no slot on any of its locks)</span>
+      </div>
     )
   }
 
@@ -52,6 +59,9 @@ export function DoorCodePushStatusBadge({ code, lockNameByEntityId, canRetry, is
           <Button size="sm" variant="secondary" disabled={isRetrying} onClick={onRetry}>
             {isRetrying ? 'Retrying…' : 'Retry'}
           </Button>
+        ) : null}
+        {!code.isActive ? (
+          <span className="text-xs text-muted-foreground">(saving it as off again or deleting it retries the clear)</span>
         ) : null}
       </div>
     )
