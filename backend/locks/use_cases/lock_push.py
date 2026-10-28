@@ -91,13 +91,15 @@ class LockRejectedCode(LockPushFailed):
     """The lock will not or did not store the PIN (admin-code clash, or the slot reads back without it).
 
     ``clear_slot`` is set when the slot we just wrote might still hold the PIN
-    (stored disabled, or read back empty but possibly committed late), so the
-    push path clears it rather than leave a PIN on the lock nothing tracks.
+    (read back holding it disabled, or read back empty but possibly committed
+    late), so the push path clears it rather than leave a PIN on the lock nothing
+    tracks. ``holds_pin`` is set only when the readback showed the PIN itself.
     """
 
-    def __init__(self, message: str, *, clear_slot: bool = False):
+    def __init__(self, message: str, *, clear_slot: bool = False, holds_pin: bool = False):
         super().__init__(message)
         self.clear_slot = clear_slot
+        self.holds_pin = holds_pin
 
 
 class LockCodeUnverified(GatewayError):
@@ -327,14 +329,21 @@ def _verify_user_code_slot(
             # e.g. 254 "status not available" — not a verdict, ask again.
             last_reason = f"unknown userIdStatus {status!r}"
             continue
+        known, stored = _normalize_pin(response.get("userCode"))
         if is_active is False:
             # We always send userIdStatus=1 (enabled); a disabled code won't open the door.
-            raise LockRejectedCode(
-                f"Lock stored the code in slot {slot_index} but reports it disabled.",
-                clear_slot=True,
-            )
+            # Only our own PIN gets cleared: a disabled slot with any other or an
+            # unreadable code may be someone else's (our set may have been dropped).
+            if known and stored == pin:
+                raise LockRejectedCode(
+                    f"Lock stored the code in slot {slot_index} but reports it disabled.",
+                    clear_slot=True,
+                    holds_pin=True,
+                )
+            if known:
+                raise LockRejectedCode(f"Lock did not store the code: slot {slot_index} holds a different code.")
+            raise LockRejectedCode(f"Lock reports slot {slot_index} disabled and its code can't be read back.")
 
-        known, stored = _normalize_pin(response.get("userCode"))
         if not known:
             logger.warning(
                 "Slot %d on node %d reads back occupied but userCode is %s; accepting without comparing",
@@ -376,6 +385,48 @@ def _record_unconfirmed_slot_attempt(
     )
 
 
+def _claimed_slots(*, lock_entity_id: str, door_code: DoorCode) -> set[int]:
+    """Slots other door codes' assignments hold on this lock (skipped by selection, adoption and cleanup)."""
+    return set(
+        DoorCodeLockAssignment.objects.filter(lock_entity_id=lock_entity_id, slot_index__isnull=False)
+        .exclude(door_code=door_code)
+        .values_list("slot_index", flat=True)
+    )
+
+
+def _unconfirmed_attempt_slots(
+    *,
+    door_code: DoorCode,
+    lock_entity_id: str,
+    claimed_slots: set[int] | frozenset[int] = frozenset(),
+) -> list[int]:
+    """Slots recorded by :func:`_record_unconfirmed_slot_attempt` for this code on this lock.
+
+    Only attempts since the code's last successful push to this lock count, newest
+    first, without duplicates or ``claimed_slots``.
+    """
+    events = DoorCodeEvent.objects.filter(door_code=door_code, lock_entity_id=lock_entity_id)
+    last_pushed_id = (
+        events.filter(event_type=DoorCodeEvent.EventType.CODE_SYNCED)
+        .order_by("-id")
+        .values_list("id", flat=True)
+        .first()
+    )
+    attempts = events.filter(event_type=DoorCodeEvent.EventType.CODE_FAILED)
+    if last_pushed_id is not None:
+        attempts = attempts.filter(id__gt=last_pushed_id)
+
+    slots: list[int] = []
+    for metadata in attempts.order_by("-id").values_list("metadata", flat=True):
+        if not isinstance(metadata, dict) or metadata.get("action") != _UNCONFIRMED_PUSH_ACTION:
+            continue
+        slot_index = _coerce_int(metadata.get("slot_index"))
+        if slot_index is None or slot_index <= 0 or slot_index in slots or slot_index in claimed_slots:
+            continue
+        slots.append(slot_index)
+    return slots
+
+
 def _find_adoptable_attempted_slot(
     *,
     zwavejs: ZwavejsGateway,
@@ -399,26 +450,11 @@ def _find_adoptable_attempted_slot(
     readback must report the PIN itself; a masked readback doesn't count.
     :class:`LockCodeUnverified` propagates.
     """
-    events = DoorCodeEvent.objects.filter(door_code=door_code, lock_entity_id=lock_entity_id)
-    last_pushed_id = (
-        events.filter(event_type=DoorCodeEvent.EventType.CODE_SYNCED)
-        .order_by("-id")
-        .values_list("id", flat=True)
-        .first()
+    candidates = _unconfirmed_attempt_slots(
+        door_code=door_code,
+        lock_entity_id=lock_entity_id,
+        claimed_slots=claimed_slots,
     )
-    attempts = events.filter(event_type=DoorCodeEvent.EventType.CODE_FAILED)
-    if last_pushed_id is not None:
-        attempts = attempts.filter(id__gt=last_pushed_id)
-
-    candidates: list[int] = []
-    for metadata in attempts.order_by("-id").values_list("metadata", flat=True):
-        if not isinstance(metadata, dict) or metadata.get("action") != _UNCONFIRMED_PUSH_ACTION:
-            continue
-        slot_index = _coerce_int(metadata.get("slot_index"))
-        if slot_index is None or slot_index <= 0 or slot_index in candidates or slot_index in claimed_slots:
-            continue
-        candidates.append(slot_index)
-
     for slot_index in candidates:
         try:
             confirmed = _verify_user_code_slot(
@@ -433,6 +469,80 @@ def _find_adoptable_attempted_slot(
         if confirmed:
             return slot_index
     return None
+
+
+def decrypt_pin_or_none(door_code: DoorCode) -> str | None:
+    """Return the stored plaintext PIN, or ``None`` when it's missing or unreadable."""
+    try:
+        return _decrypt_pin_or_raise(door_code)
+    except InvalidPin:
+        return None
+
+
+def clear_unconfirmed_slots_holding_pin(
+    *,
+    door_code: DoorCode,
+    pin: str,
+    lock_entity_ids: list[str],
+    zwavejs: ZwavejsGateway,
+    timeout_seconds: float = 5.0,
+) -> list[dict[str, object]]:
+    """Clear slots an unconfirmed push of ``door_code`` may have left ``pin`` in.
+
+    For deleting, deactivating or changing the PIN of a code that is still
+    pending: its PIN may have landed in a slot latchpoint never recorded
+    (``slot_index`` stays empty until the readback confirms), so the usual
+    "clear assigned slots" pass misses it. Candidates are the same recorded
+    attempts adoption uses. A slot is cleared only when it reads back holding
+    ``pin`` (enabled or disabled); empty, masked or different codes are left
+    alone. Best-effort: every failure is logged and skipped. Returns the slots
+    cleared as ``{"lock_entity_id", "slot_index"}`` dicts. Doesn't take the
+    ``lock_sync:`` lock, same as the existing slot clears in those paths.
+    """
+    cleared: list[dict[str, object]] = []
+    for lock_entity_id in dict.fromkeys(lock_entity_ids):
+        slots = _unconfirmed_attempt_slots(
+            door_code=door_code,
+            lock_entity_id=lock_entity_id,
+            claimed_slots=_claimed_slots(lock_entity_id=lock_entity_id, door_code=door_code),
+        )
+        if not slots:
+            continue
+        try:
+            node_id = _resolve_lock_node_id(lock_entity_id=lock_entity_id)
+        except Exception:
+            logger.warning("Can't resolve %s to check unconfirmed door code slots %s", lock_entity_id, slots)
+            continue
+        for slot_index in slots:
+            try:
+                try:
+                    holds_pin = _verify_user_code_slot(
+                        zwavejs=zwavejs,
+                        node_id=node_id,
+                        slot_index=slot_index,
+                        pin=pin,
+                        timeout_seconds=timeout_seconds,
+                    )
+                except LockRejectedCode as exc:
+                    holds_pin = exc.holds_pin
+                if not holds_pin:
+                    continue
+                clear_lock_user_code_slot(
+                    lock_entity_id=lock_entity_id,
+                    slot_index=slot_index,
+                    zwavejs=zwavejs,
+                    timeout_seconds=timeout_seconds,
+                )
+                cleared.append({"lock_entity_id": lock_entity_id, "slot_index": slot_index})
+            except Exception:
+                logger.warning(
+                    "Could not check/clear unconfirmed slot %d on %s for door code id=%s; it may still hold the PIN",
+                    slot_index,
+                    lock_entity_id,
+                    door_code.id,
+                    exc_info=True,
+                )
+    return cleared
 
 
 def _clear_slot_best_effort(
@@ -629,11 +739,7 @@ def push_door_code_to_lock(
         raise LockUnreachable("Another sync is in progress for this lock; will retry.")
 
     try:
-        claimed_slots = set(
-            DoorCodeLockAssignment.objects.filter(lock_entity_id=lock_entity_id, slot_index__isnull=False)
-            .exclude(door_code=door_code)
-            .values_list("slot_index", flat=True)
-        )
+        claimed_slots = _claimed_slots(lock_entity_id=lock_entity_id, door_code=door_code)
         try:
             _raise_if_pin_matches_admin_code(
                 zwavejs=zwavejs,

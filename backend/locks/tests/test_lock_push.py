@@ -840,6 +840,35 @@ class PushReadbackAndAdminCodeTests(EncryptionTestMixin, TestCase):
         self.assertEqual(self._cleared_slots(gateway), [1])
         self.assertNotIn((12, 1), gateway._lock_codes)
 
+    def test_disabled_readback_with_a_different_code_is_not_cleared(self):
+        # Our set was dropped and the slot holds someone else's disabled code.
+        gateway = FakeGateway(
+            usersNumber=3,
+            slot_status={1: 0, 2: 0, 3: 0},
+            get_responses=[{"userIdStatus": 2, "userCode": "9999"}],
+        )
+        code = self._make_code(pin="4321")
+
+        with self.assertRaises(LockRejectedCode):
+            self._push(code, gateway)
+
+        self._assert_terminal_failure(code, error_contains="holds a different code")
+        self.assertEqual(self._cleared_slots(gateway), [])
+
+    def test_disabled_readback_with_a_masked_code_is_not_cleared(self):
+        gateway = FakeGateway(
+            usersNumber=3,
+            slot_status={1: 0, 2: 0, 3: 0},
+            get_responses=[{"userIdStatus": 2, "userCode": "****"}],
+        )
+        code = self._make_code(pin="4321")
+
+        with self.assertRaises(LockRejectedCode):
+            self._push(code, gateway)
+
+        self._assert_terminal_failure(code, error_contains="can't be read back")
+        self.assertEqual(self._cleared_slots(gateway), [])
+
     def test_disabled_readback_clear_failure_still_fails_and_warns(self):
         from integrations_zwavejs.manager import ZwavejsCommandError
 
@@ -1256,6 +1285,29 @@ class MultiLockAndAdoptionTests(EncryptionTestMixin, TestCase):
         self.assertEqual(self._slot_calls(gateway, 3), [])
         self.assertEqual(self._set_nodes(gateway), [12])
 
+    def test_attempt_recorded_before_a_later_success_is_not_adopted(self):
+        gateway = FakeGateway(usersNumber=3, drops_duplicates=False)
+        gateway._lock_codes[(12, 1)] = "4321"
+        gateway._cache_codes[(12, 1)] = "4321"
+        code = self._make_code(pin="4321", lock_entity_ids=[self.BACK])
+        self._record_attempt(code, self.BACK, 1)
+        DoorCodeEvent.objects.create(
+            door_code=code,
+            lock_entity_id=self.BACK,
+            event_type=DoorCodeEvent.EventType.CODE_SYNCED,
+            metadata={"action": "pushed", "slot_index": 1},
+        )
+
+        result = push_door_code_to_lock(door_code=code, lock_entity_id=self.BACK, zwavejs=gateway)
+
+        # Slot 1 belongs to an earlier, finished push cycle: never read back or adopted.
+        self.assertEqual(result.slot_index, 2)
+        self.assertEqual(self._slot_calls(gateway, 1), [])
+        latest = DoorCodeEvent.objects.filter(door_code=code, event_type=DoorCodeEvent.EventType.CODE_SYNCED).latest(
+            "id"
+        )
+        self.assertNotIn("adopted_existing_slot", latest.metadata)
+
     def test_adoption_skips_recorded_slot_now_held_by_another_assignment(self):
         code = self._make_code(pin="4321", lock_entity_ids=[self.BACK])
         self._record_attempt(code, self.BACK, 1)
@@ -1271,6 +1323,164 @@ class MultiLockAndAdoptionTests(EncryptionTestMixin, TestCase):
         self.assertEqual(DoorCodeLockAssignment.objects.get(door_code=other).slot_index, 1)
         self.assertIsNone(self._slot(code, self.BACK))
         self.assertEqual([c for c in gateway.invoke_calls if c["args"] and c["args"][0] == 1], [])
+
+
+class UnconfirmedSlotCleanupTests(EncryptionTestMixin, TestCase):
+    """Delete / deactivate / PIN change of a code whose push landed but was never confirmed.
+
+    The slot is only known from the ``push_unconfirmed`` event, so it has to be
+    read back and cleared if it holds the code's old PIN.
+    """
+
+    LOCK = "lock.back_door"  # node 12
+    PIN = "4321"
+
+    # Readback the cleanup sees -> whether the slot should be cleared.
+    READBACKS = {
+        "old pin": ([], True),
+        "old pin disabled": ([{"userIdStatus": 2, "userCode": "4321"}], True),
+        "different code": ([{"userIdStatus": 1, "userCode": "9999"}], False),
+        "masked": ([{"userIdStatus": 1, "userCode": "****"}], False),
+        "empty": ([{"userIdStatus": 0, "userCode": ""}, {"userIdStatus": 0, "userCode": ""}], False),
+    }
+
+    def setUp(self):
+        self.user = User.objects.create_user(email="user@example.com", password="pass")
+        Entity.objects.create(
+            entity_id=self.LOCK,
+            domain="lock",
+            name="Back Door",
+            attributes={"zwavejs": {"node_id": 12}},
+            source="home_assistant",
+        )
+        patcher = patch.object(lock_push_uc, "_READBACK_RETRY_DELAYS_SECONDS", (0.0, 0.0))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _pending_unconfirmed(self, cleanup_readback: list) -> tuple[DoorCode, FakeGateway, int]:
+        """Push a code whose set lands but whose readbacks all time out, then script the cleanup readback."""
+        from integrations_zwavejs.manager import ZwavejsCommandError
+
+        timeout = ZwavejsCommandError("driver TimeoutError after 5.0s")
+        gateway = FakeGateway(usersNumber=5, get_responses=[timeout, timeout, timeout])
+        code = DoorCode.objects.create(
+            user=self.user,
+            encrypted_pin=SettingsEncryption.get().encrypt(self.PIN),
+            pin_length=len(self.PIN),
+            code_type=DoorCode.CodeType.PERMANENT,
+            is_active=True,
+        )
+        DoorCodeLockAssignment.objects.create(door_code=code, lock_entity_id=self.LOCK)
+        with self.assertRaises(LockUnreachable):
+            push_door_code_to_lock(door_code=code, lock_entity_id=self.LOCK, zwavejs=gateway)
+
+        self.assertIsNone(DoorCodeLockAssignment.objects.get(door_code=code).slot_index)
+        slot = lock_push_uc._unconfirmed_attempt_slots(door_code=code, lock_entity_id=self.LOCK)[0]
+        self.assertEqual(gateway._lock_codes[(12, slot)], self.PIN)
+        gateway._get_scripts = {None: list(cleanup_readback)}
+        gateway.invoke_calls.clear()
+        return code, gateway, slot
+
+    @staticmethod
+    def _cleared(gateway: FakeGateway) -> list[int]:
+        return [c["args"][0] for c in gateway.invoke_calls if c["command_class"] == 99 and c["method_name"] == "clear"]
+
+    def _check(self, operation) -> None:
+        for name, (readback, should_clear) in self.READBACKS.items():
+            with self.subTest(readback=name):
+                code, gateway, slot = self._pending_unconfirmed(readback)
+
+                operation(code, gateway)
+
+                if should_clear:
+                    self.assertEqual(self._cleared(gateway), [slot])
+                    # The old PIN is gone (a PIN change may then reuse the slot for the new PIN).
+                    self.assertNotEqual(gateway._lock_codes.get((12, slot)), self.PIN)
+                else:
+                    self.assertNotIn(slot, self._cleared(gateway))
+
+    def test_delete_clears_unconfirmed_slot_holding_the_pin(self):
+        def delete(code, gateway):
+            door_codes_uc.delete_door_code(code=code, actor_user=self.user, zwavejs=gateway)
+            self.assertFalse(DoorCode.objects.filter(id=code.id).exists())
+
+        self._check(delete)
+
+    def test_delete_records_cleared_unconfirmed_slot(self):
+        code, gateway, slot = self._pending_unconfirmed([])
+
+        door_codes_uc.delete_door_code(code=code, actor_user=self.user, zwavejs=gateway)
+
+        deleted = DoorCodeEvent.objects.get(event_type=DoorCodeEvent.EventType.CODE_DELETED)
+        self.assertEqual(
+            deleted.metadata["cleared_unconfirmed_slots"], [{"lock_entity_id": self.LOCK, "slot_index": slot}]
+        )
+
+    def test_deactivate_clears_unconfirmed_slot_holding_the_pin(self):
+        def deactivate(code, gateway):
+            door_codes_uc.update_door_code(
+                code=code, changes={"is_active": False}, actor_user=self.user, zwavejs=gateway
+            )
+            # Deactivation never re-pushes.
+            self.assertEqual([c for c in gateway.invoke_calls if c["method_name"] == "set"], [])
+
+        self._check(deactivate)
+
+    def test_pin_change_clears_unconfirmed_slot_holding_the_old_pin(self):
+        def change_pin(code, gateway):
+            door_codes_uc.update_door_code(code=code, changes={"code": "5555"}, actor_user=self.user, zwavejs=gateway)
+            # The new PIN still gets pushed afterwards.
+            sets = [c for c in gateway.invoke_calls if c["command_class"] == 99 and c["method_name"] == "set"]
+            self.assertEqual([c["args"][2] for c in sets], ["5555"])
+
+        self._check(change_pin)
+
+    def test_dropping_the_lock_clears_unconfirmed_slot_holding_the_pin(self):
+        code, gateway, slot = self._pending_unconfirmed([])
+
+        door_codes_uc.update_door_code(
+            code=code, changes={"lock_entity_ids": []}, actor_user=self.user, zwavejs=gateway
+        )
+
+        self.assertEqual(self._cleared(gateway), [slot])
+
+    def test_schedule_only_change_adopts_instead_of_clearing(self):
+        code, gateway, slot = self._pending_unconfirmed([])
+
+        door_codes_uc.update_door_code(code=code, changes={"days_of_week": 0b1}, actor_user=self.user, zwavejs=gateway)
+
+        self.assertEqual(self._cleared(gateway), [])
+        self.assertEqual([c for c in gateway.invoke_calls if c["method_name"] == "set"], [])
+        self.assertEqual(DoorCodeLockAssignment.objects.get(door_code=code).slot_index, slot)
+
+    def test_slot_held_by_another_assignment_is_not_touched(self):
+        code, gateway, slot = self._pending_unconfirmed([])
+        other = DoorCode.objects.create(
+            user=self.user,
+            encrypted_pin=SettingsEncryption.get().encrypt("9999"),
+            pin_length=4,
+            code_type=DoorCode.CodeType.PERMANENT,
+            is_active=True,
+        )
+        DoorCodeLockAssignment.objects.create(door_code=other, lock_entity_id=self.LOCK, slot_index=slot)
+
+        door_codes_uc.delete_door_code(code=code, actor_user=self.user, zwavejs=gateway)
+
+        self.assertEqual([c for c in gateway.invoke_calls if c["args"] and c["args"][0] == slot], [])
+
+    def test_cleanup_failure_is_logged_and_delete_still_happens(self):
+        from integrations_zwavejs.manager import ZwavejsCommandError
+
+        code, gateway, slot = self._pending_unconfirmed([])
+        timeout = ZwavejsCommandError("driver TimeoutError after 5.0s")
+        gateway._get_scripts = {None: [timeout, timeout, timeout]}
+
+        with self.assertLogs("locks.use_cases.lock_push", level="WARNING") as logs:
+            door_codes_uc.delete_door_code(code=code, actor_user=self.user, zwavejs=gateway)
+
+        self.assertIn(f"unconfirmed slot {slot}", "\n".join(logs.output))
+        self.assertEqual(self._cleared(gateway), [])
+        self.assertFalse(DoorCode.objects.filter(id=code.id).exists())
 
 
 class LockSlotAssignmentsSerializerTests(EncryptionTestMixin, TestCase):
