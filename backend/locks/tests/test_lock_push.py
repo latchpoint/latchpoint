@@ -1483,6 +1483,178 @@ class UnconfirmedSlotCleanupTests(EncryptionTestMixin, TestCase):
         self.assertFalse(DoorCode.objects.filter(id=code.id).exists())
 
 
+class LockListChangeTests(EncryptionTestMixin, TestCase):
+    """Issue #133: changing a code's locks keeps the slots of the locks that stay."""
+
+    BACK = "lock.back_door"  # node 12
+    SIDE = "lock.side_door"  # node 13
+    FRONT = "lock.front_door"  # node 14
+    PIN = "4321"
+
+    def setUp(self):
+        self.user = User.objects.create_user(email="user@example.com", password="pass")
+        for entity_id, name, node_id in (
+            (self.BACK, "Back Door", 12),
+            (self.SIDE, "Side Door", 13),
+            (self.FRONT, "Front Door", 14),
+        ):
+            Entity.objects.create(
+                entity_id=entity_id,
+                domain="lock",
+                name=name,
+                attributes={"zwavejs": {"node_id": node_id}},
+                source="home_assistant",
+            )
+        patcher = patch.object(lock_push_uc, "_READBACK_RETRY_DELAYS_SECONDS", (0.0, 0.0))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _pushed_code(self, lock_entity_ids: list[str], **gateway_kwargs) -> tuple[DoorCode, FakeGateway]:
+        """Create and push a code, with the cache seeing each set like it does after the readback get."""
+        gateway = FakeGateway(usersNumber=5, cache_updates_on_set=True, **gateway_kwargs)
+        code = door_codes_uc.create_door_code(
+            user=self.user,
+            raw_code=self.PIN,
+            lock_entity_ids=lock_entity_ids,
+            actor_user=self.user,
+            zwavejs=gateway,
+        )
+        gateway.invoke_calls.clear()
+        return code, gateway
+
+    def _update(self, code: DoorCode, gateway: FakeGateway, changes: dict) -> DoorCode:
+        code = door_codes_uc.get_door_code_for_read(code_id=code.id)
+        door_codes_uc.update_door_code(code=code, changes=changes, actor_user=self.user, zwavejs=gateway)
+        return DoorCode.objects.get(id=code.id)
+
+    @staticmethod
+    def _calls(gateway: FakeGateway, method_name: str) -> list[tuple[int, list]]:
+        return [
+            (c["node_id"], c["args"])
+            for c in gateway.invoke_calls
+            if c["command_class"] == 99 and c["method_name"] == method_name
+        ]
+
+    @staticmethod
+    def _lock_codes(gateway: FakeGateway, node_id: int) -> dict[int, str]:
+        return {slot: pin for (node, slot), pin in gateway._lock_codes.items() if node == node_id}
+
+    def _slots(self, code: DoorCode) -> dict[str, int | None]:
+        return dict(DoorCodeLockAssignment.objects.filter(door_code=code).values_list("lock_entity_id", "slot_index"))
+
+    def _updated_event(self, code: DoorCode) -> DoorCodeEvent:
+        return DoorCodeEvent.objects.filter(door_code=code, event_type=DoorCodeEvent.EventType.CODE_UPDATED).latest(
+            "id"
+        )
+
+    def test_dropping_a_lock_keeps_the_kept_locks_slot(self):
+        code, gateway = self._pushed_code([self.BACK, self.SIDE])
+        self.assertEqual(self._slots(code), {self.BACK: 1, self.SIDE: 1})
+
+        code = self._update(code, gateway, {"lock_entity_ids": [self.BACK]})
+
+        self.assertEqual(self._slots(code), {self.BACK: 1})
+        self.assertEqual(self._calls(gateway, "set"), [])
+        self.assertEqual(self._calls(gateway, "clear"), [(13, [1])])
+        self.assertEqual(self._lock_codes(gateway, 12), {1: self.PIN})
+        self.assertEqual(self._lock_codes(gateway, 13), {})
+        self.assertEqual(code.push_state, DoorCode.PushState.PUSHED)
+        metadata = self._updated_event(code).metadata
+        self.assertIn("lock_entity_ids", metadata["updated_fields"])
+        self.assertEqual(metadata["removed_lock_entity_ids"], [self.SIDE])
+        self.assertNotIn("added_lock_entity_ids", metadata)
+
+    def test_dropping_a_lock_from_the_edit_form_keeps_one_slot_on_the_kept_lock(self):
+        # The edit form always sends is_active, which re-pushes every lock.
+        code, gateway = self._pushed_code([self.BACK, self.SIDE])
+
+        code = self._update(code, gateway, {"is_active": True, "lock_entity_ids": [self.BACK]})
+
+        self.assertEqual(self._slots(code), {self.BACK: 1})
+        self.assertCountEqual(self._calls(gateway, "clear"), [(13, [1]), (12, [1])])
+        self.assertEqual(self._calls(gateway, "set"), [(12, [1, 1, self.PIN])])
+        self.assertEqual(self._lock_codes(gateway, 12), {1: self.PIN})
+        self.assertEqual(code.push_state, DoorCode.PushState.PUSHED)
+
+    def test_adding_a_lock_only_pushes_the_new_lock(self):
+        code, gateway = self._pushed_code([self.BACK])
+
+        code = self._update(code, gateway, {"lock_entity_ids": [self.BACK, self.SIDE]})
+
+        self.assertEqual(self._slots(code), {self.BACK: 1, self.SIDE: 1})
+        self.assertEqual(self._calls(gateway, "set"), [(13, [1, 1, self.PIN])])
+        self.assertEqual(self._calls(gateway, "clear"), [])
+        self.assertEqual(self._lock_codes(gateway, 12), {1: self.PIN})
+        self.assertEqual(code.push_state, DoorCode.PushState.PUSHED)
+        metadata = self._updated_event(code).metadata
+        self.assertEqual(metadata["added_lock_entity_ids"], [self.SIDE])
+        self.assertNotIn("removed_lock_entity_ids", metadata)
+
+    def test_swapping_a_lock_clears_the_old_one_and_pushes_the_new_one(self):
+        code, gateway = self._pushed_code([self.BACK, self.SIDE])
+
+        code = self._update(code, gateway, {"lock_entity_ids": [self.BACK, self.FRONT]})
+
+        self.assertEqual(self._slots(code), {self.BACK: 1, self.FRONT: 1})
+        self.assertEqual(self._calls(gateway, "clear"), [(13, [1])])
+        self.assertEqual(self._calls(gateway, "set"), [(14, [1, 1, self.PIN])])
+        self.assertEqual(self._lock_codes(gateway, 12), {1: self.PIN})
+        self.assertEqual(self._lock_codes(gateway, 13), {})
+        self.assertEqual(self._lock_codes(gateway, 14), {1: self.PIN})
+        self.assertEqual(code.push_state, DoorCode.PushState.PUSHED)
+        metadata = self._updated_event(code).metadata
+        self.assertEqual(metadata["added_lock_entity_ids"], [self.FRONT])
+        self.assertEqual(metadata["removed_lock_entity_ids"], [self.SIDE])
+
+    def test_unchanged_lock_list_with_a_label_edit_leaves_the_locks_alone(self):
+        # The edit form always sends the lock list, so this is every label edit.
+        code, gateway = self._pushed_code([self.BACK, self.SIDE])
+
+        code = self._update(code, gateway, {"label": "Cleaner", "lock_entity_ids": [self.SIDE, self.BACK]})
+
+        self.assertEqual(self._slots(code), {self.BACK: 1, self.SIDE: 1})
+        self.assertEqual(gateway.invoke_calls, [])
+        metadata = self._updated_event(code).metadata
+        self.assertNotIn("added_lock_entity_ids", metadata)
+        self.assertNotIn("removed_lock_entity_ids", metadata)
+
+    def test_pin_change_with_a_lock_change_moves_the_kept_lock_to_the_new_pin(self):
+        code, gateway = self._pushed_code([self.BACK, self.SIDE])
+
+        code = self._update(code, gateway, {"code": "5555", "lock_entity_ids": [self.BACK, self.FRONT]})
+
+        self.assertEqual(self._slots(code), {self.BACK: 1, self.FRONT: 1})
+        self.assertCountEqual(self._calls(gateway, "clear"), [(13, [1]), (12, [1])])
+        self.assertCountEqual(self._calls(gateway, "set"), [(12, [1, 1, "5555"]), (14, [1, 1, "5555"])])
+        self.assertEqual(self._lock_codes(gateway, 12), {1: "5555"})
+        self.assertEqual(self._lock_codes(gateway, 13), {})
+        self.assertEqual(self._lock_codes(gateway, 14), {1: "5555"})
+        self.assertEqual(code.push_state, DoorCode.PushState.PUSHED)
+
+    def test_deactivating_with_a_lock_change_clears_every_lock_without_pushing(self):
+        code, gateway = self._pushed_code([self.BACK, self.SIDE])
+
+        code = self._update(code, gateway, {"is_active": False, "lock_entity_ids": [self.BACK, self.FRONT]})
+
+        self.assertEqual(self._slots(code), {self.BACK: None, self.FRONT: None})
+        self.assertCountEqual(self._calls(gateway, "clear"), [(13, [1]), (12, [1])])
+        self.assertEqual(self._calls(gateway, "set"), [])
+        for node_id in (12, 13, 14):
+            self.assertEqual(self._lock_codes(gateway, node_id), {})
+
+    def test_dropping_the_lock_that_failed_marks_the_code_pushed(self):
+        code, gateway = self._pushed_code([self.BACK, self.SIDE], reject_pins={13: {self.PIN}})
+        code.refresh_from_db()
+        self.assertEqual(code.push_state, DoorCode.PushState.FAILED)
+
+        code = self._update(code, gateway, {"lock_entity_ids": [self.BACK]})
+
+        self.assertEqual(self._slots(code), {self.BACK: 1})
+        self.assertEqual(self._calls(gateway, "set"), [])
+        self.assertEqual(code.push_state, DoorCode.PushState.PUSHED)
+        self.assertEqual(code.last_push_error, "")
+
+
 class LockSlotAssignmentsSerializerTests(EncryptionTestMixin, TestCase):
     """ADR 0092: DoorCodeSerializer.get_lock_slot_assignments output + prefetch guard."""
 
