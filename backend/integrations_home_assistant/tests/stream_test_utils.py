@@ -82,21 +82,37 @@ class FakeSessionStream:
 
 
 class RecordingLock:
-    """A lock that records which threads have tried to take it, so a test can wait until one is queued on it."""
+    """
+    A lock that records which threads have tried to take it, so a test can wait until one is queued on it.
+
+    ``holder`` is the thread holding it right now, or None.
+    """
 
     def __init__(self):
         self._lock = threading.Lock()
         self._attempts: list[threading.Thread] = []
         self._changed = threading.Condition()
+        self.holder: threading.Thread | None = None
 
-    def __enter__(self):
+    def acquire(self, blocking: bool = True, timeout: float = -1) -> bool:
         with self._changed:
             self._attempts.append(threading.current_thread())
             self._changed.notify_all()
-        return self._lock.__enter__()
+        acquired = self._lock.acquire(blocking, timeout)
+        if acquired:
+            self.holder = threading.current_thread()
+        return acquired
+
+    def release(self) -> None:
+        self.holder = None
+        self._lock.release()
+
+    def __enter__(self):
+        self.acquire()
+        return self
 
     def __exit__(self, *exc):
-        return self._lock.__exit__(*exc)
+        self.release()
 
     def locked(self) -> bool:
         return self._lock.locked()

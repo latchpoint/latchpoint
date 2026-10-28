@@ -22,6 +22,9 @@ _LEADER_TTL_SECONDS = 60
 _LEADER_HEARTBEAT_SECONDS = 20
 # How long a session that just ended waits for its renewal thread, which may be in the middle of a cache call.
 _LEADER_HEARTBEAT_JOIN_TIMEOUT_SECONDS = 5.0
+# How long releasing the leader key waits on a renewal that's in a cache call. The release is best-effort,
+# and `stop()` runs on the apply worker (under `_apply_lock`) and at exit, so a hung cache mustn't hold it up.
+_LEADER_RELEASE_LOCK_TIMEOUT_SECONDS = 1.0
 _RECONNECT_BACKOFF_INITIAL_SECONDS = 1.0
 _RECONNECT_BACKOFF_MAX_SECONDS = 30.0
 # An authed session has to stay up this long before its drop resets the backoff (#114).
@@ -220,6 +223,19 @@ class HomeAssistantStateStream:
         self._release_leadership()
         return thread
 
+    def shutdown(self) -> None:
+        """
+        Give up the leader key at process exit, leaving the websocket alone.
+
+        This runs in every process that loaded the app, management commands included. Closing a live
+        session here sends a close frame and waits up to 3s for HA to answer (`WebSocket.close`), and logs
+        a close for a session that's still connecting. The stream thread is a daemon, so the session ends
+        with the process anyway. The stop event is still set first, so a renewal can't take the key back.
+        """
+        with self._lock:
+            self._stop.set()
+        self._release_leadership()
+
     def _signal_stop(self) -> threading.Thread | None:
         with self._lock:
             self._stop.set()
@@ -288,16 +304,21 @@ class HomeAssistantStateStream:
 
     def _release_leadership(self) -> None:
         """Delete the leader key if this process still holds it."""
-        with self._leader_lock:
-            try:
-                # Same get-then-act race as the renewal in `_is_leader`: if the key expires between these two
-                # calls and another worker takes it, we delete theirs. They take it back with `add` at their
-                # next renewal, unless a polling worker gets there first, in which case the two overlap until
-                # the old leader's renewal sees the new id and closes its session.
-                if cache.get(_CACHE_LEADER_KEY) == self._leader_id:
-                    cache.delete(_CACHE_LEADER_KEY)
-            except Exception:
-                logger.debug("HA state stream: releasing the leader key failed", exc_info=True)
+        if not self._leader_lock.acquire(timeout=_LEADER_RELEASE_LOCK_TIMEOUT_SECONDS):
+            # A renewal is stuck in a cache call. Leave the key to run out on its own TTL.
+            logger.debug("HA state stream: a leader key renewal is still running, not releasing the key")
+            return
+        try:
+            # Same get-then-act race as the renewal in `_is_leader`: if the key expires between these two
+            # calls and another worker takes it, we delete theirs. They take it back with `add` at their
+            # next renewal, unless a polling worker gets there first, in which case the two overlap until
+            # the old leader's renewal sees the new id and closes its session.
+            if cache.get(_CACHE_LEADER_KEY) == self._leader_id:
+                cache.delete(_CACHE_LEADER_KEY)
+        except Exception:
+            logger.debug("HA state stream: releasing the leader key failed", exc_info=True)
+        finally:
+            self._leader_lock.release()
 
     def _renew_leadership_during_session(
         self, *, ws_app: Any, stop: threading.Event, session_done: threading.Event, lost: threading.Event
@@ -312,8 +333,9 @@ class HomeAssistantStateStream:
         while not session_done.wait(_LEADER_HEARTBEAT_SECONDS):
             if self._hold_leadership(stop):
                 continue
-            if stop.is_set():
-                # `stop()` is already closing the session.
+            if stop.is_set() or session_done.is_set():
+                # `stop()` is already closing the session, or it ended while we were renewing (and
+                # `_connect_and_listen` gave up waiting for us), so there's nothing to close or report.
                 return
             logger.warning("HA state stream: another worker holds the leader key, closing this session")
             lost.set()
@@ -556,4 +578,4 @@ def wait_for_background_apply(timeout: float | None = None) -> bool:
 
 
 def shutdown() -> None:
-    _stream.stop()
+    _stream.shutdown()

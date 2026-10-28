@@ -878,7 +878,13 @@ class _SessionTimeline:
                 return True
             self._clock.now += 1.0
             self._every_second()
+        return self.is_set()
+
+    def is_set(self) -> bool:
         return self._clock.now >= self._end
+
+    def end_now(self) -> None:
+        self._end = self._clock.now
 
 
 class _ClosableWebSocketApp:
@@ -901,12 +907,14 @@ class LeaderRenewalTests(SimpleTestCase):
         self.leader = HomeAssistantStateStream()
         self.other = HomeAssistantStateStream()
 
-    def _renew(self, timeline: _SessionTimeline, stop: threading.Event | None = None):
+    def _renew(self, timeline, stop: threading.Event | None = None):
         ws_app = _ClosableWebSocketApp()
         lost = threading.Event()
-        self.leader._renew_leadership_during_session(
-            ws_app=ws_app, stop=stop or threading.Event(), session_done=timeline, lost=lost
-        )
+        if stop is None:
+            stop = threading.Event()
+            # After a restart `self._stop` belongs to the new thread, so a renewal must only use the event it's given.
+            self.leader._stop = _OtherThreadsStopEvent()
+        self.leader._renew_leadership_during_session(ws_app=ws_app, stop=stop, session_done=timeline, lost=lost)
         return ws_app, lost
 
     def test_long_session_renews_the_key_before_it_expires(self):
@@ -1014,6 +1022,42 @@ class LeaderRenewalTests(SimpleTestCase):
         self.assertEqual(ws_app.close_calls, 0)
         self.assertFalse(lost.is_set())
 
+    def test_session_stopped_by_a_restart_stops_renewing(self):
+        # A restart keeps the key, sets the old thread's stop event and gives `self._stop` to the new thread.
+        # The old session's renewal has to go by its own event and stop, not carry on alongside the new one.
+        self.assertTrue(self.leader._is_leader())
+        old_stop = threading.Event()
+        old_stop.set()
+        self.leader._stop = threading.Event()
+
+        timeline = _SessionTimeline(self.clock, duration=3600)
+        with self.assertNoLogs("integrations_home_assistant", level="WARNING"):
+            ws_app, lost = self._renew(timeline, stop=old_stop)
+
+        self.assertEqual(len(timeline.waits), 1)
+        self.assertEqual(self.cache.touches, 0)
+        self.assertEqual(ws_app.close_calls, 0)
+        self.assertFalse(lost.is_set())
+
+    def test_renewal_that_outlives_its_session_doesnt_report_a_lost_key(self):
+        # `_connect_and_listen` only waits so long for the renewal thread. One that finishes its cache calls
+        # after the session ended has nothing to close, so it mustn't log that another worker took over.
+        self.assertTrue(self.other._is_leader())
+        timeline = _SessionTimeline(self.clock, duration=3600)
+
+        def _session_ends_mid_renewal() -> None:
+            self.cache.on_get = None
+            timeline.end_now()
+
+        self.cache.on_get = _session_ends_mid_renewal
+        with self.assertNoLogs("integrations_home_assistant", level="WARNING"):
+            ws_app, lost = self._renew(timeline)
+
+        # The first renewal found the other worker's id, but its session had already ended.
+        self.assertEqual(len(timeline.waits), 1)
+        self.assertEqual(ws_app.close_calls, 0)
+        self.assertFalse(lost.is_set())
+
 
 class _LiveSessionWebSocketApp:
     """
@@ -1049,6 +1093,45 @@ class _LiveSessionWebSocketApp:
             raise AssertionError("the session was never closed")
         event = {"event_type": "state_changed", "data": {"entity_id": "binary_sensor.door"}}
         self._on_message(self, json.dumps({"type": "event", "event": event}))
+        self._on_close(self, None, None)
+        return False
+
+
+class _SlowConnectWebSocketApp:
+    """
+    ``run_forever`` is still connecting when the renewal closes the session, then opens anyway.
+
+    websocket-client 1.9.0 loses a ``close()`` made before the socket is up, so only the session's own
+    checks in ``on_open`` and ``on_message`` can end it.
+    """
+
+    instances: list[_SlowConnectWebSocketApp] = []
+
+    def __init__(self, url, *, on_open, on_message, on_error, on_close):
+        self._on_open = on_open
+        self._on_message = on_message
+        self._on_close = on_close
+        self.sent: list[str] = []
+        self.close_calls = 0
+        self.closed = threading.Event()
+        self.close_calls_before_open: int | None = None
+        self.close_calls_after_open: int | None = None
+        self.instances.append(self)
+
+    def send(self, data: str) -> None:
+        self.sent.append(data)
+
+    def close(self) -> None:
+        self.close_calls += 1
+        self.closed.set()
+
+    def run_forever(self, **_kwargs) -> bool:
+        if not self.closed.wait(timeout=5):
+            raise AssertionError("the renewal never closed the session")
+        self.close_calls_before_open = self.close_calls
+        self._on_open(self)
+        self.close_calls_after_open = self.close_calls
+        self._on_message(self, json.dumps({"type": "auth_required"}))
         self._on_close(self, None, None)
         return False
 
@@ -1137,6 +1220,38 @@ class SessionLeaderRenewalTests(SimpleTestCase):
         self.assertFalse(renewal_thread.is_alive())
         self.assertTrue(any("another worker holds the leader key" in line for line in logs.output))
 
+    def test_session_that_lost_the_key_while_connecting_closes_as_it_opens(self):
+        # Another worker holds the key, so the first renewal closes the session while it's still connecting.
+        self.assertTrue(self.other._is_leader())
+        with (
+            patch.object(_SlowConnectWebSocketApp, "instances", []),
+            patch("websocket.WebSocketApp", _SlowConnectWebSocketApp),
+            self.assertLogs("integrations_home_assistant", level="WARNING"),
+        ):
+            authed_at = self.stream._connect_and_listen(
+                ws_url="ws://ha:8123/api/websocket", token="token", stop=threading.Event()
+            )
+            (ws_app,) = _SlowConnectWebSocketApp.instances
+
+        self.assertIsNone(authed_at)
+        self.assertEqual(ws_app.sent, [])
+        # The renewal's close was lost, so the session closes itself as soon as it opens.
+        self.assertEqual(ws_app.close_calls_after_open, ws_app.close_calls_before_open + 1)
+
+
+class _StopLandsAfterLoopCheck:
+    """``_run``'s stop event when ``stop()`` lands right after the loop checked it: clear once, then set."""
+
+    def __init__(self):
+        self._checks = 0
+
+    def is_set(self) -> bool:
+        self._checks += 1
+        return self._checks > 1
+
+    def wait(self, timeout: float | None = None) -> bool:
+        return True
+
 
 class LeaderReleaseTests(SimpleTestCase):
     """``stop()`` gives up the leader key, but only one this process still holds (#118)."""
@@ -1166,14 +1281,92 @@ class LeaderReleaseTests(SimpleTestCase):
         self.assertEqual(self.cache.owner(), self.other._leader_id)
         self.assertFalse(self.stream._is_leader())
 
-    def test_shutdown_releases_the_key(self):
+    def test_shutdown_releases_the_key_without_closing_the_session(self):
+        # The exit hook runs in every process that loaded the app. Closing the session there held exit up by
+        # as long as `WebSocket.close` waits for HA (3s), and logged a close for a session still connecting.
         self.assertTrue(self.stream._is_leader())
+        ws_app = _ClosableWebSocketApp()
+        self.stream._ws_app = ws_app
 
-        with patch.object(state_stream, "_stream", self.stream):
+        with (
+            patch.object(state_stream, "_stream", self.stream),
+            self.assertNoLogs("integrations_home_assistant", level="DEBUG"),
+        ):
             state_stream.shutdown()
 
+        self.assertEqual(ws_app.close_calls, 0)
+        self.assertIsNone(self.cache.owner())
+        # The stop event is set, so a renewal after this can't take the key back.
+        self.assertTrue(self.stream._stop.is_set())
+        self.assertFalse(self.stream._hold_leadership(self.stream._stop))
+        self.assertIsNone(self.cache.owner())
+
+    def test_stop_during_a_renewal_waits_for_it_then_releases_the_key(self):
+        # The race `_leader_lock` is for: a renewal already past its stop check is in its cache calls when
+        # `stop()` deletes the key. Without the lock its touch misses, and its `add` takes the key back.
+        lock = RecordingLock()
+        self.stream._leader_lock = lock
+        self.assertTrue(self.stream._is_leader())
+        stopper = threading.Thread(target=self.stream.stop, daemon=True)
+
+        def _stop_mid_renewal() -> None:
+            self.cache.on_get = None
+            stopper.start()
+            lock.wait_until_tried(stopper)
+            if lock.holder is not threading.current_thread():
+                # Nothing holds the stop back, so it runs to the end before the renewal carries on.
+                stopper.join(timeout=5)
+
+        self.cache.on_get = _stop_mid_renewal
+        with patch.object(state_stream, "_LEADER_RELEASE_LOCK_TIMEOUT_SECONDS", 5.0):
+            renewed = self.stream._hold_leadership(self.stream._stop)
+            stopper.join(timeout=5)
+
+        # The renewal was past its check, so it went ahead, then the release waited for it and deleted the key.
+        self.assertTrue(renewed)
+        self.assertFalse(stopper.is_alive())
         self.assertTrue(self.stream._stop.is_set())
         self.assertIsNone(self.cache.owner())
+
+    def test_stop_doesnt_wait_long_on_a_renewal_stuck_in_the_cache(self):
+        # `stop()` runs on the apply worker while it holds `_apply_lock`, and at exit, so a hung cache call in a
+        # renewal can only hold it up for a bounded time.
+        self.assertTrue(self.stream._is_leader())
+        in_cache = threading.Event()
+        unstick = threading.Event()
+
+        def _hung() -> None:
+            self.cache.on_get = None
+            in_cache.set()
+            unstick.wait(timeout=5)
+
+        self.cache.on_get = _hung
+        renewal = threading.Thread(target=self.stream._hold_leadership, args=(threading.Event(),), daemon=True)
+        renewal.start()
+        try:
+            self.assertTrue(in_cache.wait(timeout=5))
+            with patch.object(state_stream, "_LEADER_RELEASE_LOCK_TIMEOUT_SECONDS", 0.05):
+                stopper = threading.Thread(target=self.stream.stop, daemon=True)
+                stopper.start()
+                stopper.join(timeout=2)
+            self.assertFalse(stopper.is_alive(), "stop() waited on the stuck renewal")
+        finally:
+            unstick.set()
+            renewal.join(timeout=5)
+
+        self.assertTrue(self.stream._stop.is_set())
+        # The release was skipped, so the key runs out on its own TTL.
+        self.assertEqual(self.cache.owner(), self.stream._leader_id)
+
+    def test_run_doesnt_take_the_key_once_stopped(self):
+        # `stop()` landing between `_run`'s loop check and its leadership check may already have released the
+        # key, so the leadership check has to see the stop rather than take the key back.
+        stream, _ = _make_stream(max_waits=1)
+        with patch.object(stream, "_connect_and_listen") as connect:
+            stream._run(_StopLandsAfterLoopCheck())
+
+        self.assertIsNone(self.cache.owner())
+        connect.assert_not_called()
 
     def test_stop_with_a_failing_cache_still_stops(self):
         with patch.object(state_stream, "cache", _FailingCache()):
