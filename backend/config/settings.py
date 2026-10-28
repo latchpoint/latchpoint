@@ -200,6 +200,12 @@ ALLOW_HOME_ASSISTANT_IN_TESTS = env.bool("ALLOW_HOME_ASSISTANT_IN_TESTS", defaul
 # Z-Wave JS integration (configured via alarm-profile settings; connectivity should be test-gated)
 ALLOW_ZWAVEJS_IN_TESTS = env.bool("ALLOW_ZWAVEJS_IN_TESTS", default=False)
 
+# Long-running runtimes (MQTT, Z-Wave JS, HA state stream, control panels, scheduler) start from
+# `AppConfig.ready()` only in the server process: daphne, uvicorn, gunicorn or `manage.py runserver` (#160).
+# "auto" (the default) detects that from argv. "true" starts them in any process, "false" in none. The
+# scheduler still honors SCHEDULER_ENABLED and never starts under tests.
+START_RUNTIMES = env.str("START_RUNTIMES", default="auto")
+
 # Scheduler
 SCHEDULER_ENABLED = env.bool("SCHEDULER_ENABLED", default=True)
 SCHEDULER_LEADER_LOCK_ENABLED = env.bool("SCHEDULER_LEADER_LOCK_ENABLED", default=False)

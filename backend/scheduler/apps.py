@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-import os
 import sys
 
 from django.apps import AppConfig
 from django.conf import settings
+
+from config.runtimes import should_start_runtimes
 
 
 def _should_start() -> bool:
@@ -19,23 +20,8 @@ def _should_start() -> bool:
     if getattr(settings, "IS_TESTING", False):
         return False
 
-    # If we're running under a server binary (daphne/uvicorn/gunicorn), start the scheduler.
-    #
-    # Note: these servers commonly pass flags as argv[1] (e.g. `daphne -b ...`), so we must
-    # not interpret argv[1] as a Django management command.
-    argv0 = os.path.basename(sys.argv[0] or "")
-    if any(server in argv0 for server in ("gunicorn", "uvicorn", "daphne")):
-        return True
-
-    # For Django management commands, don't start during migrations/shell/etc.
-    # Only allow development servers that should run scheduled tasks in-process.
-    if len(sys.argv) > 1:
-        command = sys.argv[1]
-        allowed_commands = {"runserver", "run"}
-        if command not in allowed_commands:
-            return False
-
-    return "runserver" in sys.argv or "run" in sys.argv
+    # Only the server process runs scheduled tasks, not management commands (#160).
+    return should_start_runtimes(sys.argv)
 
 
 class SchedulerConfig(AppConfig):

@@ -4,6 +4,8 @@ import sys
 
 from django.apps import AppConfig
 
+from config.runtimes import should_start_runtimes
+
 
 class IntegrationsFrigateConfig(AppConfig):
     default_auto_field = "django.db.models.BigAutoField"
@@ -11,8 +13,12 @@ class IntegrationsFrigateConfig(AppConfig):
 
     def ready(self) -> None:
         """Register best-effort runtime hooks for Frigate integration settings."""
-        argv = " ".join(sys.argv).lower()
-        if any(token in argv for token in ["makemigrations", "migrate", "collectstatic", "pytest", " test"]):
+        # Import tasks to register them with the scheduler. Before the server check, so `list_tasks` and
+        # `run_task` still see them.
+        from . import tasks  # noqa: F401
+
+        # Only the server process starts the runtimes, not management commands or tests (#160).
+        if not should_start_runtimes(sys.argv):
             return
 
         try:
@@ -30,6 +36,3 @@ class IntegrationsFrigateConfig(AppConfig):
             dispatch_uid="frigate_profile_changed",
             weak=False,
         )
-
-        # Import tasks to register them with the scheduler
-        from . import tasks  # noqa: F401

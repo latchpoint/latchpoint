@@ -4,19 +4,21 @@ import sys
 
 from django.apps import AppConfig
 
+from config.runtimes import should_start_runtimes
+
 
 class ControlPanelsConfig(AppConfig):
     default_auto_field = "django.db.models.BigAutoField"
     name = "control_panels"
 
     def ready(self) -> None:
-        """Initialize control panel runtime listeners (skips migrations/tests/collectstatic)."""
+        """Initialize control panel runtime listeners (only in the server process)."""
         # Import tasks to register them with the scheduler
         from . import tasks  # noqa: F401
 
         # Runtime wiring (signals / integration hooks) lives in this app to keep alarm core clean.
-        argv = " ".join(sys.argv).lower()
-        if any(token in argv for token in ["makemigrations", "migrate", "collectstatic", "pytest", " test"]):
+        # Only the server process starts the runtimes, not management commands or tests (#160).
+        if not should_start_runtimes(sys.argv):
             return
 
         try:
