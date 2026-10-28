@@ -21,6 +21,18 @@ function describeSlots(code: DoorCode, lockNameByEntityId: Map<string, string>):
 export function DoorCodePushStatusBadge({ code, lockNameByEntityId, canRetry, isRetrying, onRetry }: Props) {
   if (!code.lockEntityIds?.length) return null
 
+  // An inactive code that holds no slot isn't on any of its locks, whatever pushState says.
+  if (!code.isActive && code.lockSlotAssignments.every((a) => a.slotIndex == null)) {
+    return (
+      <Badge variant="outline" title="This code is inactive and doesn't hold a slot on any of its locks.">
+        Removed from lock
+      </Badge>
+    )
+  }
+
+  // The backend refuses to push an inactive code, so don't offer Retry for one.
+  const showRetry = canRetry && code.isActive
+
   if (code.pushState === 'pushed') {
     const slotDesc = describeSlots(code, lockNameByEntityId)
     return (
@@ -36,7 +48,7 @@ export function DoorCodePushStatusBadge({ code, lockNameByEntityId, canRetry, is
         <Badge variant="destructive" title={code.lastPushError || undefined}>
           Push failed{code.lastPushError ? `: ${code.lastPushError.slice(0, 80)}` : ''}
         </Badge>
-        {canRetry ? (
+        {showRetry ? (
           <Button size="sm" variant="secondary" disabled={isRetrying} onClick={onRetry}>
             {isRetrying ? 'Retrying…' : 'Retry'}
           </Button>
@@ -51,7 +63,7 @@ export function DoorCodePushStatusBadge({ code, lockNameByEntityId, canRetry, is
       <Badge variant="outline" title={code.lastPushError || 'Waiting for the lock to accept the code.'}>
         Pending sync
       </Badge>
-      {canRetry ? (
+      {showRetry ? (
         <Button size="sm" variant="ghost" disabled={isRetrying} onClick={onRetry}>
           {isRetrying ? 'Retrying…' : 'Retry now'}
         </Button>

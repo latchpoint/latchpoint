@@ -1,6 +1,8 @@
 import { useState } from 'react'
 import { Eye, EyeOff } from 'lucide-react'
 import type { DoorCode, Entity, UpdateDoorCodeRequest } from '@/types'
+import { getErrorMessage } from '@/types/errors'
+import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { formatDaysMask } from '@/features/codes/utils/daysOfWeek'
@@ -56,6 +58,16 @@ export function DoorCodeCard({
   onRetryPush,
 }: Props) {
   const [pinVisible, setPinVisible] = useState(false)
+  const [retryError, setRetryError] = useState<string | null>(null)
+
+  const handleRetryPush = async () => {
+    setRetryError(null)
+    try {
+      await onRetryPush(code.id)
+    } catch (err) {
+      setRetryError(getErrorMessage(err) || 'Failed to retry push')
+    }
+  }
 
   const pinDisplay = code.pin != null
     ? (pinVisible ? code.pin : '•'.repeat(code.pin.length))
@@ -112,9 +124,14 @@ export function DoorCodeCard({
               lockNameByEntityId={lockNameByEntityId}
               canRetry={canManage}
               isRetrying={isRetryingPush}
-              onRetry={() => onRetryPush(code.id)}
+              onRetry={handleRetryPush}
             />
           </div>
+          {retryError ? (
+            <Alert variant="error" layout="inline" className="mt-2">
+              <AlertDescription>{retryError}</AlertDescription>
+            </Alert>
+          ) : null}
         </div>
 
         {canManage ? (

@@ -135,6 +135,108 @@ describe('DoorCodePushStatusBadge', () => {
     expect(screen.queryByRole('button', { name: /Retry/ })).toBeNull()
   })
 
+  it('shows Removed from lock instead of On lock for an inactive code with no slots', () => {
+    // What deactivating leaves behind: slots cleared, pushState still pushed.
+    const code = makeCode({ isActive: false, pushState: 'pushed' })
+
+    renderWithProviders(
+      <DoorCodePushStatusBadge
+        code={code}
+        lockNameByEntityId={lockNames}
+        canRetry
+        isRetrying={false}
+        onRetry={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByText('Removed from lock')).toBeTruthy()
+    expect(screen.queryByText(/On lock/)).toBeNull()
+    expect(screen.queryByRole('button', { name: /Retry/ })).toBeNull()
+  })
+
+  it('shows Removed from lock for an inactive failed code with no slots', () => {
+    const code = makeCode({ isActive: false, pushState: 'failed', lastPushError: 'boom' })
+
+    renderWithProviders(
+      <DoorCodePushStatusBadge
+        code={code}
+        lockNameByEntityId={lockNames}
+        canRetry
+        isRetrying={false}
+        onRetry={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByText('Removed from lock')).toBeTruthy()
+    expect(screen.queryByText(/Push failed/)).toBeNull()
+    expect(screen.queryByRole('button', { name: /Retry/ })).toBeNull()
+  })
+
+  it('keeps On lock for an inactive code that still holds a slot', () => {
+    const code = makeCode({
+      isActive: false,
+      pushState: 'pushed',
+      lockSlotAssignments: [{ lockEntityId: 'lock.front_door', slotIndex: 3 }],
+    })
+
+    renderWithProviders(
+      <DoorCodePushStatusBadge
+        code={code}
+        lockNameByEntityId={lockNames}
+        canRetry
+        isRetrying={false}
+        onRetry={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByText(/On lock:.*Front Door.*slot 3/)).toBeTruthy()
+    expect(screen.queryByText('Removed from lock')).toBeNull()
+  })
+
+  it('hides Retry for an inactive failed code that still holds a slot', () => {
+    // A slot clear that failed while turning the code off.
+    const code = makeCode({
+      isActive: false,
+      pushState: 'failed',
+      lastPushError: "Couldn't clear slot 3 on lock.front_door",
+      lockSlotAssignments: [{ lockEntityId: 'lock.front_door', slotIndex: 3 }],
+    })
+
+    renderWithProviders(
+      <DoorCodePushStatusBadge
+        code={code}
+        lockNameByEntityId={lockNames}
+        canRetry
+        isRetrying={false}
+        onRetry={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByText(/Push failed: Couldn't clear slot 3/)).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /Retry/ })).toBeNull()
+  })
+
+  it('hides Retry now for an inactive pending code that still holds a slot', () => {
+    const code = makeCode({
+      isActive: false,
+      pushState: 'pending',
+      lockSlotAssignments: [{ lockEntityId: 'lock.front_door', slotIndex: 3 }],
+    })
+
+    renderWithProviders(
+      <DoorCodePushStatusBadge
+        code={code}
+        lockNameByEntityId={lockNames}
+        canRetry
+        isRetrying={false}
+        onRetry={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByText('Pending sync')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /Retry/ })).toBeNull()
+  })
+
   it('renders nothing when the code has no lock assignments', () => {
     const code = makeCode({ lockEntityIds: [], lockAssignments: [], lockSlotAssignments: [] })
 

@@ -48,7 +48,9 @@ export function useRetryDoorCodePushMutation(targetUserId: string) {
   const queryClient = useQueryClient()
   return useMutation({
     mutationFn: (id: number) => doorCodesService.retryPush(id),
-    onSuccess: async () => {
+    // Refetch on failure too: a refused Retry (e.g. the code was turned off
+    // elsewhere) means the card is showing stale state.
+    onSettled: async () => {
       await queryClient.invalidateQueries({ queryKey: queryKeys.doorCodes.byUser(targetUserId) })
     },
   })
