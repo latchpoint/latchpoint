@@ -58,7 +58,9 @@ export function useDeleteDoorCodeMutation(targetUserId: string) {
   return useMutation({
     mutationFn: ({ id, reauthPassword }: { id: number; reauthPassword: string }) =>
       doorCodesService.deleteDoorCode(id, { reauthPassword }),
-    onSuccess: async () => {
+    // Refetch on failure too: a delete refused because a slot couldn't be
+    // cleared turns the code off, and the list should show that.
+    onSettled: async () => {
       await queryClient.invalidateQueries({ queryKey: queryKeys.doorCodes.byUser(targetUserId) })
     },
   })

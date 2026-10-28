@@ -19,9 +19,10 @@ function describeSlots(code: DoorCode, lockNameByEntityId: Map<string, string>):
 }
 
 // The backend never pushes an inactive code, and it only leaves one pushed once
-// no slot clear is outstanding (#144). So for an inactive manual code, pending or
-// failed means a clear that may have left the PIN on a lock is still being
-// retried, and Retry retries that clear.
+// no slot clear is outstanding (#144). So for an inactive manual code, pending
+// means a clear that may have left the PIN on a lock is still being retried by
+// the scheduler (a refused delete ends here too), and failed means that clear
+// hit the attempt cap. Retry retries the clear in both.
 export function DoorCodePushStatusBadge({ code, lockNameByEntityId, canRetry, isRetrying, onRetry }: Props) {
   if (!code.lockEntityIds?.length) return null
 
@@ -67,7 +68,7 @@ export function DoorCodePushStatusBadge({ code, lockNameByEntityId, canRetry, is
         ) : null}
         {clearing ? (
           <span className="text-xs text-muted-foreground">
-            (the PIN may still be on a lock, Retry or deleting the code tries the clear again)
+            (the PIN may still be on a lock, Retry tries the clear again)
           </span>
         ) : null}
       </div>

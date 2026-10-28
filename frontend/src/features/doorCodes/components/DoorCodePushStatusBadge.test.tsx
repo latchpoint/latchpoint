@@ -199,7 +199,7 @@ describe('DoorCodePushStatusBadge', () => {
 
     expect(screen.getByText('Clear failed: boom')).toBeTruthy()
     expect(
-      screen.getByText('(the PIN may still be on a lock, Retry or deleting the code tries the clear again)'),
+      screen.getByText('(the PIN may still be on a lock, Retry tries the clear again)'),
     ).toBeVisible()
     expect(screen.queryByText('Not on lock')).toBeNull()
     expect(screen.queryByText(/Push failed/)).toBeNull()
@@ -297,6 +297,7 @@ describe('DoorCodePushStatusBadge', () => {
   })
 
   it('offers Retry now for an inactive code with a clear still being retried', () => {
+    // Also what a refused delete leaves: turned off, pending, the slots in the error.
     const code = makeCode({
       isActive: false,
       pushState: 'pending',
@@ -315,6 +316,7 @@ describe('DoorCodePushStatusBadge', () => {
     )
 
     expect(screen.getByText('Pending clear')).toBeTruthy()
+    expect(screen.getByText('(the PIN may still be on a lock, retried automatically)')).toBeVisible()
     expect(screen.getByRole('button', { name: /Retry now/ })).toBeTruthy()
   })
 

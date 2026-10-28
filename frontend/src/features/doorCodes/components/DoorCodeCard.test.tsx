@@ -3,8 +3,10 @@ import { fireEvent, screen, waitFor } from '@testing-library/react'
 import { http, HttpResponse } from 'msw'
 import { server } from '@/test/msw/server'
 import { renderWithProviders } from '@/test/render'
+import type { ComponentProps } from 'react'
 import {
   type CachedDoorCode,
+  useDeleteDoorCodeMutation,
   useDoorCodesQuery,
   useReadCachedDoorCode,
   useRetryDoorCodePushMutation,
@@ -78,7 +80,12 @@ function deferred() {
 
 type CardExtras = { codesUpdatedAt: number; readCachedCode: (id: number) => CachedDoorCode | null }
 
-function card(code: DoorCode, retry: ReturnType<typeof useRetryDoorCodePushMutation>, extras: CardExtras) {
+function card(
+  code: DoorCode,
+  retry: ReturnType<typeof useRetryDoorCodePushMutation>,
+  extras: CardExtras,
+  overrides: Partial<ComponentProps<typeof DoorCodeCard>> = {},
+) {
   return (
     <DoorCodeCard
       key={code.id}
@@ -99,6 +106,7 @@ function card(code: DoorCode, retry: ReturnType<typeof useRetryDoorCodePushMutat
       onRetryPush={(id) => retry.mutateAsync(id)}
       codesUpdatedAt={extras.codesUpdatedAt}
       readCachedCode={extras.readCachedCode}
+      {...overrides}
     />
   )
 }
@@ -129,7 +137,70 @@ function CardsFromQuery() {
   )
 }
 
+// The card open for editing, with the real delete mutation.
+function EditingCardFromQuery() {
+  const codesQuery = useDoorCodesQuery({ userId: PAGE_USER_ID, isAdmin: true })
+  const retry = useRetryDoorCodePushMutation(PAGE_USER_ID)
+  const deleteMutation = useDeleteDoorCodeMutation(PAGE_USER_ID)
+  const readCachedCode = useReadCachedDoorCode(PAGE_USER_ID)
+  return (
+    <>
+      {(codesQuery.data || []).map((code) =>
+        card(
+          code,
+          retry,
+          { codesUpdatedAt: codesQuery.dataUpdatedAt, readCachedCode },
+          {
+            isEditing: true,
+            isDeleting: deleteMutation.isPending,
+            onDelete: (id, reauthPassword) => deleteMutation.mutateAsync({ id, reauthPassword }),
+          },
+        ),
+      )}
+    </>
+  )
+}
+
 describe('DoorCodeCard', () => {
+  it('shows a refused delete turning the code off and keeps its error', async () => {
+    const refusal =
+      "Couldn't clear slot 3 on lock.front_door, it may still hold the PIN. The door code wasn't deleted and is now off, try again when the lock responds."
+    let serverCode = pushedCode('2026-10-28T10:00:00Z')
+    server.use(
+      http.get('/api/door-codes/', () => HttpResponse.json({ data: [serverCode] })),
+      http.delete('/api/door-codes/7/', () => {
+        // What #144 leaves after refusing: off, pending, the slot still tracked.
+        serverCode = makeCode({
+          isActive: false,
+          pushState: 'pending',
+          lastPushError: "Couldn't clear slot 3 on lock.front_door, it may still hold the PIN",
+          lockSlotAssignments: [{ lockEntityId: 'lock.front_door', slotIndex: 3 }],
+        })
+        return HttpResponse.json({ error: { status: 'gateway_error', message: refusal, gateway: 'zwavejs' } }, { status: 502 })
+      }),
+    )
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
+
+    try {
+      renderWithProviders(<EditingCardFromQuery />)
+      expect(await screen.findByText(/On lock:.*Front Door.*slot 3/)).toBeTruthy()
+      expect(screen.queryByText('Inactive')).toBeNull()
+      fireEvent.change(screen.getByLabelText(/Re-authenticate/), { target: { value: 'pw' } })
+      fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
+
+      expect(await screen.findByText('Inactive')).toBeTruthy()
+      expect(await screen.findByText('Pending clear')).toBeTruthy()
+      expect(await screen.findByText(refusal)).toBeTruthy()
+
+      // The refetched code resets the form, but not the delete error.
+      await settle()
+      expect(screen.getByText(refusal)).toBeTruthy()
+      expect(screen.getByText('Inactive')).toBeTruthy()
+    } finally {
+      confirmSpy.mockRestore()
+    }
+  })
+
   it('imports', async () => {
     const mod = await import('./DoorCodeCard')
     expect(mod).toBeTruthy()

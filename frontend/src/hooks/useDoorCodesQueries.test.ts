@@ -6,7 +6,7 @@ import { http, HttpResponse } from 'msw'
 import { server } from '@/test/msw/server'
 import { queryKeys } from '@/types'
 import type { DoorCode } from '@/types'
-import { useReadCachedDoorCode, useRetryDoorCodePushMutation } from './useDoorCodesQueries'
+import { useDeleteDoorCodeMutation, useReadCachedDoorCode, useRetryDoorCodePushMutation } from './useDoorCodesQueries'
 
 function createClient() {
   return new QueryClient({
@@ -49,6 +49,37 @@ describe('useDoorCodesQueries', () => {
       message: 'Door code is inactive. Turn it on before pushing it to its locks.',
       code: '409',
     })
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: queryKeys.doorCodes.byUser('user-1') })
+  })
+
+  it('rejects a refused delete with the API message and still refetches the codes', async () => {
+    const message =
+      "Couldn't clear slot 3 on lock.front_door, it may still hold the PIN. The door code wasn't deleted and is now off, try again when the lock responds."
+    server.use(
+      http.delete('/api/door-codes/7/', () =>
+        HttpResponse.json({ error: { status: 'gateway_error', message, gateway: 'zwavejs' } }, { status: 502 }),
+      ),
+    )
+
+    const client = createClient()
+    const invalidateSpy = vi.spyOn(client, 'invalidateQueries')
+    const { result } = renderHook(() => useDeleteDoorCodeMutation('user-1'), { wrapper: wrap(client) })
+
+    await expect(result.current.mutateAsync({ id: 7, reauthPassword: 'pw' })).rejects.toMatchObject({
+      message,
+      code: '502',
+    })
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: queryKeys.doorCodes.byUser('user-1') })
+  })
+
+  it('refetches the codes after a delete that works', async () => {
+    server.use(http.delete('/api/door-codes/7/', () => new HttpResponse(null, { status: 204 })))
+
+    const client = createClient()
+    const invalidateSpy = vi.spyOn(client, 'invalidateQueries')
+    const { result } = renderHook(() => useDeleteDoorCodeMutation('user-1'), { wrapper: wrap(client) })
+
+    await result.current.mutateAsync({ id: 7, reauthPassword: 'pw' })
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: queryKeys.doorCodes.byUser('user-1') })
   })
 
