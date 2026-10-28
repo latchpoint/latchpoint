@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import threading
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from django.apps import apps
 
@@ -82,21 +82,37 @@ class FakeSessionStream:
 
 
 class RecordingLock:
-    """A lock that records which threads have tried to take it, so a test can wait until one is queued on it."""
+    """
+    A lock that records which threads have tried to take it, so a test can wait until one is queued on it.
+
+    ``holder`` is the thread holding it right now, or None.
+    """
 
     def __init__(self):
         self._lock = threading.Lock()
         self._attempts: list[threading.Thread] = []
         self._changed = threading.Condition()
+        self.holder: threading.Thread | None = None
 
-    def __enter__(self):
+    def acquire(self, blocking: bool = True, timeout: float = -1) -> bool:
         with self._changed:
             self._attempts.append(threading.current_thread())
             self._changed.notify_all()
-        return self._lock.__enter__()
+        acquired = self._lock.acquire(blocking, timeout)
+        if acquired:
+            self.holder = threading.current_thread()
+        return acquired
+
+    def release(self) -> None:
+        self.holder = None
+        self._lock.release()
+
+    def __enter__(self):
+        self.acquire()
+        return self
 
     def __exit__(self, *exc):
-        return self._lock.__exit__(*exc)
+        self.release()
 
     def locked(self) -> bool:
         return self._lock.locked()
@@ -108,7 +124,7 @@ class RecordingLock:
                 raise AssertionError(f"{thread.name} never tried to take the lock")
 
 
-def run_app_ready(testcase) -> None:
+def run_app_ready(testcase) -> MagicMock:
     """
     Run the HA app's ``ready()`` the way a server process does.
 
@@ -116,15 +132,21 @@ def run_app_ready(testcase) -> None:
     looks like daphne. Only that module's ``sys`` name is swapped, the real ``sys.argv`` other threads read
     (ie ``_home_assistant_allowed_in_tests()``) is left alone. The signal handlers it connects are
     disconnected again on cleanup.
+
+    The module's ``atexit`` is swapped too, so the test process doesn't pick up exit hooks. Returns that
+    stand-in so a test can check what ``ready()`` registered.
     """
     config = apps.get_app_config("integrations_home_assistant")
     testcase.addCleanup(clear_cached_connection)
     testcase.addCleanup(_disconnect_app_handlers)
+    fake_atexit = MagicMock()
     with (
         patch.object(ha_apps, "sys", SimpleNamespace(argv=["daphne", "config.asgi:application"])),
+        patch.object(ha_apps, "atexit", fake_atexit),
         patch("integrations_home_assistant.mqtt_alarm_entity.initialize_home_assistant_mqtt_alarm_entity_integration"),
     ):
         config.ready()
+    return fake_atexit
 
 
 def _disconnect_app_handlers() -> None:

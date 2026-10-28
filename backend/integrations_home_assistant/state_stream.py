@@ -17,7 +17,14 @@ logger = logging.getLogger("integrations_home_assistant")
 
 _CACHE_LEADER_KEY = "integrations_home_assistant:state_stream:leader"
 _LEADER_TTL_SECONDS = 60
+# How often a running session renews the leader key (#118). Well under the TTL, so a late renewal or two
+# still lands before the key runs out.
 _LEADER_HEARTBEAT_SECONDS = 20
+# How long a session that just ended waits for its renewal thread, which may be in the middle of a cache call.
+_LEADER_HEARTBEAT_JOIN_TIMEOUT_SECONDS = 5.0
+# How long releasing the leader key waits on a renewal that's in a cache call. The release is best-effort,
+# and `stop()` runs on the apply worker (under `_apply_lock`) and at exit, so a hung cache mustn't hold it up.
+_LEADER_RELEASE_LOCK_TIMEOUT_SECONDS = 1.0
 _RECONNECT_BACKOFF_INITIAL_SECONDS = 1.0
 _RECONNECT_BACKOFF_MAX_SECONDS = 30.0
 # An authed session has to stay up this long before its drop resets the backoff (#114).
@@ -113,6 +120,9 @@ class HomeAssistantStateStream:
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
         self._leader_id = uuid4().hex
+        # Serializes renewing the leader key with releasing it in `stop()`, so a renewal that's already past
+        # its stop check can't take the key back right after `stop()` deleted it.
+        self._leader_lock = threading.Lock()
         self._ws_app: Any | None = None
         self._settings: _RuntimeSettings = _RuntimeSettings(enabled=False, base_url="", token="")
         self._next_subscribe_id = 1
@@ -203,7 +213,30 @@ class HomeAssistantStateStream:
             self._thread.start()
 
     def stop(self) -> threading.Thread | None:
-        """Signal the current thread to stop and close its websocket. Returns the thread without joining it."""
+        """
+        Signal the current thread to stop and close its websocket. Returns the thread without joining it.
+
+        Also gives up the leader key if this process still holds it, so another worker can take over right
+        away instead of waiting out the TTL.
+        """
+        thread = self._signal_stop()
+        self._release_leadership()
+        return thread
+
+    def shutdown(self) -> None:
+        """
+        Give up the leader key at process exit, leaving the websocket alone.
+
+        This runs in every process that loaded the app, management commands included. Closing a live
+        session here sends a close frame and waits up to 3s for HA to answer (`WebSocket.close`), and logs
+        a close for a session that's still connecting. The stream thread is a daemon, so the session ends
+        with the process anyway. The stop event is still set first, so a renewal can't take the key back.
+        """
+        with self._lock:
+            self._stop.set()
+        self._release_leadership()
+
+    def _signal_stop(self) -> threading.Thread | None:
         with self._lock:
             self._stop.set()
             thread = self._thread
@@ -223,8 +256,11 @@ class HomeAssistantStateStream:
         live session that takes a few seconds to notice the close), the new thread starts anyway. The old
         thread keeps its own stop event set, so it exits as soon as it unblocks, and any session it opens
         in the meantime is closed before it authenticates (see `_connect_and_listen`).
+
+        Keeps the leader key, so the new thread carries on as leader instead of handing over to another
+        worker, which may not have seen the new settings yet.
         """
-        old_thread = self.stop()
+        old_thread = self._signal_stop()
         if old_thread is not None and old_thread is not threading.current_thread():
             old_thread.join(timeout=_RESTART_JOIN_TIMEOUT_SECONDS)
             if old_thread.is_alive():
@@ -236,26 +272,83 @@ class HomeAssistantStateStream:
         Best-effort leader lock to avoid multiple HA connections in multi-worker deployments.
 
         Note: this only works when Django cache is shared between workers.
+
+        Takes the key if it's free, or renews it if this process holds it. Django's cache API has no
+        compare-and-set, so the renewal is a `get` then a `touch`. `touch` only moves the expiry and never
+        writes our id, so it can't take the key from another worker. What's left is a narrow race: if the
+        key expires between the two calls and another worker takes it, we touch their key and both think
+        they lead until our next renewal sees their id and closes our session (see
+        `_renew_leadership_during_session`). With renewals every `_LEADER_HEARTBEAT_SECONDS` against a
+        `_LEADER_TTL_SECONDS` key, that needs a renewal to run about 40s late.
         """
         try:
             # Acquire leadership if free.
             if cache.add(_CACHE_LEADER_KEY, self._leader_id, timeout=_LEADER_TTL_SECONDS):
                 return True
-            current = cache.get(_CACHE_LEADER_KEY)
-            if current == self._leader_id:
-                # Refresh TTL.
-                cache.set(_CACHE_LEADER_KEY, self._leader_id, timeout=_LEADER_TTL_SECONDS)
+            if cache.get(_CACHE_LEADER_KEY) != self._leader_id:
+                return False
+            if cache.touch(_CACHE_LEADER_KEY, timeout=_LEADER_TTL_SECONDS):
                 return True
-            return False
+            # It expired between the get and the touch, so it's free again unless someone beat us to it.
+            return bool(cache.add(_CACHE_LEADER_KEY, self._leader_id, timeout=_LEADER_TTL_SECONDS))
         except Exception:
             # No cache / cache error: fall back to per-process behavior.
             return True
+
+    def _hold_leadership(self, stop: threading.Event) -> bool:
+        """`_is_leader()` for the thread that owns `stop`, but False without touching the key once it's set."""
+        with self._leader_lock:
+            if stop.is_set():
+                return False
+            return self._is_leader()
+
+    def _release_leadership(self) -> None:
+        """Delete the leader key if this process still holds it."""
+        if not self._leader_lock.acquire(timeout=_LEADER_RELEASE_LOCK_TIMEOUT_SECONDS):
+            # A renewal is stuck in a cache call. Leave the key to run out on its own TTL.
+            logger.debug("HA state stream: a leader key renewal is still running, not releasing the key")
+            return
+        try:
+            # Same get-then-act race as the renewal in `_is_leader`: if the key expires between these two
+            # calls and another worker takes it, we delete theirs. They take it back with `add` at their
+            # next renewal, unless a polling worker gets there first, in which case the two overlap until
+            # the old leader's renewal sees the new id and closes its session.
+            if cache.get(_CACHE_LEADER_KEY) == self._leader_id:
+                cache.delete(_CACHE_LEADER_KEY)
+        except Exception:
+            logger.debug("HA state stream: releasing the leader key failed", exc_info=True)
+        finally:
+            self._leader_lock.release()
+
+    def _renew_leadership_during_session(
+        self, *, ws_app: Any, stop: threading.Event, session_done: threading.Event, lost: threading.Event
+    ) -> None:
+        """
+        Renew the leader key every `_LEADER_HEARTBEAT_SECONDS` until `session_done` is set (#118).
+
+        Runs on its own thread because `run_forever` blocks the stream thread for the whole session. If
+        another worker holds the key, sets `lost` and closes the session. `_run` then backs off as after any
+        other session and waits for leadership again before it reconnects.
+        """
+        while not session_done.wait(_LEADER_HEARTBEAT_SECONDS):
+            if self._hold_leadership(stop):
+                continue
+            if stop.is_set() or session_done.is_set():
+                # `stop()` is already closing the session, or it ended while we were renewing (and
+                # `_connect_and_listen` gave up waiting for us), so there's nothing to close or report.
+                return
+            logger.warning("HA state stream: another worker holds the leader key, closing this session")
+            lost.set()
+            try:
+                ws_app.close()
+            except Exception:
+                logger.debug("WebSocket close failed", exc_info=True)
+            return
 
     def _run(self, stop: threading.Event) -> None:
         # `stop` is this thread's own event from `start()`. Never use `self._stop` here, after a restart
         # that's the new thread's event.
         backoff_seconds = _RECONNECT_BACKOFF_INITIAL_SECONDS
-        last_leader_refresh = 0.0
 
         while not stop.is_set():
             with self._lock:
@@ -264,11 +357,8 @@ class HomeAssistantStateStream:
             if not settings.enabled:
                 return
 
-            # Leadership gating.
-            now_monotonic = _monotonic()
-            if now_monotonic - last_leader_refresh >= _LEADER_HEARTBEAT_SECONDS:
-                last_leader_refresh = now_monotonic
-            if not self._is_leader():
+            # Leadership gating. A running session keeps renewing the key on its own thread.
+            if not self._hold_leadership(stop):
                 if stop.wait(1.0):
                     return
                 continue
@@ -296,18 +386,21 @@ class HomeAssistantStateStream:
         import websocket
 
         authed = {"at": None}
+        # Set by the renewal thread once another worker holds the leader key.
+        lost_leadership = threading.Event()
 
         def _on_open(ws) -> None:
             # `stop()` can land after `_ws_app` is set but before `run_forever` starts. Its `close()` is lost
             # then (`run_forever` resets `keep_running` and there's no socket yet), so check again here.
-            if stop.is_set():
+            if stop.is_set() or lost_leadership.is_set():
                 ws.close()
                 return
             logger.info("HA state stream connected (ws_url=%s)", ws_url)
 
         def _on_message(ws, message: str) -> None:
-            if stop.is_set():
-                # A stopped session never authenticates or handles events.
+            if stop.is_set() or lost_leadership.is_set():
+                # A stopped session never authenticates or handles events, and one that lost leadership
+                # handles no more of them.
                 ws.close()
                 return
             try:
@@ -380,10 +473,22 @@ class HomeAssistantStateStream:
                 return None
             self._ws_app = ws_app
 
+        session_done = threading.Event()
+        renewal = threading.Thread(
+            target=self._renew_leadership_during_session,
+            kwargs={"ws_app": ws_app, "stop": stop, "session_done": session_done, "lost": lost_leadership},
+            name="ha-state-stream-leader",
+            daemon=True,
+        )
         try:
+            renewal.start()
             # run_forever blocks until closed.
             ws_app.run_forever(ping_interval=30, ping_timeout=10)
         finally:
+            # Renewal ends with the session, so a session that's gone can't keep the key alive.
+            session_done.set()
+            if renewal.is_alive():
+                renewal.join(timeout=_LEADER_HEARTBEAT_JOIN_TIMEOUT_SECONDS)
             with self._lock:
                 if self._ws_app is ws_app:
                     self._ws_app = None
@@ -473,4 +578,4 @@ def wait_for_background_apply(timeout: float | None = None) -> bool:
 
 
 def shutdown() -> None:
-    _stream.stop()
+    _stream.shutdown()
