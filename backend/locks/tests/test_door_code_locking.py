@@ -550,7 +550,7 @@ class FailedClearRetryLockTests(_LockingTestBase):
         self.assertEqual(still_failing, [])
         self.assertEqual(self._cc99("clear"), [(12, [1])])
 
-    def test_retry_on_a_lock_still_busy_counts_as_still_failing(self):
+    def test_retry_on_a_lock_still_busy_is_still_failing_but_not_counted(self):
         code = self._failed_clear()
         self._hold_elsewhere(BACK)
 
@@ -561,8 +561,32 @@ class FailedClearRetryLockTests(_LockingTestBase):
         self.assertIn("LockBusy", still_failing[0].reason)
         self.assertEqual(self.gateway.invoke_calls, [])
         self.assertEqual(len(lock_push_uc.unresolved_clear_failures(door_code=code)), 1)
+        # Waiting on a busy lock isn't a failed clear, so it doesn't count toward the attempt cap.
         code.refresh_from_db()
-        self.assertEqual(code.push_attempt_count, 1)
+        self.assertEqual(code.push_attempt_count, 0)
+
+    def test_retry_that_waited_behind_an_update_doesnt_clear_the_pin_the_update_pushed(self):
+        # The update clears slot 1 (settling the failure) and pushes the new PIN back
+        # into slot 1. A retry still working from the failures it read before it got
+        # the lock would clear slot 1 again and wipe the new PIN.
+        code = self._failed_clear()
+        holder = self._hold_elsewhere(BACK)
+
+        def update_runs_first():
+            holder.release()
+            door_codes_uc.update_door_code(
+                code=self._fresh(code), changes={"code": "5555"}, actor_user=self.user, zwavejs=self.gateway
+            )
+            self.gateway.invoke_calls.clear()
+
+        with _when_waiting_on(BACK, update_runs_first) as waited:
+            still_failing = lock_push_uc.retry_failed_slot_clears(door_code=code, zwavejs=self.gateway)
+
+        self.assertTrue(waited)
+        self.assertEqual(still_failing, [])
+        self.assertEqual(self.gateway.invoke_calls, [])
+        self.assertEqual(self._lock_codes(12), {1: "5555"})
+        self.assertEqual(self._slots(code), {BACK: 1})
 
     def test_clear_helper_waits_for_the_lock_when_the_caller_doesnt_hold_it(self):
         holder = self._hold_elsewhere(BACK)
@@ -573,6 +597,112 @@ class FailedClearRetryLockTests(_LockingTestBase):
         self.assertTrue(waited)
         self.assertEqual(self._cc99("clear"), [(12, [1])])
         self.assertTrue(_free_elsewhere(BACK))
+
+
+class _FakeClock:
+    """Stands in for ``lock_config_sync._time``, so waits take no real time and can be measured."""
+
+    def __init__(self):
+        self.now = 1000.0
+        self.on_tick = None
+
+    def monotonic(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.now += seconds
+        if self.on_tick is not None:
+            self.on_tick(self.now)
+
+
+class OverallDeadlineTests(_LockingTestBase):
+    """One request waits at most SYNC_LOCK_WAIT_SECONDS for locks in total, whatever it retakes."""
+
+    def setUp(self):
+        super().setUp()
+        self.clock = _FakeClock()
+        self.start = self.clock.now
+        for patcher in (
+            patch.object(lock_config_sync_uc, "_time", self.clock),
+            patch.object(lock_config_sync_uc, "_SYNC_LOCK_POLL_SECONDS", (1.0, 1.0)),
+        ):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def _waited(self) -> float:
+        return self.clock.now - self.start
+
+    def test_an_update_that_retakes_its_locks_shares_one_deadline(self):
+        code = self._pushed_code([BACK])
+        back = self._hold_elsewhere(BACK)
+        side = _OtherHolder(SIDE)
+        self.addCleanup(side.release)
+
+        def tick(now):
+            # 20s in, another save adds SIDE (and keeps holding it) and lets go of BACK.
+            if now - self.start >= 20 and not DoorCodeLockAssignment.objects.filter(lock_entity_id=SIDE).exists():
+                DoorCodeLockAssignment.objects.create(door_code=code, lock_entity_id=SIDE)
+                side.acquire()
+                back.release()
+
+        self.clock.on_tick = tick
+        with self.assertRaises(LockBusy):
+            door_codes_uc.update_door_code(
+                code=self._fresh(code), changes={"label": "Cleaner"}, actor_user=self.user, zwavejs=self.gateway
+            )
+
+        # A fresh deadline on the retake would have waited about 50s.
+        self.assertLessEqual(self._waited(), lock_config_sync_uc.SYNC_LOCK_WAIT_SECONDS + 1)
+        self.assertGreaterEqual(self._waited(), 20)
+        code.refresh_from_db()
+        self.assertEqual(code.label, "")
+        self.assertTrue(_free_elsewhere(BACK))
+
+    def test_clear_retries_on_several_busy_locks_share_one_deadline(self):
+        code = self._pushed_code([BACK, SIDE])
+        for lock_entity_id in (BACK, SIDE):
+            lock_push_uc.record_clear_failure(
+                door_code=code,
+                lock_entity_id=lock_entity_id,
+                slot_index=1,
+                exc=ZwavejsCommandError("driver TimeoutError after 10.0s"),
+                expected_pin=PIN,
+            )
+            self._hold_elsewhere(lock_entity_id)
+
+        still_failing = lock_push_uc.retry_failed_slot_clears(door_code=code, zwavejs=self.gateway)
+
+        self.assertEqual(sorted(f.lock_entity_id for f in still_failing), [BACK, SIDE])
+        # 30s per lock would have been about 60s.
+        self.assertLessEqual(self._waited(), lock_config_sync_uc.SYNC_LOCK_WAIT_SECONDS + 1)
+        self.assertEqual(self.gateway.invoke_calls, [])
+
+
+class SchedulerDeleteRaceTests(_LockingTestBase):
+    def test_a_code_deleted_right_after_its_push_doesnt_fail_the_tick(self):
+        from locks.tasks import push_pending_door_codes
+
+        codes = [self._pending_code([BACK]), self._pending_code([SIDE], pin="5555")]
+        real = lock_push_uc.push_or_settle_after_clear_retry
+        seen: list[int] = []
+
+        def push_then_first_code_is_deleted(*, door_code, **kwargs):
+            result = real(door_code=door_code, **kwargs)
+            seen.append(door_code.id)
+            if len(seen) == 1:
+                DoorCode.objects.filter(id=door_code.id).delete()
+            return result
+
+        with (
+            patch("locks.tasks.default_zwavejs_gateway", self.gateway),
+            patch.object(lock_push_uc, "push_or_settle_after_clear_retry", push_then_first_code_is_deleted),
+        ):
+            push_pending_door_codes()
+
+        self.assertCountEqual(seen, [c.id for c in codes])
+        [survivor] = [c for c in codes if c.id != seen[0]]
+        survivor.refresh_from_db()
+        self.assertEqual(survivor.push_state, DoorCode.PushState.PUSHED)
 
 
 class LockBusyApiTests(_LockingTestBase, APITestCase):

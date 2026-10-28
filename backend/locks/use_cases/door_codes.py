@@ -217,15 +217,18 @@ def _hold_door_code_locks(*, code: DoorCode, extra_lock_entity_ids=()):
     Once they're held the set is worked out again, and if it grew meanwhile (a
     concurrent save added a lock) they're released and taken again with the
     extra ones, so the order stays sorted. Pushes nested inside stack on these.
+    Every wait, retakes included, shares one deadline so the whole request waits
+    at most :data:`SYNC_LOCK_WAIT_SECONDS`.
     Re-reads ``code`` from the DB once held, raising :class:`NotFound` if it's gone.
     """
-    from locks.use_cases.lock_config_sync import hold_lock_sync
+    from locks.use_cases.lock_config_sync import hold_lock_sync, sync_lock_deadline
     from locks.use_cases.lock_push import affected_lock_entity_ids
 
+    deadline = sync_lock_deadline()
     extra = set(extra_lock_entity_ids or ())
     wanted = extra | affected_lock_entity_ids(door_code=code)
     while True:
-        with hold_lock_sync(wanted):
+        with hold_lock_sync(wanted, deadline=deadline):
             needed = extra | affected_lock_entity_ids(door_code=code)
             if needed <= wanted:
                 try:
@@ -515,19 +518,21 @@ def _update_door_code_locked(
 
 
 def _reset_push_state_without_locks(*, code: DoorCode) -> None:
-    """Put a code left with no locks back to the push state of a new code without locks (issue #142).
+    """Clear the push state a code left with no locks carried from the locks it was on (issue #142).
 
-    A ``failed`` or ``pushed`` state and its error belonged to locks it's no
-    longer on. Kept while a clear is still outstanding, since that slot may
-    still hold the PIN and ``settle_clear_failure_state`` reports it.
+    An active code goes back to ``pending`` like a new code without locks. An
+    inactive one is ``pushed``, as after a deactivate (issue #144), since no
+    lock holds anything for it. Kept while a clear is still outstanding, since
+    that slot may still hold the PIN and ``settle_clear_failure_state`` reports it.
     """
     from locks.use_cases.lock_push import unresolved_clear_failures
 
     if DoorCodeLockAssignment.objects.filter(door_code=code).exists() or unresolved_clear_failures(door_code=code):
         return
-    code.refresh_from_db(fields=["push_state", "last_push_error", "push_attempt_count"])
-    if (code.push_state, code.last_push_error, code.push_attempt_count) != (DoorCode.PushState.PENDING, "", 0):
-        code.push_state = DoorCode.PushState.PENDING
+    code.refresh_from_db(fields=["is_active", "push_state", "last_push_error", "push_attempt_count"])
+    state = DoorCode.PushState.PENDING if code.is_active else DoorCode.PushState.PUSHED
+    if (code.push_state, code.last_push_error, code.push_attempt_count) != (state, "", 0):
+        code.push_state = state
         code.last_push_error = ""
         code.push_attempt_count = 0
         code.save(update_fields=["push_state", "last_push_error", "push_attempt_count", "updated_at"])

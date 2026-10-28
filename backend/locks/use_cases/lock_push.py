@@ -44,6 +44,7 @@ from locks.use_cases.lock_config_sync import (
     _try_acquire_sync_lock,
     clear_lock_user_code_slot,
     hold_lock_sync,
+    sync_lock_deadline,
 )
 from locks.use_cases.lock_config_sync import (
     InvalidRequest as LockSyncInvalidRequest,
@@ -972,14 +973,18 @@ def retry_failed_slot_clears(
 
     Each lock's clears run while holding its ``lock_sync:`` lock (waiting for it,
     issue #131), and its failures are read again once it's held, since an update
-    or delete may have settled them meanwhile. A lock still busy at the wait
-    limit counts as still failing.
+    or delete may have settled them meanwhile. All the locks share one wait
+    deadline, so a call waits at most :data:`SYNC_LOCK_WAIT_SECONDS` in total. A
+    lock still busy at the deadline is returned as still failing but isn't
+    counted toward the attempt cap, since nothing was tried on it.
     """
     still_failing: list[ClearFailure] = []
+    attempted_and_failed = False
+    deadline = sync_lock_deadline()
     failures = unresolved_clear_failures(door_code=door_code)
     for lock_entity_id in sorted({f.lock_entity_id for f in failures}):
         try:
-            with hold_lock_sync([lock_entity_id]):
+            with hold_lock_sync([lock_entity_id], deadline=deadline):
                 for failure in unresolved_clear_failures(door_code=door_code):
                     if failure.lock_entity_id != lock_entity_id:
                         continue
@@ -988,6 +993,7 @@ def retry_failed_slot_clears(
                     )
                     if still is not None:
                         still_failing.append(still)
+                        attempted_and_failed = True
         except LockBusy as exc:
             logger.warning(
                 "Skipping the clear retries on %s for door code id=%s: %s", lock_entity_id, door_code.id, exc
@@ -1004,7 +1010,7 @@ def retry_failed_slot_clears(
                 if f.lock_entity_id == lock_entity_id
             )
 
-    if still_failing:
+    if attempted_and_failed:
         door_code.refresh_from_db(fields=["push_attempt_count"])
         door_code.push_attempt_count = (door_code.push_attempt_count or 0) + 1
         door_code.last_push_attempt_at = django_timezone.now()
@@ -1042,8 +1048,9 @@ def clear_unconfirmed_slots_holding_pin(
     """
     cleared: list[dict[str, object]] = []
     failed: list[ClearFailure] = []
+    deadline = sync_lock_deadline()
     for lock_entity_id in dict.fromkeys(lock_entity_ids):
-        with hold_lock_sync([lock_entity_id]):
+        with hold_lock_sync([lock_entity_id], deadline=deadline):
             lock_cleared, lock_failed = _clear_unconfirmed_slots_on_lock(
                 door_code=door_code,
                 pin=pin,

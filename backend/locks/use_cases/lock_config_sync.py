@@ -189,19 +189,28 @@ def _acquire_sync_lock_waiting(*, lock_key: str, deadline: float) -> int | None:
         delay = min(delay * 2, max_delay)
 
 
+def sync_lock_deadline(timeout_seconds: float | None = None) -> float:
+    """A ``time.monotonic()`` deadline for :func:`hold_lock_sync`, :data:`SYNC_LOCK_WAIT_SECONDS` away by default.
+
+    Compute it once per request and pass it to every hold in that request, so
+    all of its waits together stay within the limit.
+    """
+    return _time.monotonic() + (SYNC_LOCK_WAIT_SECONDS if timeout_seconds is None else timeout_seconds)
+
+
 @contextlib.contextmanager
-def hold_lock_sync(lock_entity_ids, *, timeout_seconds: float | None = None):
+def hold_lock_sync(lock_entity_ids, *, deadline: float | None = None):
     """Hold ``lock_sync:<lock>`` for every lock in ``lock_entity_ids``, waiting for each (issue #131).
 
     Locks are taken in sorted order so two callers that need overlapping locks
-    can't deadlock, and released in reverse. Waiting is bounded by
-    ``timeout_seconds`` overall (default :data:`SYNC_LOCK_WAIT_SECONDS`);
-    :class:`LockBusy` is raised past it, with nothing left held. Re-entrant, so
-    a caller that already holds a lock (or a push nested inside) just stacks on
-    it and the outer hold stays until the outer block exits.
+    can't deadlock, and released in reverse. Waiting stops at ``deadline`` (a
+    ``time.monotonic()`` value from :func:`sync_lock_deadline`, a fresh one
+    when omitted) and :class:`LockBusy` is raised with nothing left held.
+    Re-entrant, so a caller that already holds a lock (or a push nested
+    inside) just stacks on it and the outer hold stays until the outer block exits.
     """
-    wait = SYNC_LOCK_WAIT_SECONDS if timeout_seconds is None else timeout_seconds
-    deadline = _time.monotonic() + wait
+    if deadline is None:
+        deadline = sync_lock_deadline()
     held: list[tuple[str, int | None]] = []
     try:
         for lock_entity_id in sorted({str(e) for e in lock_entity_ids if e}):

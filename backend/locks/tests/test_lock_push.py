@@ -1912,6 +1912,23 @@ class LockListChangeTests(EncryptionTestMixin, TestCase):
         self.assertEqual(code.last_push_error, "")
         self.assertEqual(code.push_attempt_count, 0)
 
+    def test_dropping_every_lock_from_an_inactive_code_leaves_it_pushed(self):
+        # Like a deactivate (#144), no lock holds anything for it, and the scheduler leaves it there.
+        from locks.tasks import push_pending_door_codes
+
+        code, gateway = self._pushed_code([self.BACK])
+        code = self._update(code, gateway, {"is_active": False})
+        DoorCode.objects.filter(id=code.id).update(push_state=DoorCode.PushState.FAILED, last_push_error="old error")
+
+        code = self._update(code, gateway, {"lock_entity_ids": []})
+
+        self.assertEqual(self._slots(code), {})
+        self.assertEqual((code.push_state, code.last_push_error), (DoorCode.PushState.PUSHED, ""))
+        with patch("locks.tasks.default_zwavejs_gateway", gateway):
+            push_pending_door_codes()
+        code.refresh_from_db()
+        self.assertEqual(code.push_state, DoorCode.PushState.PUSHED)
+
     def test_dropping_every_lock_keeps_the_state_while_a_clear_is_still_outstanding(self):
         from integrations_zwavejs.manager import ZwavejsCommandError
 
