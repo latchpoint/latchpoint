@@ -1,6 +1,9 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Eye, EyeOff } from 'lucide-react'
 import type { DoorCode, Entity, UpdateDoorCodeRequest } from '@/types'
+import type { CachedDoorCode } from '@/hooks/useDoorCodesQueries'
+import { getErrorMessage } from '@/types/errors'
+import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { formatDaysMask } from '@/features/codes/utils/daysOfWeek'
@@ -23,6 +26,15 @@ type Props = {
   onUpdate: (id: number, req: UpdateDoorCodeRequest) => Promise<unknown>
   onDelete: (id: number, reauthPassword: string) => Promise<unknown>
   onRetryPush: (id: number) => Promise<unknown>
+  /** When the door codes `code` came from were fetched. */
+  codesUpdatedAt: number
+  /** Reads a code from the door codes cache, which can be ahead of `code` right after a mutation. */
+  readCachedCode: (id: number) => CachedDoorCode | null
+}
+
+// What a Retry error is about. When this changes the error is out of date.
+function pushStateKeyOf(code: DoorCode): string {
+  return `${code.isActive}|${code.pushState}|${code.lastPushAttemptAt ?? ''}`
 }
 
 function LockBadges({ lockEntityIds, lockNameByEntityId }: { lockEntityIds: string[]; lockNameByEntityId: Map<string, string> }) {
@@ -54,8 +66,54 @@ export function DoorCodeCard({
   onUpdate,
   onDelete,
   onRetryPush,
+  codesUpdatedAt,
+  readCachedCode,
 }: Props) {
   const [pinVisible, setPinVisible] = useState(false)
+  // stateKey is the push state the error belongs to, as of the codes fetched at
+  // dataUpdatedAt.
+  const [retryError, setRetryError] = useState<{ message: string; stateKey: string; dataUpdatedAt: number } | null>(
+    null,
+  )
+  const alertRef = useRef<HTMLDivElement>(null)
+  const retryFocusRef = useRef<Element | null>(null)
+
+  // Once the card shows codes at least as new as the ones the error was pinned
+  // to, a different push state (turned back on, pushed by the scheduler) means
+  // the error no longer applies.
+  const retryErrorIsStale =
+    retryError != null && codesUpdatedAt >= retryError.dataUpdatedAt && retryError.stateKey !== pushStateKeyOf(code)
+  if (retryErrorIsStale) setRetryError(null)
+  const visibleRetryError = retryError && !retryErrorIsStale ? retryError.message : null
+
+  // A refused Retry refetches the code, which can remove the focused Retry
+  // button. Move focus to the error then, but only if focus was dropped on the
+  // page rather than moved somewhere else while the Retry ran.
+  useEffect(() => {
+    const retryButton = retryFocusRef.current
+    if (!visibleRetryError || !retryButton || retryButton.isConnected) return
+    retryFocusRef.current = null
+    const active = document.activeElement
+    if (active == null || active === document.body) alertRef.current?.focus()
+  })
+
+  const handleRetryPush = async () => {
+    retryFocusRef.current = document.activeElement
+    setRetryError(null)
+    try {
+      await onRetryPush(code.id)
+    } catch (err) {
+      // The Retry mutation refetches the codes before it rejects, so the cache
+      // already has the state this error belongs to (e.g. the code turned off
+      // elsewhere) even though this card's props haven't caught up yet.
+      const latest = readCachedCode(code.id)
+      setRetryError({
+        message: getErrorMessage(err) || 'Failed to retry push',
+        stateKey: pushStateKeyOf(latest?.code ?? code),
+        dataUpdatedAt: latest?.dataUpdatedAt ?? codesUpdatedAt,
+      })
+    }
+  }
 
   const pinDisplay = code.pin != null
     ? (pinVisible ? code.pin : '•'.repeat(code.pin.length))
@@ -112,9 +170,14 @@ export function DoorCodeCard({
               lockNameByEntityId={lockNameByEntityId}
               canRetry={canManage}
               isRetrying={isRetryingPush}
-              onRetry={() => onRetryPush(code.id)}
+              onRetry={handleRetryPush}
             />
           </div>
+          {visibleRetryError ? (
+            <Alert ref={alertRef} tabIndex={-1} variant="error" layout="inline" className="mt-2">
+              <AlertDescription>{visibleRetryError}</AlertDescription>
+            </Alert>
+          ) : null}
         </div>
 
         {canManage ? (

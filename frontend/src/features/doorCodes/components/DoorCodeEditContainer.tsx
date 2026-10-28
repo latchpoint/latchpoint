@@ -65,7 +65,8 @@ export function DoorCodeEditContainer({ code, locks, locksIsLoading, locksError,
     setEditManualLockIds('')
     setEditLockSearch('')
     setEditReauthPassword('')
-    setEditError(null)
+    // editError is left alone: a refused delete refetches the code (it's now
+    // off), and its error has to outlive that. It's cleared on the next submit.
   }, [code])
   /* eslint-enable react-hooks/set-state-in-effect */
 

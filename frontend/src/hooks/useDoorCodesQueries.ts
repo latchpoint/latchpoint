@@ -1,3 +1,4 @@
+import { useCallback } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { doorCodesService, locksService } from '@/services'
 import { queryKeys } from '@/types'
@@ -10,6 +11,25 @@ export function useDoorCodesQuery(params: { userId: string; isAdmin: boolean }) 
     queryFn: () => doorCodesService.getDoorCodes(isAdmin ? { userId } : undefined),
     enabled: !!userId,
   })
+}
+
+export type CachedDoorCode = { code: DoorCode; dataUpdatedAt: number }
+
+/**
+ * Returns a reader for one of `userId`'s door codes straight from the query
+ * cache, along with when that data was fetched. For handlers that run before
+ * the component re-renders with what a mutation just refetched.
+ */
+export function useReadCachedDoorCode(userId: string) {
+  const queryClient = useQueryClient()
+  return useCallback(
+    (id: number): CachedDoorCode | null => {
+      const state = queryClient.getQueryState<DoorCode[]>(queryKeys.doorCodes.byUser(userId))
+      const code = state?.data?.find((c) => c.id === id)
+      return state && code ? { code, dataUpdatedAt: state.dataUpdatedAt } : null
+    },
+    [queryClient, userId],
+  )
 }
 
 export function useCreateDoorCodeMutation(targetUserId: string) {
@@ -38,7 +58,9 @@ export function useDeleteDoorCodeMutation(targetUserId: string) {
   return useMutation({
     mutationFn: ({ id, reauthPassword }: { id: number; reauthPassword: string }) =>
       doorCodesService.deleteDoorCode(id, { reauthPassword }),
-    onSuccess: async () => {
+    // Refetch on failure too: a delete refused because a slot couldn't be
+    // cleared turns the code off, and the list should show that.
+    onSettled: async () => {
       await queryClient.invalidateQueries({ queryKey: queryKeys.doorCodes.byUser(targetUserId) })
     },
   })
@@ -48,7 +70,9 @@ export function useRetryDoorCodePushMutation(targetUserId: string) {
   const queryClient = useQueryClient()
   return useMutation({
     mutationFn: (id: number) => doorCodesService.retryPush(id),
-    onSuccess: async () => {
+    // Refetch on failure too: a refused Retry (e.g. the code was turned off
+    // elsewhere) means the card is showing stale state.
+    onSettled: async () => {
       await queryClient.invalidateQueries({ queryKey: queryKeys.doorCodes.byUser(targetUserId) })
     },
   })
