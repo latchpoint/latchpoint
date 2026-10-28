@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import threading
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from django.apps import apps
 
 from alarm.signals import alarm_state_change_committed, settings_profile_changed
+from integrations_home_assistant import apps as ha_apps
 from integrations_home_assistant import state_stream
 from integrations_home_assistant.connection import clear_cached_connection
 from integrations_home_assistant.state_stream import HomeAssistantStateStream
@@ -102,21 +104,24 @@ class RecordingLock:
     def wait_until_tried(self, thread: threading.Thread, timeout: float = 5) -> None:
         """Return once `thread` has tried to take the lock, or has finished without trying."""
         with self._changed:
-            self._changed.wait_for(lambda: thread in self._attempts or not thread.is_alive(), timeout)
+            if not self._changed.wait_for(lambda: thread in self._attempts or not thread.is_alive(), timeout):
+                raise AssertionError(f"{thread.name} never tried to take the lock")
 
 
 def run_app_ready(testcase) -> None:
     """
     Run the HA app's ``ready()`` the way a server process does.
 
-    ``ready()`` skips itself under ``manage.py test``, so this patches ``sys.argv`` to look like daphne. The
-    signal handlers it connects are disconnected again on cleanup.
+    ``ready()`` skips itself under ``manage.py test``, so this gives the ``apps`` module a ``sys`` whose argv
+    looks like daphne. Only that module's ``sys`` name is swapped, the real ``sys.argv`` other threads read
+    (ie ``_home_assistant_allowed_in_tests()``) is left alone. The signal handlers it connects are
+    disconnected again on cleanup.
     """
     config = apps.get_app_config("integrations_home_assistant")
     testcase.addCleanup(clear_cached_connection)
     testcase.addCleanup(_disconnect_app_handlers)
     with (
-        patch("integrations_home_assistant.apps.sys.argv", ["daphne", "config.asgi:application"]),
+        patch.object(ha_apps, "sys", SimpleNamespace(argv=["daphne", "config.asgi:application"])),
         patch("integrations_home_assistant.mqtt_alarm_entity.initialize_home_assistant_mqtt_alarm_entity_integration"),
     ):
         config.ready()

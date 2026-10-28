@@ -610,6 +610,36 @@ class ConcurrentApplyTests(SimpleTestCase):
         self.assertEqual((ws_url, token), ("ws://ha-new:8123/api/websocket", "new-token"))
 
 
+class _RequestOnWorkerExitLock:
+    """Stands in for ``_apply_worker_lock``, and makes one request on another thread right after the worker
+    releases it on its way out (its first release once it has applied once and nothing is queued)."""
+
+    def __init__(self, stream: HomeAssistantStateStream, applies: list[threading.Thread]):
+        self._lock = threading.Lock()
+        self._stream = stream
+        self._applies = applies
+        self._fired = False
+        self.request_made = threading.Event()
+
+    def __enter__(self):
+        return self._lock.__enter__()
+
+    def __exit__(self, *exc):
+        result = self._lock.__exit__(*exc)
+        worker_exiting = (
+            threading.current_thread().name == "ha-state-stream-apply"
+            and len(self._applies) == 1
+            and not self._stream._apply_requested
+        )
+        if worker_exiting and not self._fired:
+            self._fired = True
+            requester = threading.Thread(target=self._stream.apply_runtime_settings_in_background, daemon=True)
+            requester.start()
+            requester.join(timeout=5)
+            self.request_made.set()
+        return result
+
+
 class BackgroundApplyTests(SimpleTestCase):
     def test_returns_right_away_and_coalesces_requests_into_one_more_apply(self):
         fake = FakeSessionStream(self)
@@ -684,6 +714,62 @@ class BackgroundApplyTests(SimpleTestCase):
 
         self.assertFalse(worker.is_alive())
         self.assertEqual(calls, ["close_old", "apply", "close_all"])
+
+    def test_failed_db_cleanup_on_a_later_pass_still_applies_and_finishes(self):
+        # The second pass has already taken its request, so a raise there must not skip the apply or kill the
+        # worker before it gives up `_apply_worker` and sets `_apply_idle`.
+        stream = HomeAssistantStateStream()
+        applies: list[threading.Thread] = []
+        first_applying = threading.Event()
+        release_first = threading.Event()
+
+        def _apply() -> None:
+            applies.append(threading.current_thread())
+            if len(applies) == 1:
+                first_applying.set()
+                release_first.wait(timeout=5)
+
+        with (
+            patch.object(state_stream, "close_old_connections", side_effect=[None, RuntimeError("db gone")]),
+            patch.object(state_stream, "connections"),
+            patch.object(stream, "apply_runtime_settings_from_active_profile", side_effect=_apply),
+            self.assertLogs("integrations_home_assistant", level="WARNING") as logs,
+        ):
+            stream.apply_runtime_settings_in_background()
+            self.assertTrue(first_applying.wait(timeout=5))
+            worker = stream._apply_worker
+            # Queued while the first apply runs, so it's taken on the pass where the cleanup raises.
+            stream.apply_runtime_settings_in_background()
+            release_first.set()
+            self.assertTrue(stream.wait_for_background_apply(timeout=5))
+            worker.join(timeout=5)
+
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(applies, [worker, worker])
+        self.assertIsNone(stream._apply_worker)
+        self.assertEqual(len(logs.output), 1)
+        self.assertIn("closing stale DB connections failed", logs.output[0])
+
+    def test_request_landing_as_the_worker_exits_still_runs(self):
+        # The worker's exit has to give up `_apply_worker` under the same lock hold as its "nothing requested"
+        # check. This forces a request in right after the worker releases that lock on its way out, which is
+        # where a request would be dropped if `_apply_worker` were cleared after the lock.
+        stream = HomeAssistantStateStream()
+        applies: list[threading.Thread] = []
+        lock = _RequestOnWorkerExitLock(stream, applies)
+        stream._apply_worker_lock = lock
+        with patch.object(
+            stream,
+            "apply_runtime_settings_from_active_profile",
+            side_effect=lambda: applies.append(threading.current_thread()),
+        ):
+            stream.apply_runtime_settings_in_background()
+            self.assertTrue(lock.request_made.wait(timeout=5))
+            self.assertTrue(stream.wait_for_background_apply(timeout=5))
+
+        self.assertEqual(len(applies), 2)
+        self.assertFalse(stream._apply_requested)
+        self.assertIsNone(stream._apply_worker)
 
     def test_failed_apply_is_logged_and_the_worker_still_finishes(self):
         stream = HomeAssistantStateStream()

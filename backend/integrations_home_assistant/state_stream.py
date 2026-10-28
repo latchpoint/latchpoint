@@ -160,6 +160,10 @@ class HomeAssistantStateStream:
         return self._apply_idle.wait(timeout)
 
     def _take_apply_request(self) -> bool:
+        # The worker decides to exit and gives up `_apply_worker` in one step under `_apply_worker_lock`.
+        # `apply_runtime_settings_in_background()` skips starting a thread while `_apply_worker` is alive, so
+        # clearing it after releasing the lock would let a request land in between, see the exiting worker
+        # still alive and get dropped.
         with self._apply_worker_lock:
             if self._apply_requested:
                 self._apply_requested = False
@@ -169,17 +173,23 @@ class HomeAssistantStateStream:
             return False
 
     def _apply_worker_loop(self) -> None:
-        try:
-            while self._take_apply_request():
+        # Nothing in here may raise out of the loop. The request is already taken, so a raise would drop it,
+        # and the thread would exit without giving up `_apply_worker` or setting `_apply_idle`.
+        while self._take_apply_request():
+            try:
                 # A cold cache reads the DB on this thread, so don't reuse a connection that went stale.
                 close_old_connections()
-                try:
-                    self.apply_runtime_settings_from_active_profile()
-                except Exception:
-                    logger.warning("HA state stream apply failed", exc_info=True)
-        finally:
+            except Exception:
+                logger.warning("HA state stream apply: closing stale DB connections failed", exc_info=True)
+            try:
+                self.apply_runtime_settings_from_active_profile()
+            except Exception:
+                logger.warning("HA state stream apply failed", exc_info=True)
+        try:
             # This thread is about to exit, so close its DB connections instead of leaving them open.
             connections.close_all()
+        except Exception:
+            logger.warning("HA state stream apply: closing DB connections failed", exc_info=True)
 
     def start(self) -> None:
         with self._lock:
