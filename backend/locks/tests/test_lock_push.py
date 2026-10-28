@@ -1647,6 +1647,85 @@ class UnconfirmedSlotCleanupTests(EncryptionTestMixin, TestCase):
         self.assertEqual(code.push_state, DoorCode.PushState.PUSHED)
         self.assertEqual(code.last_push_error, "")
 
+    def _deleted_event(self) -> DoorCodeEvent:
+        return DoorCodeEvent.objects.get(event_type=DoorCodeEvent.EventType.CODE_DELETED)
+
+    def test_delete_checks_an_unconfirmed_slot_on_a_lock_the_code_was_dropped_from(self):
+        # Issue #134: the lock was dropped without its cleanup running (a save with no
+        # gateway, or one from before #111), so only the push_unconfirmed event points at it.
+        code, gateway, slot = self._pending_unconfirmed([])
+        door_codes_uc.update_door_code(code=code, changes={"lock_entity_ids": []}, actor_user=self.user)
+        self.assertFalse(DoorCodeLockAssignment.objects.filter(door_code=code).exists())
+
+        door_codes_uc.delete_door_code(code=code, actor_user=self.user, zwavejs=gateway)
+
+        self.assertFalse(DoorCode.objects.filter(id=code.id).exists())
+        self.assertEqual(self._cleared(gateway), [slot])
+        self.assertNotIn((12, slot), gateway._lock_codes)
+        self.assertEqual(
+            self._deleted_event().metadata["cleared_unconfirmed_slots"],
+            [{"lock_entity_id": self.LOCK, "slot_index": slot}],
+        )
+
+    def test_delete_refuses_while_an_unconfirmed_slot_on_a_dropped_lock_cant_be_checked(self):
+        from integrations_zwavejs.manager import ZwavejsCommandError
+
+        timeout = ZwavejsCommandError("driver TimeoutError after 5.0s")
+        code, gateway, slot = self._pending_unconfirmed([timeout, timeout, timeout])
+        door_codes_uc.update_door_code(code=code, changes={"lock_entity_ids": []}, actor_user=self.user)
+
+        with self.assertRaises(door_codes_uc.SlotClearFailed):
+            door_codes_uc.delete_door_code(code=code, actor_user=self.user, zwavejs=gateway)
+
+        self.assertTrue(DoorCode.objects.filter(id=code.id).exists())
+        [failure] = lock_push_uc.unresolved_clear_failures(door_code=code)
+        self.assertEqual((failure.lock_entity_id, failure.slot_index, failure.unconfirmed), (self.LOCK, slot, True))
+
+    def test_delete_keeps_a_trace_of_unconfirmed_slots_on_a_lock_that_is_gone(self):
+        code, gateway, slot = self._pending_unconfirmed([])
+        Entity.objects.filter(entity_id=self.LOCK).delete()
+
+        door_codes_uc.delete_door_code(code=code, actor_user=self.user, zwavejs=gateway)
+
+        self.assertFalse(DoorCode.objects.filter(id=code.id).exists())
+        self.assertEqual(gateway.invoke_calls, [])
+        metadata = self._deleted_event().metadata
+        [unchecked] = metadata["unconfirmed_slots_unchecked"]
+        self.assertEqual(
+            (unchecked["lock_entity_id"], unchecked["slot_index"], unchecked["permanent"]), (self.LOCK, slot, True)
+        )
+        self.assertIn("NotFound", unchecked["reason"])
+        self.assertNotIn("cleared_unconfirmed_slots", metadata)
+
+    def test_synced_code_delete_keeps_a_trace_of_unconfirmed_slots_it_couldnt_check(self):
+        from integrations_zwavejs.manager import ZwavejsCommandError
+
+        timeout = ZwavejsCommandError("driver TimeoutError after 5.0s")
+        code, gateway, slot = self._pending_unconfirmed([timeout, timeout, timeout])
+        DoorCode.objects.filter(id=code.id).update(source=DoorCode.Source.SYNCED)
+        code.refresh_from_db()
+
+        door_codes_uc.delete_door_code(code=code, actor_user=self.user, zwavejs=gateway)
+
+        self.assertFalse(DoorCode.objects.filter(id=code.id).exists())
+        [unchecked] = self._deleted_event().metadata["unconfirmed_slots_unchecked"]
+        self.assertEqual((unchecked["lock_entity_id"], unchecked["slot_index"]), (self.LOCK, slot))
+        self.assertNotIn("permanent", unchecked)
+
+    def test_dropping_a_lock_that_is_gone_records_its_unconfirmed_slot_in_the_update_event(self):
+        code, gateway, slot = self._pending_unconfirmed([])
+        Entity.objects.filter(entity_id=self.LOCK).delete()
+
+        door_codes_uc.update_door_code(
+            code=code, changes={"lock_entity_ids": []}, actor_user=self.user, zwavejs=gateway
+        )
+
+        updated = DoorCodeEvent.objects.filter(event_type=DoorCodeEvent.EventType.CODE_UPDATED).latest("id")
+        [failure] = updated.metadata["failed_slot_clears"]
+        self.assertEqual(
+            (failure["lock_entity_id"], failure["slot_index"], failure["permanent"]), (self.LOCK, slot, True)
+        )
+
 
 class LockListChangeTests(EncryptionTestMixin, TestCase):
     """Issue #133: changing a code's locks keeps the slots of the locks that stay."""
@@ -1818,6 +1897,44 @@ class LockListChangeTests(EncryptionTestMixin, TestCase):
         self.assertEqual(self._calls(gateway, "set"), [])
         self.assertEqual(code.push_state, DoorCode.PushState.PUSHED)
         self.assertEqual(code.last_push_error, "")
+
+    def test_dropping_every_lock_resets_a_failed_code(self):
+        # Issue #142: the failure belonged to a lock the code isn't on any more.
+        code, gateway = self._pushed_code([self.BACK], reject_pins={12: {self.PIN}})
+        code.refresh_from_db()
+        self.assertEqual(code.push_state, DoorCode.PushState.FAILED)
+        self.assertTrue(code.last_push_error)
+
+        code = self._update(code, gateway, {"lock_entity_ids": []})
+
+        self.assertEqual(self._slots(code), {})
+        self.assertEqual(code.push_state, DoorCode.PushState.PENDING)
+        self.assertEqual(code.last_push_error, "")
+        self.assertEqual(code.push_attempt_count, 0)
+
+    def test_dropping_every_lock_keeps_the_state_while_a_clear_is_still_outstanding(self):
+        from integrations_zwavejs.manager import ZwavejsCommandError
+
+        # BACK's push landed but was never confirmed, and its cleanup readback times out too.
+        timeout = ZwavejsCommandError("driver TimeoutError after 5.0s")
+        code, gateway = self._pushed_code([self.BACK], get_responses={12: [timeout] * 6})
+        DoorCode.objects.filter(id=code.id).update(push_state=DoorCode.PushState.FAILED, last_push_error="old error")
+
+        code = self._update(code, gateway, {"lock_entity_ids": []})
+
+        self.assertEqual(self._slots(code), {})
+        self.assertEqual(self._lock_codes(gateway, 12), {1: self.PIN})
+        self.assertEqual(code.push_state, DoorCode.PushState.FAILED)
+        self.assertTrue(code.last_push_error.startswith(f"Couldn't clear slot 1 on {self.BACK}"))
+
+    def test_lock_lists_in_the_event_are_sorted(self):
+        code, gateway = self._pushed_code([self.SIDE, self.FRONT])
+
+        code = self._update(code, gateway, {"lock_entity_ids": [self.BACK]})
+        self.assertEqual(self._updated_event(code).metadata["removed_lock_entity_ids"], [self.FRONT, self.SIDE])
+
+        code = self._update(code, gateway, {"lock_entity_ids": [self.SIDE, self.FRONT, self.BACK]})
+        self.assertEqual(self._updated_event(code).metadata["added_lock_entity_ids"], [self.FRONT, self.SIDE])
 
 
 class ClearFailingGateway(FakeGateway):
@@ -2521,6 +2638,146 @@ class EditFormSaveTests(_TwoLockUpdateTestBase, APITestCase):
         self.assertCountEqual(self._calls(gateway, "clear"), [(12, [1]), (13, [1])])
         self.assertEqual(self._calls(gateway, "set"), [])
         self.assertEqual(self._slots(code), {self.BACK: None, self.SIDE: None})
+
+
+class LockListChangeApiTests(_TwoLockUpdateTestBase, APITestCase):
+    """Issue #142: lock list changes through the PATCH view and serializer."""
+
+    # Mon-Fri as set by _scheduled_code, as CC 78 slot ids (weekday bit + 1).
+    WEEKDAY_SLOTS = [1, 2, 3, 4, 5]
+
+    def setUp(self):
+        super().setUp()
+        self.client.force_authenticate(self.user)
+
+    _form_save = EditFormSaveTests._form_save
+    _scheduled_code = EditFormSaveTests._scheduled_code
+
+    @staticmethod
+    def _schedule_calls(gateway: FakeGateway) -> list[tuple[int, int, int]]:
+        return sorted(
+            (c["node_id"], c["args"][0]["userId"], c["args"][0]["slotId"])
+            for c in gateway.invoke_calls
+            if c["command_class"] == 78 and c["method_name"] == "setDailyRepeatingSchedule"
+        )
+
+    def test_lock_change_through_the_api(self):
+        code, gateway = self._pushed_code([self.BACK, self.SIDE])
+
+        with patch("locks.views.door_codes.default_zwavejs_gateway", gateway):
+            response = self.client.patch(
+                reverse("door-code-detail", args=[code.id]),
+                {"lock_entity_ids": [self.FRONT, self.BACK], "reauth_password": "pass"},
+                format="json",
+            )
+
+        self.assertEqual(response.status_code, 200, response.content)
+        data = response.json()["data"]
+        self.assertEqual(data["lock_entity_ids"], [self.BACK, self.FRONT])
+        self.assertCountEqual(
+            data["lock_slot_assignments"],
+            [{"lock_entity_id": self.BACK, "slot_index": 1}, {"lock_entity_id": self.FRONT, "slot_index": 1}],
+        )
+        self.assertEqual(data["push_state"], DoorCode.PushState.PUSHED)
+        self.assertEqual(self._calls(gateway, "clear"), [(13, [1])])
+        self.assertEqual(self._calls(gateway, "set"), [(14, [1, 1, self.PIN])])
+        metadata = self._updated_event(code).metadata
+        self.assertEqual(metadata["added_lock_entity_ids"], [self.FRONT])
+        self.assertEqual(metadata["removed_lock_entity_ids"], [self.SIDE])
+
+    def test_saving_a_failed_code_with_no_locks_from_the_form_resets_it(self):
+        code, gateway = self._scheduled_code()
+        DoorCode.objects.filter(id=code.id).update(
+            push_state=DoorCode.PushState.FAILED, last_push_error="Lock did not store the code"
+        )
+
+        code = self._form_save(code, gateway, lock_entity_ids=[])
+
+        self.assertCountEqual(self._calls(gateway, "clear"), [(12, [1]), (13, [1])])
+        self.assertEqual(self._slots(code), {})
+        self.assertEqual(code.push_state, DoorCode.PushState.PENDING)
+        self.assertEqual(code.last_push_error, "")
+
+    def test_adding_a_lock_to_a_scheduled_code_pushes_the_pin_and_schedule_to_that_lock_only(self):
+        code, gateway = self._scheduled_code()
+
+        code = self._form_save(code, gateway, lock_entity_ids=[self.FRONT, self.BACK, self.SIDE])
+
+        self.assertEqual(self._calls(gateway, "clear"), [])
+        self.assertEqual(self._calls(gateway, "set"), [(14, [1, 1, self.PIN])])
+        self.assertEqual(self._schedule_calls(gateway), [(14, 1, slot) for slot in self.WEEKDAY_SLOTS])
+        self.assertEqual(self._slots(code), {self.BACK: 1, self.SIDE: 1, self.FRONT: 1})
+        self.assertEqual((code.days_of_week, code.window_start, code.window_end), (0b0011111, time(9, 0), time(17, 0)))
+        self.assertEqual(code.push_state, DoorCode.PushState.PUSHED)
+
+    def test_dropping_a_lock_from_a_scheduled_code_only_clears_that_lock(self):
+        code, gateway = self._scheduled_code()
+
+        code = self._form_save(code, gateway, lock_entity_ids=[self.BACK])
+
+        self.assertEqual(self._calls(gateway, "clear"), [(13, [1])])
+        self.assertEqual(self._calls(gateway, "set"), [])
+        self.assertEqual(self._schedule_calls(gateway), [])
+        self.assertEqual(self._slots(code), {self.BACK: 1})
+        self.assertEqual(self._lock_codes(gateway, 12), {1: self.PIN})
+        self.assertEqual(code.push_state, DoorCode.PushState.PUSHED)
+
+    def test_a_kept_lock_still_pending_gets_pushed_by_a_lock_list_only_save(self):
+        code, gateway = self._scheduled_code()
+        # SIDE's push never got through: no slot, nothing on the lock.
+        gateway._lock_codes.pop((13, 1))
+        gateway._cache_codes.pop((13, 1))
+        DoorCodeLockAssignment.objects.filter(door_code=code, lock_entity_id=self.SIDE).update(slot_index=None)
+        DoorCode.objects.filter(id=code.id).update(
+            push_state=DoorCode.PushState.PENDING, last_push_error="Lock is not reachable right now; will retry."
+        )
+
+        code = self._form_save(code, gateway, lock_entity_ids=[self.BACK, self.SIDE, self.FRONT])
+
+        self.assertEqual(self._calls(gateway, "clear"), [])
+        self.assertCountEqual(self._calls(gateway, "set"), [(13, [1, 1, self.PIN]), (14, [1, 1, self.PIN])])
+        self.assertEqual(
+            self._schedule_calls(gateway), [(node, 1, slot) for node in (13, 14) for slot in self.WEEKDAY_SLOTS]
+        )
+        self.assertEqual(self._slots(code), {self.BACK: 1, self.SIDE: 1, self.FRONT: 1})
+        self.assertEqual(code.push_state, DoorCode.PushState.PUSHED)
+        self.assertEqual(code.last_push_error, "")
+
+    def test_a_kept_lock_whose_push_went_unconfirmed_is_adopted_by_a_lock_list_only_save(self):
+        from integrations_zwavejs.manager import ZwavejsCommandError
+
+        # SIDE's set lands but every readback times out, so its slot is only on record.
+        timeout = ZwavejsCommandError("driver TimeoutError after 5.0s")
+        gateway = ClearFailingGateway(usersNumber=5, cache_updates_on_set=True, get_responses={13: [timeout] * 3})
+        code = door_codes_uc.create_door_code(
+            user=self.user,
+            raw_code=self.PIN,
+            lock_entity_ids=[self.BACK, self.SIDE],
+            actor_user=self.user,
+            zwavejs=gateway,
+            code_type=DoorCode.CodeType.TEMPORARY,
+            days_of_week=0b0011111,
+            window_start=time(9, 0),
+            window_end=time(17, 0),
+        )
+        code.refresh_from_db()
+        self.assertEqual(code.push_state, DoorCode.PushState.PENDING)
+        self.assertEqual(self._slots(code), {self.BACK: 1, self.SIDE: None})
+        self.assertEqual(self._lock_codes(gateway, 13), {1: self.PIN})
+        gateway.invoke_calls.clear()
+
+        code = self._form_save(code, gateway, lock_entity_ids=[self.BACK, self.SIDE, self.FRONT])
+
+        # SIDE's slot is read back and kept instead of the PIN going into a second slot.
+        self.assertEqual(self._calls(gateway, "set"), [(14, [1, 1, self.PIN])])
+        self.assertEqual(self._calls(gateway, "clear"), [])
+        self.assertEqual(self._lock_codes(gateway, 13), {1: self.PIN})
+        self.assertEqual(self._slots(code), {self.BACK: 1, self.SIDE: 1, self.FRONT: 1})
+        adopted = DoorCodeEvent.objects.filter(
+            door_code=code, lock_entity_id=self.SIDE, event_type=DoorCodeEvent.EventType.CODE_SYNCED
+        ).get()
+        self.assertTrue(adopted.metadata["adopted_existing_slot"])
+        self.assertEqual(code.push_state, DoorCode.PushState.PUSHED)
 
 
 class LockSlotAssignmentsSerializerTests(EncryptionTestMixin, TestCase):

@@ -35,6 +35,7 @@ from locks.models import DoorCode, DoorCodeEvent, DoorCodeLockAssignment
 from locks.use_cases.lock_config_sync import (
     CC_SCHEDULE_ENTRY_LOCK,
     CC_USER_CODE,
+    LockBusy,
     _coerce_int,
     _normalize_pin,
     _parse_user_code_status,
@@ -42,6 +43,7 @@ from locks.use_cases.lock_config_sync import (
     _resolve_lock_node_id,
     _try_acquire_sync_lock,
     clear_lock_user_code_slot,
+    hold_lock_sync,
 )
 from locks.use_cases.lock_config_sync import (
     InvalidRequest as LockSyncInvalidRequest,
@@ -106,6 +108,14 @@ class LockCodeUnverified(GatewayError):
     """The slot could not be read back after the ``set``; transient, the scheduler retries."""
 
     gateway_name = "zwavejs"
+
+
+class PushSuperseded(LockUnreachable):
+    """The code changed while its push waited for the lock (deleted, turned off, lock dropped); nothing was sent."""
+
+
+# DoorCode fields a push writes to the lock, re-read once the push holds the lock.
+_PUSHED_FIELDS = ["encrypted_pin", "is_active", "days_of_week", "window_start", "window_end"]
 
 
 @dataclass
@@ -521,6 +531,33 @@ def decrypt_pin_or_none(door_code: DoorCode) -> str | None:
         return None
 
 
+def unconfirmed_attempt_lock_entity_ids(*, door_code: DoorCode) -> list[str]:
+    """Locks with a ``push_unconfirmed`` event for ``door_code``, assigned now or not (issue #134), sorted."""
+    return sorted(
+        set(
+            DoorCodeEvent.objects.filter(
+                door_code=door_code,
+                event_type=DoorCodeEvent.EventType.CODE_FAILED,
+                metadata__action=_UNCONFIRMED_PUSH_ACTION,
+            )
+            .exclude(lock_entity_id="")
+            .values_list("lock_entity_id", flat=True)
+        )
+    )
+
+
+def affected_lock_entity_ids(*, door_code: DoorCode) -> set[str]:
+    """Every lock an update or delete of ``door_code`` may send a clear or set to (issue #131).
+
+    Its assigned locks, locks with a clear still outstanding, and locks with an
+    unconfirmed push attempt on record.
+    """
+    locks = set(DoorCodeLockAssignment.objects.filter(door_code=door_code).values_list("lock_entity_id", flat=True))
+    locks.update(f.lock_entity_id for f in unresolved_clear_failures(door_code=door_code))
+    locks.update(unconfirmed_attempt_lock_entity_ids(door_code=door_code))
+    return locks
+
+
 def has_unconfirmed_attempt_slots(*, door_code: DoorCode) -> bool:
     """Whether any of ``door_code``'s locks has a recorded unconfirmed slot that may hold its PIN."""
     for lock_entity_id in DoorCodeLockAssignment.objects.filter(door_code=door_code).values_list(
@@ -832,6 +869,87 @@ def _slot_holds_pin(
         return exc.holds_pin
 
 
+def _held_by_another_code(*, door_code: DoorCode, lock_entity_id: str, slot_index: int) -> bool:
+    return (
+        DoorCodeLockAssignment.objects.filter(lock_entity_id=lock_entity_id, slot_index=slot_index)
+        .exclude(door_code=door_code)
+        .exists()
+    )
+
+
+def _retry_failed_slot_clear(
+    *,
+    door_code: DoorCode,
+    failure: ClearFailure,
+    zwavejs: ZwavejsGateway,
+    timeout_seconds: float,
+) -> ClearFailure | None:
+    """One clear for :func:`retry_failed_slot_clears`; returns the failure if it's still failing."""
+    lock_entity_id, slot_index = failure.lock_entity_id, failure.slot_index
+    tracked_here = DoorCodeLockAssignment.objects.filter(
+        door_code=door_code, lock_entity_id=lock_entity_id, slot_index=slot_index
+    ).exists()
+    if _held_by_another_code(door_code=door_code, lock_entity_id=lock_entity_id, slot_index=slot_index) or (
+        failure.unconfirmed and tracked_here
+    ):
+        resolve_clear_failure(
+            door_code=door_code, lock_entity_id=lock_entity_id, slot_index=slot_index, outcome="tracked"
+        )
+        return None
+    try:
+        if not tracked_here:
+            if not _slot_holds_pin(
+                zwavejs=zwavejs,
+                lock_entity_id=lock_entity_id,
+                slot_index=slot_index,
+                pin=failure.expected_pin or decrypt_pin_or_none(door_code),
+                timeout_seconds=timeout_seconds,
+            ):
+                forget_cleared_slot(
+                    door_code=door_code,
+                    lock_entity_id=lock_entity_id,
+                    slot_index=slot_index,
+                    outcome="not_holding_pin",
+                )
+                return None
+            # Checked again after the readback, right before the clear: a slot
+            # another code took meanwhile holds its PIN now, not this one's.
+            if _held_by_another_code(door_code=door_code, lock_entity_id=lock_entity_id, slot_index=slot_index):
+                resolve_clear_failure(
+                    door_code=door_code, lock_entity_id=lock_entity_id, slot_index=slot_index, outcome="tracked"
+                )
+                return None
+        clear_lock_user_code_slot(
+            lock_entity_id=lock_entity_id,
+            slot_index=slot_index,
+            zwavejs=zwavejs,
+            timeout_seconds=timeout_seconds,
+        )
+    except Exception as exc:
+        if is_permanent_clear_error(exc):
+            logger.warning("Can't resolve %s to clear slot %d; no longer tracking it", lock_entity_id, slot_index)
+            forget_cleared_slot(
+                door_code=door_code, lock_entity_id=lock_entity_id, slot_index=slot_index, outcome="lock_missing"
+            )
+            return None
+        logger.warning(
+            "Retrying the clear of slot %d on %s for door code id=%s failed again",
+            slot_index,
+            lock_entity_id,
+            door_code.id,
+            exc_info=True,
+        )
+        return ClearFailure(
+            lock_entity_id=lock_entity_id,
+            slot_index=slot_index,
+            reason=_clear_error_reason(exc),
+            removing=failure.removing,
+            unconfirmed=failure.unconfirmed,
+        )
+    forget_cleared_slot(door_code=door_code, lock_entity_id=lock_entity_id, slot_index=slot_index, outcome="cleared")
+    return None
+
+
 def retry_failed_slot_clears(
     *,
     door_code: DoorCode,
@@ -851,65 +969,40 @@ def retry_failed_slot_clears(
     that can't be resolved any more is settled as ``lock_missing``. A failure
     still failing bumps ``push_attempt_count`` so the scheduler's attempt cap
     applies.
+
+    Each lock's clears run while holding its ``lock_sync:`` lock (waiting for it,
+    issue #131), and its failures are read again once it's held, since an update
+    or delete may have settled them meanwhile. A lock still busy at the wait
+    limit counts as still failing.
     """
     still_failing: list[ClearFailure] = []
-    for failure in unresolved_clear_failures(door_code=door_code):
-        lock_entity_id, slot_index = failure.lock_entity_id, failure.slot_index
-        holders = DoorCodeLockAssignment.objects.filter(lock_entity_id=lock_entity_id, slot_index=slot_index)
-        tracked_here = holders.filter(door_code=door_code).exists()
-        if holders.exclude(door_code=door_code).exists() or (failure.unconfirmed and tracked_here):
-            resolve_clear_failure(
-                door_code=door_code, lock_entity_id=lock_entity_id, slot_index=slot_index, outcome="tracked"
-            )
-            continue
+    failures = unresolved_clear_failures(door_code=door_code)
+    for lock_entity_id in sorted({f.lock_entity_id for f in failures}):
         try:
-            if not tracked_here and not _slot_holds_pin(
-                zwavejs=zwavejs,
-                lock_entity_id=lock_entity_id,
-                slot_index=slot_index,
-                pin=failure.expected_pin or decrypt_pin_or_none(door_code),
-                timeout_seconds=timeout_seconds,
-            ):
-                forget_cleared_slot(
-                    door_code=door_code,
-                    lock_entity_id=lock_entity_id,
-                    slot_index=slot_index,
-                    outcome="not_holding_pin",
-                )
-                continue
-            clear_lock_user_code_slot(
-                lock_entity_id=lock_entity_id,
-                slot_index=slot_index,
-                zwavejs=zwavejs,
-                timeout_seconds=timeout_seconds,
-            )
-        except Exception as exc:
-            if is_permanent_clear_error(exc):
-                logger.warning("Can't resolve %s to clear slot %d; no longer tracking it", lock_entity_id, slot_index)
-                forget_cleared_slot(
-                    door_code=door_code, lock_entity_id=lock_entity_id, slot_index=slot_index, outcome="lock_missing"
-                )
-                continue
+            with hold_lock_sync([lock_entity_id]):
+                for failure in unresolved_clear_failures(door_code=door_code):
+                    if failure.lock_entity_id != lock_entity_id:
+                        continue
+                    still = _retry_failed_slot_clear(
+                        door_code=door_code, failure=failure, zwavejs=zwavejs, timeout_seconds=timeout_seconds
+                    )
+                    if still is not None:
+                        still_failing.append(still)
+        except LockBusy as exc:
             logger.warning(
-                "Retrying the clear of slot %d on %s for door code id=%s failed again",
-                slot_index,
-                lock_entity_id,
-                door_code.id,
-                exc_info=True,
+                "Skipping the clear retries on %s for door code id=%s: %s", lock_entity_id, door_code.id, exc
             )
-            still_failing.append(
+            still_failing.extend(
                 ClearFailure(
-                    lock_entity_id=lock_entity_id,
-                    slot_index=slot_index,
+                    lock_entity_id=f.lock_entity_id,
+                    slot_index=f.slot_index,
                     reason=_clear_error_reason(exc),
-                    removing=failure.removing,
-                    unconfirmed=failure.unconfirmed,
+                    removing=f.removing,
+                    unconfirmed=f.unconfirmed,
                 )
+                for f in failures
+                if f.lock_entity_id == lock_entity_id
             )
-            continue
-        forget_cleared_slot(
-            door_code=door_code, lock_entity_id=lock_entity_id, slot_index=slot_index, outcome="cleared"
-        )
 
     if still_failing:
         door_code.refresh_from_db(fields=["push_attempt_count"])
@@ -938,73 +1031,119 @@ def clear_unconfirmed_slots_holding_pin(
     attempts recorded before that was stored), enabled or disabled; empty, masked
     or different codes are left alone. A slot that can't be checked or cleared is
     recorded with :func:`record_clear_failure` (``unconfirmed``, with that PIN)
-    so it's retried. Returns the slots cleared as ``{"lock_entity_id",
-    "slot_index"}`` dicts and the failures. Doesn't take the ``lock_sync:`` lock,
-    same as the existing slot clears in those paths.
+    so it's retried. A lock latchpoint can't resolve to a Z-Wave node any more
+    gives a ``permanent`` failure per slot instead (nothing recorded to retry,
+    but the caller can still put it in its event, issue #134). Returns the slots
+    cleared as ``{"lock_entity_id", "slot_index"}`` dicts and the failures.
+
+    Each lock is checked while holding its ``lock_sync:`` lock (a no-op for a
+    caller already holding it), and a slot is skipped if another code's
+    assignment holds it by the time it would be cleared (issue #131).
     """
     cleared: list[dict[str, object]] = []
     failed: list[ClearFailure] = []
     for lock_entity_id in dict.fromkeys(lock_entity_ids):
-        attempts = _unconfirmed_attempts(
-            door_code=door_code,
-            lock_entity_id=lock_entity_id,
-            claimed_slots=_claimed_slots(lock_entity_id=lock_entity_id, door_code=door_code),
-        )
-        if not attempts:
-            continue
-        try:
-            node_id = _resolve_lock_node_id(lock_entity_id=lock_entity_id)
-        except Exception:
-            logger.warning("Can't resolve %s to check unconfirmed door code slots %s", lock_entity_id, list(attempts))
-            continue
+        with hold_lock_sync([lock_entity_id]):
+            lock_cleared, lock_failed = _clear_unconfirmed_slots_on_lock(
+                door_code=door_code,
+                pin=pin,
+                lock_entity_id=lock_entity_id,
+                zwavejs=zwavejs,
+                timeout_seconds=timeout_seconds,
+            )
+        cleared.extend(lock_cleared)
+        failed.extend(lock_failed)
+    return cleared, failed
+
+
+def _clear_unconfirmed_slots_on_lock(
+    *,
+    door_code: DoorCode,
+    pin: str,
+    lock_entity_id: str,
+    zwavejs: ZwavejsGateway,
+    timeout_seconds: float,
+) -> tuple[list[dict[str, object]], list[ClearFailure]]:
+    """One lock's part of :func:`clear_unconfirmed_slots_holding_pin`; the caller holds its lock."""
+    cleared: list[dict[str, object]] = []
+    failed: list[ClearFailure] = []
+    attempts = _unconfirmed_attempts(
+        door_code=door_code,
+        lock_entity_id=lock_entity_id,
+        claimed_slots=_claimed_slots(lock_entity_id=lock_entity_id, door_code=door_code),
+    )
+    if not attempts:
+        return cleared, failed
+    try:
+        node_id = _resolve_lock_node_id(lock_entity_id=lock_entity_id)
+    except Exception as exc:
+        logger.warning("Can't resolve %s to check unconfirmed door code slots %s", lock_entity_id, list(attempts))
         for slot_index, attempted_pin in attempts.items():
-            expected_pin = attempted_pin or pin
-            try:
-                try:
-                    holds_pin = _verify_user_code_slot(
-                        zwavejs=zwavejs,
-                        node_id=node_id,
-                        slot_index=slot_index,
-                        pin=expected_pin,
-                        timeout_seconds=timeout_seconds,
-                    )
-                except LockRejectedCode as exc:
-                    holds_pin = exc.holds_pin
-                if not holds_pin:
-                    resolve_clear_failure(
-                        door_code=door_code,
-                        lock_entity_id=lock_entity_id,
-                        slot_index=slot_index,
-                        outcome="not_holding_pin",
-                    )
-                    continue
-                clear_lock_user_code_slot(
+            failed.append(
+                record_clear_failure(
+                    door_code=door_code,
                     lock_entity_id=lock_entity_id,
                     slot_index=slot_index,
+                    exc=exc,
+                    expected_pin=attempted_pin or pin,
+                    unconfirmed=True,
+                )
+            )
+        return cleared, failed
+    for slot_index, attempted_pin in attempts.items():
+        expected_pin = attempted_pin or pin
+        try:
+            try:
+                holds_pin = _verify_user_code_slot(
                     zwavejs=zwavejs,
+                    node_id=node_id,
+                    slot_index=slot_index,
+                    pin=expected_pin,
                     timeout_seconds=timeout_seconds,
                 )
-                cleared.append({"lock_entity_id": lock_entity_id, "slot_index": slot_index})
+            except LockRejectedCode as exc:
+                holds_pin = exc.holds_pin
+            if not holds_pin:
                 resolve_clear_failure(
-                    door_code=door_code, lock_entity_id=lock_entity_id, slot_index=slot_index, outcome="cleared"
+                    door_code=door_code,
+                    lock_entity_id=lock_entity_id,
+                    slot_index=slot_index,
+                    outcome="not_holding_pin",
                 )
-            except Exception as exc:
-                logger.warning(
-                    "Could not check/clear unconfirmed slot %d on %s for door code id=%s; it may still hold the PIN",
-                    slot_index,
-                    lock_entity_id,
-                    door_code.id,
+                continue
+            if slot_index in _claimed_slots(lock_entity_id=lock_entity_id, door_code=door_code):
+                # Another code took this slot during the readback, so what it holds is that code's PIN.
+                resolve_clear_failure(
+                    door_code=door_code, lock_entity_id=lock_entity_id, slot_index=slot_index, outcome="tracked"
                 )
-                failed.append(
-                    record_clear_failure(
-                        door_code=door_code,
-                        lock_entity_id=lock_entity_id,
-                        slot_index=slot_index,
-                        exc=exc,
-                        expected_pin=expected_pin,
-                        unconfirmed=True,
-                    )
+                continue
+            clear_lock_user_code_slot(
+                lock_entity_id=lock_entity_id,
+                slot_index=slot_index,
+                zwavejs=zwavejs,
+                timeout_seconds=timeout_seconds,
+            )
+            cleared.append({"lock_entity_id": lock_entity_id, "slot_index": slot_index})
+            resolve_clear_failure(
+                door_code=door_code, lock_entity_id=lock_entity_id, slot_index=slot_index, outcome="cleared"
+            )
+        except Exception as exc:
+            logger.warning(
+                "Could not check/clear unconfirmed slot %d on %s for door code id=%s; it may still hold the PIN",
+                slot_index,
+                lock_entity_id,
+                door_code.id,
+            )
+            failed.append(
+                record_clear_failure(
+                    door_code=door_code,
+                    lock_entity_id=lock_entity_id,
+                    slot_index=slot_index,
+                    exc=exc,
+                    expected_pin=expected_pin,
+                    unconfirmed=True,
                 )
+            )
     return cleared, failed
 
 
@@ -1215,6 +1354,14 @@ def push_door_code_to_lock(
         scheduler will retry.
       * :class:`LockPushFailed` — terminal; the row is flipped to ``failed`` and a
         ``code_failed`` event is emitted.
+      * :class:`PushSuperseded` — once the lock is held the code turns out to be
+        deleted, inactive or no longer on this lock; nothing is sent or recorded.
+
+    The code's PIN, schedule and assignment are read again once the
+    ``lock_sync:`` lock is held, since a caller that loaded them earlier (the
+    scheduler) may have waited behind an update or delete (issue #131). An
+    assignment that has a slot by then is returned as is instead of being
+    written to a second slot.
     """
     pin = _decrypt_pin_or_raise(door_code)
     try:
@@ -1234,6 +1381,23 @@ def push_door_code_to_lock(
         raise LockUnreachable("Another sync is in progress for this lock; will retry.")
 
     try:
+        try:
+            door_code.refresh_from_db(fields=_PUSHED_FIELDS)
+        except DoorCode.DoesNotExist as exc:
+            raise PushSuperseded("Door code was deleted before its push started.") from exc
+        assignment = DoorCodeLockAssignment.objects.filter(door_code=door_code, lock_entity_id=lock_entity_id).first()
+        if not door_code.is_active or assignment is None:
+            raise PushSuperseded("Door code is no longer active on this lock; nothing was pushed.")
+        if assignment.slot_index is not None:
+            logger.info(
+                "Door code id=%d already holds slot %d on %s; not pushing it again",
+                door_code.id,
+                assignment.slot_index,
+                lock_entity_id,
+            )
+            return PushResult(lock_entity_id=lock_entity_id, node_id=node_id, slot_index=int(assignment.slot_index))
+        pin = _decrypt_pin_or_raise(door_code)
+
         claimed_slots = _claimed_slots(lock_entity_id=lock_entity_id, door_code=door_code)
         try:
             _raise_if_pin_matches_admin_code(
@@ -1466,6 +1630,11 @@ def push_door_code_to_assigned_locks(
                 timeout_seconds=timeout_seconds,
             )
             successes.append(result)
+        except PushSuperseded:
+            # An update or delete got the lock first and settled the code's locks
+            # and state itself, so this stale pass stops here.
+            logger.info("Door code id=%s changed while its push waited for the lock; stopping", door_code.id)
+            return successes, failures
         except (LockUnreachable, LockSlotsFull, LockPushFailed, InvalidPin) as exc:
             failures.append((assignment.lock_entity_id, str(exc)))
             door_code.refresh_from_db(fields=["push_state", "last_push_attempt_at", "last_push_error"])
