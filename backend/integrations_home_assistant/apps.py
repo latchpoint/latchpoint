@@ -67,6 +67,21 @@ class IntegrationsHomeAssistantConfig(AppConfig):
             _on_settings_profile_changed, dispatch_uid="ha_mqtt_alarm_entity_profile_changed", weak=False
         )
 
+        def _on_settings_profile_changed_reconnect(sender, **_kwargs) -> None:
+            """Refresh the cached HA connection and reconnect the state stream with the active profile's settings."""
+            try:
+                from integrations_home_assistant import state_stream
+
+                set_cached_connection()
+                # In the background, since closing a live session can take a few seconds (#121).
+                state_stream.apply_runtime_settings_in_background()
+            except Exception:
+                logger.warning("HA connection profile update failed", exc_info=True)
+
+        settings_profile_changed.connect(
+            _on_settings_profile_changed_reconnect, dispatch_uid="ha_connection_profile_changed", weak=False
+        )
+
         # Warm-up HA connection cache from env vars.
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore", message="Accessing the database during app initialization")
