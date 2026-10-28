@@ -39,6 +39,7 @@ vi.mock('@/hooks/useDoorCodesQueries', () => {
     useUpdateDoorCodeMutation: () => ({ isPending: false, mutateAsync: vi.fn() }),
     useDeleteDoorCodeMutation: () => ({ isPending: false, mutateAsync: vi.fn() }),
     useRetryDoorCodePushMutation: () => ({ isPending: false, mutateAsync: vi.fn(), variables: undefined }),
+    useReadCachedDoorCode: () => () => null,
     useSyncLockConfigMutation: () => ({ isPending: false, mutateAsync: vi.fn() }),
   }
 })

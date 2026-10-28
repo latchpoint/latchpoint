@@ -156,8 +156,14 @@ describe('DoorCodePushStatusBadge', () => {
     expect(screen.queryByRole('button', { name: /Retry/ })).toBeNull()
   })
 
-  it('shows Not on lock for an inactive pending code that never got a slot', () => {
-    const code = makeCode({ isActive: false, pushState: 'pending' })
+  it('shows Pending clear, not Not on lock, for an inactive pending code with no slots', () => {
+    // A failed cleanup of an unconfirmed slot: no slot_index, but the PIN may be on the lock.
+    const onRetry = vi.fn()
+    const code = makeCode({
+      isActive: false,
+      pushState: 'pending',
+      lastPushError: "Couldn't clear slot 4 on lock.front_door, it may still hold the PIN",
+    })
 
     renderWithProviders(
       <DoorCodePushStatusBadge
@@ -165,15 +171,20 @@ describe('DoorCodePushStatusBadge', () => {
         lockNameByEntityId={lockNames}
         canRetry
         isRetrying={false}
-        onRetry={vi.fn()}
+        onRetry={onRetry}
       />,
     )
 
-    expect(screen.getByText('Not on lock')).toBeTruthy()
+    expect(screen.getByText('Pending clear')).toBeTruthy()
+    expect(screen.getByText('(the PIN may still be on a lock, retried automatically)')).toBeVisible()
+    expect(screen.queryByText('Not on lock')).toBeNull()
     expect(screen.queryByText('Pending sync')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: /Retry now/ }))
+    expect(onRetry).toHaveBeenCalledTimes(1)
   })
 
-  it('keeps Push failed without Retry for an inactive failed code with no slots', () => {
+  it('shows Clear failed with Retry, not Not on lock, for an inactive failed code with no slots', () => {
+    const onRetry = vi.fn()
     const code = makeCode({ isActive: false, pushState: 'failed', lastPushError: 'boom' })
 
     renderWithProviders(
@@ -182,14 +193,18 @@ describe('DoorCodePushStatusBadge', () => {
         lockNameByEntityId={lockNames}
         canRetry
         isRetrying={false}
-        onRetry={vi.fn()}
+        onRetry={onRetry}
       />,
     )
 
-    expect(screen.getByText('Push failed: boom')).toBeTruthy()
-    expect(screen.getByText('(saving it as off again or deleting it retries the clear)')).toBeVisible()
+    expect(screen.getByText('Clear failed: boom')).toBeTruthy()
+    expect(
+      screen.getByText('(the PIN may still be on a lock, Retry or deleting the code tries the clear again)'),
+    ).toBeVisible()
     expect(screen.queryByText('Not on lock')).toBeNull()
-    expect(screen.queryByRole('button', { name: /Retry/ })).toBeNull()
+    expect(screen.queryByText(/Push failed/)).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: /^Retry$/ }))
+    expect(onRetry).toHaveBeenCalledTimes(1)
   })
 
   it('does not show Not on lock when the code has no slot assignments to check', () => {
@@ -209,12 +224,10 @@ describe('DoorCodePushStatusBadge', () => {
     expect(screen.getByText('On lock')).toBeTruthy()
   })
 
-  it('does not show the clear hint for an active failed code', () => {
-    const code = makeCode({ pushState: 'failed', lastPushError: 'boom' })
-
-    renderWithProviders(
+  it('keeps Push failed and Pending sync wording for active codes', () => {
+    const { rerender } = renderWithProviders(
       <DoorCodePushStatusBadge
-        code={code}
+        code={makeCode({ pushState: 'failed', lastPushError: 'boom' })}
         lockNameByEntityId={lockNames}
         canRetry
         isRetrying={false}
@@ -222,7 +235,21 @@ describe('DoorCodePushStatusBadge', () => {
       />,
     )
 
-    expect(screen.queryByText(/retries the clear/)).toBeNull()
+    expect(screen.getByText('Push failed: boom')).toBeTruthy()
+    expect(screen.queryByText(/the PIN may still be on a lock/)).toBeNull()
+
+    rerender(
+      <DoorCodePushStatusBadge
+        code={makeCode({ pushState: 'pending' })}
+        lockNameByEntityId={lockNames}
+        canRetry
+        isRetrying={false}
+        onRetry={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByText('Pending sync')).toBeTruthy()
+    expect(screen.queryByText(/the PIN may still be on a lock/)).toBeNull()
   })
 
   it('keeps On lock for an inactive code that still holds a slot', () => {
@@ -246,12 +273,12 @@ describe('DoorCodePushStatusBadge', () => {
     expect(screen.queryByText('Not on lock')).toBeNull()
   })
 
-  it('hides Retry for an inactive failed code that still holds a slot', () => {
-    // A slot clear that failed while turning the code off.
+  it('offers Retry for an inactive code whose clear hit the attempt cap', () => {
+    // A slot clear that kept failing after the code was turned off.
     const code = makeCode({
       isActive: false,
       pushState: 'failed',
-      lastPushError: "Couldn't clear slot 3 on lock.front_door",
+      lastPushError: "Couldn't clear slot 3 on lock.front_door, it may still hold the PIN",
       lockSlotAssignments: [{ lockEntityId: 'lock.front_door', slotIndex: 3 }],
     })
 
@@ -265,14 +292,15 @@ describe('DoorCodePushStatusBadge', () => {
       />,
     )
 
-    expect(screen.getByText(/Push failed: Couldn't clear slot 3/)).toBeTruthy()
-    expect(screen.queryByRole('button', { name: /Retry/ })).toBeNull()
+    expect(screen.getByText(/Clear failed: Couldn't clear slot 3/)).toBeTruthy()
+    expect(screen.getByRole('button', { name: /^Retry$/ })).toBeTruthy()
   })
 
-  it('hides Retry now for an inactive pending code that still holds a slot', () => {
+  it('offers Retry now for an inactive code with a clear still being retried', () => {
     const code = makeCode({
       isActive: false,
       pushState: 'pending',
+      lastPushError: "Couldn't clear slot 3 on lock.front_door, it may still hold the PIN",
       lockSlotAssignments: [{ lockEntityId: 'lock.front_door', slotIndex: 3 }],
     })
 
@@ -286,7 +314,24 @@ describe('DoorCodePushStatusBadge', () => {
       />,
     )
 
-    expect(screen.getByText('Pending sync')).toBeTruthy()
+    expect(screen.getByText('Pending clear')).toBeTruthy()
+    expect(screen.getByRole('button', { name: /Retry now/ })).toBeTruthy()
+  })
+
+  it('hides Retry for an inactive code with a clear outstanding when the user cannot manage codes', () => {
+    const code = makeCode({ isActive: false, pushState: 'pending' })
+
+    renderWithProviders(
+      <DoorCodePushStatusBadge
+        code={code}
+        lockNameByEntityId={lockNames}
+        canRetry={false}
+        isRetrying={false}
+        onRetry={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByText('Pending clear')).toBeTruthy()
     expect(screen.queryByRole('button', { name: /Retry/ })).toBeNull()
   })
 

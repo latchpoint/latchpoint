@@ -18,29 +18,26 @@ function describeSlots(code: DoorCode, lockNameByEntityId: Map<string, string>):
     .join(', ')
 }
 
+// The backend never pushes an inactive code, and it only leaves one pushed once
+// no slot clear is outstanding (#144). So for an inactive code, pending or
+// failed means a clear that may have left the PIN on a lock is still being
+// retried, and Retry retries that clear.
 export function DoorCodePushStatusBadge({ code, lockNameByEntityId, canRetry, isRetrying, onRetry }: Props) {
   if (!code.lockEntityIds?.length) return null
 
-  // An inactive code that holds no slot isn't on any of its locks. A failed one
-  // falls through so a failed slot clear still shows as Push failed.
-  if (
-    !code.isActive &&
-    code.pushState !== 'failed' &&
-    code.lockSlotAssignments.length > 0 &&
-    code.lockSlotAssignments.every((a) => a.slotIndex == null)
-  ) {
-    return (
-      <div className="flex items-center gap-2">
-        <Badge variant="outline">Not on lock</Badge>
-        <span className="text-xs text-muted-foreground">(inactive, no slot on any of its locks)</span>
-      </div>
-    )
-  }
-
-  // The backend refuses to push an inactive code, so don't offer Retry for one.
-  const showRetry = canRetry && code.isActive
-
   if (code.pushState === 'pushed') {
+    if (
+      !code.isActive &&
+      code.lockSlotAssignments.length > 0 &&
+      code.lockSlotAssignments.every((a) => a.slotIndex == null)
+    ) {
+      return (
+        <div className="flex items-center gap-2">
+          <Badge variant="outline">Not on lock</Badge>
+          <span className="text-xs text-muted-foreground">(inactive, no slot on any of its locks)</span>
+        </div>
+      )
+    }
     const slotDesc = describeSlots(code, lockNameByEntityId)
     return (
       <Badge variant="secondary" title={slotDesc || undefined}>
@@ -49,19 +46,24 @@ export function DoorCodePushStatusBadge({ code, lockNameByEntityId, canRetry, is
     )
   }
 
+  const clearing = !code.isActive
+
   if (code.pushState === 'failed') {
     return (
       <div className="flex items-center gap-2">
         <Badge variant="destructive" title={code.lastPushError || undefined}>
-          Push failed{code.lastPushError ? `: ${code.lastPushError.slice(0, 80)}` : ''}
+          {clearing ? 'Clear failed' : 'Push failed'}
+          {code.lastPushError ? `: ${code.lastPushError.slice(0, 80)}` : ''}
         </Badge>
-        {showRetry ? (
+        {canRetry ? (
           <Button size="sm" variant="secondary" disabled={isRetrying} onClick={onRetry}>
             {isRetrying ? 'Retrying…' : 'Retry'}
           </Button>
         ) : null}
-        {!code.isActive ? (
-          <span className="text-xs text-muted-foreground">(saving it as off again or deleting it retries the clear)</span>
+        {clearing ? (
+          <span className="text-xs text-muted-foreground">
+            (the PIN may still be on a lock, Retry or deleting the code tries the clear again)
+          </span>
         ) : null}
       </div>
     )
@@ -71,12 +73,15 @@ export function DoorCodePushStatusBadge({ code, lockNameByEntityId, canRetry, is
   return (
     <div className="flex items-center gap-2">
       <Badge variant="outline" title={code.lastPushError || 'Waiting for the lock to accept the code.'}>
-        Pending sync
+        {clearing ? 'Pending clear' : 'Pending sync'}
       </Badge>
-      {showRetry ? (
+      {canRetry ? (
         <Button size="sm" variant="ghost" disabled={isRetrying} onClick={onRetry}>
           {isRetrying ? 'Retrying…' : 'Retry now'}
         </Button>
+      ) : null}
+      {clearing ? (
+        <span className="text-xs text-muted-foreground">(the PIN may still be on a lock, retried automatically)</span>
       ) : null}
     </div>
   )

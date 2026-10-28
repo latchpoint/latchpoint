@@ -1,8 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Eye, EyeOff } from 'lucide-react'
-import { useQueryClient } from '@tanstack/react-query'
-import { queryKeys } from '@/types'
 import type { DoorCode, Entity, UpdateDoorCodeRequest } from '@/types'
+import type { CachedDoorCode } from '@/hooks/useDoorCodesQueries'
 import { getErrorMessage } from '@/types/errors'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
@@ -27,6 +26,10 @@ type Props = {
   onUpdate: (id: number, req: UpdateDoorCodeRequest) => Promise<unknown>
   onDelete: (id: number, reauthPassword: string) => Promise<unknown>
   onRetryPush: (id: number) => Promise<unknown>
+  /** When the door codes `code` came from were fetched. */
+  codesUpdatedAt: number
+  /** Reads a code from the door codes cache, which can be ahead of `code` right after a mutation. */
+  readCachedCode: (id: number) => CachedDoorCode | null
 }
 
 // What a Retry error is about. When this changes the error is out of date.
@@ -63,37 +66,35 @@ export function DoorCodeCard({
   onUpdate,
   onDelete,
   onRetryPush,
+  codesUpdatedAt,
+  readCachedCode,
 }: Props) {
-  const queryClient = useQueryClient()
   const [pinVisible, setPinVisible] = useState(false)
-  // stateKey is the push state the error belongs to. caughtUp turns true once
-  // this card's props show that state.
-  const [retryError, setRetryError] = useState<{ message: string; stateKey: string; caughtUp: boolean } | null>(
+  // stateKey is the push state the error belongs to, as of the codes fetched at
+  // dataUpdatedAt.
+  const [retryError, setRetryError] = useState<{ message: string; stateKey: string; dataUpdatedAt: number } | null>(
     null,
   )
   const alertRef = useRef<HTMLDivElement>(null)
   const retryFocusRef = useRef<Element | null>(null)
 
-  const pushStateKey = pushStateKeyOf(code)
-
-  // Once the card shows the state the error belongs to, any change after that
-  // (the code is turned back on, the scheduler pushes it) means it no longer applies.
-  if (retryError) {
-    if (retryError.stateKey === pushStateKey) {
-      if (!retryError.caughtUp) setRetryError({ ...retryError, caughtUp: true })
-    } else if (retryError.caughtUp) {
-      setRetryError(null)
-    }
-  }
-  const visibleRetryError =
-    retryError && (!retryError.caughtUp || retryError.stateKey === pushStateKey) ? retryError.message : null
+  // Once the card shows codes at least as new as the ones the error was pinned
+  // to, a different push state (turned back on, pushed by the scheduler) means
+  // the error no longer applies.
+  const retryErrorIsStale =
+    retryError != null && codesUpdatedAt >= retryError.dataUpdatedAt && retryError.stateKey !== pushStateKeyOf(code)
+  if (retryErrorIsStale) setRetryError(null)
+  const visibleRetryError = retryError && !retryErrorIsStale ? retryError.message : null
 
   // A refused Retry refetches the code, which can remove the focused Retry
-  // button. Move focus to the error instead of dropping it on the page.
+  // button. Move focus to the error then, but only if focus was dropped on the
+  // page rather than moved somewhere else while the Retry ran.
   useEffect(() => {
-    if (!visibleRetryError || !retryFocusRef.current || retryFocusRef.current.isConnected) return
+    const retryButton = retryFocusRef.current
+    if (!visibleRetryError || !retryButton || retryButton.isConnected) return
     retryFocusRef.current = null
-    alertRef.current?.focus()
+    const active = document.activeElement
+    if (active == null || active === document.body) alertRef.current?.focus()
   })
 
   const handleRetryPush = async () => {
@@ -105,14 +106,11 @@ export function DoorCodeCard({
       // The Retry mutation refetches the codes before it rejects, so the cache
       // already has the state this error belongs to (e.g. the code turned off
       // elsewhere) even though this card's props haven't caught up yet.
-      const latest =
-        queryClient
-          .getQueryData<DoorCode[]>(queryKeys.doorCodes.byUser(code.userId))
-          ?.find((c) => c.id === code.id) ?? code
+      const latest = readCachedCode(code.id)
       setRetryError({
         message: getErrorMessage(err) || 'Failed to retry push',
-        stateKey: pushStateKeyOf(latest),
-        caughtUp: false,
+        stateKey: pushStateKeyOf(latest?.code ?? code),
+        dataUpdatedAt: latest?.dataUpdatedAt ?? codesUpdatedAt,
       })
     }
   }

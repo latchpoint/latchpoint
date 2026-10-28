@@ -7,6 +7,7 @@ import {
   useCreateDoorCodeMutation,
   useDeleteDoorCodeMutation,
   useDoorCodesQuery,
+  useReadCachedDoorCode,
   useRetryDoorCodePushMutation,
   useUpdateDoorCodeMutation,
 } from '@/hooks/useDoorCodesQueries'
@@ -51,6 +52,7 @@ export function DoorCodesPage() {
   const updateMutation = useUpdateDoorCodeMutation(targetUserId)
   const deleteMutation = useDeleteDoorCodeMutation(targetUserId)
   const retryPushMutation = useRetryDoorCodePushMutation(targetUserId)
+  const readCachedDoorCode = useReadCachedDoorCode(targetUserId)
 
   const selectedUserDisplay = (() => {
     if (!isAdmin) return user?.displayName || ''
@@ -152,6 +154,8 @@ export function DoorCodesPage() {
             onUpdate={(id, req) => updateMutation.mutateAsync({ id, req })}
             onDelete={(id, reauthPassword) => deleteMutation.mutateAsync({ id, reauthPassword })}
             onRetryPush={(id) => retryPushMutation.mutateAsync(id)}
+            codesUpdatedAt={doorCodesQuery.dataUpdatedAt}
+            readCachedCode={readCachedDoorCode}
           />
         ))}
       </SectionCard>

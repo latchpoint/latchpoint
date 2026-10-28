@@ -3,11 +3,19 @@ import { fireEvent, screen, waitFor } from '@testing-library/react'
 import { http, HttpResponse } from 'msw'
 import { server } from '@/test/msw/server'
 import { renderWithProviders } from '@/test/render'
-import { useDoorCodesQuery, useRetryDoorCodePushMutation } from '@/hooks/useDoorCodesQueries'
+import {
+  type CachedDoorCode,
+  useDoorCodesQuery,
+  useReadCachedDoorCode,
+  useRetryDoorCodePushMutation,
+} from '@/hooks/useDoorCodesQueries'
 import { DoorCodeCard } from './DoorCodeCard'
 import type { DoorCode } from '@/types'
 
 const INACTIVE_MESSAGE = 'Door code is inactive. Turn it on before pushing it to its locks.'
+// The page's selected user. Deliberately not the codes' userId, so the card
+// can't be relying on code.userId to find the cache.
+const PAGE_USER_ID = 'selected-user'
 
 function makeCode(overrides: Partial<DoorCode> = {}): DoorCode {
   return {
@@ -41,11 +49,36 @@ function makeCode(overrides: Partial<DoorCode> = {}): DoorCode {
   }
 }
 
+const pushedCode = (lastPushAttemptAt: string) =>
+  makeCode({
+    pushState: 'pushed',
+    lastPushError: '',
+    lastPushAttemptAt,
+    lockSlotAssignments: [{ lockEntityId: 'lock.front_door', slotIndex: 3 }],
+  })
+
 function conflict() {
   return HttpResponse.json({ error: { status: 'conflict', message: INACTIVE_MESSAGE } }, { status: 409 })
 }
 
-function card(code: DoorCode, retry: ReturnType<typeof useRetryDoorCodePushMutation>) {
+function timeout(message = 'Lock timed out') {
+  return HttpResponse.json({ error: { status: 'timeout', message } }, { status: 504 })
+}
+
+// Lets the queued query and mutation notifications reach React.
+const settle = () => new Promise((resolve) => setTimeout(resolve, 50))
+
+function deferred() {
+  let release: () => void = () => {}
+  const promise = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  return { promise, release }
+}
+
+type CardExtras = { codesUpdatedAt: number; readCachedCode: (id: number) => CachedDoorCode | null }
+
+function card(code: DoorCode, retry: ReturnType<typeof useRetryDoorCodePushMutation>, extras: CardExtras) {
   return (
     <DoorCodeCard
       key={code.id}
@@ -64,22 +97,36 @@ function card(code: DoorCode, retry: ReturnType<typeof useRetryDoorCodePushMutat
       onUpdate={vi.fn()}
       onDelete={vi.fn()}
       onRetryPush={(id) => retry.mutateAsync(id)}
+      codesUpdatedAt={extras.codesUpdatedAt}
+      readCachedCode={extras.readCachedCode}
     />
   )
 }
 
-// The card wired to the real Retry mutation, with the code passed in so tests
-// can rerender it with the state a later refetch would bring.
-function CardWithRetry({ code }: { code: DoorCode }) {
-  const retry = useRetryDoorCodePushMutation(code.userId)
-  return card(code, retry)
+// The card wired to the real Retry mutation with the code passed in, so tests
+// can rerender it with whatever state they need.
+function CardWithRetry({
+  code,
+  codesUpdatedAt = 0,
+  readCachedCode = () => null,
+}: { code: DoorCode } & Partial<CardExtras>) {
+  const retry = useRetryDoorCodePushMutation(PAGE_USER_ID)
+  return card(code, retry, { codesUpdatedAt, readCachedCode })
 }
 
 // The card fed from the real door codes query, the way DoorCodesPage does it.
-function CardsFromQuery({ userId }: { userId: string }) {
-  const codesQuery = useDoorCodesQuery({ userId, isAdmin: true })
-  const retry = useRetryDoorCodePushMutation(userId)
-  return <>{(codesQuery.data || []).map((code) => card(code, retry))}</>
+function CardsFromQuery() {
+  const codesQuery = useDoorCodesQuery({ userId: PAGE_USER_ID, isAdmin: true })
+  const retry = useRetryDoorCodePushMutation(PAGE_USER_ID)
+  const readCachedCode = useReadCachedDoorCode(PAGE_USER_ID)
+  return (
+    <>
+      <input aria-label="Other field" />
+      {(codesQuery.data || []).map((code) =>
+        card(code, retry, { codesUpdatedAt: codesQuery.dataUpdatedAt, readCachedCode }),
+      )}
+    </>
+  )
 }
 
 describe('DoorCodeCard', () => {
@@ -111,8 +158,7 @@ describe('DoorCodeCard', () => {
     server.use(
       http.post('/api/door-codes/7/push/', () => {
         calls += 1
-        const message = calls === 1 ? 'Lock timed out' : 'Lock is still asleep'
-        return HttpResponse.json({ error: { status: 'timeout', message } }, { status: 504 })
+        return timeout(calls === 1 ? 'Lock timed out' : 'Lock is still asleep')
       }),
     )
 
@@ -127,17 +173,12 @@ describe('DoorCodeCard', () => {
 
   it('has no error once a Retry after a failed one works', async () => {
     let calls = 0
-    let release: () => void = () => {}
-    const secondCallReleased = new Promise<void>((resolve) => {
-      release = resolve
-    })
+    const second = deferred()
     server.use(
       http.post('/api/door-codes/7/push/', async () => {
         calls += 1
-        if (calls === 1) {
-          return HttpResponse.json({ error: { status: 'timeout', message: 'Lock timed out' } }, { status: 504 })
-        }
-        await secondCallReleased
+        if (calls === 1) return timeout()
+        await second.promise
         return HttpResponse.json({ data: makeCode({ pushState: 'pending', lastPushError: '' }) })
       }),
     )
@@ -148,7 +189,7 @@ describe('DoorCodeCard', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /^Retry$/ }))
     expect(await screen.findByRole('button', { name: /Retrying/ })).toBeDisabled()
-    release()
+    second.release()
 
     // Only check once the second Retry has resolved and the button is back.
     expect(await screen.findByRole('button', { name: /^Retry$/ })).toBeEnabled()
@@ -166,22 +207,18 @@ describe('DoorCodeCard', () => {
       }),
     )
 
-    const { queryClient } = renderWithProviders(<CardsFromQuery userId={serverCode.userId} />)
+    const { queryClient } = renderWithProviders(<CardsFromQuery />)
     fireEvent.click(await screen.findByRole('button', { name: /^Retry$/ }))
     expect(await screen.findByText('Not on lock')).toBeTruthy()
     expect(await screen.findByRole('alert')).toHaveTextContent(INACTIVE_MESSAGE)
 
     // A refetch with nothing new keeps the error.
     await queryClient.invalidateQueries()
+    await settle()
     expect(screen.getByRole('alert')).toHaveTextContent(INACTIVE_MESSAGE)
 
     // Someone turns it back on and it lands on the lock.
-    serverCode = makeCode({
-      pushState: 'pushed',
-      lastPushError: '',
-      lastPushAttemptAt: '2026-10-28T10:05:00Z',
-      lockSlotAssignments: [{ lockEntityId: 'lock.front_door', slotIndex: 3 }],
-    })
+    serverCode = pushedCode('2026-10-28T10:05:00Z')
     await queryClient.invalidateQueries()
 
     expect(await screen.findByText(/On lock:.*Front Door.*slot 3/)).toBeTruthy()
@@ -196,26 +233,46 @@ describe('DoorCodeCard', () => {
       http.post('/api/door-codes/7/push/', () => {
         // The attempt is recorded on the row before the timeout comes back.
         serverCode = makeCode({ lastPushAttemptAt: '2026-10-28T10:10:00Z', lastPushError: 'Lock timed out' })
-        return HttpResponse.json({ error: { status: 'timeout', message: 'Lock timed out' } }, { status: 504 })
+        return timeout()
       }),
     )
 
-    const { queryClient } = renderWithProviders(<CardsFromQuery userId={serverCode.userId} />)
+    const { queryClient } = renderWithProviders(<CardsFromQuery />)
     fireEvent.click(await screen.findByRole('button', { name: /^Retry$/ }))
     expect(await screen.findByRole('alert')).toHaveTextContent('Lock timed out')
 
     await queryClient.invalidateQueries()
+    await settle()
     expect(screen.getByRole('alert')).toHaveTextContent('Lock timed out')
 
-    serverCode = makeCode({
-      pushState: 'pushed',
-      lastPushError: '',
-      lastPushAttemptAt: '2026-10-28T10:15:00Z',
-      lockSlotAssignments: [{ lockEntityId: 'lock.front_door', slotIndex: 3 }],
-    })
+    serverCode = pushedCode('2026-10-28T10:15:00Z')
     await queryClient.invalidateQueries()
 
     expect(await screen.findByText(/On lock:.*Front Door.*slot 3/)).toBeTruthy()
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
+
+  it('pins the error to the cached codes, even if a render skips straight past them', async () => {
+    // The cache had the code failed at time 10 when the Retry was refused.
+    const readCachedCode = () => ({ code: makeCode(), dataUpdatedAt: 10 })
+    server.use(http.post('/api/door-codes/7/push/', () => timeout()))
+
+    const { rerender } = renderWithProviders(
+      <CardWithRetry code={makeCode()} codesUpdatedAt={5} readCachedCode={readCachedCode} />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: /^Retry$/ }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Lock timed out')
+
+    // Props older than the pinned data don't clear it, whatever they show.
+    rerender(
+      <CardWithRetry code={pushedCode('2026-10-28T09:00:00Z')} codesUpdatedAt={5} readCachedCode={readCachedCode} />,
+    )
+    expect(screen.getByRole('alert')).toHaveTextContent('Lock timed out')
+
+    // Newer data with a different state clears it, without ever rendering time 10.
+    rerender(
+      <CardWithRetry code={pushedCode('2026-10-28T10:15:00Z')} codesUpdatedAt={20} readCachedCode={readCachedCode} />,
+    )
     expect(screen.queryByRole('alert')).toBeNull()
   })
 
@@ -230,7 +287,7 @@ describe('DoorCodeCard', () => {
       }),
     )
 
-    renderWithProviders(<CardsFromQuery userId={serverCode.userId} />)
+    renderWithProviders(<CardsFromQuery />)
     const retryButton = await screen.findByRole('button', { name: /^Retry$/ })
     retryButton.focus()
     fireEvent.click(retryButton)
@@ -244,11 +301,39 @@ describe('DoorCodeCard', () => {
     await waitFor(() => expect(alert).toHaveFocus())
 
     // Still there after everything has settled.
-    await new Promise((resolve) => setTimeout(resolve, 50))
+    await settle()
     expect(screen.getByRole('alert')).toHaveTextContent(INACTIVE_MESSAGE)
   })
 
-  it('does not offer Retry for an inactive code', () => {
+  it('leaves focus alone when it moved elsewhere while the Retry ran', async () => {
+    let serverCode = makeCode()
+    const held = deferred()
+    server.use(
+      http.get('/api/door-codes/', () => HttpResponse.json({ data: [serverCode] })),
+      http.post('/api/door-codes/7/push/', async () => {
+        await held.promise
+        serverCode = makeCode({ isActive: false, pushState: 'pushed', lastPushError: '' })
+        return conflict()
+      }),
+    )
+
+    renderWithProviders(<CardsFromQuery />)
+    const retryButton = await screen.findByRole('button', { name: /^Retry$/ })
+    retryButton.focus()
+    fireEvent.click(retryButton)
+    expect(await screen.findByRole('button', { name: /Retrying/ })).toBeTruthy()
+
+    const otherField = screen.getByRole('textbox', { name: 'Other field' })
+    otherField.focus()
+    held.release()
+
+    expect(await screen.findByText('Not on lock')).toBeTruthy()
+    expect(await screen.findByRole('alert')).toHaveTextContent(INACTIVE_MESSAGE)
+    await settle()
+    expect(otherField).toHaveFocus()
+  })
+
+  it('does not offer Retry for an inactive code with nothing left to clear', () => {
     renderWithProviders(<CardWithRetry code={makeCode({ isActive: false, pushState: 'pushed' })} />)
 
     expect(screen.getByText('Inactive')).toBeTruthy()
