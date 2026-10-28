@@ -43,6 +43,13 @@ class CcApiContractsTests(SimpleTestCase):
         with self.assertRaises(CcApiContractViolation):
             validate_cc_api_args(command_class=99, method_name="clear", args=[])
 
+    def test_cc_99_get_takes_one_int(self):
+        validate_cc_api_args(command_class=99, method_name="get", args=[2])
+
+    def test_cc_99_get_rejects_non_int_userId(self):
+        with self.assertRaises(CcApiContractViolation):
+            validate_cc_api_args(command_class=99, method_name="get", args=["2"])
+
     def test_cc_78_daily_schedule_takes_two_dicts(self):
         # setDailyRepeatingSchedule(slot, schedule) — the shape node-zwave-js wants.
         validate_cc_api_args(
@@ -81,7 +88,7 @@ class CcApiContractsTests(SimpleTestCase):
     def test_unknown_cc_method_combo_passes_unvalidated(self):
         # We don't want to break things we haven't characterised; only enforce
         # the entries explicitly added to the contract table.
-        validate_cc_api_args(command_class=99, method_name="get", args=["anything"])
+        validate_cc_api_args(command_class=78, method_name="getNumSlots", args=["anything"])
         validate_cc_api_args(command_class=999, method_name="something_made_up", args=[1, 2, 3])
 
     def test_none_args_treated_as_empty(self):

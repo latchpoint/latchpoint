@@ -181,6 +181,14 @@ def update_door_code(
     """
     updated_fields = []
 
+    # Snapshot the PIN before it can be overwritten: a still-pending push may have
+    # left it in a slot that only the recorded unconfirmed attempts know about.
+    old_pin: str | None = None
+    if zwavejs is not None:
+        from locks.use_cases.lock_push import decrypt_pin_or_none
+
+        old_pin = decrypt_pin_or_none(code)
+
     if "code" in changes and changes.get("code"):
         raw_code = str(changes.get("code") or "").strip()
         code.encrypted_pin = SettingsEncryption.get().encrypt(raw_code)
@@ -221,12 +229,14 @@ def update_door_code(
 
     # Snapshot old assignments BEFORE swap so we can clear dropped locks' slots.
     dropped_slot_clears: list[dict[str, object]] = []
+    dropped_lock_entity_ids: list[str] = []
     if "lock_entity_ids" in changes:
         new_entity_ids = set(changes.get("lock_entity_ids") or [])
         old_assignments = list(DoorCodeLockAssignment.objects.filter(door_code=code))
         for assignment in old_assignments:
             if assignment.lock_entity_id in new_entity_ids:
                 continue
+            dropped_lock_entity_ids.append(assignment.lock_entity_id)
             if assignment.slot_index is None:
                 continue
             dropped_slot_clears.append(
@@ -269,6 +279,26 @@ def update_door_code(
                     slot_index=int(clear_info["slot_index"]),
                     zwavejs=zwavejs,
                 )
+
+        # A pending code's PIN may sit in a slot recorded only as an unconfirmed
+        # attempt. Clear it where the code no longer belongs there with that PIN:
+        # dropped locks always, surviving locks when the PIN changes or the code is
+        # deactivated. (A schedule-only change re-pushes and adopts it instead.)
+        deactivating = "is_active" in changes and not bool(changes.get("is_active"))
+        unconfirmed_lock_ids = list(dropped_lock_entity_ids)
+        if "code" in updated_fields or deactivating:
+            unconfirmed_lock_ids.extend(
+                DoorCodeLockAssignment.objects.filter(door_code=code).values_list("lock_entity_id", flat=True)
+            )
+        if old_pin and unconfirmed_lock_ids:
+            from locks.use_cases.lock_push import clear_unconfirmed_slots_holding_pin
+
+            clear_unconfirmed_slots_holding_pin(
+                door_code=code,
+                pin=old_pin,
+                lock_entity_ids=unconfirmed_lock_ids,
+                zwavejs=zwavejs,
+            )
 
         push_relevant_change = bool(_PUSH_TRIGGER_FIELDS & set(changes.keys()))
         if push_relevant_change or "lock_entity_ids" in changes:
@@ -365,6 +395,26 @@ def delete_door_code(
             if cleared:
                 extra_metadata["cleared_from_lock"] = True
                 extra_metadata["cleared_slots"] = cleared
+
+    # A still-pending push may have left the PIN in a slot recorded only as an
+    # unconfirmed attempt; those events cascade away with the row, so check now.
+    if zwavejs is not None:
+        from locks.use_cases.lock_push import clear_unconfirmed_slots_holding_pin, decrypt_pin_or_none
+
+        pin = decrypt_pin_or_none(code)
+        lock_entity_ids = list(
+            DoorCodeLockAssignment.objects.filter(door_code=code).values_list("lock_entity_id", flat=True)
+        )
+        if pin and lock_entity_ids:
+            unconfirmed_cleared = clear_unconfirmed_slots_holding_pin(
+                door_code=code,
+                pin=pin,
+                lock_entity_ids=lock_entity_ids,
+                zwavejs=zwavejs,
+            )
+            if unconfirmed_cleared:
+                extra_metadata["cleared_from_lock"] = True
+                extra_metadata["cleared_unconfirmed_slots"] = unconfirmed_cleared
 
     with transaction.atomic():
         DoorCodeEvent.objects.create(
