@@ -42,7 +42,8 @@ class FakeGateway:
 
     * the physical lock (``_lock_codes``), which stores what CC 99 ``set`` sends
       unless the PIN is in ``reject_pins`` for that node or already sits in
-      another slot (Yale drops duplicates), and answers CC 99 ``get`` from it;
+      another slot (Yale drops duplicates; ``drops_duplicates=False`` turns that
+      off), and answers CC 99 ``get`` from it;
     * the Z-Wave JS value cache read by ``node_get_value``. ``slot_status`` seeds
       it. By default a stored ``set`` does not reach it until
       ``deliver_late_reports()`` runs, which is the stale cache #106 depends on
@@ -65,6 +66,7 @@ class FakeGateway:
         get_responses: list | dict[int, list] | None = None,
         reject_pins: dict[int, set[str]] | None = None,
         cache_updates_on_set: bool = False,
+        drops_duplicates: bool = True,
     ):
         self._usersNumber = usersNumber
         self._slot_status = slot_status or {}
@@ -77,6 +79,7 @@ class FakeGateway:
             self._get_scripts = {None: list(get_responses or [])}
         self._reject_pins = reject_pins or {}
         self._cache_updates_on_set = cache_updates_on_set
+        self._drops_duplicates = drops_duplicates
         self._lock_codes: dict[tuple[int, int], str] = {}
         self._cache_codes: dict[tuple[int, int], str] = {}
         self._late_reports: list[tuple[int, int, str]] = []
@@ -114,7 +117,9 @@ class FakeGateway:
     def _handle_user_code_call(self, *, node_id: int, method_name: str, args: list):
         if method_name == "set":
             slot, pin = int(args[0]), str(args[2])
-            held_elsewhere = any(n == node_id and s != slot and c == pin for (n, s), c in self._lock_codes.items())
+            held_elsewhere = self._drops_duplicates and any(
+                n == node_id and s != slot and c == pin for (n, s), c in self._lock_codes.items()
+            )
             if pin in self._reject_pins.get(node_id, set()) or held_elsewhere:
                 return None  # the lock silently drops it; the set still "succeeds"
             self._lock_codes[(node_id, slot)] = pin
@@ -711,6 +716,18 @@ class PushReadbackAndAdminCodeTests(EncryptionTestMixin, TestCase):
             c for c in gateway.invoke_calls if c["command_class"] == command_class and c["method_name"] == method_name
         ]
 
+    @staticmethod
+    def _cleared_slots(gateway: FakeGateway) -> list[int]:
+        return [c["args"][0] for c in gateway.invoke_calls if c["command_class"] == 99 and c["method_name"] == "clear"]
+
+    @staticmethod
+    def _unconfirmed_slots(code: DoorCode) -> list[int]:
+        return [
+            e.metadata["slot_index"]
+            for e in DoorCodeEvent.objects.filter(door_code=code).order_by("id")
+            if e.metadata.get("action") == lock_push_uc._UNCONFIRMED_PUSH_ACTION
+        ]
+
     def _assert_terminal_failure(self, code: DoorCode, *, error_contains: str) -> None:
         code.refresh_from_db()
         self.assertEqual(code.push_state, DoorCode.PushState.FAILED)
@@ -750,6 +767,8 @@ class PushReadbackAndAdminCodeTests(EncryptionTestMixin, TestCase):
         self._assert_terminal_failure(code, error_contains="slot 2 reads back empty")
         # An empty answer is asked once more before it counts.
         self.assertEqual(len(self._calls(gateway, "get")), 2)
+        # Best-effort clear in case the lock committed the write late.
+        self.assertEqual(self._cleared_slots(gateway), [2])
         # No schedule pushed to a slot the lock doesn't hold.
         self.assertEqual(self._calls(gateway, "setDailyRepeatingSchedule", command_class=78), [])
 
@@ -768,8 +787,13 @@ class PushReadbackAndAdminCodeTests(EncryptionTestMixin, TestCase):
         code.refresh_from_db()
         self.assertEqual(code.push_state, DoorCode.PushState.PUSHED)
 
-    def test_empty_readback_then_no_answer_is_terminal_failure(self):
+    def test_empty_readback_then_no_answer_stays_pending_and_retry_adopts(self):
+        # One empty answer then silence is the "still committing" case, not a
+        # verdict. It used to be terminal, which stopped the scheduler; now it's
+        # pending with the slot recorded, and the retry adopts it once it reads back.
         from integrations_zwavejs.manager import ZwavejsCommandError
+
+        from locks.tasks import push_pending_door_codes
 
         timeout = ZwavejsCommandError("driver TimeoutError after 5.0s")
         gateway = FakeGateway(
@@ -777,12 +801,27 @@ class PushReadbackAndAdminCodeTests(EncryptionTestMixin, TestCase):
             slot_status={1: 0, 2: 0, 3: 0},
             get_responses=[{"userIdStatus": 0, "userCode": ""}, timeout, timeout],
         )
-        code = self._make_code(pin="4321")
+        code = self._make_code(pin="4321", push_state=DoorCode.PushState.PENDING)
 
-        with self.assertRaises(LockRejectedCode):
+        with self.assertRaises(LockUnreachable):
             self._push(code, gateway)
 
-        self._assert_terminal_failure(code, error_contains="slot 1 reads back empty")
+        code.refresh_from_db()
+        self.assertEqual(code.push_state, DoorCode.PushState.PENDING)
+        self.assertIn("LockCodeUnverified", code.last_push_error)
+        self.assertIsNone(DoorCodeLockAssignment.objects.get(door_code=code).slot_index)
+        self.assertEqual(self._unconfirmed_slots(code), [1])
+        self.assertEqual(self._cleared_slots(gateway), [])
+
+        with patch("locks.tasks.default_zwavejs_gateway", gateway):
+            push_pending_door_codes()
+
+        code.refresh_from_db()
+        self.assertEqual(code.push_state, DoorCode.PushState.PUSHED)
+        self.assertEqual(DoorCodeLockAssignment.objects.get(door_code=code).slot_index, 1)
+        self.assertEqual(len(self._calls(gateway, "set")), 1)
+        synced = DoorCodeEvent.objects.get(door_code=code, event_type=DoorCodeEvent.EventType.CODE_SYNCED)
+        self.assertIs(synced.metadata.get("adopted_existing_slot"), True)
 
     def test_disabled_readback_is_terminal_failure(self):
         # We send userIdStatus=1 (enabled); a code stored disabled won't open the door.
@@ -796,6 +835,39 @@ class PushReadbackAndAdminCodeTests(EncryptionTestMixin, TestCase):
         with self.assertRaises(LockRejectedCode):
             self._push(code, gateway)
 
+        self._assert_terminal_failure(code, error_contains="reports it disabled")
+        # The lock still holds the PIN; clear it so re-enabling the slot can't open the door.
+        self.assertEqual(self._cleared_slots(gateway), [1])
+        self.assertNotIn((12, 1), gateway._lock_codes)
+
+    def test_disabled_readback_clear_failure_still_fails_and_warns(self):
+        from integrations_zwavejs.manager import ZwavejsCommandError
+
+        class ClearFailsGateway(FakeGateway):
+            def invoke_cc_api(self, *, node_id, command_class, method_name, args=None, timeout_seconds=10.0):
+                result = super().invoke_cc_api(
+                    node_id=node_id,
+                    command_class=command_class,
+                    method_name=method_name,
+                    args=args,
+                    timeout_seconds=timeout_seconds,
+                )
+                if command_class == 99 and method_name == "clear":
+                    raise ZwavejsCommandError("driver TimeoutError after 5.0s")
+                return result
+
+        gateway = ClearFailsGateway(
+            usersNumber=3,
+            slot_status={1: 0, 2: 0, 3: 0},
+            get_responses=[{"userIdStatus": 2, "userCode": "4321"}],
+        )
+        code = self._make_code(pin="4321")
+
+        with self.assertLogs("locks.use_cases.lock_push", level="WARNING") as logs, self.assertRaises(LockRejectedCode):
+            self._push(code, gateway)
+
+        self.assertIn("Could not clear slot 1", "\n".join(logs.output))
+        self.assertEqual(self._cleared_slots(gateway), [1])
         self._assert_terminal_failure(code, error_contains="reports it disabled")
 
     def test_mismatched_readback_code_is_terminal_failure(self):
@@ -812,6 +884,8 @@ class PushReadbackAndAdminCodeTests(EncryptionTestMixin, TestCase):
         self._assert_terminal_failure(code, error_contains="holds a different code")
         self.assertNotIn("9999", code.last_push_error)
         self.assertNotIn("4321", code.last_push_error)
+        # Someone else's code is in that slot; never clear it.
+        self.assertEqual(self._cleared_slots(gateway), [])
 
     def test_readback_timeout_then_success_on_retry_marks_pushed(self):
         from integrations_zwavejs.manager import ZwavejsCommandError
@@ -871,6 +945,8 @@ class PushReadbackAndAdminCodeTests(EncryptionTestMixin, TestCase):
         self.assertFalse(
             DoorCodeEvent.objects.filter(door_code=code, event_type=DoorCodeEvent.EventType.CODE_SYNCED).exists()
         )
+        # The slot the PIN went to is recorded so the retry can adopt it.
+        self.assertEqual(self._unconfirmed_slots(code), [1])
 
     def test_masked_readback_code_on_occupied_slot_is_accepted(self):
         gateway = FakeGateway(
@@ -1055,13 +1131,16 @@ class MultiLockAndAdoptionTests(EncryptionTestMixin, TestCase):
         self.assertEqual(code.push_state, DoorCode.PushState.PUSHED)
         self.assertEqual(code.last_push_error, "")
         self.assertEqual(self._slot(code, self.SIDE), 1)
-        # Only the side lock was retried.
-        self.assertEqual(self._set_nodes(gateway), [13, 12, 13])
+        # Only the side lock was retried, and since its first set did land it was
+        # adopted from the recorded attempt instead of written again.
+        self.assertEqual(self._set_nodes(gateway), [13, 12])
 
     def test_scheduler_retry_adopts_slot_where_unverified_code_landed(self):
-        # All readbacks time out, but the code did land in slot 1. The value cache
-        # catches up later; the retry must adopt slot 1 instead of writing slot 2
-        # (which the lock would drop as a duplicate, orphaning slot 1).
+        # All readbacks time out, but the code did land in slot 1. The retry must
+        # adopt slot 1 (recorded by the failed attempt) instead of writing slot 2,
+        # which the lock would drop as a duplicate, orphaning slot 1. Adoption goes
+        # off the recorded attempt and the readback, not the value cache, which
+        # stays stale here.
         from integrations_zwavejs.manager import ZwavejsCommandError
 
         from locks.tasks import push_pending_door_codes
@@ -1082,7 +1161,6 @@ class MultiLockAndAdoptionTests(EncryptionTestMixin, TestCase):
         # The readback never answered, so no schedule went out for that attempt.
         self.assertEqual([c for c in gateway.invoke_calls if c["command_class"] == 78], [])
 
-        gateway.deliver_late_reports()
         with patch("locks.tasks.default_zwavejs_gateway", gateway):
             push_pending_door_codes()
 
@@ -1094,37 +1172,105 @@ class MultiLockAndAdoptionTests(EncryptionTestMixin, TestCase):
         schedule_calls = [c for c in gateway.invoke_calls if c["command_class"] == 78]
         self.assertEqual(len(schedule_calls), 1)
         self.assertEqual(schedule_calls[0]["args"][0]["userId"], 1)
-        self.assertTrue(
-            DoorCodeEvent.objects.filter(
-                door_code=code, event_type=DoorCodeEvent.EventType.CODE_SYNCED, metadata__slot_index=1
-            ).exists()
+        synced = DoorCodeEvent.objects.get(door_code=code, event_type=DoorCodeEvent.EventType.CODE_SYNCED)
+        self.assertEqual(synced.metadata.get("slot_index"), 1)
+        self.assertIs(synced.metadata.get("adopted_existing_slot"), True)
+
+    @staticmethod
+    def _keypad_code_in_slot_3(gateway: FakeGateway) -> None:
+        # Entered on the lock's keypad: on the lock and in the cache, no assignment anywhere.
+        gateway._lock_codes[(12, 3)] = "4321"
+        gateway._cache_codes[(12, 3)] = "4321"
+
+    @staticmethod
+    def _slot_calls(gateway: FakeGateway, slot_index: int) -> list[dict]:
+        return [
+            c
+            for c in gateway.invoke_calls
+            if (c["command_class"] == 99 and c["args"] and c["args"][0] == slot_index)
+            or (c["command_class"] == 78 and c["args"][0].get("userId") == slot_index)
+        ]
+
+    @staticmethod
+    def _record_attempt(code: DoorCode, lock_entity_id: str, slot_index: int) -> None:
+        DoorCodeEvent.objects.create(
+            door_code=code,
+            lock_entity_id=lock_entity_id,
+            event_type=DoorCodeEvent.EventType.CODE_FAILED,
+            metadata={"action": lock_push_uc._UNCONFIRMED_PUSH_ACTION, "slot_index": slot_index},
         )
 
-    def test_adoption_ignores_stale_cache_entry(self):
-        # Cache says slot 1 holds the PIN, but the lock reads it back empty: write a fresh slot instead.
-        gateway = FakeGateway(usersNumber=3)
-        gateway._cache_codes[(12, 1)] = "4321"
-        code = self._make_code(pin="4321", lock_entity_ids=[self.BACK])
+    def test_keypad_code_with_same_pin_is_not_adopted(self):
+        gateway = FakeGateway(usersNumber=3, drops_duplicates=False)
+        self._keypad_code_in_slot_3(gateway)
+        code = self._make_code(pin="4321", lock_entity_ids=[self.BACK], days_of_week=0b1)
 
         result = push_door_code_to_lock(door_code=code, lock_entity_id=self.BACK, zwavejs=gateway)
 
-        self.assertEqual(result.slot_index, 2)
+        # Normal push to the lowest free slot; slot 3 is never read, written, cleared or scheduled.
+        self.assertEqual(result.slot_index, 1)
         self.assertEqual(self._set_nodes(gateway), [12])
+        self.assertEqual(self._slot_calls(gateway, 3), [])
+        self.assertEqual(gateway._lock_codes[(12, 3)], "4321")
+        synced = DoorCodeEvent.objects.get(door_code=code, event_type=DoorCodeEvent.EventType.CODE_SYNCED)
+        self.assertNotIn("adopted_existing_slot", synced.metadata)
 
-    def test_adoption_skips_slot_held_by_another_assignment(self):
-        other = self._make_code(pin="4321", lock_entity_ids=[])
-        DoorCodeLockAssignment.objects.create(door_code=other, lock_entity_id=self.BACK, slot_index=1)
+    def test_keypad_code_with_same_pin_on_a_yale_fails_without_touching_slot_3(self):
+        # A Yale drops the duplicate, so the push fails, but the keypad user's slot is left alone.
         gateway = FakeGateway(usersNumber=3)
-        gateway._lock_codes[(12, 1)] = "4321"
-        gateway._cache_codes[(12, 1)] = "4321"
+        self._keypad_code_in_slot_3(gateway)
         code = self._make_code(pin="4321", lock_entity_ids=[self.BACK])
 
         with self.assertRaises(LockRejectedCode):
             push_door_code_to_lock(door_code=code, lock_entity_id=self.BACK, zwavejs=gateway)
 
-        # Slot 1 stays with the other code; the duplicate written to slot 2 was dropped by the lock.
+        self.assertEqual(self._set_nodes(gateway), [12])
+        self.assertEqual(self._slot_calls(gateway, 3), [])
+        self.assertEqual(gateway._lock_codes[(12, 3)], "4321")
+        self.assertIsNone(self._slot(code, self.BACK))
+
+    def test_prior_attempt_on_a_different_slot_is_not_adopted(self):
+        gateway = FakeGateway(usersNumber=3, drops_duplicates=False)
+        self._keypad_code_in_slot_3(gateway)
+        code = self._make_code(pin="4321", lock_entity_ids=[self.BACK])
+        self._record_attempt(code, self.BACK, 2)
+
+        result = push_door_code_to_lock(door_code=code, lock_entity_id=self.BACK, zwavejs=gateway)
+
+        # Slot 2 was checked (reads back empty) and skipped; slot 3 was never considered.
+        self.assertEqual(result.slot_index, 1)
+        self.assertEqual(self._set_nodes(gateway), [12])
+        self.assertEqual(self._slot_calls(gateway, 3), [])
+        synced = DoorCodeEvent.objects.get(door_code=code, event_type=DoorCodeEvent.EventType.CODE_SYNCED)
+        self.assertNotIn("adopted_existing_slot", synced.metadata)
+
+    def test_prior_attempt_on_a_different_lock_is_not_adopted(self):
+        gateway = FakeGateway(usersNumber=3, drops_duplicates=False)
+        self._keypad_code_in_slot_3(gateway)
+        code = self._make_code(pin="4321", lock_entity_ids=[self.BACK])
+        self._record_attempt(code, self.SIDE, 3)
+
+        result = push_door_code_to_lock(door_code=code, lock_entity_id=self.BACK, zwavejs=gateway)
+
+        self.assertEqual(result.slot_index, 1)
+        self.assertEqual(self._slot_calls(gateway, 3), [])
+        self.assertEqual(self._set_nodes(gateway), [12])
+
+    def test_adoption_skips_recorded_slot_now_held_by_another_assignment(self):
+        code = self._make_code(pin="4321", lock_entity_ids=[self.BACK])
+        self._record_attempt(code, self.BACK, 1)
+        other = self._make_code(pin="4321", lock_entity_ids=[])
+        DoorCodeLockAssignment.objects.create(door_code=other, lock_entity_id=self.BACK, slot_index=1)
+        gateway = FakeGateway(usersNumber=3)
+        gateway._lock_codes[(12, 1)] = "4321"
+
+        with self.assertRaises(LockRejectedCode):
+            push_door_code_to_lock(door_code=code, lock_entity_id=self.BACK, zwavejs=gateway)
+
+        # Slot 1 stays with the other code and is never read; the duplicate written to slot 2 was dropped.
         self.assertEqual(DoorCodeLockAssignment.objects.get(door_code=other).slot_index, 1)
         self.assertIsNone(self._slot(code, self.BACK))
+        self.assertEqual([c for c in gateway.invoke_calls if c["args"] and c["args"][0] == 1], [])
 
 
 class LockSlotAssignmentsSerializerTests(EncryptionTestMixin, TestCase):
