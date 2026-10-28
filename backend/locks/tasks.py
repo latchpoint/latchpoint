@@ -36,14 +36,20 @@ def cleanup_door_code_events() -> int:
     """
     Delete DoorCodeEvent records older than the configured retention period.
 
+    Unresolved ``clear_failed`` and in-window ``push_unconfirmed`` events are
+    kept: they're the only record of a slot that may still hold a PIN.
+
     Returns the count of deleted records.
     """
+    from locks.use_cases.lock_push import retained_marker_event_ids
+
     retention_days = _get_door_code_event_retention_days()
     if retention_days <= 0:
         return 0
 
     cutoff = timezone.now() - timedelta(days=retention_days)
-    deleted_count, _ = DoorCodeEvent.objects.filter(created_at__lt=cutoff).delete()
+    keep = retained_marker_event_ids(older_than=cutoff)
+    deleted_count, _ = DoorCodeEvent.objects.filter(created_at__lt=cutoff).exclude(id__in=keep).delete()
 
     if deleted_count > 0:
         logger.info(

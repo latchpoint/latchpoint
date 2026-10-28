@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import time
+from datetime import time, timedelta
 from unittest.mock import patch
 
 from django.test import SimpleTestCase, TestCase
@@ -1485,6 +1485,118 @@ class UnconfirmedSlotCleanupTests(EncryptionTestMixin, TestCase):
         self.assertEqual(self._cleared(gateway), [])
         self.assertTrue(DoorCode.objects.filter(id=code.id).exists())
 
+    def _pin_change_while_the_cleanup_times_out(self) -> tuple[DoorCode, FakeGateway, int]:
+        """Issue #144 review: 4321 sits in an unconfirmed slot, then the PIN changes while its cleanup times out."""
+        from integrations_zwavejs.manager import ZwavejsCommandError
+
+        timeout = ZwavejsCommandError("driver TimeoutError after 5.0s")
+        code, gateway, slot = self._pending_unconfirmed([timeout, timeout, timeout])
+        gateway.deliver_late_reports()  # the value cache catches up with the set
+
+        door_codes_uc.update_door_code(code=code, changes={"code": "5555"}, actor_user=self.user, zwavejs=gateway)
+
+        code.refresh_from_db()
+        lock = {s: c for (n, s), c in gateway._lock_codes.items() if n == 12}
+        self.assertEqual(lock[slot], self.PIN)
+        self.assertIn("5555", lock.values())
+        self.assertNotEqual(code.push_state, DoorCode.PushState.PUSHED)
+        return code, gateway, slot
+
+    def test_old_pin_in_an_unconfirmed_slot_is_cleared_after_a_pin_change_whose_cleanup_timed_out(self):
+        code, gateway, slot = self._pin_change_while_the_cleanup_times_out()
+
+        from locks.tasks import push_pending_door_codes
+
+        with patch("locks.tasks.default_zwavejs_gateway", gateway):
+            push_pending_door_codes()
+
+        code.refresh_from_db()
+        lock = {s: c for (n, s), c in gateway._lock_codes.items() if n == 12}
+        self.assertNotIn(slot, lock)
+        self.assertEqual(list(lock.values()), ["5555"])
+        self.assertEqual(code.push_state, DoorCode.PushState.PUSHED)
+
+    def test_delete_after_a_pin_change_whose_cleanup_timed_out_clears_the_old_pin(self):
+        code, gateway, slot = self._pin_change_while_the_cleanup_times_out()
+
+        door_codes_uc.delete_door_code(code=code, actor_user=self.user, zwavejs=gateway)
+
+        self.assertFalse(DoorCode.objects.filter(id=code.id).exists())
+        self.assertEqual({s: c for (n, s), c in gateway._lock_codes.items() if n == 12}, {})
+
+    def test_expected_pins_are_stored_encrypted(self):
+        code, gateway, slot = self._pin_change_while_the_cleanup_times_out()
+
+        for event in DoorCodeEvent.objects.filter(
+            door_code=code, metadata__action__in=["push_unconfirmed", "clear_failed"]
+        ):
+            self.assertNotIn(self.PIN, json.dumps(event.metadata))
+            self.assertNotIn("5555", json.dumps(event.metadata))
+            self.assertIn(SettingsEncryption.get().decrypt(event.metadata["encrypted_pin"]), {self.PIN, "5555"})
+
+    def test_unconfirmed_cleanup_compares_against_the_pin_that_attempt_sent(self):
+        # The attempt sent 4321, but the code's PIN is 5555 by the time it's deleted.
+        code, gateway, slot = self._pending_unconfirmed([])
+        DoorCode.objects.filter(id=code.id).update(encrypted_pin=SettingsEncryption.get().encrypt("5555"))
+        code.refresh_from_db()
+
+        door_codes_uc.delete_door_code(code=code, actor_user=self.user, zwavejs=gateway)
+
+        self.assertEqual(self._cleared(gateway), [slot])
+        self.assertNotIn((12, slot), gateway._lock_codes)
+
+    def _backdate_events_and_run_retention(self, code: DoorCode, days: int = 91) -> None:
+        from django.utils import timezone
+
+        from alarm.models import SystemConfig
+        from locks.tasks import cleanup_door_code_events
+
+        SystemConfig.objects.update_or_create(
+            key="door_code_events.retention_days",
+            defaults={"name": "Door code event retention (days)", "value_type": "integer", "value": 90},
+        )
+        DoorCodeEvent.objects.filter(door_code=code).update(created_at=timezone.now() - timedelta(days=days))
+        cleanup_door_code_events()
+
+    def test_retention_keeps_unresolved_markers(self):
+        code, gateway, slot = self._pin_change_while_the_cleanup_times_out()
+
+        self._backdate_events_and_run_retention(code)
+
+        # Only the unresolved marker survives; the closed push_unconfirmed window and
+        # everything else ages out.
+        remaining = DoorCodeEvent.objects.filter(door_code=code)
+        self.assertEqual(
+            [(e.metadata.get("action"), e.metadata.get("slot_index")) for e in remaining], [("clear_failed", slot)]
+        )
+        # The marker still drives the retry, so the old PIN still goes.
+        from locks.tasks import push_pending_door_codes
+
+        with patch("locks.tasks.default_zwavejs_gateway", gateway):
+            push_pending_door_codes()
+        self.assertNotIn((12, slot), gateway._lock_codes)
+
+    def test_retention_keeps_in_window_unconfirmed_attempts_and_prunes_settled_markers(self):
+        code, gateway, slot = self._pending_unconfirmed([])
+        door_codes_uc.update_door_code(code=code, changes={"is_active": False}, actor_user=self.user, zwavejs=gateway)
+        attempt = DoorCodeEvent.objects.get(door_code=code, metadata__action="push_unconfirmed")
+
+        self._backdate_events_and_run_retention(code)
+
+        # Nothing is unresolved (the deactivate cleared the slot), but the attempt is
+        # still in its window, so it stays.
+        self.assertEqual(list(DoorCodeEvent.objects.filter(door_code=code).values_list("id", flat=True)), [attempt.id])
+
+        # A later successful push closes the window, and then it can go.
+        DoorCodeEvent.objects.create(
+            door_code=code,
+            lock_entity_id=self.LOCK,
+            event_type=DoorCodeEvent.EventType.CODE_SYNCED,
+            metadata={"action": "pushed", "slot_index": slot},
+        )
+        self._backdate_events_and_run_retention(code)
+        self.assertFalse(DoorCodeEvent.objects.filter(door_code=code).exists())
+
     def _deactivate_while_the_cleanup_times_out(self) -> tuple[DoorCode, FakeGateway, int]:
         from integrations_zwavejs.manager import ZwavejsCommandError
 
@@ -2006,6 +2118,26 @@ class FailedSlotClearTests(_TwoLockUpdateTestBase):
         self.assertEqual(self._calls(gateway, "set"), [(14, [1, 1, "5555"])])
         self._assert_not_pushed_while_back_holds_the_old_pin(code, gateway)
 
+    def test_adding_a_lock_after_the_failure_is_past_event_retention_does_not_mark_the_code_pushed(self):
+        from django.utils import timezone
+
+        from alarm.models import SystemConfig
+        from locks.tasks import cleanup_door_code_events
+
+        code, gateway = self._pin_change_with_back_clear_failing([self.BACK, self.SIDE])
+        SystemConfig.objects.create(
+            key="door_code_events.retention_days",
+            name="Door code event retention (days)",
+            value_type="integer",
+            value=90,
+        )
+        DoorCodeEvent.objects.filter(door_code=code).update(created_at=timezone.now() - timedelta(days=91))
+        cleanup_door_code_events()
+
+        code = self._update(code, gateway, {"lock_entity_ids": [self.BACK, self.SIDE, self.FRONT]})
+
+        self._assert_not_pushed_while_back_holds_the_old_pin(code, gateway)
+
     def test_dropping_the_other_lock_after_a_failed_clear_does_not_mark_the_code_pushed(self):
         code, gateway = self._pin_change_with_back_clear_failing([self.BACK, self.SIDE])
 
@@ -2119,10 +2251,13 @@ class FailedSlotClearTests(_TwoLockUpdateTestBase):
 
         self.assertIn(f"Couldn't clear slot 1 on {self.SIDE}", str(raised.exception))
         code = DoorCode.objects.get(id=code.id)
-        # Back was cleared so it's no longer tracked there; Side still is.
+        # Back was cleared so it's no longer tracked there; Side still is. The code
+        # is turned off so the scheduler retries Side without pushing Back again.
         self.assertEqual(self._lock_codes(gateway, 12), {})
         self.assertEqual(self._slots(code), {self.BACK: None, self.SIDE: 1})
-        self.assertEqual(code.push_state, DoorCode.PushState.FAILED)
+        self.assertFalse(code.is_active)
+        self.assertEqual(code.push_state, DoorCode.PushState.PENDING)
+        self.assertIn(f"Couldn't clear slot 1 on {self.SIDE}", code.last_push_error)
         self.assertFalse(DoorCodeEvent.objects.filter(event_type=DoorCodeEvent.EventType.CODE_DELETED).exists())
 
         # Once Side answers the delete goes through.
@@ -2130,6 +2265,122 @@ class FailedSlotClearTests(_TwoLockUpdateTestBase):
         door_codes_uc.delete_door_code(code=code, actor_user=self.user, zwavejs=gateway)
         self.assertFalse(DoorCode.objects.filter(id=code.id).exists())
         self.assertEqual(self._lock_codes(gateway, 13), {})
+
+    def test_refused_delete_never_pushes_onto_a_lock_an_earlier_clear_retry_freed(self):
+        # Back's stale clear failed during a PIN change. At delete time Back answers
+        # (the retry frees it) but Side doesn't, so the delete is refused.
+        code, gateway = self._pin_change_with_back_clear_failing([self.BACK, self.SIDE])
+        gateway.clear_fails_on = {13}
+
+        with self.assertRaises(door_codes_uc.SlotClearFailed):
+            door_codes_uc.delete_door_code(code=code, actor_user=self.user, zwavejs=gateway)
+
+        code.refresh_from_db()
+        self.assertEqual(self._lock_codes(gateway, 12), {})
+        self.assertEqual(self._slots(code), {self.BACK: None, self.SIDE: 1})
+        self.assertFalse(code.is_active)
+
+        # The scheduler keeps retrying Side's clear and never puts 5555 back on Back.
+        gateway.invoke_calls.clear()
+        self.assertEqual(self._run_scheduler(gateway), 1)
+        self.assertEqual(self._calls(gateway, "set"), [])
+        gateway.clear_fails_on = set()
+        self.assertEqual(self._run_scheduler(gateway), 1)
+
+        code.refresh_from_db()
+        self.assertEqual(self._calls(gateway, "set"), [])
+        self.assertEqual(self._lock_codes(gateway, 12), {})
+        self.assertEqual(self._lock_codes(gateway, 13), {})
+        self.assertEqual(code.push_state, DoorCode.PushState.PUSHED)
+
+    def test_re_adding_a_lock_whose_drop_is_still_clearing_keeps_it(self):
+        code, gateway = self._pushed_code([self.BACK, self.SIDE])
+        gateway.clear_fails_on = {13}
+        self._update(code, gateway, {"lock_entity_ids": [self.BACK]})
+
+        code = self._update(code, gateway, {"lock_entity_ids": [self.BACK, self.SIDE]})
+        gateway.clear_fails_on = set()
+        self._run_scheduler(gateway)
+
+        code.refresh_from_db()
+        # Side was cleared once it answered, but stays on the code and gets the PIN back.
+        self.assertEqual(self._slots(code), {self.BACK: 1, self.SIDE: 1})
+        self.assertEqual(self._lock_codes(gateway, 13), {1: self.PIN})
+        self.assertEqual(code.push_state, DoorCode.PushState.PUSHED)
+
+    def test_a_failed_drop_of_a_lock_whose_entity_is_then_removed_is_settled_as_lock_missing(self):
+        code, gateway = self._pushed_code([self.BACK, self.SIDE])
+        gateway.clear_fails_on = {13}
+        self._update(code, gateway, {"lock_entity_ids": [self.BACK]})
+        Entity.objects.filter(entity_id=self.SIDE).delete()
+        gateway.invoke_calls.clear()
+
+        self._run_scheduler(gateway)
+
+        code.refresh_from_db()
+        self.assertEqual([c for c in gateway.invoke_calls if c["node_id"] == 13], [])
+        self.assertEqual(self._slots(code), {self.BACK: 1})
+        self.assertEqual(self._clear_events(code)[-1]["outcome"], "lock_missing")
+        self.assertEqual(code.push_state, DoorCode.PushState.PUSHED)
+
+    def _record_failure(self, code: DoorCode, lock_entity_id: str, slot_index: int, **kwargs) -> None:
+        from integrations_zwavejs.manager import ZwavejsCommandError
+
+        lock_push_uc.record_clear_failure(
+            door_code=code,
+            lock_entity_id=lock_entity_id,
+            slot_index=slot_index,
+            exc=ZwavejsCommandError("driver TimeoutError after 10.0s"),
+            **kwargs,
+        )
+        DoorCode.objects.filter(id=code.id).update(push_state=DoorCode.PushState.PENDING)
+
+    def test_a_failed_slot_no_longer_tracked_is_only_cleared_if_it_holds_the_expected_pin(self):
+        code, gateway = self._pushed_code([self.BACK])
+        gateway._lock_codes[(12, 3)] = "9999"  # someone else's code now
+        gateway._lock_codes[(12, 4)] = self.PIN
+        self._record_failure(code, self.BACK, 3, expected_pin=self.PIN)
+        self._record_failure(code, self.BACK, 4, expected_pin=self.PIN)
+
+        self._run_scheduler(gateway)
+
+        self.assertEqual(self._calls(gateway, "clear"), [(12, [4])])
+        self.assertEqual(gateway._lock_codes[(12, 3)], "9999")
+        self.assertEqual(self._lock_codes(gateway, 12), {1: self.PIN, 3: "9999"})
+        outcomes = [e["outcome"] for e in self._clear_events(code) if e["action"] == "clear_resolved"]
+        self.assertCountEqual(outcomes, ["not_holding_pin", "cleared"])
+        code.refresh_from_db()
+        self.assertEqual(code.push_state, DoorCode.PushState.PUSHED)
+
+    def test_an_unconfirmed_slot_holding_a_different_code_is_never_cleared(self):
+        code, gateway = self._pushed_code([self.BACK])
+        gateway._lock_codes[(12, 3)] = "9999"
+        self._record_failure(code, self.BACK, 3, expected_pin=self.PIN, unconfirmed=True)
+
+        self._run_scheduler(gateway)
+
+        self.assertEqual(self._calls(gateway, "clear"), [])
+        self.assertEqual(gateway._lock_codes[(12, 3)], "9999")
+        self.assertEqual(self._clear_events(code)[-1]["outcome"], "not_holding_pin")
+
+    def test_an_unconfirmed_slot_another_code_now_holds_is_left_alone(self):
+        code, gateway = self._pushed_code([self.BACK])
+        other = DoorCode.objects.create(
+            user=self.user,
+            encrypted_pin=SettingsEncryption.get().encrypt("9999"),
+            pin_length=4,
+            code_type=DoorCode.CodeType.PERMANENT,
+            is_active=True,
+        )
+        DoorCodeLockAssignment.objects.create(door_code=other, lock_entity_id=self.BACK, slot_index=3)
+        gateway._lock_codes[(12, 3)] = self.PIN  # even if it reads back like ours
+        self._record_failure(code, self.BACK, 3, expected_pin=self.PIN, unconfirmed=True)
+        gateway.invoke_calls.clear()
+
+        self._run_scheduler(gateway)
+
+        self.assertEqual([c for c in gateway.invoke_calls if c["args"] and c["args"][0] == 3], [])
+        self.assertEqual(self._clear_events(code)[-1]["outcome"], "tracked")
 
     def test_delete_finishes_a_lock_drop_whose_clear_failed(self):
         code, gateway = self._pushed_code([self.BACK, self.SIDE])

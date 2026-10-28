@@ -235,6 +235,7 @@ def update_door_code(
     if zwavejs is not None:
         from locks.use_cases.lock_config_sync import clear_lock_user_code_slot
         from locks.use_cases.lock_push import (
+            cancel_pending_removal,
             clear_unconfirmed_slots_holding_pin,
             decrypt_pin_or_none,
             forget_cleared_slot,
@@ -299,6 +300,10 @@ def update_door_code(
         removed_assignment_ids: list[int] = []
         for assignment in old_assignments:
             if assignment.lock_entity_id in new_entity_ids:
+                if zwavejs is not None:
+                    # Kept (or re-added) while an earlier drop's clear was still
+                    # failing: the lock stays on the code once that clear works.
+                    cancel_pending_removal(door_code=code, lock_entity_id=assignment.lock_entity_id)
                 continue
             dropped_lock_entity_ids.append(assignment.lock_entity_id)
             if zwavejs is not None and assignment.slot_index is not None:
@@ -315,6 +320,7 @@ def update_door_code(
                         lock_entity_id=assignment.lock_entity_id,
                         slot_index=slot_index,
                         exc=exc,
+                        expected_pin=old_pin,
                         removing=True,
                     )
                     failed_slot_clears.append(failure)
@@ -410,6 +416,7 @@ def update_door_code(
                             lock_entity_id=assignment.lock_entity_id,
                             slot_index=slot_index,
                             exc=exc,
+                            expected_pin=old_pin,
                         )
                         failed_slot_clears.append(failure)
                         if not failure.permanent:
@@ -500,7 +507,7 @@ def delete_door_code(
         # Clear slots on physical locks before deleting (ADR 0082 + 0092).
         if zwavejs is not None and slots_to_clear:
             from locks.use_cases.lock_config_sync import clear_lock_user_code_slot
-            from locks.use_cases.lock_push import describe_clear_failure
+            from locks.use_cases.lock_push import decrypt_pin_or_none, record_clear_failure
 
             already_failed = {(f.lock_entity_id, f.slot_index) for f in transient_failures}
             for slot_info in slots_to_clear:
@@ -517,11 +524,14 @@ def delete_door_code(
                     if code.source == DoorCode.Source.SYNCED:
                         # Synced codes still fail-fast (ADR 0082 contract).
                         raise
-                    failure = describe_clear_failure(
+                    # Recorded (unless permanent) so the scheduler keeps retrying it
+                    # if the delete is refused below.
+                    failure = record_clear_failure(
                         door_code=code,
                         lock_entity_id=str(slot_info["lock_entity_id"]),
                         slot_index=int(slot_info["slot_index"]),
                         exc=exc,
+                        expected_pin=decrypt_pin_or_none(code),
                     )
                     (permanent_failures if failure.permanent else transient_failures).append(failure)
             if cleared:
@@ -555,7 +565,9 @@ def delete_door_code(
                 transient_failures.extend(unconfirmed_failures)
 
     if transient_failures:
-        _refuse_delete_after_failed_clears(code=code, cleared=cleared, failures=transient_failures)
+        _refuse_delete_after_failed_clears(
+            code=code, actor_user=actor_user, cleared=cleared, failures=transient_failures
+        )
 
     with transaction.atomic():
         DoorCodeEvent.objects.create(
@@ -571,32 +583,39 @@ def delete_door_code(
 def _refuse_delete_after_failed_clears(
     *,
     code: DoorCode,
+    actor_user: User | None,
     cleared: list[dict[str, object]],
     failures: list[ClearFailure],
 ) -> None:
-    """Keep a manual code whose PIN may still be on a lock, and raise :class:`SlotClearFailed`.
+    """Keep a manual code whose PIN may still be on a lock, turn it off, and raise :class:`SlotClearFailed`.
 
-    Slots that were cleared are forgotten so the row stays truthful, and the code
-    is then marked failed so the scheduler doesn't push it back onto them.
+    The code is turned off so the scheduler keeps retrying the failed clears
+    without pushing it back onto any lock, including one a clear just freed.
+    Slots that were cleared are forgotten so the row stays truthful.
     """
     from locks.use_cases.lock_push import clear_failures_message, forget_cleared_slot, settle_clear_failure_state
 
     unique = {(f.lock_entity_id, f.slot_index): f for f in failures}
     message = clear_failures_message(list(unique.values()))
-    if cleared:
-        for slot_info in cleared:
-            forget_cleared_slot(
-                door_code=code,
-                lock_entity_id=str(slot_info["lock_entity_id"]),
-                slot_index=int(slot_info["slot_index"]),
-                outcome="cleared",
-            )
-        code.push_state = DoorCode.PushState.FAILED
-        code.last_push_error = message[:500]
-        code.last_push_attempt_at = django_timezone.now()
-        code.save(update_fields=["push_state", "last_push_error", "last_push_attempt_at", "updated_at"])
+    for slot_info in cleared:
+        forget_cleared_slot(
+            door_code=code,
+            lock_entity_id=str(slot_info["lock_entity_id"]),
+            slot_index=int(slot_info["slot_index"]),
+            outcome="cleared",
+        )
+    code.refresh_from_db(fields=["is_active"])
+    if code.is_active:
+        code.is_active = False
+        code.save(update_fields=["is_active", "updated_at"])
+        DoorCodeEvent.objects.create(
+            door_code=code,
+            user=actor_user,
+            event_type=DoorCodeEvent.EventType.CODE_UPDATED,
+            metadata={"updated_fields": ["is_active"], "reason": "delete_refused"},
+        )
     settle_clear_failure_state(door_code=code)
-    raise SlotClearFailed(f"{message}. The door code wasn't deleted, try again when the lock responds.")
+    raise SlotClearFailed(f"{message}. The door code wasn't deleted and is now off, try again when the lock responds.")
 
 
 def _push_to_assigned_locks_best_effort(
