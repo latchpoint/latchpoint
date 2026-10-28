@@ -782,3 +782,441 @@ class BackgroundApplyTests(SimpleTestCase):
 
         self.assertIn("HA state stream apply failed", logs.output[0])
         self.assertIsNone(stream._apply_worker)
+
+
+# Taken before any test patches it, for tests that need the real one under `FakeSessionStream`.
+_real_is_leader = HomeAssistantStateStream._is_leader
+
+
+class _FakeSharedCache:
+    """
+    A cache shared between workers, with the leader key's TTL running on a fake clock.
+
+    Covers the part of Django's cache API the leader key uses. ``on_get`` runs right after a ``get()``, so a
+    test can land something between the get and whatever the caller does next.
+    """
+
+    def __init__(self, clock: _FakeClock):
+        self._clock = clock
+        self._lock = threading.Lock()
+        self._data: dict[str, tuple[object, float]] = {}
+        self.touches = 0
+        self.deletes = 0
+        self.on_get = None
+
+    def _live(self, key: str) -> tuple[object, float] | None:
+        item = self._data.get(key)
+        if item is not None and item[1] <= self._clock():
+            del self._data[key]
+            return None
+        return item
+
+    def add(self, key: str, value: object, timeout: float) -> bool:
+        with self._lock:
+            if self._live(key) is not None:
+                return False
+            self._data[key] = (value, self._clock() + timeout)
+            return True
+
+    def get(self, key: str) -> object:
+        with self._lock:
+            item = self._live(key)
+        if self.on_get is not None:
+            self.on_get()
+        return None if item is None else item[0]
+
+    def touch(self, key: str, timeout: float) -> bool:
+        with self._lock:
+            item = self._live(key)
+            if item is None:
+                return False
+            self._data[key] = (item[0], self._clock() + timeout)
+            self.touches += 1
+            return True
+
+    def delete(self, key: str) -> bool:
+        with self._lock:
+            self.deletes += 1
+            return self._data.pop(key, None) is not None
+
+    def set(self, key: str, value: object, timeout: float) -> None:
+        with self._lock:
+            self._data[key] = (value, self._clock() + timeout)
+
+    def owner(self) -> object:
+        with self._lock:
+            item = self._live(state_stream._CACHE_LEADER_KEY)
+        return None if item is None else item[0]
+
+
+class _FailingCache:
+    def __getattr__(self, name: str):
+        def _fail(*_args, **_kwargs):
+            raise ConnectionError("cache is down")
+
+        return _fail
+
+
+class _SessionTimeline:
+    """
+    Stands in for a session's ``session_done`` event, so a long session runs on the fake clock.
+
+    Each ``wait(timeout)`` moves the clock forward a second at a time and calls ``every_second`` after each
+    step (another worker polling for leadership, say). Returns True once the session has lasted ``duration``.
+    """
+
+    def __init__(self, clock: _FakeClock, *, duration: float, every_second=None):
+        self.waits: list[float] = []
+        self._clock = clock
+        self._end = clock.now + duration
+        self._every_second = every_second or (lambda: None)
+
+    def wait(self, timeout: float | None = None) -> bool:
+        self.waits.append(timeout)
+        for _ in range(int(timeout)):
+            if self._clock.now >= self._end:
+                return True
+            self._clock.now += 1.0
+            self._every_second()
+        return self._clock.now >= self._end
+
+
+class _ClosableWebSocketApp:
+    def __init__(self):
+        self.close_calls = 0
+
+    def close(self) -> None:
+        self.close_calls += 1
+
+
+class LeaderRenewalTests(SimpleTestCase):
+    """A session keeps the leader key for as long as it runs, and gives up once another worker has it (#118)."""
+
+    def setUp(self):
+        self.clock = _FakeClock()
+        self.cache = _FakeSharedCache(self.clock)
+        patcher = patch.object(state_stream, "cache", self.cache)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.leader = HomeAssistantStateStream()
+        self.other = HomeAssistantStateStream()
+
+    def _renew(self, timeline: _SessionTimeline, stop: threading.Event | None = None):
+        ws_app = _ClosableWebSocketApp()
+        lost = threading.Event()
+        self.leader._renew_leadership_during_session(
+            ws_app=ws_app, stop=stop or threading.Event(), session_done=timeline, lost=lost
+        )
+        return ws_app, lost
+
+    def test_long_session_renews_the_key_before_it_expires(self):
+        # `_run` takes the key right before the session starts.
+        self.assertTrue(self.leader._is_leader())
+        other_won: list[float] = []
+
+        def _other_polls() -> None:
+            # A non-leader polls every second, so it would get in the moment the key ran out.
+            if self.other._is_leader():
+                other_won.append(self.clock.now)
+
+        # Ten times the TTL.
+        duration = 10 * state_stream._LEADER_TTL_SECONDS
+        timeline = _SessionTimeline(self.clock, duration=duration, every_second=_other_polls)
+        ws_app, lost = self._renew(timeline)
+
+        self.assertEqual(other_won, [])
+        self.assertEqual(self.cache.owner(), self.leader._leader_id)
+        # One renewal per heartbeat, and none once the session has ended.
+        self.assertEqual(timeline.waits, [state_stream._LEADER_HEARTBEAT_SECONDS] * 30)
+        self.assertEqual(self.cache.touches, 29)
+        self.assertEqual(ws_app.close_calls, 0)
+        self.assertFalse(lost.is_set())
+
+    def test_losing_the_key_mid_session_closes_the_session(self):
+        self.assertTrue(self.leader._is_leader())
+        start = self.clock.now
+
+        def _evicted_and_taken() -> None:
+            # The key is evicted at 70s and a polling worker takes it straight away.
+            if self.clock.now == start + 70:
+                self.cache.delete(state_stream._CACHE_LEADER_KEY)
+                self.assertTrue(self.other._is_leader())
+
+        timeline = _SessionTimeline(self.clock, duration=3600, every_second=_evicted_and_taken)
+        with self.assertLogs("integrations_home_assistant", level="WARNING") as logs:
+            ws_app, lost = self._renew(timeline)
+
+        # The renewal at 80s finds the other worker's id, closes the session and stops renewing.
+        self.assertEqual(len(timeline.waits), 4)
+        self.assertEqual(ws_app.close_calls, 1)
+        self.assertTrue(lost.is_set())
+        self.assertEqual(self.cache.owner(), self.other._leader_id)
+        self.assertIn("another worker holds the leader key", logs.output[0])
+
+    def test_renewal_after_stop_leaves_the_released_key_alone(self):
+        stop = self.leader._stop
+        self.assertTrue(self.leader._is_leader())
+        start = self.clock.now
+
+        def _stopped() -> None:
+            if self.clock.now == start + 30:
+                self.leader.stop()
+
+        timeline = _SessionTimeline(self.clock, duration=3600, every_second=_stopped)
+        with self.assertNoLogs("integrations_home_assistant", level="WARNING"):
+            ws_app, lost = self._renew(timeline, stop=stop)
+
+        # The renewal at 20s ran. The one at 40s sees the stop and returns, without taking the released key
+        # back or treating it as lost.
+        self.assertEqual(len(timeline.waits), 2)
+        self.assertEqual(self.cache.touches, 1)
+        self.assertIsNone(self.cache.owner())
+        self.assertEqual(ws_app.close_calls, 0)
+        self.assertFalse(lost.is_set())
+        self.assertTrue(self.other._is_leader())
+
+    def test_renewal_never_overwrites_a_key_another_worker_took(self):
+        self.assertTrue(self.leader._is_leader())
+
+        def _expires_and_is_taken() -> None:
+            # The race `_is_leader` documents: the key runs out right after our get, and another worker takes it.
+            self.cache.on_get = None
+            self.clock.now += state_stream._LEADER_TTL_SECONDS
+            self.assertTrue(self.other._is_leader())
+
+        self.cache.on_get = _expires_and_is_taken
+        self.leader._is_leader()
+
+        # The touch only moved the expiry, so the cache still names the other worker, and our next renewal
+        # sees that and steps down.
+        self.assertEqual(self.cache.owner(), self.other._leader_id)
+        self.assertFalse(self.leader._is_leader())
+
+    def test_renewal_retakes_a_key_that_ran_out_between_get_and_touch(self):
+        self.assertTrue(self.leader._is_leader())
+
+        def _expires() -> None:
+            self.cache.on_get = None
+            self.clock.now += state_stream._LEADER_TTL_SECONDS
+
+        self.cache.on_get = _expires
+
+        self.assertTrue(self.leader._is_leader())
+        self.assertEqual(self.cache.owner(), self.leader._leader_id)
+
+    def test_cache_error_during_a_session_keeps_the_session(self):
+        # No cache is per-process behavior: every process leads, so a failing renewal mustn't end the session.
+        timeline = _SessionTimeline(self.clock, duration=5 * state_stream._LEADER_TTL_SECONDS)
+        with patch.object(state_stream, "cache", _FailingCache()):
+            ws_app, lost = self._renew(timeline)
+
+        self.assertEqual(len(timeline.waits), 15)
+        self.assertEqual(ws_app.close_calls, 0)
+        self.assertFalse(lost.is_set())
+
+
+class _LiveSessionWebSocketApp:
+    """
+    Authenticates, then stays connected until something calls ``close()``, like a live HA session.
+
+    ``after_auth`` runs once the session is authed. After the close, one more ``state_changed`` arrives,
+    like a frame that was already on the wire.
+    """
+
+    after_auth = None
+    instances: list[_LiveSessionWebSocketApp] = []
+
+    def __init__(self, url, *, on_open, on_message, on_error, on_close):
+        self._on_open = on_open
+        self._on_message = on_message
+        self._on_close = on_close
+        self.closed = threading.Event()
+        self.instances.append(self)
+
+    def send(self, data: str) -> None:
+        pass
+
+    def close(self) -> None:
+        self.closed.set()
+
+    def run_forever(self, **_kwargs) -> bool:
+        self._on_open(self)
+        self._on_message(self, json.dumps({"type": "auth_required"}))
+        self._on_message(self, json.dumps({"type": "auth_ok"}))
+        if self.after_auth is not None:
+            self.after_auth()
+        if not self.closed.wait(timeout=5):
+            raise AssertionError("the session was never closed")
+        event = {"event_type": "state_changed", "data": {"entity_id": "binary_sensor.door"}}
+        self._on_message(self, json.dumps({"type": "event", "event": event}))
+        self._on_close(self, None, None)
+        return False
+
+
+class SessionLeaderRenewalTests(SimpleTestCase):
+    """The renewal thread runs for exactly as long as a real ``_connect_and_listen`` session (#118)."""
+
+    def setUp(self):
+        self.cache = _FakeSharedCache(_FakeClock())
+        self.stream = HomeAssistantStateStream()
+        self.stream._settings = _SETTINGS
+        self.other = HomeAssistantStateStream()
+        self.renewal_threads: list[threading.Thread] = []
+        real_renew = self.stream._renew_leadership_during_session
+
+        def _tracking_renew(**kwargs) -> None:
+            self.renewal_threads.append(threading.current_thread())
+            real_renew(**kwargs)
+
+        for patcher in (
+            patch.object(state_stream, "cache", self.cache),
+            # Real time, but short, so the renewal thread gets a few turns during the session.
+            patch.object(state_stream, "_LEADER_HEARTBEAT_SECONDS", 0.01),
+            patch.object(_LiveSessionWebSocketApp, "instances", []),
+            patch("websocket.WebSocketApp", _LiveSessionWebSocketApp),
+            patch.object(self.stream, "_renew_leadership_during_session", side_effect=_tracking_renew),
+            patch.object(self.stream, "_handle_state_changed"),
+        ):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def test_renewal_runs_during_the_session_and_stops_when_it_ends(self):
+        self.assertTrue(self.stream._is_leader())
+
+        def _end_after_three_renewals() -> None:
+            # HA closes the session once the renewal thread has renewed a few times.
+            (ws_app,) = _LiveSessionWebSocketApp.instances
+
+            def _watch() -> None:
+                deadline = time.monotonic() + 5
+                while self.cache.touches < 3 and time.monotonic() < deadline:
+                    time.sleep(0.001)
+                ws_app.close()
+
+            threading.Thread(target=_watch, daemon=True).start()
+
+        with patch.object(_LiveSessionWebSocketApp, "after_auth", staticmethod(_end_after_three_renewals)):
+            authed_at = self.stream._connect_and_listen(
+                ws_url="ws://ha:8123/api/websocket", token="token", stop=threading.Event()
+            )
+
+        self.assertIsNotNone(authed_at)
+        self.assertGreaterEqual(self.cache.touches, 3)
+        self.assertEqual(self.cache.owner(), self.stream._leader_id)
+        (renewal_thread,) = self.renewal_threads
+        # Gone by the time `_connect_and_listen` returns, so nothing renews the key once the session is over.
+        self.assertFalse(renewal_thread.is_alive())
+        self.assertIsNone(self.stream._ws_app)
+
+    def test_losing_the_key_closes_the_session_and_backs_off_without_reconnecting(self):
+        def _taken_by_other() -> None:
+            # Another worker gets the key mid-session (it ran out, or the cache evicted it).
+            self.cache.delete(state_stream._CACHE_LEADER_KEY)
+            self.assertTrue(self.other._is_leader())
+
+        stop = _RecordingStopEvent(max_waits=4)
+        with (
+            # The renewal thread checks the stop event on every turn too, so give it room before the guard trips.
+            patch.object(_RecordingStopEvent, "_MAX_LOOP_CHECKS", 10_000),
+            # Not the 1s leadership poll, so the backoff wait shows up on its own.
+            patch.object(state_stream, "_RECONNECT_BACKOFF_INITIAL_SECONDS", 2.0),
+            patch.object(_LiveSessionWebSocketApp, "after_auth", staticmethod(_taken_by_other)),
+            self.assertLogs("integrations_home_assistant", level="WARNING") as logs,
+        ):
+            self.stream._run(stop)
+
+        # One session, closed by the renewal, then the normal backoff, then polling for leadership instead of
+        # reconnecting.
+        (ws_app,) = _LiveSessionWebSocketApp.instances
+        self.assertTrue(ws_app.closed.is_set())
+        self.assertEqual(stop.waits, [2.0, 1.0, 1.0, 1.0])
+        self.assertEqual(self.cache.owner(), self.other._leader_id)
+        # The event that arrived after leadership was lost wasn't handled.
+        self.stream._handle_state_changed.assert_not_called()
+        (renewal_thread,) = self.renewal_threads
+        self.assertFalse(renewal_thread.is_alive())
+        self.assertTrue(any("another worker holds the leader key" in line for line in logs.output))
+
+
+class LeaderReleaseTests(SimpleTestCase):
+    """``stop()`` gives up the leader key, but only one this process still holds (#118)."""
+
+    def setUp(self):
+        self.cache = _FakeSharedCache(_FakeClock())
+        patcher = patch.object(state_stream, "cache", self.cache)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.stream = HomeAssistantStateStream()
+        self.other = HomeAssistantStateStream()
+
+    def test_stop_releases_a_key_this_process_holds(self):
+        self.assertTrue(self.stream._is_leader())
+
+        self.stream.stop()
+
+        self.assertIsNone(self.cache.owner())
+        # Another worker can take over straight away instead of waiting out the TTL.
+        self.assertTrue(self.other._is_leader())
+
+    def test_stop_leaves_another_workers_key_alone(self):
+        self.assertTrue(self.other._is_leader())
+
+        self.stream.stop()
+
+        self.assertEqual(self.cache.owner(), self.other._leader_id)
+        self.assertFalse(self.stream._is_leader())
+
+    def test_shutdown_releases_the_key(self):
+        self.assertTrue(self.stream._is_leader())
+
+        with patch.object(state_stream, "_stream", self.stream):
+            state_stream.shutdown()
+
+        self.assertTrue(self.stream._stop.is_set())
+        self.assertIsNone(self.cache.owner())
+
+    def test_stop_with_a_failing_cache_still_stops(self):
+        with patch.object(state_stream, "cache", _FailingCache()):
+            self.stream.stop()
+
+        self.assertTrue(self.stream._stop.is_set())
+
+    def test_settings_restart_keeps_the_key_and_disabling_releases_it(self):
+        # A restart keeps the key, so the new thread carries on as leader. The real `_is_leader` runs here.
+        fake = FakeSessionStream(self)
+        stream = fake.stream
+        patcher = patch.object(HomeAssistantStateStream, "_is_leader", _real_is_leader)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+        with patch.object(state_stream, "_get_runtime_settings", return_value=_SETTINGS):
+            stream.apply_runtime_settings_from_active_profile()
+        fake.wait_for_session()
+        self.assertEqual(self.cache.owner(), stream._leader_id)
+
+        with patch.object(state_stream, "_get_runtime_settings", return_value=_NEW_SETTINGS):
+            stream.apply_runtime_settings_from_active_profile()
+        _, _, token, _ = fake.wait_for_current_session()
+        self.assertEqual(token, "new-token")
+        self.assertEqual(self.cache.owner(), stream._leader_id)
+        # Never let go in between, where a polling worker could have taken it.
+        self.assertEqual(self.cache.deletes, 0)
+
+        with patch.object(state_stream, "_get_runtime_settings", return_value=_DISABLED):
+            stream.apply_runtime_settings_from_active_profile()
+        self.assertIsNone(self.cache.owner())
+
+
+class LeaderCacheErrorTests(SimpleTestCase):
+    def test_cache_error_falls_back_to_per_process_leadership(self):
+        stream, stop = _make_stream(max_waits=1)
+        with (
+            patch.object(state_stream, "cache", _FailingCache()),
+            patch.object(stream, "_connect_and_listen", return_value=None) as connect,
+        ):
+            self.assertTrue(stream._is_leader())
+            stream._run(stop)
+
+        # It connected as if it were the only process, rather than waiting for leadership.
+        connect.assert_called_once()
+        self.assertEqual(stop.waits, [1.0])

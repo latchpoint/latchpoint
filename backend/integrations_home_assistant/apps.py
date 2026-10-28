@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import atexit
 import logging
 import sys
 import warnings
@@ -94,6 +95,8 @@ class IntegrationsHomeAssistantConfig(AppConfig):
             try:
                 from integrations_home_assistant import state_stream
 
+                # Give up the leader key on a clean exit, so another worker doesn't wait out its TTL (#118).
+                atexit.register(state_stream.shutdown)
                 state_stream.apply_runtime_settings_from_active_profile()
             except Exception:
                 logger.warning("HA state stream startup failed", exc_info=True)

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import threading
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from django.apps import apps
 
@@ -108,7 +108,7 @@ class RecordingLock:
                 raise AssertionError(f"{thread.name} never tried to take the lock")
 
 
-def run_app_ready(testcase) -> None:
+def run_app_ready(testcase) -> MagicMock:
     """
     Run the HA app's ``ready()`` the way a server process does.
 
@@ -116,15 +116,21 @@ def run_app_ready(testcase) -> None:
     looks like daphne. Only that module's ``sys`` name is swapped, the real ``sys.argv`` other threads read
     (ie ``_home_assistant_allowed_in_tests()``) is left alone. The signal handlers it connects are
     disconnected again on cleanup.
+
+    The module's ``atexit`` is swapped too, so the test process doesn't pick up exit hooks. Returns that
+    stand-in so a test can check what ``ready()`` registered.
     """
     config = apps.get_app_config("integrations_home_assistant")
     testcase.addCleanup(clear_cached_connection)
     testcase.addCleanup(_disconnect_app_handlers)
+    fake_atexit = MagicMock()
     with (
         patch.object(ha_apps, "sys", SimpleNamespace(argv=["daphne", "config.asgi:application"])),
+        patch.object(ha_apps, "atexit", fake_atexit),
         patch("integrations_home_assistant.mqtt_alarm_entity.initialize_home_assistant_mqtt_alarm_entity_integration"),
     ):
         config.ready()
+    return fake_atexit
 
 
 def _disconnect_app_handlers() -> None:

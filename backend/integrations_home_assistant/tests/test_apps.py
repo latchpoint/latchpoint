@@ -11,6 +11,7 @@ from alarm.use_cases.settings_profile import (
     create_settings_profile,
     update_settings_profile,
 )
+from integrations_home_assistant import state_stream
 from integrations_home_assistant.connection import get_cached_connection
 from integrations_home_assistant.state_stream import _RuntimeSettings
 from integrations_home_assistant.tests.stream_test_utils import FakeSessionStream, run_app_ready
@@ -62,6 +63,13 @@ class HomeAssistantAppHooksTests(EncryptionTestMixin, TestCase):
         self.assertIs(thread, self.stream._thread)
         self.assertTrue(thread.is_alive())
         self.assertFalse(stop.is_set())
+
+    def test_startup_releases_the_leader_key_on_exit(self):
+        # #118: a clean exit gives up the leader key, so another worker doesn't wait out its TTL.
+        fake_atexit = run_app_ready(self)
+        self.fake.wait_for_session()
+
+        fake_atexit.register.assert_called_once_with(state_stream.shutdown)
 
     def test_activating_a_profile_reconnects_on_its_settings(self):
         other = create_settings_profile(name="Away")
