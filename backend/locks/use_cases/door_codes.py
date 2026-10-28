@@ -175,9 +175,9 @@ def update_door_code(
 ) -> DoorCode:
     """Update a door code and its lock assignments, emitting a `DoorCodeEvent` when changed.
 
-    When ``zwavejs`` is provided and either (a) a push-relevant field changed or
-    (b) the assigned lock set changed, re-push to surviving + new locks and CC 99
-    ``clear`` any dropped locks' slots.
+    When ``zwavejs`` is provided, dropped locks' slots are CC 99 ``clear``-ed. A
+    push-relevant field change clears and re-pushes every lock; a lock-list-only
+    change keeps the surviving locks' slots and pushes only locks without one.
     """
     updated_fields = []
 
@@ -227,43 +227,56 @@ def update_door_code(
 
     code.save()
 
-    # Snapshot old assignments BEFORE swap so we can clear dropped locks' slots.
+    # Diff the lock set. Locks that stay keep their assignment and slot_index;
+    # recreating them would forget a slot the lock still holds the PIN in, and the
+    # re-push would write it into a second slot (issue #133).
     dropped_slot_clears: list[dict[str, object]] = []
     dropped_lock_entity_ids: list[str] = []
+    added_lock_entity_ids: list[str] = []
     if "lock_entity_ids" in changes:
-        new_entity_ids = set(changes.get("lock_entity_ids") or [])
+        new_entity_ids = list(dict.fromkeys(changes.get("lock_entity_ids") or []))
         old_assignments = list(DoorCodeLockAssignment.objects.filter(door_code=code))
+        old_entity_ids = {assignment.lock_entity_id for assignment in old_assignments}
+        dropped_assignment_ids: list[int] = []
         for assignment in old_assignments:
             if assignment.lock_entity_id in new_entity_ids:
                 continue
+            dropped_assignment_ids.append(assignment.id)
             dropped_lock_entity_ids.append(assignment.lock_entity_id)
             if assignment.slot_index is None:
                 continue
             dropped_slot_clears.append(
                 {"lock_entity_id": assignment.lock_entity_id, "slot_index": int(assignment.slot_index)}
             )
+        added_lock_entity_ids = [entity_id for entity_id in new_entity_ids if entity_id not in old_entity_ids]
 
-        code.lock_assignments.all().delete()
+        if dropped_assignment_ids:
+            DoorCodeLockAssignment.objects.filter(id__in=dropped_assignment_ids).delete()
 
-        if new_entity_ids:
+        if added_lock_entity_ids:
             DoorCodeLockAssignment.objects.bulk_create(
                 [
                     DoorCodeLockAssignment(
                         door_code=code,
                         lock_entity_id=entity_id,
                     )
-                    for entity_id in new_entity_ids
+                    for entity_id in added_lock_entity_ids
                 ],
                 ignore_conflicts=True,
             )
         updated_fields.append("lock_entity_ids")
 
     if updated_fields:
+        metadata: dict[str, object] = {"updated_fields": updated_fields}
+        if added_lock_entity_ids:
+            metadata["added_lock_entity_ids"] = added_lock_entity_ids
+        if dropped_lock_entity_ids:
+            metadata["removed_lock_entity_ids"] = dropped_lock_entity_ids
         DoorCodeEvent.objects.create(
             door_code=code,
             user=actor_user,
             event_type=DoorCodeEvent.EventType.CODE_UPDATED,
-            metadata={"updated_fields": updated_fields},
+            metadata=metadata,
         )
 
     if zwavejs is not None:
@@ -344,6 +357,20 @@ def update_door_code(
             else:
                 code = DoorCode.objects.prefetch_related("lock_assignments").get(id=code.id)
                 _push_to_assigned_locks_best_effort(code=code, zwavejs=zwavejs, actor_user=actor_user)
+                if dropped_lock_entity_ids and not push_relevant_change:
+                    # Locks that stay aren't re-pushed, so when they all hold a slot
+                    # nothing recomputes push_state and a failure left by a dropped
+                    # lock would stick.
+                    remaining = DoorCodeLockAssignment.objects.filter(door_code=code)
+                    if remaining.exists() and not remaining.filter(slot_index__isnull=True).exists():
+                        code.refresh_from_db(fields=["push_state", "last_push_error", "push_attempt_count"])
+                        if code.push_state != DoorCode.PushState.PUSHED or code.last_push_error:
+                            code.push_state = DoorCode.PushState.PUSHED
+                            code.last_push_error = ""
+                            code.push_attempt_count = 0
+                            code.save(
+                                update_fields=["push_state", "last_push_error", "push_attempt_count", "updated_at"]
+                            )
 
     return code
 
