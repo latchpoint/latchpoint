@@ -1,10 +1,10 @@
 import { StrictMode } from 'react'
-import { describe, expect, it, vi } from 'vitest'
-import { fireEvent, screen, waitFor } from '@testing-library/react'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { act, fireEvent, screen, waitFor } from '@testing-library/react'
 import { http, HttpResponse } from 'msw'
 import { server } from '@/test/msw/server'
 import { renderWithProviders } from '@/test/render'
-import { useDoorCodesQuery } from '@/hooks/useDoorCodesQueries'
+import { DOOR_CODES_SETTLING_POLL_MS, useDoorCodesQuery } from '@/hooks/useDoorCodesQueries'
 import { DoorCodeEditContainer } from './DoorCodeEditContainer'
 import type { DoorCode, Entity, UpdateDoorCodeRequest } from '@/types'
 
@@ -86,10 +86,16 @@ function EditFormFromQuery({ onUpdate = vi.fn(), locks = [] }: { onUpdate?: OnUp
   )
 }
 
-// Serves state.code from the codes endpoint. Tests change it, then refetch.
+// Serves state.code from the codes endpoint and counts the fetches. Tests
+// change it, then refetch.
 function serveCode(initial: DoorCode) {
-  const state = { code: initial }
-  server.use(http.get('/api/door-codes/', () => HttpResponse.json({ data: [state.code] })))
+  const state = { code: initial, fetches: 0 }
+  server.use(
+    http.get('/api/door-codes/', () => {
+      state.fetches += 1
+      return HttpResponse.json({ data: [state.code] })
+    }),
+  )
   return state
 }
 
@@ -131,6 +137,49 @@ describe('DoorCodeEditContainer', () => {
   })
 
   describe('refetches', () => {
+    afterEach(() => {
+      vi.useRealTimers()
+    })
+
+    it('keeps an edit in progress across polls while the code is pending', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true })
+      const nextPoll = () => act(() => vi.advanceTimersByTimeAsync(DOOR_CODES_SETTLING_POLL_MS))
+      // Its lock has no slot yet, so the scheduler is still pushing it.
+      const served = serveCode(
+        makeCode({
+          pushState: 'pending',
+          lockSlotAssignments: [{ lockEntityId: 'lock.front_door', slotIndex: null, pendingRemoval: false }],
+        }),
+      )
+      renderWithProviders(<EditFormFromQuery />)
+      expect(await screen.findByDisplayValue('Front')).toBeTruthy()
+      expect(served.fetches).toBe(1)
+
+      fireEvent.change(labelInput(), { target: { value: 'Back door' } })
+      fireEvent.change(newCodeInput(), { target: { value: '2468' } })
+      fireEvent.click(dayCheckbox('Sun'))
+      fireEvent.change(screen.getByLabelText(/Re-authenticate/), { target: { value: 'pw' } })
+
+      // A poll with nothing new.
+      await nextPoll()
+      await waitFor(() => expect(served.fetches).toBe(2))
+      expect(labelInput().value).toBe('Back door')
+      expect(newCodeInput().value).toBe('2468')
+      expect(dayCheckbox('Sun')).not.toBeChecked()
+
+      // The scheduler pushes it, and another tab sets max uses.
+      served.code = makeCode({ maxUses: 5, lastPushAttemptAt: '2026-10-28T10:05:00Z' })
+      await nextPoll()
+      await waitFor(() => expect(served.fetches).toBe(3))
+      await waitFor(() => expect(maxUsesInput().value).toBe('5'))
+
+      expect(labelInput().value).toBe('Back door')
+      expect(newCodeInput().value).toBe('2468')
+      expect(dayCheckbox('Sun')).not.toBeChecked()
+      expect((screen.getByLabelText(/Re-authenticate/) as HTMLInputElement).value).toBe('pw')
+      expect(notice()).toBeEmptyDOMElement()
+    })
+
     it('keeps an edit in progress when the code changes on the server', async () => {
       const { serverChanges } = renderForm(makeCode())
       expect(await screen.findByDisplayValue('Front')).toBeTruthy()
