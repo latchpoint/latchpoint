@@ -33,7 +33,8 @@ function makeCode(overrides: Partial<DoorCode> = {}): DoorCode {
     lastUsedLock: null,
     lockAssignments: [{ id: 1, lockEntityId: 'lock.front_door' }],
     lockEntityIds: ['lock.front_door'],
-    lockSlotAssignments: [{ lockEntityId: 'lock.front_door', slotIndex: 3 }],
+    lockSlotAssignments: [{ lockEntityId: 'lock.front_door', slotIndex: 3, pendingRemoval: false }],
+    pendingSlotClears: [],
     pushState: 'pushed',
     lastPushError: '',
     lastPushAttemptAt: '2026-10-28T10:00:00Z',
@@ -249,6 +250,72 @@ describe('DoorCodeEditContainer', () => {
       expect(lockCheckbox('lock.d')).toBeChecked()
       expect(notice()).toBeEmptyDOMElement()
 
+      const req = await savedRequest(onUpdate)
+      expect([...(req.lockEntityIds ?? [])].sort()).toEqual(['lock.a', 'lock.d'])
+    })
+
+    // #151: Lock B was unticked and saved, but its slot clear failed, so it's still
+    // listed until the clear works.
+    const withBRemoving = () =>
+      makeCode({
+        lockEntityIds: ['lock.a', 'lock.b'],
+        lockAssignments: [
+          { id: 1, lockEntityId: 'lock.a' },
+          { id: 2, lockEntityId: 'lock.b' },
+        ],
+        lockSlotAssignments: [
+          { lockEntityId: 'lock.a', slotIndex: 1, pendingRemoval: false },
+          { lockEntityId: 'lock.b', slotIndex: 1, pendingRemoval: true },
+        ],
+        pendingSlotClears: [{ lockEntityId: 'lock.b', slotIndex: 1, removing: true }],
+      })
+
+    it("doesn't cancel a pending removal when another lock is added", async () => {
+      const onUpdate = vi.fn().mockResolvedValue(undefined)
+      renderForm(withBRemoving(), { onUpdate, locks: LOCKS })
+      expect(await screen.findByDisplayValue('Front')).toBeTruthy()
+      expect(lockCheckbox('lock.a')).toBeChecked()
+      expect(lockCheckbox('lock.b')).not.toBeChecked()
+
+      fireEvent.click(lockCheckbox('lock.d'))
+
+      // Sending lock B again would keep it on the code.
+      const req = await savedRequest(onUpdate)
+      expect([...(req.lockEntityIds ?? [])].sort()).toEqual(['lock.a', 'lock.d'])
+    })
+
+    it("doesn't send the locks at all when only another field was edited", async () => {
+      const onUpdate = vi.fn().mockResolvedValue(undefined)
+      renderForm(withBRemoving(), { onUpdate, locks: LOCKS })
+      expect(await screen.findByDisplayValue('Front')).toBeTruthy()
+
+      fireEvent.change(labelInput(), { target: { value: 'Back door' } })
+
+      expect(await savedRequest(onUpdate)).toEqual({ reauthPassword: 'pw', label: 'Back door' })
+    })
+
+    it('cancels a pending removal only when the user ticks the lock again', async () => {
+      const onUpdate = vi.fn().mockResolvedValue(undefined)
+      renderForm(withBRemoving(), { onUpdate, locks: LOCKS })
+      expect(await screen.findByDisplayValue('Front')).toBeTruthy()
+
+      fireEvent.click(lockCheckbox('lock.b'))
+
+      const req = await savedRequest(onUpdate)
+      expect([...(req.lockEntityIds ?? [])].sort()).toEqual(['lock.a', 'lock.b'])
+    })
+
+    it('leaves the removed lock off once its clear works', async () => {
+      const onUpdate = vi.fn().mockResolvedValue(undefined)
+      const { serverChanges } = renderForm(withBRemoving(), { onUpdate, locks: LOCKS })
+      expect(await screen.findByDisplayValue('Front')).toBeTruthy()
+
+      fireEvent.click(lockCheckbox('lock.d'))
+      await serverChanges(withLocks(['lock.a']))
+
+      await waitFor(() => expect(lockCheckbox('lock.d')).toBeChecked())
+      expect(lockCheckbox('lock.b')).not.toBeChecked()
+      expect(notice()).toBeEmptyDOMElement()
       const req = await savedRequest(onUpdate)
       expect([...(req.lockEntityIds ?? [])].sort()).toEqual(['lock.a', 'lock.d'])
     })

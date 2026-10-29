@@ -142,7 +142,17 @@ export function DoorCodeEditContainer({ code, locks, locksIsLoading, locksError,
     { isEqual: sameRange },
   )
   const maxUsesField = useServerField(code.maxUses == null ? '' : String(code.maxUses))
-  const locksField = useServerField(new Set(code.lockEntityIds || []), {
+  // A lock whose removal is still waiting on its slot clear stays in
+  // lockEntityIds until the clear works, but the user already took it off. It
+  // starts unticked so a save only keeps it when the user ticks it again, which
+  // is what cancels the removal on the backend (#151).
+  const serverLockIds = useMemo(() => {
+    const removing = new Set(
+      (code.lockSlotAssignments || []).filter((a) => a.pendingRemoval).map((a) => a.lockEntityId),
+    )
+    return (code.lockEntityIds || []).filter((id) => !removing.has(id))
+  }, [code.lockEntityIds, code.lockSlotAssignments])
+  const locksField = useServerField(new Set(serverLockIds), {
     isEqual: sameSet,
     merge: mergeSet,
     copy: copySet,
@@ -274,8 +284,8 @@ export function DoorCodeEditContainer({ code, locks, locksIsLoading, locksError,
     if (isActiveField.isEdited || !editIsActive) req.isActive = editIsActive
     if (maxUsesField.isEdited) req.maxUses = maxUses
     // The manual ids stand in for the picker when it's empty, so compare what
-    // would be saved with the server's locks.
-    if (!sameSet(new Set(resolvedLockEntityIds), new Set(code.lockEntityIds || []))) {
+    // would be saved with the server's locks (without the ones being removed).
+    if (!sameSet(new Set(resolvedLockEntityIds), new Set(serverLockIds))) {
       req.lockEntityIds = resolvedLockEntityIds
     }
     if (typedPin) req.code = typedPin

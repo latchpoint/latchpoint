@@ -24,6 +24,7 @@ class DoorCodeSerializer(serializers.ModelSerializer):
     lock_assignments = serializers.SerializerMethodField()
     lock_entity_ids = serializers.SerializerMethodField()
     lock_slot_assignments = serializers.SerializerMethodField()
+    pending_slot_clears = serializers.SerializerMethodField()
 
     class Meta:
         model = DoorCode
@@ -49,6 +50,7 @@ class DoorCodeSerializer(serializers.ModelSerializer):
             "lock_assignments",
             "lock_entity_ids",
             "lock_slot_assignments",
+            "pending_slot_clears",
             "push_state",
             "last_push_attempt_at",
             "last_push_error",
@@ -96,17 +98,40 @@ class DoorCodeSerializer(serializers.ModelSerializer):
         return sorted({assignment.lock_entity_id for assignment in obj.lock_assignments.all()})
 
     def get_lock_slot_assignments(self, obj: DoorCode) -> list[dict]:
-        """Return per-lock slot programming state for the UI push-status badge (ADR 0092)."""
+        """Return per-lock slot programming state for the UI push-status badge (ADR 0092).
+
+        ``pending_removal`` is set for a lock the code is being dropped from whose
+        slot clear hasn't worked yet. Its assignment stays until it does (issue
+        #139), and only listing it again in ``lock_entity_ids`` on an update keeps
+        it on the code (issue #151).
+        """
         prefetched = getattr(obj, "_prefetched_objects_cache", {}) or {}
         if "lock_assignments" not in prefetched:
             raise RuntimeError("DoorCode.lock_assignments must be prefetched for serialization.")
+        removing = {f.lock_entity_id for f in self._clear_failures(obj) if f.removing}
         return [
             {
                 "lock_entity_id": assignment.lock_entity_id,
                 "slot_index": assignment.slot_index,
+                "pending_removal": assignment.lock_entity_id in removing,
             }
             for assignment in obj.lock_assignments.all()
         ]
+
+    def get_pending_slot_clears(self, obj: DoorCode) -> list[dict]:
+        """Slot clears still outstanding, as ``{lock_entity_id, slot_index, removing}`` (issue #151). No PINs."""
+        from locks.use_cases.lock_push import pending_slot_clears
+
+        return pending_slot_clears(door_code=obj, failures=self._clear_failures(obj))
+
+    def _clear_failures(self, obj: DoorCode) -> list:
+        """``unresolved_clear_failures`` for ``obj``, loaded once per code for both fields above."""
+        from locks.use_cases.lock_push import unresolved_clear_failures
+
+        cache = self.__dict__.setdefault("_clear_failures_cache", {})
+        if obj.pk not in cache:
+            cache[obj.pk] = unresolved_clear_failures(door_code=obj)
+        return cache[obj.pk]
 
 
 class DoorCodePushSerializer(DoorCodeSerializer):

@@ -37,13 +37,23 @@ function pushStateKeyOf(code: DoorCode): string {
   return `${code.isActive}|${code.pushState}|${code.lastPushAttemptAt ?? ''}`
 }
 
-function LockBadges({ lockEntityIds, lockNameByEntityId }: { lockEntityIds: string[]; lockNameByEntityId: Map<string, string> }) {
+function LockBadges({
+  lockEntityIds,
+  removingLockEntityIds,
+  lockNameByEntityId,
+}: {
+  lockEntityIds: string[]
+  removingLockEntityIds: Set<string>
+  lockNameByEntityId: Map<string, string>
+}) {
   if (!lockEntityIds.length) return <span className="text-sm text-muted-foreground">No locks</span>
   return (
     <div className="mt-2 flex flex-wrap gap-2">
       {lockEntityIds.map((entityId) => (
         <Badge key={entityId} variant="outline">
           {lockNameByEntityId.get(entityId) || entityId}
+          {/* Still listed until its slot clear works (#151). */}
+          {removingLockEntityIds.has(entityId) ? ' (removing)' : ''}
         </Badge>
       ))}
     </div>
@@ -163,7 +173,13 @@ export function DoorCodeCard({
             {code.lastUsedAt ? ` • Last used: ${new Date(code.lastUsedAt).toLocaleString()}` : ''}
             {code.lastUsedLock ? ` • Lock: ${lockNameByEntityId.get(code.lastUsedLock) || code.lastUsedLock}` : ''}
           </div>
-          <LockBadges lockEntityIds={code.lockEntityIds || []} lockNameByEntityId={lockNameByEntityId} />
+          <LockBadges
+            lockEntityIds={code.lockEntityIds || []}
+            removingLockEntityIds={
+              new Set((code.lockSlotAssignments || []).filter((a) => a.pendingRemoval).map((a) => a.lockEntityId))
+            }
+            lockNameByEntityId={lockNameByEntityId}
+          />
           <div className="mt-2">
             <DoorCodePushStatusBadge
               code={code}
