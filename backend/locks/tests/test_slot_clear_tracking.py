@@ -13,11 +13,15 @@ from integrations_zwavejs.manager import ZwavejsCommandError
 from rest_framework.test import APIClient, APITestCase
 
 from alarm.crypto import SettingsEncryption
+from alarm.models import Entity
 from locks.models import DoorCode, DoorCodeEvent, DoorCodeLockAssignment
 from locks.serializers import DoorCodePushSerializer, DoorCodeSerializer
+from locks.tests.test_door_code_locking import _recording_acquires
 from locks.tests.test_lock_push import ClearFailingGateway, FakeGateway, _TwoLockUpdateTestBase
 from locks.use_cases import door_codes as door_codes_uc
 from locks.use_cases import lock_push as lock_push_uc
+from locks.use_cases.lock_config_sync import LockBusy
+from locks.use_cases.lock_config_sync import NotFound as LockSyncNotFound
 
 
 def _timeouts(count: int = 3) -> list[Exception]:
@@ -307,15 +311,20 @@ class UnconfirmedSlotSettledTests(_SlotClearTestBase):
         self.assertEqual([c for c in gateway.invoke_calls if c["node_id"] == 13], [])
         self.assertEqual(self._lock_codes(gateway, 12), {})
 
-    def test_later_updates_dont_check_the_dropped_lock_again(self):
+    def test_later_updates_and_deletes_dont_wait_on_the_dropped_lock(self):
         code, gateway = self._code_with_side_unconfirmed()
         self._update(code, gateway, {"lock_entity_ids": [self.BACK]})
-        gateway.invoke_calls.clear()
 
-        self._update(code, gateway, {"code": "5555"})
+        with _recording_acquires() as update_locks:
+            self._update(code, gateway, {"code": "5555"})
+        with _recording_acquires() as delete_locks:
+            door_codes_uc.delete_door_code(code=code, actor_user=self.user, zwavejs=gateway)
 
-        self.assertEqual([c for c in gateway.invoke_calls if c["node_id"] == 13], [])
-        self.assertEqual(self._lock_codes(gateway, 12), {1: "5555"})
+        # Before #161 both still took Side's lock_sync: lock, so a sync on Side held them up.
+        self.assertNotIn(self.SIDE, update_locks)
+        self.assertNotIn(self.SIDE, delete_locks)
+        self.assertIn(self.BACK, update_locks)
+        self.assertFalse(DoorCode.objects.filter(id=code.id).exists())
 
     def test_a_slot_whose_check_timed_out_stays_tied_until_a_retry_clears_it(self):
         code, gateway = self._code_with_side_unconfirmed()
@@ -477,3 +486,321 @@ class PendingSlotClearsSerializerTests(_SlotClearTestBase, APITestCase):
             data["pending_slot_clears"], [{"lock_entity_id": self.SIDE, "slot_index": 1, "removing": False}]
         )
         self.assertFalse(any(a["pending_removal"] for a in data["lock_slot_assignments"]))
+
+
+class ClearResolvedDoesntHideALaterAttemptTests(_SlotClearTestBase):
+    """PR #167 review: settling an old clear failure must not settle a newer unconfirmed attempt on that slot."""
+
+    OLD_PIN = "1111"
+
+    def _code(self) -> DoorCode:
+        code = DoorCode.objects.create(
+            user=self.user,
+            encrypted_pin=SettingsEncryption.get().encrypt(self.PIN),
+            pin_length=len(self.PIN),
+            code_type=DoorCode.CodeType.PERMANENT,
+            is_active=True,
+            push_state=DoorCode.PushState.PENDING,
+        )
+        DoorCodeLockAssignment.objects.create(door_code=code, lock_entity_id=self.BACK, slot_index=None)
+        return code
+
+    def _attempt(self, code: DoorCode, pin: str, slot_index: int = 1) -> None:
+        lock_push_uc._record_unconfirmed_slot_attempt(
+            door_code=code, lock_entity_id=self.BACK, slot_index=slot_index, reason="timeout", pin=pin
+        )
+
+    def _failure(self, code: DoorCode, slot_index: int = 1) -> None:
+        lock_push_uc.record_clear_failure(
+            door_code=code,
+            lock_entity_id=self.BACK,
+            slot_index=slot_index,
+            exc=ZwavejsCommandError("driver TimeoutError after 5.0s"),
+            expected_pin=self.OLD_PIN,
+            unconfirmed=True,
+        )
+
+    def _attempts(self, code: DoorCode) -> dict[int, str | None]:
+        return lock_push_uc._unconfirmed_attempts(door_code=code, lock_entity_id=self.BACK)
+
+    def test_the_retry_adopts_the_new_pins_slot_instead_of_stranding_it(self):
+        for drops_duplicates in (False, True):
+            with self.subTest(drops_duplicates=drops_duplicates):
+                # A PIN change's cleanup couldn't check slot 1 for the old PIN, then
+                # the new PIN landed in slot 1 but its readback timed out.
+                gateway = ClearFailingGateway(
+                    usersNumber=5, cache_updates_on_set=True, drops_duplicates=drops_duplicates
+                )
+                code = self._code()
+                self._failure(code)
+                self._attempt(code, self.PIN)
+                gateway._lock_codes[(12, 1)] = self.PIN
+                gateway._cache_codes[(12, 1)] = self.PIN
+
+                self._run_scheduler(gateway)
+
+                code.refresh_from_db()
+                # Slot 1 doesn't hold the old PIN, which settles the old failure, but
+                # the new PIN's attempt there was never checked, so it gets adopted.
+                self.assertEqual(lock_push_uc.unresolved_clear_failures(door_code=code), [])
+                self.assertEqual(self._slots(code), {self.BACK: 1})
+                self.assertEqual(self._lock_codes(gateway, 12), {1: self.PIN})
+                self.assertEqual(self._calls(gateway, "set"), [])
+                self.assertEqual(code.push_state, DoorCode.PushState.PUSHED)
+
+                self._update(code, gateway, {"is_active": False})
+                self.assertEqual(self._lock_codes(gateway, 12), {}, "the inactive code's PIN is still on the lock")
+                DoorCode.objects.filter(id=code.id).delete()
+
+    def test_a_not_holding_resolve_settles_the_attempts_before_its_failure(self):
+        code = self._code()
+        self._attempt(code, self.OLD_PIN)
+        self._failure(code)
+
+        lock_push_uc.resolve_clear_failure(
+            door_code=code, lock_entity_id=self.BACK, slot_index=1, outcome="not_holding_pin"
+        )
+
+        self.assertEqual(self._attempts(code), {})
+        # A later attempt on the slot counts again.
+        self._attempt(code, self.PIN)
+        self.assertEqual(self._attempts(code), {1: self.PIN})
+
+    def test_a_clear_settles_every_attempt_before_it(self):
+        code = self._code()
+        self._failure(code)
+        self._attempt(code, self.PIN)
+
+        lock_push_uc.forget_cleared_slot(door_code=code, lock_entity_id=self.BACK, slot_index=1, outcome="cleared")
+
+        # Whatever either PIN left in slot 1 went with the clear.
+        self.assertEqual(self._attempts(code), {})
+
+
+class ReactivatedWhileClearingTests(_SlotClearTestBase):
+    """PR #167 review: the inactive clear must not write a stale state over an update that turned the code on."""
+
+    def _reactivate_with_a_timed_out_push(self, code: DoorCode, gateway: FakeGateway) -> None:
+        # What the update turning the code back on leaves when its push times out.
+        DoorCode.objects.filter(id=code.id).update(
+            is_active=True, push_state=DoorCode.PushState.PENDING, last_push_error="LockUnreachable: timed out"
+        )
+        DoorCodeLockAssignment.objects.filter(door_code=code).update(slot_index=None)
+        gateway._lock_codes.pop((12, 1), None)
+        gateway._cache_codes.pop((12, 1), None)
+
+    def _assert_left_for_the_scheduler(self, code: DoorCode) -> None:
+        code.refresh_from_db()
+        self.assertTrue(code.is_active)
+        self.assertEqual(code.push_state, DoorCode.PushState.PENDING)
+        self.assertEqual(code.last_push_error, "LockUnreachable: timed out")
+
+    def test_turned_on_while_the_clear_waited_for_the_lock(self):
+        code, gateway = self._turned_off_without_clearing([self.BACK])
+        DoorCode.objects.filter(id=code.id).update(push_state=DoorCode.PushState.PENDING)
+        real_hold = lock_push_uc.hold_lock_sync
+
+        @contextlib.contextmanager
+        def hold_after_a_reactivate(lock_entity_ids, *, deadline=None):
+            self._reactivate_with_a_timed_out_push(code, gateway)
+            with real_hold(lock_entity_ids, deadline=deadline):
+                yield
+
+        with patch.object(lock_push_uc, "hold_lock_sync", hold_after_a_reactivate):
+            lock_push_uc.push_or_settle_after_clear_retry(door_code=code, zwavejs=gateway)
+
+        self.assertEqual(self._calls(gateway, "clear"), [])
+        self._assert_left_for_the_scheduler(code)
+
+    def test_turned_on_right_after_the_clear(self):
+        code, gateway = self._turned_off_without_clearing([self.BACK])
+        DoorCode.objects.filter(id=code.id).update(push_state=DoorCode.PushState.PENDING)
+        real_settle = lock_push_uc.settle_clear_failure_state
+
+        def settle_after_a_reactivate(*, door_code):
+            self._reactivate_with_a_timed_out_push(code, gateway)
+            return real_settle(door_code=door_code)
+
+        with patch.object(lock_push_uc, "settle_clear_failure_state", settle_after_a_reactivate):
+            lock_push_uc.push_or_settle_after_clear_retry(door_code=code, zwavejs=gateway)
+
+        self.assertEqual(self._calls(gateway, "clear"), [(12, [1])])
+        self._assert_left_for_the_scheduler(code)
+
+
+class InactiveClearEdgeTests(_SlotClearTestBase):
+    """PR #167 review: the inactive clear's readback, busy locks, and the slots it leaves to other paths."""
+
+    def test_a_tracked_slot_is_read_back_before_its_cleared(self):
+        cases = {
+            # readback -> whether the slot gets cleared (it's forgotten either way)
+            "this pin": ([], True),
+            "this pin disabled": ([{"userIdStatus": 2, "userCode": self.PIN}], True),
+            "masked": ([{"userIdStatus": 1, "userCode": "****"}], True),
+            "disabled and unreadable": ([{"userIdStatus": 2, "userCode": "****"}], True),
+            "a keypad code": ([{"userIdStatus": 1, "userCode": "9999"}], False),
+            "empty": ([{"userIdStatus": 0, "userCode": ""}, {"userIdStatus": 0, "userCode": ""}], False),
+        }
+        for name, (readback, should_clear) in cases.items():
+            with self.subTest(readback=name):
+                code, gateway = self._turned_off_without_clearing([self.BACK])
+                gateway._get_scripts = {12: list(readback)}
+
+                self._run_scheduler(gateway)
+
+                code.refresh_from_db()
+                self.assertEqual(self._calls(gateway, "clear"), [(12, [1])] if should_clear else [])
+                self.assertEqual(self._slots(code), {self.BACK: None})
+                self.assertEqual(code.push_state, DoorCode.PushState.PUSHED)
+                self.assertEqual(lock_push_uc.unresolved_clear_failures(door_code=code), [])
+                DoorCode.objects.filter(id=code.id).delete()
+
+    def test_a_tracked_slot_whose_readback_gets_no_answer_is_read_back_again(self):
+        code, gateway = self._turned_off_without_clearing([self.BACK])
+        gateway._get_scripts = {12: _timeouts()}
+
+        self._run_scheduler(gateway)
+
+        code.refresh_from_db()
+        self.assertEqual(self._calls(gateway, "clear"), [])
+        self.assertEqual(self._slots(code), {self.BACK: 1})
+        self.assertEqual(code.push_state, DoorCode.PushState.PENDING)
+        self.assertIn(f"Couldn't clear slot 1 on {self.BACK}", code.last_push_error)
+        self.assertEqual(code.push_attempt_count, 1)
+        # Nothing recorded, so the retry doesn't clear it blind.
+        self.assertEqual(lock_push_uc.unresolved_clear_failures(door_code=code), [])
+
+        gateway._lock_codes[(12, 1)] = "9999"  # typed in on the keypad meanwhile
+        gateway._cache_codes[(12, 1)] = "9999"
+        self._run_scheduler(gateway)
+
+        code.refresh_from_db()
+        self.assertEqual(self._calls(gateway, "clear"), [])
+        self.assertEqual(self._lock_codes(gateway, 12), {1: "9999"})
+        self.assertEqual(self._slots(code), {self.BACK: None})
+        self.assertEqual(code.push_state, DoorCode.PushState.PUSHED)
+
+    def test_a_busy_lock_keeps_the_code_pending(self):
+        code, gateway = self._turned_off_without_clearing([self.BACK])
+
+        @contextlib.contextmanager
+        def busy(lock_entity_ids, *, deadline=None):
+            raise LockBusy(f"Another operation on {self.BACK} is still running. Try again in a moment.")
+            yield  # pragma: no cover
+
+        with patch.object(lock_push_uc, "hold_lock_sync", busy):
+            successes, failures = lock_push_uc.push_or_settle_after_clear_retry(door_code=code, zwavejs=gateway)
+
+        code.refresh_from_db()
+        self.assertEqual(successes, [])
+        self.assertEqual([lock for lock, _reason in failures], [self.BACK])
+        self.assertEqual(gateway.invoke_calls, [])
+        self.assertEqual(self._slots(code), {self.BACK: 1})
+        self.assertEqual(code.push_state, DoorCode.PushState.PENDING)
+        self.assertIn(f"Couldn't clear slot 1 on {self.BACK}", code.last_push_error)
+        # Nothing was tried there, so it doesn't count toward the cap.
+        self.assertEqual(code.push_attempt_count, 0)
+
+    def test_slots_with_a_recorded_failure_are_left_to_the_retry(self):
+        # Slot 1 is tracked and slot 2 unconfirmed, both with a failed clear on
+        # record. Slot 3 is unconfirmed with nothing recorded, so only it is checked.
+        code, gateway = self._turned_off_without_clearing([self.BACK])
+        for slot_index in (2, 3):
+            lock_push_uc._record_unconfirmed_slot_attempt(
+                door_code=code, lock_entity_id=self.BACK, slot_index=slot_index, reason="timeout", pin=self.PIN
+            )
+            gateway._lock_codes[(12, slot_index)] = self.PIN
+        for slot_index, unconfirmed in ((1, False), (2, True)):
+            lock_push_uc.record_clear_failure(
+                door_code=code,
+                lock_entity_id=self.BACK,
+                slot_index=slot_index,
+                exc=ZwavejsCommandError("driver TimeoutError after 5.0s"),
+                expected_pin=self.PIN,
+                unconfirmed=unconfirmed,
+            )
+
+        lock_push_uc.clear_inactive_code_slots(door_code=code, zwavejs=gateway)
+
+        touched = sorted({c["args"][0] for c in gateway.invoke_calls if c["command_class"] == 99})
+        self.assertEqual(touched, [3])
+        self.assertEqual(self._lock_codes(gateway, 12), {1: self.PIN, 2: self.PIN})
+        self.assertEqual(sorted(f.slot_index for f in lock_push_uc.unresolved_clear_failures(door_code=code)), [1, 2])
+
+    def test_an_unconfirmed_slot_on_a_lock_thats_gone_is_settled(self):
+        code, gateway = self._code_with_side_unconfirmed()
+        door_codes_uc.update_door_code(code=code, changes={"is_active": False}, actor_user=self.user)
+        DoorCodeLockAssignment.objects.filter(door_code=code, lock_entity_id=self.BACK).update(slot_index=None)
+        Entity.objects.filter(entity_id=self.SIDE).delete()
+
+        self._run_scheduler(gateway)
+
+        self.assertEqual(gateway.invoke_calls, [])
+        self.assertEqual(lock_push_uc.unconfirmed_attempt_lock_entity_ids(door_code=code), [])
+        self.assertEqual(lock_push_uc.inactive_slots_to_clear(door_code=code), [])
+        self.assertEqual(DoorCode.objects.get(id=code.id).push_state, DoorCode.PushState.PUSHED)
+
+    def test_an_unconfirmed_slot_whose_lock_goes_away_before_the_clear_is_settled(self):
+        code, gateway = self._code_with_side_unconfirmed()
+        door_codes_uc.update_door_code(code=code, changes={"is_active": False}, actor_user=self.user)
+        DoorCodeLockAssignment.objects.filter(door_code=code, lock_entity_id=self.BACK).update(slot_index=None)
+
+        # The readback works, then the entity is gone by the time of the clear.
+        with patch.object(lock_push_uc, "clear_lock_user_code_slot", side_effect=LockSyncNotFound("Lock not found.")):
+            self._run_scheduler(gateway)
+
+        self.assertEqual(lock_push_uc.unconfirmed_attempt_lock_entity_ids(door_code=code), [])
+        self.assertEqual(lock_push_uc.unresolved_clear_failures(door_code=code), [])
+        self.assertEqual(DoorCode.objects.get(id=code.id).push_state, DoorCode.PushState.PUSHED)
+
+    def test_the_scheduler_skips_a_pushed_inactive_code_with_nothing_left(self):
+        # An old unconfirmed attempt puts it in the rough cut, but a later push closed its window.
+        code, gateway = self._deactivated_code([self.BACK])
+        lock_push_uc._record_unconfirmed_slot_attempt(
+            door_code=code, lock_entity_id=self.BACK, slot_index=2, reason="timeout", pin=self.PIN
+        )
+        DoorCodeEvent.objects.create(
+            door_code=code,
+            lock_entity_id=self.BACK,
+            event_type=DoorCodeEvent.EventType.CODE_SYNCED,
+            metadata={"action": "pushed", "slot_index": 1},
+        )
+
+        self.assertEqual(self._run_scheduler(gateway), 0)
+        self.assertEqual(gateway.invoke_calls, [])
+
+    def test_a_checked_attempt_newer_than_an_open_failure_is_settled(self):
+        # The cleanup checks slot 1 against the newest attempt's PIN, so that check
+        # covers the attempt even though the older failure's resolve doesn't.
+        code, gateway = self._turned_off_without_clearing([self.BACK])
+        DoorCodeLockAssignment.objects.filter(door_code=code).update(slot_index=None)
+        lock_push_uc.record_clear_failure(
+            door_code=code,
+            lock_entity_id=self.BACK,
+            slot_index=1,
+            exc=ZwavejsCommandError("driver TimeoutError after 5.0s"),
+            expected_pin="1111",
+            unconfirmed=True,
+        )
+        lock_push_uc._record_unconfirmed_slot_attempt(
+            door_code=code, lock_entity_id=self.BACK, slot_index=1, reason="timeout", pin=self.PIN
+        )
+        gateway._lock_codes[(12, 1)] = "9999"
+
+        _cleared, failed = lock_push_uc.clear_unconfirmed_slots_holding_pin(
+            door_code=code, pin=self.PIN, lock_entity_ids=[self.BACK], zwavejs=gateway
+        )
+
+        self.assertEqual(failed, [])
+        self.assertEqual(self._calls(gateway, "clear"), [])
+        self.assertEqual(lock_push_uc.unresolved_clear_failures(door_code=code), [])
+        self.assertEqual(lock_push_uc._unconfirmed_attempts(door_code=code, lock_entity_id=self.BACK), {})
+
+    def test_the_scheduler_leaves_a_pending_synced_inactive_code_alone(self):
+        code, gateway = self._turned_off_without_clearing([self.BACK])
+        DoorCode.objects.filter(id=code.id).update(source=DoorCode.Source.SYNCED, push_state=DoorCode.PushState.PENDING)
+
+        self.assertEqual(self._run_scheduler(gateway), 0)
+
+        self.assertEqual(gateway.invoke_calls, [])
+        self.assertEqual(DoorCode.objects.get(id=code.id).push_state, DoorCode.PushState.PENDING)

@@ -96,13 +96,15 @@ class LockRejectedCode(LockPushFailed):
     ``clear_slot`` is set when the slot we just wrote might still hold the PIN
     (read back holding it disabled, or read back empty but possibly committed
     late), so the push path clears it rather than leave a PIN on the lock nothing
-    tracks. ``holds_pin`` is set only when the readback showed the PIN itself.
+    tracks. ``holds_pin`` is set only when the readback showed the PIN itself,
+    and ``holds_other`` only when it showed a different code.
     """
 
-    def __init__(self, message: str, *, clear_slot: bool = False, holds_pin: bool = False):
+    def __init__(self, message: str, *, clear_slot: bool = False, holds_pin: bool = False, holds_other: bool = False):
         super().__init__(message)
         self.clear_slot = clear_slot
         self.holds_pin = holds_pin
+        self.holds_other = holds_other
 
 
 class LockCodeUnverified(GatewayError):
@@ -352,7 +354,9 @@ def _verify_user_code_slot(
                     holds_pin=True,
                 )
             if known:
-                raise LockRejectedCode(f"Lock did not store the code: slot {slot_index} holds a different code.")
+                raise LockRejectedCode(
+                    f"Lock did not store the code: slot {slot_index} holds a different code.", holds_other=True
+                )
             raise LockRejectedCode(f"Lock reports slot {slot_index} disabled and its code can't be read back.")
 
         if not known:
@@ -364,7 +368,9 @@ def _verify_user_code_slot(
             )
             return False
         if stored != pin:
-            raise LockRejectedCode(f"Lock did not store the code: slot {slot_index} holds a different code.")
+            raise LockRejectedCode(
+                f"Lock did not store the code: slot {slot_index} holds a different code.", holds_other=True
+            )
         return True
 
     raise LockCodeUnverified(f"Could not read back slot {slot_index} after {attempts} attempts ({last_reason}).")
@@ -377,8 +383,13 @@ _UNCONFIRMED_PUSH_ACTION = "push_unconfirmed"
 # DoorCodeEvent metadata ``action`` (on a ``code_removed`` event) recorded once a
 # cleanup has checked or cleared a ``push_unconfirmed`` slot, so the attempts for
 # that lock and slot before it no longer count (issue #161). A ``clear_resolved``
-# for the same lock and slot settles them too.
+# for the same lock and slot settles them too when the slot was emptied
+# (``_SLOT_EMPTIED_OUTCOMES``), see ``_unsettled_unconfirmed_attempts``.
 _UNCONFIRMED_RESOLVED_ACTION = "unconfirmed_resolved"
+
+# ``clear_resolved`` outcomes after which the slot holds nothing of the code's,
+# whatever PIN an earlier attempt sent there: it was cleared, or the lock is gone.
+_SLOT_EMPTIED_OUTCOMES = frozenset({"cleared", "lock_missing"})
 
 
 # Metadata key for the PIN a recorded slot is expected to hold, encrypted at rest
@@ -468,21 +479,43 @@ def _unconfirmed_attempt_window(*, door_code: DoorCode, lock_entity_id: str):
 def _unsettled_unconfirmed_attempts(*, door_code: DoorCode, lock_entity_id: str) -> dict[int, tuple[int, dict]]:
     """The newest in-window ``push_unconfirmed`` event per slot that no cleanup has settled since.
 
-    Maps each slot to that event's ``(id, metadata)``, newest first. A
-    ``unconfirmed_resolved`` or ``clear_resolved`` event for the same lock and
-    slot settles every attempt recorded before it (issue #161); a later attempt
-    on that slot counts again.
+    Maps each slot to that event's ``(id, metadata)``, newest first. An
+    ``unconfirmed_resolved`` marker for the same lock and slot settles every
+    attempt recorded before it (issue #161), and so does a ``clear_resolved``
+    whose slot was actually cleared or whose lock is gone. Any other
+    ``clear_resolved`` (the slot didn't hold the failure's expected PIN, or
+    another code tracks it) only says something about the PIN that failure
+    expected, so it only settles attempts recorded before that failure. An
+    attempt recorded after it was never checked and may hold a newer PIN (PR
+    #167 review). A later attempt on a settled slot counts again.
     """
     settled_up_to: dict[int, int] = {}
-    resolved = DoorCodeEvent.objects.filter(
-        door_code=door_code,
-        lock_entity_id=lock_entity_id,
-        metadata__action__in=[_UNCONFIRMED_RESOLVED_ACTION, _CLEAR_RESOLVED_ACTION],
-    ).values_list("id", "metadata")
-    for event_id, metadata in resolved:
+    open_failure_since: dict[int, int] = {}
+    markers = (
+        DoorCodeEvent.objects.filter(
+            door_code=door_code,
+            lock_entity_id=lock_entity_id,
+            metadata__action__in=[_UNCONFIRMED_RESOLVED_ACTION, _CLEAR_FAILED_ACTION, _CLEAR_RESOLVED_ACTION],
+        )
+        .order_by("id")
+        .values_list("id", "metadata")
+    )
+    for event_id, metadata in markers:
         slot_index = _coerce_int(metadata.get("slot_index")) if isinstance(metadata, dict) else None
-        if slot_index:
-            settled_up_to[slot_index] = max(settled_up_to.get(slot_index, 0), event_id)
+        if not slot_index:
+            continue
+        action = metadata.get("action")
+        if action == _CLEAR_FAILED_ACTION:
+            open_failure_since.setdefault(slot_index, event_id)
+            continue
+        settles = event_id
+        if action == _CLEAR_RESOLVED_ACTION:
+            failed_at = open_failure_since.pop(slot_index, None)
+            if metadata.get("outcome") not in _SLOT_EMPTIED_OUTCOMES:
+                if failed_at is None:
+                    continue
+                settles = failed_at
+        settled_up_to[slot_index] = max(settled_up_to.get(slot_index, 0), settles)
 
     newest: dict[int, tuple[int, dict]] = {}
     attempts = _unconfirmed_attempt_window(door_code=door_code, lock_entity_id=lock_entity_id)
@@ -1111,13 +1144,15 @@ def clear_unconfirmed_slots_holding_pin(
 def _settle_unconfirmed_slot(*, door_code: DoorCode, lock_entity_id: str, slot_index: int, outcome: str) -> None:
     """Record that an unconfirmed slot was checked or cleared, so its attempts stop counting (issue #161).
 
-    Settles a recorded clear failure for the slot if there is one (its
-    ``clear_resolved`` settles the attempts too), else adds an
-    ``unconfirmed_resolved`` marker.
+    Settles a recorded clear failure for the slot if there is one, and adds an
+    ``unconfirmed_resolved`` marker unless that failure's ``clear_resolved``
+    already settles the attempts (the slot was emptied). The caller checked the
+    slot against its newest attempt, so the marker covers every attempt so far.
     """
-    if resolve_clear_failure(
+    resolved = resolve_clear_failure(
         door_code=door_code, lock_entity_id=lock_entity_id, slot_index=slot_index, outcome=outcome
-    ):
+    )
+    if resolved is not None and outcome in _SLOT_EMPTIED_OUTCOMES:
         return
     DoorCodeEvent.objects.create(
         door_code=door_code,
@@ -1302,6 +1337,37 @@ def pending_slot_clears(*, door_code: DoorCode, failures: list[ClearFailure] | N
     return [entries[key] for key in sorted(entries)]
 
 
+def _tracked_slot_may_hold_pin(
+    *, zwavejs: ZwavejsGateway, lock_entity_id: str, slot_index: int, pin: str | None, timeout_seconds: float
+) -> bool:
+    """Read a slot an inactive code tracks back before clearing it (PR #167 review).
+
+    ``True`` when it holds ``pin`` (enabled or disabled), or reads back occupied
+    with a code that can't be read, which counts as this code's since it tracks
+    the slot. ``False`` when it holds a different readable code (ie one typed in
+    on the keypad since) or reads back empty. A code whose own PIN can't be read
+    has nothing to compare against, so its slot counts as its own.
+    :class:`LockCodeUnverified` and gateway errors propagate.
+    """
+    if not pin:
+        return True
+    try:
+        _verify_user_code_slot(
+            zwavejs=zwavejs,
+            node_id=_resolve_lock_node_id(lock_entity_id=lock_entity_id),
+            slot_index=slot_index,
+            pin=pin,
+            timeout_seconds=timeout_seconds,
+        )
+    except LockRejectedCode as exc:
+        if exc.holds_pin:
+            return True
+        # A different code, or empty (the only rejection that asks for a clear
+        # without holding the PIN). Disabled with an unreadable code stays ours.
+        return not (exc.holds_other or exc.clear_slot)
+    return True
+
+
 def _clear_inactive_slots_on_lock(
     *,
     door_code: DoorCode,
@@ -1318,7 +1384,34 @@ def _clear_inactive_slots_on_lock(
     assignment = DoorCodeLockAssignment.objects.filter(
         door_code=door_code, lock_entity_id=lock_entity_id, slot_index__isnull=False
     ).first()
+    holds_pin: bool | None = None
     if assignment is not None and assignment.slot_index not in failing:
+        slot_index = int(assignment.slot_index)
+        try:
+            holds_pin = _tracked_slot_may_hold_pin(
+                zwavejs=zwavejs,
+                lock_entity_id=lock_entity_id,
+                slot_index=slot_index,
+                pin=pin,
+                timeout_seconds=timeout_seconds,
+            )
+        except Exception as exc:
+            # Not recorded: a recorded failure on a tracked slot is retried as a
+            # clear with no readback, so this one stays a slot to read back first.
+            failure = describe_clear_failure(
+                door_code=door_code, lock_entity_id=lock_entity_id, slot_index=slot_index, exc=exc
+            )
+            failed.append(failure)
+            if failure.permanent:
+                forget_cleared_slot(
+                    door_code=door_code, lock_entity_id=lock_entity_id, slot_index=slot_index, outcome="lock_missing"
+                )
+        if holds_pin is False:
+            # Someone typed another code into it, or it's empty: nothing of ours to clear.
+            forget_cleared_slot(
+                door_code=door_code, lock_entity_id=lock_entity_id, slot_index=slot_index, outcome="not_holding_pin"
+            )
+    if holds_pin:
         slot_index = int(assignment.slot_index)
         try:
             clear_lock_user_code_slot(
@@ -1364,13 +1457,18 @@ def clear_inactive_code_slots(
 ) -> list[ClearFailure]:
     """Clear the slots :func:`inactive_slots_to_clear` finds, for the scheduler and Retry (issue #158).
 
-    The same rules as the other clears apply. A slot the code tracks is cleared
-    as is and forgotten once that works. An unconfirmed slot is read back and
-    only cleared when it holds the PIN that attempt sent, then settled
-    (:func:`_clear_unconfirmed_slots_on_lock`). A slot another code holds is
-    never touched. A clear that fails is recorded with :func:`record_clear_failure`
-    so :func:`retry_failed_slot_clears` takes over, and counts toward the attempt
-    cap. A lock latchpoint can't resolve any more is settled as ``lock_missing``.
+    A slot the code tracks is read back first, since nothing has written to it
+    for a while (ie rows from before #144) and a keypad code may have replaced
+    the PIN: it's cleared when it holds this code's PIN or a code that can't be
+    read, and forgotten without a clear when it holds a different code or reads
+    back empty (:func:`_tracked_slot_may_hold_pin`). A readback that gets no
+    answer isn't recorded, so the next try reads it back again. An unconfirmed
+    slot is read back and only cleared when it holds the PIN that attempt sent,
+    then settled (:func:`_clear_unconfirmed_slots_on_lock`). A slot another code
+    holds is never touched. A clear that fails is recorded with
+    :func:`record_clear_failure` so :func:`retry_failed_slot_clears` takes over.
+    Either failure counts toward the attempt cap. A lock latchpoint can't
+    resolve any more is settled as ``lock_missing``.
 
     Each lock is handled while holding its ``lock_sync:`` lock (one deadline
     shared across them), and the code is read again once it's held, so a code
@@ -1964,22 +2062,35 @@ def push_or_settle_after_clear_retry(
     door_code = DoorCode.objects.prefetch_related("lock_assignments").get(id=door_code.id)
     if not door_code.is_active:
         still_failing = clear_inactive_code_slots(door_code=door_code, zwavejs=zwavejs)
+        failures = [(f.lock_entity_id, f.reason) for f in still_failing]
+        # The clear may have waited behind an update that turned the code back on
+        # (PR #167 review). That update owns its state now, so nothing below may
+        # write over it, and the writes only land while the code is still off.
+        try:
+            door_code.refresh_from_db(fields=["is_active", "push_state", "last_push_error"])
+        except DoorCode.DoesNotExist:
+            return [], failures
+        if door_code.is_active:
+            return [], failures
+        still_off = DoorCode.objects.filter(id=door_code.id, is_active=False)
         if settle_clear_failure_state(door_code=door_code):
             pass
         elif still_failing:
-            # Only a lock still busy leaves a slot behind with nothing recorded.
-            door_code.refresh_from_db(fields=["push_state", "last_push_error"])
+            # A lock still busy, or a readback that got no answer, leaves a slot
+            # behind with nothing recorded.
             error = sanitize_push_error_for_storage(clear_failures_message(still_failing))[:500]
             if (door_code.push_state, door_code.last_push_error) != (DoorCode.PushState.PENDING, error):
-                door_code.push_state = DoorCode.PushState.PENDING
-                door_code.last_push_error = error
-                door_code.save(update_fields=["push_state", "last_push_error", "updated_at"])
+                still_off.update(
+                    push_state=DoorCode.PushState.PENDING, last_push_error=error, updated_at=django_timezone.now()
+                )
         elif door_code.push_state != DoorCode.PushState.PUSHED or door_code.last_push_error:
-            door_code.push_state = DoorCode.PushState.PUSHED
-            door_code.last_push_error = ""
-            door_code.push_attempt_count = 0
-            door_code.save(update_fields=["push_state", "last_push_error", "push_attempt_count", "updated_at"])
-        return [], [(f.lock_entity_id, f.reason) for f in still_failing]
+            still_off.update(
+                push_state=DoorCode.PushState.PUSHED,
+                last_push_error="",
+                push_attempt_count=0,
+                updated_at=django_timezone.now(),
+            )
+        return [], failures
     successes, failures = push_door_code_to_assigned_locks(
         door_code=door_code,
         zwavejs=zwavejs,
