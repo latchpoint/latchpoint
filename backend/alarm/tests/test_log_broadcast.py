@@ -101,3 +101,48 @@ class LogBroadcastStartupTests(SimpleTestCase):
         self.assertEqual(message["type"], "broadcast")
         self.assertEqual(message["message"]["type"], "log_entry")
         self.assertEqual(message["message"]["payload"]["message"], "door sensor offline")
+
+
+class BoundedBroadcastQueueTests(SimpleTestCase):
+    """The broadcast queue is bounded and drops its oldest entries when full (#174)."""
+
+    def setUp(self):
+        log_handler.configure(buffer_size=500, capture_level=logging.DEBUG, broadcast_level=logging.WARNING)
+
+    def _emit_into(self, entries: queue.Queue, messages: list[str]) -> int:
+        """Emit `messages` with a worker "running" but not draining. Returns how many were dropped."""
+        before = log_handler.get_broadcast_dropped_count()
+        with (
+            patch.object(log_handler, "_broadcast_queue", entries),
+            patch.object(log_handler, "_broadcast_thread", object()),
+        ):
+            for msg in messages:
+                log_handler.BufferedWebSocketHandler().emit(_warning(msg))
+        return log_handler.get_broadcast_dropped_count() - before
+
+    def test_the_module_queue_is_bounded(self):
+        self.assertGreater(log_handler._broadcast_queue.maxsize, 0)
+
+    def test_a_full_queue_drops_the_oldest_entry_and_counts_it(self):
+        entries: queue.Queue = queue.Queue(maxsize=2)
+
+        dropped = self._emit_into(entries, ["first", "second", "third", "fourth"])
+
+        self.assertEqual(dropped, 2)
+        self.assertEqual([entries.get_nowait()["message"] for _ in range(entries.qsize())], ["third", "fourth"])
+
+    def test_a_full_queue_still_buffers_the_entry_for_the_logs_tab(self):
+        # Only the live broadcast drops. The ring buffer the Logs tab reads keeps everything up to its own size.
+        log_handler.clear_buffer()
+
+        self._emit_into(queue.Queue(maxsize=1), ["first", "second"])
+
+        self.assertEqual([e["message"] for e in log_handler.get_buffered_entries()], ["first", "second"])
+
+    def test_nothing_is_dropped_below_the_limit(self):
+        entries: queue.Queue = queue.Queue(maxsize=5)
+
+        dropped = self._emit_into(entries, ["first", "second"])
+
+        self.assertEqual(dropped, 0)
+        self.assertEqual(entries.qsize(), 2)

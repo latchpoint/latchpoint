@@ -143,13 +143,20 @@ def _format_ansi(entry: dict[str, Any]) -> str:
 # waiting for the result — but if the event loop is busy the request thread
 # hangs, stalling all HTTP responses.
 #
-# To avoid this, we push entries onto a ``queue.SimpleQueue`` (non-blocking,
-# thread-safe, no GIL-release needed) and let a single daemon worker thread
-# drain the queue and call ``async_to_sync`` from a clean context that has no
-# parent event-loop association.
+# To avoid this, we push entries onto a bounded ``queue.Queue`` without blocking
+# and let a single daemon worker thread drain the queue and call
+# ``async_to_sync`` from a clean context that has no parent event-loop
+# association. When the queue is full (ie a burst of logging while websocket
+# sends are slow), the oldest entry is dropped and counted (#174).
 # ---------------------------------------------------------------------------
 
-_broadcast_queue: queue.SimpleQueue[dict[str, Any]] = queue.SimpleQueue()
+# Twice the default ring buffer. The Logs tab reads the ring buffer, so a dropped broadcast only misses the live view.
+_BROADCAST_QUEUE_MAXSIZE = 1000
+
+_broadcast_queue: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=_BROADCAST_QUEUE_MAXSIZE)
+# Held only while enqueueing, so the drop-oldest and the put that follows it can't interleave with another producer.
+_broadcast_enqueue_lock = threading.Lock()
+_broadcast_dropped = 0
 _broadcast_thread: threading.Thread | None = None
 _broadcast_thread_lock = threading.Lock()
 
@@ -174,7 +181,7 @@ def start_broadcast_worker() -> None:
         _broadcast_thread.start()
 
 
-def _broadcast_worker(entries: queue.SimpleQueue[dict[str, Any]]) -> None:
+def _broadcast_worker(entries: queue.Queue[dict[str, Any]]) -> None:
     """Drain the broadcast queue and send entries to the Channels group."""
     from asgiref.sync import async_to_sync
     from channels.layers import get_channel_layer
@@ -201,13 +208,34 @@ def _broadcast_worker(entries: queue.SimpleQueue[dict[str, Any]]) -> None:
             pass
 
 
+def get_broadcast_dropped_count() -> int:
+    """Return how many log entries were dropped from the full broadcast queue since the process started."""
+    return _broadcast_dropped
+
+
 def _enqueue_broadcast(entry: dict[str, Any]) -> None:
-    """Enqueue a log entry for WebSocket broadcast (non-blocking)."""
+    """Enqueue a log entry for WebSocket broadcast (never blocks; drops the oldest entry when full)."""
+    global _broadcast_dropped
     if _broadcast_thread is None:
-        # No worker in this process, so nothing would drain the queue and it would only grow.
+        # No worker in this process, so nothing would drain the queue.
         return
-    with contextlib.suppress(Exception):
-        _broadcast_queue.put_nowait(entry)
+    with contextlib.suppress(Exception), _broadcast_enqueue_lock:
+        try:
+            _broadcast_queue.put_nowait(entry)
+            return
+        except queue.Full:
+            pass
+        # Only the worker takes entries out, so after this get there's room for the put below.
+        try:
+            _broadcast_queue.get_nowait()
+        except queue.Empty:
+            pass
+        else:
+            _broadcast_dropped += 1
+        try:
+            _broadcast_queue.put_nowait(entry)
+        except queue.Full:
+            _broadcast_dropped += 1
 
 
 # ---------------------------------------------------------------------------

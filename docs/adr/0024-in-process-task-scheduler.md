@@ -432,3 +432,12 @@ doesn't come up is reported and the task runs anyway. The Z-Wave JS connection i
 and `fire_due_pending_actions` declare both, because rule actions can use either. `START_RUNTIMES=true`
 isn't the way to give a task its connections, since it also starts a second scheduler, the HA state stream
 and the control panel listener in that process.
+
+A task run that way can also change the alarm state (`process_alarm_timers`, `process_due_rule_runtimes`,
+`fire_due_pending_actions`), and the HA MQTT alarm entity and keypad receivers of
+`alarm_state_change_committed` are only connected in the server (#173). So `run_task` listens for the
+signal during the run, and if the state changed and the HA alarm entity is enabled, it re-reads the
+snapshot and publishes that state once after the task, over the task's MQTT connection or one it opens
+just for the publish. That's the same retained, idempotent publish the server makes. It doesn't write the
+keypads, because the server's panel sync worker is their only writer (ADR-0100). It warns instead when
+any panel is enabled, and the server syncs them on its next alarm state change.

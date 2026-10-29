@@ -57,6 +57,8 @@ def _validate_encryption_key(sender, **kwargs) -> None:  # noqa: ARG001
     """
     import logging
 
+    from django.db import DEFAULT_DB_ALIAS, connections
+
     from alarm.crypto import ENCRYPTED_PREFIX, SettingsEncryption
     from alarm.models import AlarmSettingsEntry
     from alarm.settings_registry import ALARM_PROFILE_SETTINGS
@@ -67,7 +69,13 @@ def _validate_encryption_key(sender, **kwargs) -> None:  # noqa: ARG001
     if not keys_with_secrets:
         return
 
-    for entry in AlarmSettingsEntry.objects.filter(key__in=keys_with_secrets).iterator():
+    # `migrate <app>` sends post_migrate for every app, alarm included, so on a fresh DB this runs before the alarm
+    # migrations created the table. There are no values to check yet then (#169).
+    using = kwargs.get("using") or DEFAULT_DB_ALIAS
+    if AlarmSettingsEntry._meta.db_table not in connections[using].introspection.table_names():
+        return
+
+    for entry in AlarmSettingsEntry.objects.using(using).filter(key__in=keys_with_secrets).iterator():
         if not isinstance(entry.value, dict):
             continue
         for v in entry.value.values():

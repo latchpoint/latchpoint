@@ -16,7 +16,9 @@ class Command(BaseCommand):
 
     help = (
         "Run a scheduled task manually. MQTT and Z-Wave JS only stay connected in the server process, so a task "
-        "that declares it needs one gets it opened for the run and closed again after."
+        "that declares it needs one gets it opened for the run and closed again after. If the task changes the "
+        "alarm state, the new state is published to the Home Assistant alarm entity, but the keypads only follow "
+        "changes made in the server."
     )
 
     def add_arguments(self, parser) -> None:
@@ -34,7 +36,7 @@ class Command(BaseCommand):
             available = ", ".join(sorted(get_tasks().keys()))
             raise CommandError(f"Task '{task_name}' not found. Available tasks: {available or 'none'}")
 
-        with self._connections(task.connections):
+        with self._connections(task.connections), self._follow_alarm_state(task.connections):
             self.stdout.write(f"Running task: {task_name}")
             start_time = time.monotonic()
 
@@ -64,6 +66,81 @@ class Command(BaseCommand):
             if "zwavejs" in names:
                 stack.enter_context(self._zwavejs())
             yield
+
+    @contextlib.contextmanager
+    def _follow_alarm_state(self, names: tuple[str, ...]) -> Iterator[None]:
+        """
+        Publish an alarm state change the task made to the HA alarm entity, and say the keypads won't follow (#173).
+
+        The server's HA and control panel apps connect their `alarm_state_change_committed` receivers only in the
+        server, so a change made here reaches neither. Publishing the retained state topic from here is safe, since it's
+        the same idempotent publish the server makes, sent once after the task with the state re-read from the DB.
+        Writing the keypads isn't, since the server's panel sync worker owns every keypad write (ADR-0100).
+        """
+        from alarm.signals import alarm_state_change_committed
+
+        changes: list[str] = []
+
+        def _on_change(sender, *, state_to: str, **_kwargs) -> None:
+            changes.append(state_to)
+
+        dispatch_uid = f"run_task_follow_alarm_state_{id(self)}"
+        alarm_state_change_committed.connect(_on_change, dispatch_uid=dispatch_uid, weak=False)
+        try:
+            yield
+        finally:
+            alarm_state_change_committed.disconnect(dispatch_uid=dispatch_uid)
+            if changes:
+                self._best_effort(lambda: self._publish_alarm_entity_state(mqtt_open="mqtt" in names))
+                self._best_effort(self._warn_keypads_not_synced)
+
+    def _best_effort(self, follow_up) -> None:
+        # A failed follow-up is reported, and mustn't hide the task's own result or error.
+        try:
+            follow_up()
+        except Exception as exc:
+            self.stderr.write(f"Couldn't follow up on the alarm state change ({exc}).")
+
+    def _publish_alarm_entity_state(self, *, mqtt_open: bool) -> None:
+        from transports_mqtt.views import get_mqtt_settings
+
+        from alarm.gateways.mqtt import default_mqtt_gateway
+        from alarm.state_machine.settings import get_active_settings_profile, get_setting_json
+
+        entity_settings = get_setting_json(get_active_settings_profile(), "home_assistant_alarm_entity") or {}
+        if not isinstance(entity_settings, dict) or not entity_settings.get("enabled"):
+            return
+        if not get_mqtt_settings().get("enabled"):
+            self.stderr.write("MQTT is disabled, so the Home Assistant alarm entity didn't get the new alarm state.")
+            return
+
+        with contextlib.nullcontext() if mqtt_open else self._mqtt():
+            if not default_mqtt_gateway.get_status().connected:
+                self.stderr.write(
+                    "MQTT isn't connected, so the Home Assistant alarm entity didn't get the new alarm state. "
+                    "The server publishes it on its next alarm state change or MQTT reconnect."
+                )
+                return
+
+            from integrations_home_assistant import mqtt_alarm_entity
+
+            from alarm.state_machine.transitions import get_current_snapshot
+
+            # Re-read right before publishing rather than using the task's changes, so an older state from earlier
+            # in the task doesn't land over one the server committed since.
+            state = get_current_snapshot(process_timers=False).current_state
+            mqtt_alarm_entity.publish_state(state=state)
+            self.stdout.write(f"Published the alarm state ({state}) to the Home Assistant alarm entity.")
+
+    def _warn_keypads_not_synced(self) -> None:
+        from control_panels.models import ControlPanelDevice
+
+        if not ControlPanelDevice.objects.filter(enabled=True).exists():
+            return
+        self.stderr.write(
+            "The alarm state changed in this process, but only the server's panel sync worker writes to the "
+            "keypads, so they don't get this change. The server syncs them on its next alarm state change."
+        )
 
     @contextlib.contextmanager
     def _mqtt(self) -> Iterator[None]:
