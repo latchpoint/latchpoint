@@ -760,35 +760,35 @@ _SKIP_PIN_MISMATCH = "pin_mismatch"
 _WARN_DUPLICATE_PIN = "duplicate_pin"
 
 
-def _has_outstanding_slot_cleanup(*, door_code: DoorCode) -> bool:
+def _has_outstanding_slot_cleanup(*, door_code: DoorCode, lock_entity_id: str) -> bool:
     """Whether a slot may still hold an older PIN of ``door_code``: a clear that hasn't
     gone through yet (#144) or an unconfirmed push still in its window (#111).
 
-    Unconfirmed attempts count on any lock, assigned now or not, but only the
+    Clear failures count on any lock, since the scheduler retries every one of
+    them. Unconfirmed attempts only count on the lock being synced, and only the
     ones a cleanup would still act on: not settled since (#161), not in a slot
-    another code holds, and with a PIN to compare against. Anything else would
-    block the sync with nothing ever coming to settle it.
+    another code holds, and with a PIN to compare against. An attempt left on a
+    lock the code was dropped from before #167 has nothing coming to settle it,
+    so counting it would stop the code's sync on every other lock for good.
     """
     from locks.use_cases.lock_push import (
         _claimed_slots,
         _unconfirmed_attempts,
         decrypt_pin_or_none,
-        unconfirmed_attempt_lock_entity_ids,
         unresolved_clear_failures,
     )
 
     if unresolved_clear_failures(door_code=door_code):
         return True
+    attempts = _unconfirmed_attempts(
+        door_code=door_code,
+        lock_entity_id=lock_entity_id,
+        claimed_slots=_claimed_slots(lock_entity_id=lock_entity_id, door_code=door_code),
+    )
+    if not attempts:
+        return False
     pin = decrypt_pin_or_none(door_code)
-    for lock_entity_id in unconfirmed_attempt_lock_entity_ids(door_code=door_code):
-        attempts = _unconfirmed_attempts(
-            door_code=door_code,
-            lock_entity_id=lock_entity_id,
-            claimed_slots=_claimed_slots(lock_entity_id=lock_entity_id, door_code=door_code),
-        )
-        if any(attempted_pin or pin for attempted_pin in attempts.values()):
-            return True
-    return False
+    return any(attempted_pin or pin for attempted_pin in attempts.values())
 
 
 def _slots_with_outstanding_cleanup(*, lock_entity_id: str) -> dict[int, list[tuple[int, str | None]]]:
@@ -868,27 +868,29 @@ def _flag_duplicate_pins(
     *,
     lock_entity_id: str,
     pin_by_slot: dict[int, str | None],
-    pre_sync_owner_by_slot: dict[int, int],
     slot_results: dict[int, SlotSyncResult],
     slot_events: dict[int, DoorCodeEvent],
 ) -> None:
     """Flag slots holding the PIN of another code on this lock outside that code's tracked slot (issue #140).
 
-    Catches copies stranded before #136 (#133), which nothing tracks. Runs once
-    the sync has written its changes, so it compares against the PINs codes have
-    now. A slot that was already tracked by a code with that same PIN isn't
-    flagged, since 2 codes can share a PIN in their own slots. Only flagged; the
-    sync never clears a slot.
+    Catches copies stranded before #136 (#133), including ones an older sync
+    already imported as a synced "Slot N": the original and the copy each get
+    flagged with the other's id on every sync. Runs once the sync has written its
+    changes, so it compares against the PINs codes have now, and leaves out the
+    code tracked in the slot itself. 2 codes that share a PIN on purpose get
+    flagged too. Only flagged; the sync never clears a slot.
     """
     assigned_pins = _assigned_code_pins(lock_entity_id=lock_entity_id)
-    pin_by_code = {door_code_id: pin for door_code_id, _tracked, pin in assigned_pins}
+    owner_by_slot: dict[int, int] = dict(
+        DoorCodeLockAssignment.objects.filter(lock_entity_id=lock_entity_id, slot_index__isnull=False).values_list(
+            "slot_index", "door_code_id"
+        )
+    )
     for slot_index, row in sorted(slot_results.items()):
         pin = pin_by_slot.get(slot_index)
         if pin is None:
             continue
-        owner_id = pre_sync_owner_by_slot.get(slot_index)
-        if owner_id is not None and pin_by_code.get(owner_id) == pin:
-            continue
+        owner_id = owner_by_slot.get(slot_index)
         duplicate_ids = sorted(
             {
                 door_code_id
@@ -912,7 +914,7 @@ def _flag_duplicate_pins(
             event.save(update_fields=["metadata"])
 
 
-def _existing_code_skip_reason(*, code: DoorCode, raw_pin: str | None) -> str | None:
+def _existing_code_skip_reason(*, code: DoorCode, lock_entity_id: str, raw_pin: str | None) -> str | None:
     """Why the sync must leave the code tracked in this slot alone, or ``None`` to reconcile it (issue #150).
 
     - any code with a clear or unconfirmed push still outstanding: its slot may
@@ -922,7 +924,7 @@ def _existing_code_skip_reason(*, code: DoorCode, raw_pin: str | None) -> str | 
       slot is a clear that hasn't happened, not the lock's say
     - a manual code whose slot holds a different PIN: flagged, never adopted
     """
-    if _has_outstanding_slot_cleanup(door_code=code):
+    if _has_outstanding_slot_cleanup(door_code=code, lock_entity_id=lock_entity_id):
         return _SKIP_CLEAR_OUTSTANDING
     if code.source == DoorCode.Source.SYNCED:
         return None
@@ -1152,11 +1154,6 @@ def _sync_lock_config_atomically(
 
         # Read before anything below changes the assignments.
         outstanding_cleanup_by_slot = _slots_with_outstanding_cleanup(lock_entity_id=lock_entity_id)
-        pre_sync_owner_by_slot: dict[int, int] = dict(
-            DoorCodeLockAssignment.objects.filter(lock_entity_id=lock_entity_id, slot_index__isnull=False).values_list(
-                "slot_index", "door_code_id"
-            )
-        )
         # Rows and events per slot, for the duplicate PIN flags added at the end.
         slot_results: dict[int, SlotSyncResult] = {}
         slot_events: dict[int, DoorCodeEvent] = {}
@@ -1214,7 +1211,9 @@ def _sync_lock_config_atomically(
             skip_code: DoorCode | None = None
             skip_reason: str | None = None
             if existing:
-                skip_reason = _existing_code_skip_reason(code=existing.door_code, raw_pin=raw_pin)
+                skip_reason = _existing_code_skip_reason(
+                    code=existing.door_code, lock_entity_id=lock_entity_id, raw_pin=raw_pin
+                )
                 skip_code = existing.door_code if skip_reason else None
             elif slot_index in outstanding_cleanup_by_slot:
                 owner_id = _outstanding_cleanup_owner(markers=outstanding_cleanup_by_slot[slot_index], raw_pin=raw_pin)
@@ -1390,7 +1389,9 @@ def _sync_lock_config_atomically(
                     code.delete()
                     existing_code = existing.door_code
                     # Same guards as a code that already held the slot (issue #150).
-                    race_skip_reason = _existing_code_skip_reason(code=existing_code, raw_pin=raw_pin)
+                    race_skip_reason = _existing_code_skip_reason(
+                        code=existing_code, lock_entity_id=lock_entity_id, raw_pin=raw_pin
+                    )
                     if race_skip_reason:
                         skip_slot(
                             code=existing_code,
@@ -1476,7 +1477,7 @@ def _sync_lock_config_atomically(
             code = assignment.door_code
             if not code or code.source != DoorCode.Source.SYNCED:
                 continue
-            if _has_outstanding_slot_cleanup(door_code=code):
+            if _has_outstanding_slot_cleanup(door_code=code, lock_entity_id=lock_entity_id):
                 skip_slot(
                     code=code,
                     slot_index=slot_index,
@@ -1514,7 +1515,6 @@ def _sync_lock_config_atomically(
         _flag_duplicate_pins(
             lock_entity_id=lock_entity_id,
             pin_by_slot=pin_by_slot,
-            pre_sync_owner_by_slot=pre_sync_owner_by_slot,
             slot_results=slot_results,
             slot_events=slot_events,
         )

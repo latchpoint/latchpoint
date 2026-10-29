@@ -796,8 +796,9 @@ class LockConfigSyncReconcileTests(EncryptionTestMixin, APITestCase):
         self.assertEqual(stranded["action"], "created")
         self.assertIn("duplicate_pin", stranded["warnings"])
         self.assertEqual(stranded["duplicate_pin_door_code_ids"], [code.id])
-        self.assertEqual(self._slot(body, 2)["duplicate_pin_door_code_ids"], [])
         copy = DoorCode.objects.get(id=stranded["door_code_id"])
+        # The original is flagged the other way round.
+        self.assertEqual(self._slot(body, 2)["duplicate_pin_door_code_ids"], [copy.id])
         self.assertEqual(copy.source, DoorCode.Source.SYNCED)
         self.assertTrue(
             DoorCodeEvent.objects.filter(
@@ -946,15 +947,55 @@ class LockConfigSyncReconcileTests(EncryptionTestMixin, APITestCase):
         self._sync(SlotGateway({1: ("Available", None)}))
         self.assertIsNone(DoorCodeLockAssignment.objects.get(door_code=code).slot_index)
 
-    def test_codes_sharing_a_pin_in_their_own_slots_are_not_flagged(self):
-        self._manual_code(pin="1111", slot_index=1)
-        self._manual_code(pin="1111", slot_index=2)
+    def test_codes_sharing_a_pin_in_their_own_slots_are_flagged_with_each_other(self):
+        # Accepted noise: a PIN shared on purpose looks the same as a #133 copy.
+        first = self._manual_code(pin="1111", slot_index=1)
+        second = self._manual_code(pin="1111", slot_index=2)
 
         body = self._sync(SlotGateway({1: (1, "1111"), 2: (1, "1111")}))
 
-        for slot_index in (1, 2):
-            self.assertNotIn("duplicate_pin", self._slot(body, slot_index)["warnings"])
-            self.assertEqual(self._slot(body, slot_index)["duplicate_pin_door_code_ids"], [])
+        self.assertEqual(self._slot(body, 1)["duplicate_pin_door_code_ids"], [second.id])
+        self.assertEqual(self._slot(body, 2)["duplicate_pin_door_code_ids"], [first.id])
+
+    def test_second_sync_still_flags_stranded_copy(self):
+        code = self._manual_code(pin="4321", slot_index=2)
+        fake = SlotGateway({1: (1, "4321"), 2: (1, "4321")})
+        first = self._sync(fake)
+        copy_id = self._slot(first, 1)["door_code_id"]
+
+        body = self._sync(fake)
+
+        self.assertEqual(self._slot(body, 1)["action"], "unchanged")
+        self.assertIn("duplicate_pin", self._slot(body, 1)["warnings"])
+        self.assertEqual(self._slot(body, 1)["duplicate_pin_door_code_ids"], [code.id])
+        self.assertEqual(self._slot(body, 2)["duplicate_pin_door_code_ids"], [copy_id])
+
+    def test_copy_an_older_sync_already_imported_is_flagged(self):
+        # What prod has: an older sync turned the original synced and imported the copy as "Slot 1".
+        enc = SettingsEncryption.get()
+        ids = []
+        for slot_index, label in ((1, "Slot 1"), (2, "Dog walker")):
+            code = DoorCode.objects.create(
+                user=self.user,
+                source=DoorCode.Source.SYNCED,
+                encrypted_pin=enc.encrypt("4321"),
+                pin_length=4,
+                label=label,
+                code_type=DoorCode.CodeType.PERMANENT,
+                push_state=DoorCode.PushState.PENDING,
+            )
+            DoorCodeLockAssignment.objects.create(door_code=code, lock_entity_id=self.LOCK, slot_index=slot_index)
+            ids.append(code.id)
+
+        body = self._sync(SlotGateway({1: (1, "4321"), 2: (1, "4321")}))
+
+        self.assertEqual(self._slot(body, 1)["duplicate_pin_door_code_ids"], [ids[1]])
+        self.assertEqual(self._slot(body, 2)["duplicate_pin_door_code_ids"], [ids[0]])
+        self.assertTrue(
+            DoorCodeEvent.objects.filter(
+                door_code_id=ids[0], metadata__action="unchanged", metadata__duplicate_pin_door_code_ids=[ids[1]]
+            ).exists()
+        )
 
     def test_duplicate_pin_compares_against_pins_after_the_sync(self):
         # Slot 1's synced code was 4321 but the lock now has 5555 there, and 4321 is in slot 2.
@@ -992,17 +1033,68 @@ class LockConfigSyncReconcileTests(EncryptionTestMixin, APITestCase):
 
         self.assertEqual(self._slot(body, 2)["action"], "created")
 
-    def test_unsettled_attempt_on_a_dropped_lock_blocks_conversion(self):
-        code = self._manual_code(pin="1234", slot_index=1)
+    def test_unsettled_attempt_on_another_lock_does_not_block_this_lock(self):
+        # Left on a lock the code was dropped from before #167, with nothing to settle it.
+        code = self._synced_code_at(1, "1234")
         lock_push_uc._record_unconfirmed_slot_attempt(
             door_code=code, lock_entity_id="lock.back_door", slot_index=2, reason="readback timed out", pin="1234"
+        )
+
+        body = self._sync(SlotGateway({1: (1, "5678")}))
+
+        self.assertEqual(self._slot(body, 1)["action"], "updated")
+        code.refresh_from_db()
+        self.assertEqual(lock_push_uc.decrypt_pin_or_none(code), "5678")
+
+    def test_clear_failure_on_another_lock_still_blocks(self):
+        code = self._manual_code(pin="1234", slot_index=1)
+        lock_push_uc.record_clear_failure(
+            door_code=code,
+            lock_entity_id="lock.back_door",
+            slot_index=2,
+            exc=TimeoutError("asleep"),
+            expected_pin="1234",
         )
 
         body = self._sync(SlotGateway({1: (1, "1234")}))
 
         self.assertIn("clear_outstanding", self._slot(body, 1)["warnings"])
+
+    def test_attempt_with_no_pin_does_not_block_reconciling_its_code(self):
+        # A synced code with a masked PIN and an attempt that stored none: the cleanup can't check it.
+        code = self._synced_code_at(1, "****")
+        DoorCodeEvent.objects.create(
+            door_code=code,
+            lock_entity_id=self.LOCK,
+            event_type=DoorCodeEvent.EventType.CODE_FAILED,
+            metadata={"action": "push_unconfirmed", "slot_index": 3, "reason": "readback timed out"},
+        )
+
+        body = self._sync(SlotGateway({1: (1, "****"), 3: (0, None)}))
+
+        self.assertNotEqual(self._slot(body, 1)["action"], "skipped")
+
+    def test_attempt_in_a_slot_another_code_holds_does_not_block(self):
+        code = self._manual_code(pin="1234", slot_index=1)
+        self._unconfirmed(code, 2, "1234")
+        self._manual_code(pin="5678", slot_index=2)
+
+        body = self._sync(SlotGateway({1: (1, "1234"), 2: (1, "5678")}))
+
+        self.assertNotIn("clear_outstanding", self._slot(body, 1)["warnings"])
         code.refresh_from_db()
-        self.assertEqual(code.source, DoorCode.Source.MANUAL)
+        self.assertEqual(code.source, DoorCode.Source.SYNCED)
+
+    def test_untracked_slot_uses_the_clear_failures_expected_pin(self):
+        # The clear failed before a PIN change, so slot 3 may still hold the old 4321.
+        code = self._manual_code(pin="5555", slot_index=None)
+        self._clear_failed(code, 3, "4321")
+
+        body = self._sync(SlotGateway({3: (1, "4321")}))
+
+        slot = self._slot(body, 3)
+        self.assertEqual(slot["action"], "skipped")
+        self.assertEqual(slot["door_code_id"], code.id)
 
     def test_attempt_with_no_pin_to_compare_does_not_block_import(self):
         # The cleanup skips an attempt it has no PIN for, so it would never settle.
