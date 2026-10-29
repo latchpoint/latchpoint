@@ -6,7 +6,7 @@ import threading
 from typing import Any
 
 from django.core.cache import cache
-from django.db import close_old_connections
+from django.db import close_old_connections, connections
 from django.dispatch import receiver
 from django.utils import timezone
 from transports_mqtt.manager import mqtt_connection_manager
@@ -29,6 +29,14 @@ _CACHE_KEY_IEEE_ENTITY_IDS_PREFIX = "zigbee2mqtt:ieee_entity_ids:"
 
 _init_lock = threading.Lock()
 _initialized = False
+
+# A devices request that times out (Zigbee2MQTT slow or down) is retried on a timer, backing off up to the max (#174).
+_MAPPING_RETRY_INITIAL_SECONDS = 30
+_MAPPING_RETRY_MAX_SECONDS = 600
+_mapping_retry_lock = threading.Lock()
+_mapping_retry_timer: threading.Timer | None = None
+_mapping_retry_delay = _MAPPING_RETRY_INITIAL_SECONDS
+
 _subscribed_wildcards: set[str] = set()
 _subscribed_topics: set[str] = set()
 _subscribed_lock = threading.Lock()
@@ -298,15 +306,84 @@ def refresh_device_mapping_async(*, min_interval_seconds: int = 30) -> None:
     except Exception:
         logger.debug("Cache operation failed", exc_info=True)
 
-    def _run() -> None:
-        """Background worker to refresh the mapping without blocking the caller."""
-        try:
-            refresh_device_mapping_via_mqtt(timeout_seconds=3.0)
-        except Exception:
-            logger.warning("Device mapping refresh failed", exc_info=True)
-            return
+    threading.Thread(target=_refresh_device_mapping, daemon=True).start()
 
-    threading.Thread(target=_run, daemon=True).start()
+
+def _refresh_device_mapping() -> None:
+    """Background worker to refresh the mapping without blocking the caller."""
+    try:
+        refresh_device_mapping_via_mqtt(timeout_seconds=3.0)
+    except TimeoutError as exc:
+        # Expected when Zigbee2MQTT is slow or down (ie at boot), so one line without the traceback (#174).
+        delay = _schedule_mapping_retry()
+        if delay is None:
+            logger.warning("Device mapping refresh failed: %s", exc)
+        else:
+            logger.warning("Device mapping refresh failed: %s Retrying in %ss.", exc, delay)
+        return
+    except Exception:
+        logger.warning("Device mapping refresh failed", exc_info=True)
+        return
+    _reset_mapping_retry()
+
+
+def _schedule_mapping_retry() -> int | None:
+    """Schedule one retry of the timed out mapping refresh. Returns its delay, or None if one is already pending."""
+    global _mapping_retry_timer, _mapping_retry_delay
+    with _mapping_retry_lock:
+        if _mapping_retry_timer is not None:
+            return None
+        delay = _mapping_retry_delay
+        _mapping_retry_delay = min(delay * 2, _MAPPING_RETRY_MAX_SECONDS)
+        _mapping_retry_timer = _start_mapping_retry_timer(delay, _retry_mapping_refresh)
+        return delay
+
+
+def _reset_mapping_retry() -> None:
+    """After a successful refresh, cancel a pending retry and start the backoff over."""
+    global _mapping_retry_timer, _mapping_retry_delay
+    with _mapping_retry_lock:
+        timer = _mapping_retry_timer
+        _mapping_retry_timer = None
+        _mapping_retry_delay = _MAPPING_RETRY_INITIAL_SECONDS
+    if timer is not None:
+        timer.cancel()
+
+
+def _retry_mapping_refresh() -> None:
+    """Timer callback: refresh again while Zigbee2MQTT is enabled and MQTT is connected."""
+    global _mapping_retry_timer, _mapping_retry_delay
+    with _mapping_retry_lock:
+        _mapping_retry_timer = None
+    try:
+        ready = get_settings().enabled and _mqtt_enabled() and mqtt_connection_manager.get_status().connected
+    except Exception:
+        logger.debug("Device mapping retry check failed", exc_info=True)
+        ready = False
+    if not ready:
+        # The on-connect hook refreshes once MQTT is back, and a profile change once Zigbee2MQTT is re-enabled. That's
+        # a fresh start, so a timeout then retries after the initial delay again.
+        with _mapping_retry_lock:
+            if _mapping_retry_timer is None:
+                _mapping_retry_delay = _MAPPING_RETRY_INITIAL_SECONDS
+        return
+    _refresh_device_mapping()
+
+
+def _start_mapping_retry_timer(delay: float, callback) -> threading.Timer:
+    """Run `callback` once after `delay` seconds on a daemon timer thread."""
+
+    def _run() -> None:
+        try:
+            callback()
+        finally:
+            # This thread's DB connection (from the settings reads) would otherwise stay open until it's collected.
+            connections.close_all()
+
+    timer = threading.Timer(delay, _run)
+    timer.daemon = True
+    timer.start()
+    return timer
 
 
 def refresh_device_mapping_via_mqtt(*, timeout_seconds: float = 3.0) -> dict[str, Any]:

@@ -436,15 +436,19 @@ class MqttConnectionManager:
 
         return client
 
-    def publish(self, *, topic: str, payload: str, qos: int = 0, retain: bool = False) -> None:
-        """Publish a string payload to a topic, raising if the manager is not connected."""
+    def publish(self, *, topic: str, payload: str, qos: int = 0, retain: bool = False):
+        """Publish a string payload to a topic, raising if the manager is not connected.
+
+        Returns paho's `MQTTMessageInfo`, so a caller that needs to know the message went out (ie `run_task` before
+        it closes its short-lived connection) can `wait_for_publish()` on it. Other callers ignore it.
+        """
         with self._lock:
             client = self._client
             connected = self._connected
         if client is None or not connected:
             raise MqttNotReachable("MQTT is not connected.")
         try:
-            client.publish(topic, payload=payload, qos=qos, retain=retain)
+            return client.publish(topic, payload=payload, qos=qos, retain=retain)
         except Exception as exc:
             raise MqttPublishError(topic, str(exc)) from exc
 
