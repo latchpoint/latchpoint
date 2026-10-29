@@ -1,4 +1,5 @@
 import { Input } from '@/components/ui/input'
+import { MAX_USES_ENFORCED } from '@/features/doorCodes/utils/maxUses'
 
 type Props = {
   codeId: number
@@ -45,21 +46,23 @@ export function DoorCodeEditBasicsFields({
           disabled={isBusy || isSynced}
         />
       </div>
-      <div className="space-y-2">
-        <label className="text-sm font-medium" htmlFor={`door-code-edit-max-uses-${codeId}`}>
-          Max uses (optional)
-        </label>
-        <Input
-          id={`door-code-edit-max-uses-${codeId}`}
-          type="number"
-          min={1}
-          step={1}
-          value={maxUses}
-          onChange={(e) => onMaxUsesChange(e.target.value)}
-          placeholder={isSynced ? 'Controlled by lock sync' : undefined}
-          disabled={isBusy || isSynced}
-        />
-      </div>
+      {MAX_USES_ENFORCED ? (
+        <div className="space-y-2">
+          <label className="text-sm font-medium" htmlFor={`door-code-edit-max-uses-${codeId}`}>
+            Max uses (optional)
+          </label>
+          <Input
+            id={`door-code-edit-max-uses-${codeId}`}
+            type="number"
+            min={1}
+            step={1}
+            value={maxUses}
+            onChange={(e) => onMaxUsesChange(e.target.value)}
+            placeholder={isSynced ? 'Controlled by lock sync' : undefined}
+            disabled={isBusy || isSynced}
+          />
+        </div>
+      ) : null}
     </div>
   )
 }

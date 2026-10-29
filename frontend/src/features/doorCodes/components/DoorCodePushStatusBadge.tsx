@@ -31,6 +31,35 @@ export function DoorCodePushStatusBadge({ code, lockNameByEntityId, canRetry, is
   const clearing = !code.isActive && code.source !== 'synced' && (code.pendingSlotClears?.length ?? 0) > 0
   if (!code.lockEntityIds?.length && !clearing) return null
 
+  // An active code is only on its locks from its start to its end (#145). The
+  // scheduler pushes it at the start and turns it off at the end, so neither
+  // gets a Retry. Once it's off the states below take over.
+  if (code.isActive && code.validity === 'scheduled') {
+    const stillOnALock =
+      code.lockSlotAssignments.some((a) => a.slotIndex != null) || (code.pendingSlotClears?.length ?? 0) > 0
+    const startsAt = code.startAt ? new Date(code.startAt).toLocaleString() : 'its start'
+    return (
+      <div className="flex items-center gap-2">
+        <Badge variant="outline" title={code.lastPushError || undefined}>
+          Scheduled
+        </Badge>
+        <span className="text-xs text-muted-foreground">
+          {stillOnALock ? `(taking it off the lock until ${startsAt})` : `(goes on lock at ${startsAt})`}
+        </span>
+      </div>
+    )
+  }
+  if (code.isActive && code.validity === 'expired') {
+    return (
+      <div className="flex items-center gap-2">
+        <Badge variant="outline" title={code.lastPushError || undefined}>
+          Expired
+        </Badge>
+        <span className="text-xs text-muted-foreground">(removing from lock)</span>
+      </div>
+    )
+  }
+
   if (code.pushState === 'pushed' && !clearing) {
     if (
       !code.isActive &&

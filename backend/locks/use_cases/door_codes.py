@@ -13,6 +13,7 @@ from accounts.policies import is_admin
 from alarm.crypto import SettingsEncryption
 from config.domain_exceptions import ConflictError, ForbiddenError, GatewayError, NotFoundError, ValidationError
 from locks.models import DoorCode, DoorCodeEvent, DoorCodeLockAssignment
+from locks.use_cases.code_lifecycle import is_expired, is_started, starts_by
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +40,10 @@ class ReauthFailed(ForbiddenError):
 
 class DoorCodeInactive(ConflictError):
     pass
+
+
+class DoorCodeNotStarted(ConflictError):
+    """Retry on an active code before its ``start_at``: it isn't pushed until then (issue #145)."""
 
 
 class SlotClearFailed(GatewayError):
@@ -172,8 +177,9 @@ def create_door_code(
 
 
 # Fields whose change requires re-pushing the code onto the physical lock.
-# ``start_at`` / ``end_at`` are deliberately excluded — they are validity-window
-# fields enforced in software, never programmed onto the lock.
+# ``start_at`` / ``end_at`` are never programmed onto the lock. The PIN is only
+# on a lock between them (ADR 0109), so ``start_at`` crossing now is a derived
+# trigger below, and ``enforce_door_code_validity`` handles the clock passing them.
 _PUSH_TRIGGER_FIELDS = frozenset({"code", "is_active", "days_of_week", "window_start", "window_end"})
 
 
@@ -184,10 +190,19 @@ def _changed_push_trigger_fields(*, code: DoorCode, changes: dict, old_pin: str 
     sends ``is_active: false`` for an inactive code, and other API clients may
     send unchanged values, so a key being present doesn't mean it changed
     (issue #139). Call before ``changes`` is applied.
+
+    ``start_at`` counts when the new value moves the start across now, ie a
+    code on its locks gets a start in the future (it comes off them) or one
+    waiting for its start gets one in the past (it goes on). Moving it within
+    the past or within the future doesn't touch the locks (issue #145).
     """
     from locks.use_cases.lock_push import has_unconfirmed_attempt_slots
 
     changed: set[str] = set()
+    if "start_at" in changes:
+        now = django_timezone.now()
+        if starts_by(changes.get("start_at"), now=now) != is_started(code, now=now):
+            changed.add("start_at")
     for field in _PUSH_TRIGGER_FIELDS & changes.keys():
         new = changes.get(field)
         if field == "code":
@@ -259,23 +274,107 @@ def update_door_code(
         return _update_door_code_locked(code=code, changes=changes, actor_user=actor_user, zwavejs=zwavejs)
 
 
+def retire_door_code(
+    *,
+    code: DoorCode,
+    reason: str,
+    zwavejs: ZwavejsGateway,
+    now=None,
+) -> DoorCode | None:
+    """Turn off a code that's past its ``end_at`` and take it off its locks (issue #145).
+
+    Holds the ``lock_sync:`` locks like an update (:func:`_hold_door_code_locks`),
+    then checks the row it read again once they're held: a code turned off,
+    given a later ``end_at`` or deleted while this waited is left alone. Anything
+    else goes through the same locked update a user's deactivate does, so its
+    tracked and unconfirmed slots get cleared and a clear that fails is recorded
+    for the scheduler's retries, attempt cap and #167 inactive clear. ``reason``
+    goes in the ``code_updated`` event. Returns the code, or ``None`` when it
+    was left alone. Raises :class:`LockBusy` like an update.
+    """
+    try:
+        with _hold_door_code_locks(code=code):
+            check_at = now if now is not None else django_timezone.now()
+            if not code.is_active or not is_expired(code, now=check_at):
+                return None
+            return _update_door_code_locked(
+                code=code,
+                changes={"is_active": False},
+                actor_user=None,
+                zwavejs=zwavejs,
+                event_metadata={"reason": reason},
+            )
+    except NotFound:
+        return None
+
+
+def withdraw_door_code(*, code: DoorCode, zwavejs: ZwavejsGateway, now=None) -> bool:
+    """Clear an active code's PIN off its locks before its ``start_at``, leaving it active (issue #145).
+
+    For codes pushed before their start, ie before this was enforced or when the
+    start was moved later through the API. Holds the ``lock_sync:`` locks like
+    an update and checks again once they're held, so a code that started, was
+    turned off or was deleted meanwhile is left alone. Tracked slots are
+    cleared and forgotten, and unconfirmed slots are read back and cleared when
+    they hold its PIN (:func:`withdraw_slots_before_start`). A clear that fails
+    is recorded like any other, so the scheduler retries it, and slots that
+    already have one are left to that retry. ``enforce_door_code_validity``
+    pushes the code again once it starts. Returns whether anything was tried.
+    Raises :class:`LockBusy` like an update.
+    """
+    from locks.use_cases.lock_push import (
+        settle_clear_failure_state,
+        slots_to_withdraw,
+        withdraw_slots_before_start,
+    )
+
+    try:
+        with _hold_door_code_locks(code=code):
+            check_at = now if now is not None else django_timezone.now()
+            if not code.is_active or is_started(code, now=check_at) or not slots_to_withdraw(door_code=code):
+                return False
+            cleared, failures = withdraw_slots_before_start(door_code=code, zwavejs=zwavejs)
+            # Off its locks until it starts, so it isn't pushed any more.
+            DoorCode.objects.filter(id=code.id, push_state=DoorCode.PushState.PUSHED).update(
+                push_state=DoorCode.PushState.PENDING, updated_at=django_timezone.now()
+            )
+            settle_clear_failure_state(door_code=code)
+            DoorCodeEvent.objects.create(
+                door_code=code,
+                user=None,
+                event_type=DoorCodeEvent.EventType.CODE_REMOVED,
+                metadata={
+                    "action": "withdrawn",
+                    "reason": "not_started",
+                    "cleared_slots": cleared,
+                    **({"failed_slot_clears": [f.as_metadata() for f in failures]} if failures else {}),
+                },
+            )
+            return True
+    except NotFound:
+        return False
+
+
 def _update_door_code_locked(
     *,
     code: DoorCode,
     changes: dict,
     actor_user: User | None = None,
     zwavejs: ZwavejsGateway | None = None,
+    event_metadata: dict[str, object] | None = None,
 ) -> DoorCode:
     """Update a door code and its lock assignments, emitting a `DoorCodeEvent` when changed.
 
     When ``zwavejs`` is provided, dropped locks' slots are CC 99 ``clear``-ed. A
     change to a push-relevant field's value clears and re-pushes every lock; a
     lock-list-only change keeps the surviving locks' slots and pushes only locks
-    without one. An inactive code is never pushed. A slot whose clear fails
+    without one. An inactive code is never pushed, and neither is one outside
+    its ``start_at``/``end_at`` (issue #145). A slot whose clear fails
     transiently stays tracked (a dropped lock keeps its assignment), is recorded
     per lock for the scheduler and Retry to clear later, and keeps the code from
     showing ``pushed``. A lock latchpoint can't resolve to a Z-Wave node any more
     is dropped or forgotten anyway, since no clear can reach it.
+    ``event_metadata`` is added to the ``code_updated`` event.
     """
     updated_fields = []
 
@@ -409,7 +508,7 @@ def _update_door_code_locked(
 
     updated_event: DoorCodeEvent | None = None
     if updated_fields:
-        metadata: dict[str, object] = {"updated_fields": updated_fields}
+        metadata: dict[str, object] = {"updated_fields": updated_fields, **(event_metadata or {})}
         if added_lock_entity_ids:
             metadata["added_lock_entity_ids"] = sorted(added_lock_entity_ids)
         if removed_lock_entity_ids:
@@ -424,11 +523,13 @@ def _update_door_code_locked(
     if zwavejs is not None:
         # A pending code's PIN may sit in a slot recorded only as an unconfirmed
         # attempt. Clear it where the code no longer belongs there with that PIN:
-        # dropped locks always, surviving locks when the PIN changes or the code is
-        # deactivated. (A schedule-only change re-pushes and adopts it instead.)
+        # dropped locks always, surviving locks when the PIN changes, the code is
+        # deactivated or its start moves into the future. (A schedule-only change
+        # re-pushes and adopts it instead.)
         deactivating = "is_active" in push_trigger_changes and not code.is_active
+        withdrawing = "start_at" in push_trigger_changes and code.is_active and not is_started(code)
         unconfirmed_lock_ids = list(dropped_lock_entity_ids)
-        if "code" in push_trigger_changes or deactivating:
+        if "code" in push_trigger_changes or deactivating or withdrawing:
             unconfirmed_lock_ids.extend(
                 DoorCodeLockAssignment.objects.filter(door_code=code).values_list("lock_entity_id", flat=True)
             )
@@ -775,7 +876,8 @@ def retry_push_door_code(
     slot (which includes a kept lock whose stale slot just got cleared). An
     inactive code is only retried when it has clears outstanding, which
     includes a slot it still holds or an unconfirmed attempt slot left to check
-    (issue #158), and is never pushed.
+    (issue #158), and is never pushed. An active code before its ``start_at``
+    isn't retried at all (409), since it can't go on a lock yet (issue #145).
     """
     assert_admin(user=actor_user) if actor_user is not None else None
 
@@ -792,6 +894,8 @@ def retry_push_door_code(
         and not inactive_slots_to_clear(door_code=code)
     ):
         raise DoorCodeInactive("Door code is inactive. Turn it on before pushing it to its locks.")
+    if code.is_active and not is_started(code):
+        raise DoorCodeNotStarted("Door code hasn't started yet. It goes on its locks at its start time.")
 
     retry_failed_slot_clears(door_code=code, zwavejs=zwavejs)
 

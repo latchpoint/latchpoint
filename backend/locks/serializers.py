@@ -1,11 +1,21 @@
 from __future__ import annotations
 
 from cryptography.fernet import InvalidToken
+from django.utils import timezone
 from rest_framework import serializers
 
 from alarm.crypto import SettingsEncryption
 
 from .models import DoorCode, DoorCodeLockAssignment
+from .use_cases.code_lifecycle import ended_by, validity
+
+_END_AT_IN_PAST = "end_at must be in the future."
+_ACTIVE_WHEN_EXPIRED = "This code has expired. Set a later end_at to turn it back on."
+
+
+def _validation_now(serializer: serializers.Serializer):
+    """The time the date checks compare against; tests can pin it with ``context["now"]``."""
+    return serializer.context.get("now") or timezone.now()
 
 
 class DoorCodeLockAssignmentSerializer(serializers.ModelSerializer):
@@ -25,6 +35,7 @@ class DoorCodeSerializer(serializers.ModelSerializer):
     lock_entity_ids = serializers.SerializerMethodField()
     lock_slot_assignments = serializers.SerializerMethodField()
     pending_slot_clears = serializers.SerializerMethodField()
+    validity = serializers.SerializerMethodField()
 
     class Meta:
         model = DoorCode
@@ -45,6 +56,7 @@ class DoorCodeSerializer(serializers.ModelSerializer):
             "days_of_week",
             "window_start",
             "window_end",
+            "validity",
             "last_used_at",
             "last_used_lock",
             "lock_assignments",
@@ -123,6 +135,10 @@ class DoorCodeSerializer(serializers.ModelSerializer):
         from locks.use_cases.lock_push import pending_slot_clears
 
         return pending_slot_clears(door_code=obj, failures=self._clear_failures(obj))
+
+    def get_validity(self, obj: DoorCode) -> str:
+        """``scheduled``, ``valid``, ``expired`` or ``exhausted``, from the code's dates and uses (issue #145)."""
+        return validity(obj, now=_validation_now(self))
 
     def _clear_failures(self, obj: DoorCode) -> list:
         """``unresolved_clear_failures`` for ``obj``, loaded once per code for both fields above."""
@@ -203,6 +219,11 @@ class DoorCodeCreateSerializer(serializers.Serializer):
         if start_at and end_at and start_at > end_at:
             raise serializers.ValidationError({"end_at": "end_at must be after or equal to start_at."})
 
+        # A new code is always active, so one that's already expired would only be
+        # turned off again by the scheduler (issue #145).
+        if ended_by(end_at, now=_validation_now(self)):
+            raise serializers.ValidationError({"end_at": _END_AT_IN_PAST})
+
         if days_of_week is not None:
             if days_of_week < 0 or days_of_week > 127:
                 raise serializers.ValidationError({"days_of_week": "days_of_week must be between 0 and 127."})
@@ -273,6 +294,14 @@ class DoorCodeUpdateSerializer(serializers.Serializer):
                 raise serializers.ValidationError(
                     {field: "This field cannot be modified on synced codes." for field in sorted(disallowed)}
                 )
+
+        # An expired code stays off until it's turned on with a later end_at, and
+        # moving end_at later on its own doesn't turn it back on (issue #145).
+        now = _validation_now(self)
+        if ended_by(attrs.get("end_at"), now=now):
+            raise serializers.ValidationError({"end_at": _END_AT_IN_PAST})
+        if attrs.get("is_active") is True and ended_by(attrs.get("end_at", instance.end_at), now=now):
+            raise serializers.ValidationError({"is_active": _ACTIVE_WHEN_EXPIRED})
 
         updates_time_range = any(
             key in attrs for key in ["start_at", "end_at", "days_of_week", "window_start", "window_end"]

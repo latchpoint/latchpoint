@@ -31,6 +31,8 @@ type Props = {
   onEditMaxUsesChange: (next: string) => void
   editIsActive: boolean
   onEditIsActiveChange: (next: boolean) => void
+  /** Whether the code would be expired with the Active until being saved. */
+  isExpired?: boolean
 
   editStartAtLocal: string
   editEndAtLocal: string
@@ -84,6 +86,7 @@ export function DoorCodeEditPanel({
   onEditMaxUsesChange,
   editIsActive,
   onEditIsActiveChange,
+  isExpired = false,
   editStartAtLocal,
   editEndAtLocal,
   onActiveWindowChange,
@@ -107,6 +110,10 @@ export function DoorCodeEditPanel({
 }: Props) {
   const isBusy = isSaving || isDeleting
   const isSynced = code.source === 'synced'
+  // The backend won't turn on an expired code, and moving its end later doesn't
+  // turn it back on by itself (#145). A code that's still on can be turned off
+  // and back again, since that only undoes the edit.
+  const blockTurningOn = isExpired && !code.isActive && !editIsActive
   const isTemporary = code.codeType === 'temporary'
 
   return (
@@ -158,7 +165,13 @@ export function DoorCodeEditPanel({
         disabled={isBusy || isSynced}
       />
 
-      <DoorCodeActiveToggle id={`door-code-active-label-${code.id}`} checked={editIsActive} onCheckedChange={isSynced ? undefined : onEditIsActiveChange} disabled={isBusy || isSynced} hint={isSynced ? 'Controlled by lock sync' : undefined} />
+      <DoorCodeActiveToggle
+        id={`door-code-active-label-${code.id}`}
+        checked={editIsActive}
+        onCheckedChange={isSynced ? undefined : onEditIsActiveChange}
+        disabled={isBusy || isSynced || blockTurningOn}
+        hint={isSynced ? 'Controlled by lock sync' : blockTurningOn ? 'Expired, set a later Active until to turn it on' : undefined}
+      />
 
       <ReauthPasswordField
         id={`door-code-edit-password-${code.id}`}

@@ -212,6 +212,15 @@ export function DoorCodeEditContainer({ code, locks, locksIsLoading, locksError,
     setEditManualLockIds('')
   }
 
+  // Expired with the end date the save would send. An untouched range goes by
+  // the backend's validity, since the input drops the seconds. An edited one is
+  // checked against when it was last edited, since render can't read the clock.
+  const [rangeEditedAt, setRangeEditedAt] = useState(() => Date.now())
+  const editedEndAt = toUtcIsoFromDatetimeLocal(editDateRange.end)
+  const isExpired = dateRangeField.isEdited
+    ? editedEndAt != null && new Date(editedEndAt).getTime() <= rangeEditedAt
+    : code.validity === 'expired'
+
   const resolvedLockEntityIds = useMemo(() => {
     const locksFromPicker = Array.from(editSelectedLocks)
     if (locksFromPicker.length) return locksFromPicker
@@ -340,9 +349,13 @@ export function DoorCodeEditContainer({ code, locks, locksIsLoading, locksError,
       onEditMaxUsesChange={setEditMaxUses}
       editIsActive={editIsActive}
       onEditIsActiveChange={setEditIsActive}
+      isExpired={isExpired}
       editStartAtLocal={editDateRange.start}
       editEndAtLocal={editDateRange.end}
-      onActiveWindowChange={(next) => setEditDateRange({ start: next.start, end: next.end })}
+      onActiveWindowChange={(next) => {
+        setRangeEditedAt(Date.now())
+        setEditDateRange({ start: next.start, end: next.end })
+      }}
       editDays={editDays}
       onEditDaysChange={setEditDays}
       editWindowStart={editTimeWindow.start}

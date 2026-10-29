@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from datetime import timedelta
 
-from django.db.models import Exists, OuterRef, Q
+from django.db.models import Exists, F, OuterRef, Q
 from django.utils import timezone
 
 from alarm.gateways.zwavejs import default_zwavejs_gateway
@@ -13,6 +13,7 @@ from alarm.system_config_utils import get_int_system_config_value
 from scheduler import DailyAt, Every, register
 
 from .models import DoorCode, DoorCodeEvent, DoorCodeLockAssignment
+from .use_cases.code_lifecycle import expired_q, started_q
 
 logger = logging.getLogger(__name__)
 
@@ -74,8 +75,8 @@ def push_pending_door_codes() -> int:
     """Iterate over pending door codes with unassigned slots or failed clears and retry them.
 
     A code is considered "pending" if (a) ``push_state=pending`` AND (b) it's
-    active with at least one assignment still at ``slot_index IS NULL``, or it
-    has a slot clear on record that failed (issue #139; active or not, since an
+    active, started and not expired (issue #145) with at least one assignment
+    still at ``slot_index IS NULL``, or it has a slot clear on record that failed (issue #139; active or not, since an
     inactive code's PIN may still be on the lock). An inactive manual code that
     still holds a slot or has an unconfirmed attempt slot left to check is
     picked up too, ``pending`` or ``pushed`` (issue #158), and those slots get
@@ -118,6 +119,9 @@ def push_pending_door_codes() -> int:
         source=DoorCode.Source.MANUAL,
         push_state__in=[DoorCode.PushState.PENDING, DoorCode.PushState.PUSHED],
     ) & (Q(_holds_slot=True) | Q(_has_unconfirmed=True))
+    # Only codes between their start_at and end_at get pushed (issue #145).
+    now = timezone.now()
+    to_push = Q(_has_unassigned=True, is_active=True) & started_q(now) & ~expired_q(now)
     pending = (
         DoorCode.objects.annotate(
             _has_unassigned=Exists(unassigned_subquery),
@@ -126,9 +130,7 @@ def push_pending_door_codes() -> int:
             _has_unconfirmed=Exists(unconfirmed_subquery),
         )
         .filter(
-            Q(push_state=DoorCode.PushState.PENDING)
-            & (Q(_has_unassigned=True, is_active=True) | Q(_has_clear_failures=True))
-            | inactive_with_slots
+            Q(push_state=DoorCode.PushState.PENDING) & (to_push | Q(_has_clear_failures=True)) | inactive_with_slots
         )
         .prefetch_related("lock_assignments")
     )
@@ -186,3 +188,85 @@ def push_pending_door_codes() -> int:
             settle_clear_failure_state(door_code=code)
 
     return attempted
+
+
+@register(
+    "enforce_door_code_validity",
+    schedule=Every(seconds=60),
+    description="Takes door codes off their locks once they expire and puts them on once they start.",
+    connections=("zwavejs",),
+)
+def enforce_door_code_validity() -> int:
+    """Keep each door code's PIN on its locks only between its ``start_at`` and ``end_at`` (issue #145).
+
+    Three passes against one ``now``, for codes of any source or type:
+
+    - an active code at or past its ``end_at`` is retired: turned off through
+      the same locked update a user's deactivate uses, so a clear that fails is
+      left to ``push_pending_door_codes``'s retries
+    - an active code whose ``start_at`` is still ahead but that may hold a slot
+      (pushed before this was enforced, or its start moved later) has those
+      slots cleared and stays active
+    - an active code whose ``start_at`` has passed, that isn't expired, has a
+      lock without a slot and hasn't had a push attempt since its start is
+      pushed. The attempt is stamped either way, so a push that doesn't land
+      is left to ``push_pending_door_codes`` instead of being tried every minute
+
+    Errors are caught per code (a busy lock included) and the task never
+    raises. Returns the number of codes it acted on.
+    """
+    from locks.use_cases.door_codes import retire_door_code, withdraw_door_code
+    from locks.use_cases.lock_push import push_door_code_to_assigned_locks
+
+    now = timezone.now()
+    acted = 0
+
+    for code in DoorCode.objects.filter(is_active=True).filter(expired_q(now)).order_by("id"):
+        try:
+            if retire_door_code(code=code, reason="expired", zwavejs=default_zwavejs_gateway, now=now) is not None:
+                acted += 1
+        except Exception:
+            logger.warning("Couldn't retire expired door code id=%d this tick", code.id, exc_info=True)
+
+    holds_slot = DoorCodeLockAssignment.objects.filter(door_code=OuterRef("pk"), slot_index__isnull=False)
+    unconfirmed = DoorCodeEvent.objects.filter(
+        door_code=OuterRef("pk"),
+        event_type=DoorCodeEvent.EventType.CODE_FAILED,
+        metadata__action="push_unconfirmed",
+    )
+    not_started = (
+        DoorCode.objects.filter(is_active=True)
+        .exclude(started_q(now))
+        .filter(Exists(holds_slot) | Exists(unconfirmed))
+        .order_by("id")
+    )
+    for code in not_started:
+        try:
+            if withdraw_door_code(code=code, zwavejs=default_zwavejs_gateway):
+                acted += 1
+        except Exception:
+            logger.warning("Couldn't take door code id=%d off its locks before its start", code.id, exc_info=True)
+
+    unassigned = DoorCodeLockAssignment.objects.filter(door_code=OuterRef("pk"), slot_index__isnull=True)
+    just_started = (
+        DoorCode.objects.filter(is_active=True, start_at__isnull=False, start_at__lte=now)
+        .exclude(expired_q(now))
+        .filter(Exists(unassigned))
+        .filter(Q(last_push_attempt_at__isnull=True) | Q(last_push_attempt_at__lt=F("start_at")))
+        .prefetch_related("lock_assignments")
+        .order_by("id")
+    )
+    for code in just_started:
+        try:
+            push_door_code_to_assigned_locks(door_code=code, zwavejs=default_zwavejs_gateway, only_unassigned=True)
+            acted += 1
+        except Exception:
+            logger.warning("Couldn't push door code id=%d at its start", code.id, exc_info=True)
+        try:
+            DoorCode.objects.filter(id=code.id).filter(
+                Q(last_push_attempt_at__isnull=True) | Q(last_push_attempt_at__lt=F("start_at"))
+            ).update(last_push_attempt_at=now)
+        except Exception:
+            logger.warning("Couldn't stamp the push attempt for door code id=%d", code.id, exc_info=True)
+
+    return acted
