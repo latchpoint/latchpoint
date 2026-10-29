@@ -297,6 +297,18 @@ class MqttConnectionManager:
         with self._lock:
             self._last_error = error
 
+    def _on_connected(self) -> None:
+        """Mark the manager connected, re-apply subscriptions and run the on-connect hooks."""
+        with self._lock:
+            self._connected = True
+            self._last_connect_at = _now()
+            self._last_error = None
+            # Taken under the same lock that sets `_connected`, so a hook registered from here on sees it
+            # connected and runs itself, and one registered before is in this list. Either way it runs once.
+            hooks = list(self._on_connect_hooks)
+        self._resubscribe()
+        self._run_on_connect_hooks(hooks=hooks)
+
     def _disconnect(self) -> None:
         """Disconnect and tear down the current client (idempotent)."""
         with self._lock:
@@ -334,12 +346,7 @@ class MqttConnectionManager:
             except Exception:
                 rc_int = 1
             if rc_int == 0:
-                with self._lock:
-                    self._connected = True
-                    self._last_connect_at = _now()
-                    self._last_error = None
-                self._resubscribe()
-                self._run_on_connect_hooks()
+                self._on_connected()
             else:
                 with self._lock:
                     self._connected = False

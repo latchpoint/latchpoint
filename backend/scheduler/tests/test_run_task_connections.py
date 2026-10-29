@@ -34,11 +34,13 @@ class _FakeMqttGateway:
 class _FakeZwavejsGateway:
     def __init__(self, *, connects: bool = True) -> None:
         self.applied: list[dict] = []
+        self.event_bridges: list[bool] = []
         self.connected = False
         self._connects = connects
 
-    def apply_settings(self, *, settings_obj) -> None:
+    def apply_settings(self, *, settings_obj, event_bridges: bool = True) -> None:
         self.applied.append(dict(settings_obj))
+        self.event_bridges.append(event_bridges)
         self.connected = bool(settings_obj.get("enabled")) and self._connects
 
     def ensure_connected(self, *, timeout_seconds: float = 5.0) -> None:
@@ -108,6 +110,14 @@ class RunTaskConnectionsTests(EncryptionTestMixin, TestCase):
         self.assertEqual([s["enabled"] for s in self.zwavejs.applied], [True, False])
         self.assertFalse(self.zwavejs.connected)
         self.assertIn("Connected to Z-Wave JS for this run.", out)
+
+    def test_the_zwavejs_connection_doesnt_bridge_node_events(self):
+        # Node events would otherwise reach a rule dispatcher in this process too, next to the server's.
+        self._register("needs_zwavejs", ("zwavejs",))
+
+        self._run("needs_zwavejs")
+
+        self.assertEqual(self.zwavejs.event_bridges, [False, False])
 
     def test_opens_both_when_declared(self):
         self._register("needs_both", ("mqtt", "zwavejs"))

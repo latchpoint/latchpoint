@@ -27,6 +27,21 @@ _CACHE_LAST_PRUNE_AT = f"{_PREFIX}last_prune_at"
 _init_lock = threading.Lock()
 _initialized = False
 _subscribed_topics: set[str] = set()
+_subscribed_topics_lock = threading.Lock()
+
+
+def _claim_topic(topic: str) -> bool:
+    """Mark `topic` subscribed and return True, or False if it already was (#164).
+
+    The check and the add happen under one lock, so two threads (ie startup and the on-connect hook)
+    can't both pass the check and register the same handler twice.
+    """
+    with _subscribed_topics_lock:
+        if topic in _subscribed_topics:
+            return False
+        _subscribed_topics.add(topic)
+        return True
+
 
 # `_handle_message` reads settings on every inbound MQTT message, so hitting the DB
 # there scales query load with event chatter (ADR-0103). Cache a normalized snapshot,
@@ -198,8 +213,7 @@ def _subscribe(*, settings: FrigateSettings) -> None:
     """Subscribe to the configured Frigate MQTT events topic and availability topic (idempotent)."""
     # Subscribe to events topic
     topic = settings.events_topic
-    if topic not in _subscribed_topics:
-        _subscribed_topics.add(topic)
+    if _claim_topic(topic):
 
         def _handle_message(*, topic: str, payload: str) -> None:
             """Per-message handler that reloads settings and ingests the payload (best-effort)."""
@@ -217,8 +231,7 @@ def _subscribe(*, settings: FrigateSettings) -> None:
 
     # Subscribe to availability topic
     avail_topic = "frigate/available"
-    if avail_topic not in _subscribed_topics:
-        _subscribed_topics.add(avail_topic)
+    if _claim_topic(avail_topic):
 
         def _handle_availability(*, topic: str, payload: str) -> None:
             """Handle Frigate availability state messages (online/offline)."""

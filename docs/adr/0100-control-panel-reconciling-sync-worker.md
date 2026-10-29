@@ -201,3 +201,19 @@ class of register-semantics bugs (including the 7/10 regression) remains.
 - [ADR-0098](0098-siren-reassert-and-triggered-notification.md) — re-assert task retained; its writes now guaranteed value-changing.
 - [ADR-0099](0099-burglar-siren-rising-edge-activation.md) — superseded: the teardown clear it introduced caused the 2026-07-10 arm-sounds-siren regression; its reset-then-set survives only as the unknown-register trigger path.
 - [ADR-0096](0096-scheduled-alarm-timer-ticker.md) — the scheduler pattern considered and rejected for panel I/O.
+
+## Amendment (2026-10-29): manual siren re-assert from `run_task`
+
+The worker is the single owner of panel Indicator CC writes in the server process. `python manage.py
+run_task resync_ring_keypad_siren` runs in a separate process with no worker, so there the task writes the
+siren itself (#164) through `reassert_ring_keypad_v2_siren_without_worker()`, while the server's worker
+keeps owning the keypads. To stay out of its way:
+
+- it re-reads the alarm snapshot right before every write and stops once the alarm isn't `triggered`. A
+  disarm during the run makes the worker select the disarmed mode, and a siren write landing after that
+  would sound until the next disarm (ADR-0104)
+- it never saves `last_written_indicators` or `last_error`. The worker reconciles from its own saved copy,
+  and one saved from the other process could be stale by the time it lands
+
+A small window remains between the last re-read and the write reaching the device. In the server the task
+still only calls `request_siren_reassert()`.

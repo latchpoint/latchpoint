@@ -81,12 +81,16 @@ class ResyncRingKeypadSirenOutsideTheServerTests(TestCase):
 
         with (
             patch("control_panels.tasks.panel_sync_worker", worker),
-            patch("control_panels.zwave_ring_keypad_v2.sync_ring_keypad_v2_devices_state", return_value=0) as sync,
+            patch(
+                "control_panels.zwave_ring_keypad_v2.reassert_ring_keypad_v2_siren_without_worker", return_value=0
+            ) as reassert,
+            patch.object(worker, "request_siren_reassert") as request,
         ):
             result = resync_ring_keypad_siren()
 
-        self.assertEqual(result, {"resynced": True})
-        sync.assert_called_once_with(force_siren_edge=True)
+        self.assertEqual(result, {"resynced": True, "failed_devices": 0})
+        reassert.assert_called_once_with()
+        request.assert_not_called()
 
     def test_leaves_it_to_the_worker_in_the_server(self, mock_snapshot):
         mock_snapshot.return_value = _snapshot(AlarmState.TRIGGERED)
@@ -95,8 +99,11 @@ class ResyncRingKeypadSirenOutsideTheServerTests(TestCase):
         with (
             patch("control_panels.tasks.panel_sync_worker", worker),
             patch.object(worker, "is_running", return_value=True),
-            patch.object(worker, "run_pending") as run_pending,
+            patch.object(worker, "request_siren_reassert") as request,
+            patch("control_panels.zwave_ring_keypad_v2.reassert_ring_keypad_v2_siren_without_worker") as reassert,
         ):
-            resync_ring_keypad_siren()
+            result = resync_ring_keypad_siren()
 
-        run_pending.assert_not_called()
+        self.assertEqual(result, {"resynced": True})
+        request.assert_called_once_with()
+        reassert.assert_not_called()

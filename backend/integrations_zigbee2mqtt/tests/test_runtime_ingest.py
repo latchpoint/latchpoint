@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import json
 import os
+from datetime import timedelta
 from unittest.mock import patch
 
 from django.core.cache import cache
 from django.test import TestCase
+from django.utils import timezone
 
 from alarm.dispatcher.dispatcher import get_dispatcher
 from alarm.models import AlarmSettingsEntry, Entity
@@ -93,3 +95,59 @@ class Zigbee2mqttRuntimeIngestTests(TestCase):
         settings = get_settings()
         with self.assertNumQueries(0):
             _handle_z2m_message(settings=settings, topic=f"zigbee2mqtt/{friendly}", payload=json.dumps({"unknown": 1}))
+
+    def _contact_sensor(self, *, last_state: str | None, last_changed=None) -> str:
+        profile = ensure_active_settings_profile()
+        AlarmSettingsEntry.objects.update_or_create(
+            profile=profile,
+            key="zigbee2mqtt",
+            defaults={"value_type": "json", "value": {"enabled": True, "base_topic": "zigbee2mqtt"}},
+        )
+        ieee = "0x00124b0018e2abcd"
+        friendly = "side_fence_door"
+        entity_id = f"z2m_binary_sensor.{ieee}_contact"
+        Entity.objects.create(
+            entity_id=entity_id,
+            domain="binary_sensor",
+            name="Contact",
+            source="zigbee2mqtt",
+            last_state=last_state,
+            last_changed=last_changed,
+            attributes={"zigbee2mqtt": {"ieee_address": ieee, "friendly_name": friendly}},
+        )
+        cache.set(_CACHE_KEY_FRIENDLY_TO_IEEE, {friendly: ieee}, timeout=None)
+        cache.set(_entity_ids_cache_key(ieee=ieee), [entity_id], timeout=None)
+        return entity_id
+
+    def _ingest(self, payload: dict) -> list:
+        with patch("integrations_zigbee2mqtt.runtime._notify_dispatcher") as notify:
+            _handle_z2m_message(
+                settings=get_settings(), topic="zigbee2mqtt/side_fence_door", payload=json.dumps(payload)
+            )
+        return [c.kwargs["entity_ids"] for c in notify.call_args_list]
+
+    def test_an_unchanged_state_doesnt_count_as_a_change(self):
+        # #164: the server subscribes at startup and gets each device's retained state again, and Z2M repeats
+        # the full state in every report. An open door that stayed open must not look "changed since armed"
+        # (ADR-0108) or reach the rules again.
+        armed_at = timezone.now() - timedelta(hours=1)
+        entity_id = self._contact_sensor(last_state="False", last_changed=armed_at - timedelta(minutes=5))
+
+        notified = self._ingest({"contact": False, "battery": 90})
+
+        self.assertEqual(notified, [])
+        entity = Entity.objects.get(entity_id=entity_id)
+        self.assertEqual(entity.last_state, "False")
+        self.assertLess(entity.last_changed, armed_at)
+        self.assertGreater(entity.last_seen, armed_at)
+
+    def test_a_new_state_is_a_change(self):
+        entity_id = self._contact_sensor(last_state="True", last_changed=timezone.now() - timedelta(hours=1))
+        before = timezone.now()
+
+        notified = self._ingest({"contact": False})
+
+        self.assertEqual(notified, [[entity_id]])
+        entity = Entity.objects.get(entity_id=entity_id)
+        self.assertEqual(entity.last_state, "False")
+        self.assertGreaterEqual(entity.last_changed, before)

@@ -31,6 +31,7 @@ _init_lock = threading.Lock()
 _initialized = False
 _subscribed_wildcards: set[str] = set()
 _subscribed_topics: set[str] = set()
+_subscribed_lock = threading.Lock()
 
 # `_handle_message` reads settings on every inbound MQTT message, so hitting the DB
 # there scales query load with device chatter (ADR-0103). Cache a normalized snapshot,
@@ -258,15 +259,25 @@ def _subscribe_for_ingest(*, settings: Zigbee2mqttSettings) -> None:
             logger.warning("Message handling failed for topic %s", topic, exc_info=True)
             return
 
-    if wildcard not in _subscribed_wildcards:
-        _subscribed_wildcards.add(wildcard)
+    if _claim(_subscribed_wildcards, wildcard):
         mqtt_connection_manager.subscribe(topic=wildcard, qos=0, callback=_handle_message)
 
     for topic in (bridge_state_topic, devices_response_topic, devices_snapshot_topic):
-        if topic in _subscribed_topics:
-            continue
-        _subscribed_topics.add(topic)
-        mqtt_connection_manager.subscribe(topic=topic, qos=0, callback=_handle_message)
+        if _claim(_subscribed_topics, topic):
+            mqtt_connection_manager.subscribe(topic=topic, qos=0, callback=_handle_message)
+
+
+def _claim(subscribed: set[str], topic: str) -> bool:
+    """Mark `topic` subscribed and return True, or False if it already was (#164).
+
+    The check and the add happen under one lock, so two threads (ie startup, the on-connect hook and a status
+    request) can't both pass the check and register the same handler twice.
+    """
+    with _subscribed_lock:
+        if topic in subscribed:
+            return False
+        subscribed.add(topic)
+        return True
 
 
 def refresh_device_mapping_async(*, min_interval_seconds: int = 30) -> None:
@@ -453,12 +464,19 @@ def _handle_z2m_message(*, settings: Zigbee2mqttSettings, topic: str, payload: s
         ):
             if entity_id not in known_entity_ids:
                 continue
-            Entity.objects.filter(entity_id=entity_id).update(
-                last_state=value_str,
-                last_changed=now,
-                last_seen=now,
+            # Only a new value counts as a change, like HA's state stream. Z2M repeats a device's full state
+            # in every report (ie a battery update still carries `contact`), and the subscribe at server start
+            # gets the retained one again (#164). Bumping `last_changed` and notifying the dispatcher for those
+            # would make an unchanged open door look "changed since armed" (ADR-0108) and could trigger.
+            changed = (
+                Entity.objects.filter(entity_id=entity_id)
+                .exclude(last_state=value_str)
+                .update(last_state=value_str, last_changed=now, last_seen=now)
             )
-            changed_entity_ids.append(entity_id)
+            if changed:
+                changed_entity_ids.append(entity_id)
+            else:
+                Entity.objects.filter(entity_id=entity_id).update(last_seen=now)
 
     # Notify dispatcher of entity changes (ADR 0057).
     if changed_entity_ids:

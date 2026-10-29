@@ -42,9 +42,13 @@ def resync_ring_keypad_siren() -> dict:
         return {"resynced": False, "reason": "not_triggered"}
 
     logger.info("Ring Keypad v2 siren re-assert: alarm still triggered")
-    panel_sync_worker.request_siren_reassert()
-    if not panel_sync_worker.is_running():
-        # Outside the server (ie `manage.py run_task`) there's no worker thread to pick the request up, so
-        # write it here before the process exits (#164).
-        panel_sync_worker.run_pending()
-    return {"resynced": True}
+    if panel_sync_worker.is_running():
+        panel_sync_worker.request_siren_reassert()
+        return {"resynced": True}
+
+    # Outside the server (ie `manage.py run_task`) there's no worker thread to pick the request up, so write it
+    # here, out of the way of the server's worker (#164).
+    from control_panels.zwave_ring_keypad_v2 import reassert_ring_keypad_v2_siren_without_worker
+
+    failed_devices = reassert_ring_keypad_v2_siren_without_worker()
+    return {"resynced": True, "failed_devices": failed_devices}

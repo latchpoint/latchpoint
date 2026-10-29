@@ -104,7 +104,9 @@ class Command(BaseCommand):
             yield
             return
 
-        default_zwavejs_gateway.apply_settings(settings_obj=settings)
+        # Without the node event bridges, so this connection doesn't feed node events to a rule dispatcher in this
+        # process while the server's handles the same events.
+        default_zwavejs_gateway.apply_settings(settings_obj=settings, event_bridges=False)
         try:
             timeout = float(settings.get("connect_timeout_seconds") or 5)
             try:
@@ -114,4 +116,4 @@ class Command(BaseCommand):
                 self.stderr.write(f"Z-Wave JS didn't connect within {timeout:g}s ({exc}).")
             yield
         finally:
-            default_zwavejs_gateway.apply_settings(settings_obj={**settings, "enabled": False})
+            default_zwavejs_gateway.apply_settings(settings_obj={**settings, "enabled": False}, event_bridges=False)

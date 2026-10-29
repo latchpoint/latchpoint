@@ -49,10 +49,6 @@ class PanelSyncWorker:
         with self._cond:
             return self._thread is not None and self._thread.is_alive()
 
-    def run_pending(self) -> None:
-        """Process the queued work on the calling thread, for a process without the worker (ie `run_task`)."""
-        self._drain()
-
     def request_sync(self) -> None:
         """Ask for a reconcile against the latest alarm snapshot; returns immediately."""
         with self._cond:
