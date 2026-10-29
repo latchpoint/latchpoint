@@ -1,18 +1,23 @@
 from __future__ import annotations
 
+import importlib
 import json
 from unittest import TestCase
 from unittest.mock import patch
 
+from django.test import TestCase as DjangoTestCase
 from django.urls import reverse
 from rest_framework.test import APITestCase
 
 from accounts.models import User
+from alarm.crypto import SettingsEncryption
 from alarm.models import AlarmSettingsEntry, Entity
 from alarm.settings_registry import ALARM_PROFILE_SETTINGS_BY_KEY
 from alarm.tests.settings_test_utils import EncryptionTestMixin
 from alarm.use_cases.settings_profile import ensure_active_settings_profile
-from locks.models import DoorCode, DoorCodeLockAssignment
+from locks.models import DoorCode, DoorCodeEvent, DoorCodeLockAssignment
+from locks.use_cases import door_codes as door_codes_uc
+from locks.use_cases import lock_push as lock_push_uc
 from locks.use_cases.lock_config_sync import _normalize_pin, _weekday_to_mask_index
 
 
@@ -522,6 +527,347 @@ class LockConfigSyncApiTests(EncryptionTestMixin, APITestCase):
         body = resp.json()["data"]
         self.assertEqual(body["created"], 1)
         self.assertEqual(body["errors"], 0)
+
+
+class SlotGateway(FakeZwavejsGateway):
+    """A lock whose slots are given as ``{slot: (userIdStatus, userCode)}``.
+
+    ``failing_status_slots`` raise on the status read and CC 99 clears are recorded.
+    """
+
+    def __init__(self, slots: dict[int, tuple[object, object]], *, failing_status_slots: set[int] = frozenset()):
+        value_ids = [{"commandClass": 99, "property": "usersNumber"}]
+        values: dict[tuple[int, str], object] = {
+            (5, _value_id_key({"commandClass": 99, "property": "usersNumber"})): max(slots),
+        }
+        for slot, (status, pin) in slots.items():
+            for prop, value in (("userIdStatus", status), ("userCode", pin)):
+                value_id = {"commandClass": 99, "property": prop, "propertyKey": slot}
+                value_ids.append(value_id)
+                values[(5, _value_id_key(value_id))] = value
+        super().__init__(value_ids=value_ids, values=values)
+        self.failing_status_slots = set(failing_status_slots)
+        self.clears: list[int] = []
+
+    def node_get_value(self, *, node_id, value_id, timeout_seconds=5.0):
+        if value_id.get("property") == "userIdStatus" and value_id.get("propertyKey") in self.failing_status_slots:
+            raise TimeoutError("lock asleep")
+        return super().node_get_value(node_id=node_id, value_id=value_id, timeout_seconds=timeout_seconds)
+
+    def invoke_cc_api(self, *, node_id, command_class, method_name, args=None, timeout_seconds=10.0):
+        if command_class == 99 and method_name == "clear":
+            self.clears.append(int((args or [None])[0]))
+            return None
+        return super().invoke_cc_api(
+            node_id=node_id,
+            command_class=command_class,
+            method_name=method_name,
+            args=args,
+            timeout_seconds=timeout_seconds,
+        )
+
+
+class LockConfigSyncReconcileTests(EncryptionTestMixin, APITestCase):
+    """Issues #149, #150 and #140: what a sync may change on codes latchpoint already tracks."""
+
+    LOCK = "lock.front_door"
+
+    def setUp(self):
+        self.admin = User.objects.create_superuser(email="admin@example.com", password="pass")
+        self.user = User.objects.create_user(email="user@example.com", password="pass")
+        self.client.force_authenticate(self.admin)
+        profile = ensure_active_settings_profile()
+        definition = ALARM_PROFILE_SETTINGS_BY_KEY["zwavejs"]
+        entry, _ = AlarmSettingsEntry.objects.get_or_create(
+            profile=profile,
+            key="zwavejs",
+            defaults={"value": definition.default, "value_type": definition.value_type},
+        )
+        entry.set_value_with_encryption({"enabled": True, "ws_url": "ws://example.invalid:3000"})
+        Entity.objects.create(
+            entity_id=self.LOCK,
+            domain="lock",
+            name="Front Door",
+            attributes={"zwavejs": {"node_id": 5}},
+            source="home_assistant",
+        )
+
+    def _sync(self, fake):
+        url = reverse("locks-sync-config", kwargs={"lock_entity_id": self.LOCK})
+        with patch("locks.views.lock_config_sync.zwavejs_gateway", fake):
+            response = self.client.post(url, {"user_id": str(self.user.id), "reauth_password": "pass"}, format="json")
+        self.assertEqual(response.status_code, 200, response.content)
+        return response.json()["data"]
+
+    def _manual_code(self, *, pin: str, slot_index: int | None, is_active: bool = True) -> DoorCode:
+        code = DoorCode.objects.create(
+            user=self.user,
+            source=DoorCode.Source.MANUAL,
+            encrypted_pin=SettingsEncryption.get().encrypt(pin),
+            pin_length=len(pin),
+            label="Dog walker",
+            code_type=DoorCode.CodeType.PERMANENT,
+            is_active=is_active,
+            push_state=DoorCode.PushState.PUSHED,
+        )
+        DoorCodeLockAssignment.objects.create(door_code=code, lock_entity_id=self.LOCK, slot_index=slot_index)
+        return code
+
+    @staticmethod
+    def _slot(body, slot_index):
+        return next(s for s in body["slots"] if s["slot_index"] == slot_index)
+
+    # --- #149: turning synced codes off ---
+
+    def test_failed_slot_read_does_not_turn_off_synced_code(self):
+        self._sync(SlotGateway({1: (1, "1234"), 2: (1, "5678")}))
+        assignment = DoorCodeLockAssignment.objects.select_related("door_code").get(
+            lock_entity_id=self.LOCK, slot_index=2
+        )
+
+        body = self._sync(SlotGateway({1: (1, "1234"), 2: (1, "5678")}, failing_status_slots={2}))
+
+        self.assertEqual(body["deactivated"], 0)
+        self.assertEqual(self._slot(body, 2)["action"], "error")
+        assignment.refresh_from_db()
+        assignment.door_code.refresh_from_db()
+        self.assertTrue(assignment.door_code.is_active)
+        self.assertEqual(assignment.slot_index, 2)
+
+    def test_inconclusive_slot_status_does_not_turn_off_synced_code(self):
+        self._sync(SlotGateway({1: (1, "1234")}))
+        assignment = DoorCodeLockAssignment.objects.select_related("door_code").get(
+            lock_entity_id=self.LOCK, slot_index=1
+        )
+
+        # 254 = status not available; None = nothing in the value cache.
+        for status in (254, None):
+            body = self._sync(SlotGateway({1: (status, None)}))
+            self.assertEqual(body["deactivated"], 0)
+            assignment.refresh_from_db()
+            assignment.door_code.refresh_from_db()
+            self.assertTrue(assignment.door_code.is_active)
+            self.assertEqual(assignment.slot_index, 1)
+
+    def test_confirmed_empty_slot_turns_code_off_and_releases_slot(self):
+        self._sync(SlotGateway({1: (1, "1234")}))
+        assignment = DoorCodeLockAssignment.objects.select_related("door_code").get(
+            lock_entity_id=self.LOCK, slot_index=1
+        )
+
+        body = self._sync(SlotGateway({1: (0, None)}))
+
+        self.assertEqual(body["deactivated"], 1)
+        assignment.refresh_from_db()
+        assignment.door_code.refresh_from_db()
+        self.assertFalse(assignment.door_code.is_active)
+        self.assertIsNone(assignment.slot_index)
+        self.assertTrue(
+            DoorCodeEvent.objects.filter(
+                door_code=assignment.door_code, metadata__action="deactivated", metadata__slot_index=1
+            ).exists()
+        )
+
+    def test_confirmed_empty_slot_releases_slot_of_already_inactive_synced_code(self):
+        # A synced code an older sync turned off but left on "slot 1".
+        self._sync(SlotGateway({1: (1, "1234")}))
+        assignment = DoorCodeLockAssignment.objects.select_related("door_code").get(
+            lock_entity_id=self.LOCK, slot_index=1
+        )
+        DoorCode.objects.filter(id=assignment.door_code_id).update(is_active=False)
+
+        body = self._sync(SlotGateway({1: (0, None)}))
+
+        self.assertEqual(body["deactivated"], 0)
+        assignment.refresh_from_db()
+        self.assertIsNone(assignment.slot_index)
+
+    def test_sync_creates_codes_as_pushed(self):
+        self._sync(SlotGateway({1: (1, "1234"), 2: (2, "****")}))
+
+        codes = DoorCode.objects.filter(source=DoorCode.Source.SYNCED)
+        self.assertEqual(codes.count(), 2)
+        self.assertEqual(set(codes.values_list("push_state", flat=True)), {DoorCode.PushState.PUSHED})
+
+    # --- #150: manual -> synced conversion ---
+
+    def test_conversion_skipped_when_clear_failure_outstanding(self):
+        # #144 turned the code off after a delete whose clear of slot 1 failed.
+        code = self._manual_code(pin="1234", slot_index=1, is_active=False)
+        lock_push_uc.record_clear_failure(
+            door_code=code, lock_entity_id=self.LOCK, slot_index=1, exc=TimeoutError("asleep"), expected_pin="1234"
+        )
+
+        body = self._sync(SlotGateway({1: (1, "1234")}))
+
+        self.assertEqual(body["skipped"], 1)
+        self.assertEqual(body["updated"], 0)
+        slot = self._slot(body, 1)
+        self.assertEqual(slot["action"], "skipped")
+        self.assertEqual(slot["door_code_id"], code.id)
+        self.assertIn("clear_outstanding", slot["warnings"])
+        code.refresh_from_db()
+        self.assertEqual(code.source, DoorCode.Source.MANUAL)
+        self.assertFalse(code.is_active)
+        self.assertEqual(lock_push_uc.decrypt_pin_or_none(code), "1234")
+        self.assertTrue(
+            DoorCodeEvent.objects.filter(
+                door_code=code, metadata__action="sync_skipped", metadata__reason="clear_outstanding"
+            ).exists()
+        )
+        # Nothing that would close the code's push_unconfirmed window or settle the clear.
+        self.assertFalse(
+            DoorCodeEvent.objects.filter(door_code=code, event_type=DoorCodeEvent.EventType.CODE_SYNCED).exists()
+        )
+        self.assertEqual(len(lock_push_uc.unresolved_clear_failures(door_code=code)), 1)
+
+    def test_conversion_skipped_for_inactive_manual_code(self):
+        code = self._manual_code(pin="1234", slot_index=1, is_active=False)
+
+        body = self._sync(SlotGateway({1: (1, "1234")}))
+
+        self.assertIn("inactive_code_on_lock", self._slot(body, 1)["warnings"])
+        code.refresh_from_db()
+        self.assertEqual(code.source, DoorCode.Source.MANUAL)
+        self.assertFalse(code.is_active)
+
+    def test_stale_pin_mismatch_flagged_not_adopted(self):
+        # The code's PIN is now 5555 but slot 1 still holds the old 1234.
+        code = self._manual_code(pin="5555", slot_index=1)
+
+        body = self._sync(SlotGateway({1: (1, "1234")}))
+
+        self.assertEqual(body["skipped"], 1)
+        slot = self._slot(body, 1)
+        self.assertEqual(slot["action"], "skipped")
+        self.assertIn("pin_mismatch", slot["warnings"])
+        code.refresh_from_db()
+        self.assertEqual(code.source, DoorCode.Source.MANUAL)
+        self.assertEqual(lock_push_uc.decrypt_pin_or_none(code), "5555")
+        self.assertTrue(
+            DoorCodeEvent.objects.filter(
+                door_code=code, metadata__action="sync_skipped", metadata__reason="pin_mismatch"
+            ).exists()
+        )
+
+    def test_conversion_with_matching_or_masked_pin_keeps_code_pin(self):
+        matching = self._manual_code(pin="1234", slot_index=1)
+        masked = self._manual_code(pin="5678", slot_index=2)
+
+        self._sync(SlotGateway({1: (1, "1234"), 2: (1, "****")}))
+
+        for code, pin in ((matching, "1234"), (masked, "5678")):
+            code.refresh_from_db()
+            self.assertEqual(code.source, DoorCode.Source.SYNCED)
+            self.assertEqual(lock_push_uc.decrypt_pin_or_none(code), pin)
+            self.assertEqual(code.pin_length, 4)
+
+    def test_untracked_slot_with_unconfirmed_push_is_not_imported(self):
+        # A push wrote 4321 to slot 2 but never got it confirmed (#111).
+        code = self._manual_code(pin="4321", slot_index=None)
+        code.push_state = DoorCode.PushState.PENDING
+        code.save(update_fields=["push_state"])
+        lock_push_uc._record_unconfirmed_slot_attempt(
+            door_code=code, lock_entity_id=self.LOCK, slot_index=2, reason="readback timed out", pin="4321"
+        )
+
+        body = self._sync(SlotGateway({1: (0, None), 2: (1, "4321")}))
+
+        self.assertEqual(body["created"], 0)
+        slot = self._slot(body, 2)
+        self.assertEqual(slot["action"], "skipped")
+        self.assertEqual(slot["door_code_id"], code.id)
+        self.assertIn("clear_outstanding", slot["warnings"])
+        self.assertFalse(DoorCodeLockAssignment.objects.filter(lock_entity_id=self.LOCK, slot_index=2).exists())
+        # The unconfirmed window stays open for the code's own cleanup.
+        self.assertEqual(lock_push_uc._unconfirmed_attempt_slots(door_code=code, lock_entity_id=self.LOCK), [2])
+
+    # --- #140: copies of a PIN stranded by #133 ---
+
+    def test_stranded_copy_is_imported_as_flagged_synced_code_and_delete_clears_it(self):
+        # #133 left back with {1: PIN, 2: PIN} with only slot 2 tracked.
+        code = self._manual_code(pin="4321", slot_index=2)
+        fake = SlotGateway({1: (1, "4321"), 2: (1, "4321")})
+
+        body = self._sync(fake)
+
+        stranded = self._slot(body, 1)
+        self.assertEqual(stranded["action"], "created")
+        self.assertIn("duplicate_pin", stranded["warnings"])
+        self.assertEqual(stranded["duplicate_pin_door_code_ids"], [code.id])
+        self.assertEqual(self._slot(body, 2)["duplicate_pin_door_code_ids"], [])
+        copy = DoorCode.objects.get(id=stranded["door_code_id"])
+        self.assertEqual(copy.source, DoorCode.Source.SYNCED)
+        self.assertTrue(
+            DoorCodeEvent.objects.filter(
+                door_code=copy, metadata__action="created", metadata__duplicate_pin_door_code_ids=[code.id]
+            ).exists()
+        )
+
+        # The cleanup path: delete the imported copy, which clears only its slot.
+        door_codes_uc.delete_door_code(code=copy, actor_user=self.admin, zwavejs=fake)
+        self.assertEqual(fake.clears, [1])
+        self.assertEqual(DoorCodeLockAssignment.objects.get(door_code=code).slot_index, 2)
+
+    def test_untracked_slot_holding_pin_of_code_without_slot_is_flagged(self):
+        # The Yale case: the push went `failed` on this lock but slot 1 kept the PIN.
+        code = self._manual_code(pin="4321", slot_index=None)
+        DoorCode.objects.filter(id=code.id).update(push_state=DoorCode.PushState.FAILED)
+
+        fake = SlotGateway({1: (1, "4321")})
+
+        body = self._sync(fake)
+
+        self.assertEqual(self._slot(body, 1)["duplicate_pin_door_code_ids"], [code.id])
+        self.assertEqual(fake.clears, [])  # the sync only flags, it never clears
+
+
+class BackfillSyncedPushStateTests(DjangoTestCase):
+    """Migration 0007 (issue #149)."""
+
+    def _run(self):
+        from django.apps import apps
+
+        migration = importlib.import_module("locks.migrations.0007_backfill_synced_code_push_state")
+        migration._backfill_synced_push_state(apps, None)
+
+    def _code(self, *, source, push_state, slot_index, user):
+        code = DoorCode.objects.create(
+            user=user,
+            source=source,
+            code_type=DoorCode.CodeType.PERMANENT,
+            push_state=push_state,
+            last_push_error="Lock busy" if push_state == DoorCode.PushState.PENDING else "",
+        )
+        DoorCodeLockAssignment.objects.create(door_code=code, lock_entity_id="lock.front_door", slot_index=slot_index)
+        return code
+
+    def test_backfill_marks_only_synced_pending_codes_holding_a_slot(self):
+        user = User.objects.create_user(email="u@example.com", password="pass")
+        synced_on_lock = self._code(source="synced", push_state="pending", slot_index=1, user=user)
+        synced_no_slot = self._code(source="synced", push_state="pending", slot_index=None, user=user)
+        synced_failed = self._code(source="synced", push_state="failed", slot_index=2, user=user)
+        manual_pending = self._code(source="manual", push_state="pending", slot_index=3, user=user)
+        synced_clear_failed = self._code(source="synced", push_state="pending", slot_index=4, user=user)
+        DoorCodeEvent.objects.create(
+            door_code=synced_clear_failed,
+            lock_entity_id="lock.front_door",
+            event_type=DoorCodeEvent.EventType.CODE_FAILED,
+            metadata={"action": "clear_failed", "slot_index": 4},
+        )
+
+        self._run()
+
+        def state(code):
+            code.refresh_from_db()
+            return code.push_state
+
+        self.assertEqual(state(synced_on_lock), "pushed")
+        self.assertEqual(synced_on_lock.last_push_error, "")
+        self.assertEqual(state(synced_no_slot), "pending")
+        self.assertEqual(state(synced_failed), "failed")
+        self.assertEqual(state(manual_pending), "pending")
+        self.assertEqual(state(synced_clear_failed), "pending")
 
 
 class PinNormalizationTests(TestCase):
