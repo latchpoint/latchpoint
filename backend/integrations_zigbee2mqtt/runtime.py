@@ -184,16 +184,19 @@ def initialize() -> None:
             return
 
         def _after_connect() -> None:
-            """On-connect hook: refresh mapping and ensure subscriptions exist when enabled."""
-            # Best-effort: refresh device mapping so ingest works without manual sync.
-            refresh_device_mapping_async()
+            """On-connect hook: refresh mapping when enabled."""
+            settings = get_settings()
+            if settings.enabled and _mqtt_enabled():
+                # Best-effort: refresh device mapping so ingest works without manual sync.
+                refresh_device_mapping_async()
 
+        # Runs the hook right away too if MQTT is already connected, so the mapping refresh doesn't need its own
+        # call here, which failed with a traceback when the server starts before MQTT connects (#164).
         mqtt_connection_manager.register_on_connect(_after_connect)
 
         settings = get_settings()
         if settings.enabled and _mqtt_enabled():
             _subscribe_for_ingest(settings=settings)
-            refresh_device_mapping_async()
 
         _initialized = True
 

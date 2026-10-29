@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from unittest.mock import patch
 
 from django.test import SimpleTestCase
@@ -217,3 +218,28 @@ class MqttClientIdSuffixTests(SimpleTestCase):
             mgr._client_id_suffix,
             "test_connection's per-call suffix must differ from the live manager suffix",
         )
+
+
+class MqttOnConnectHookTests(SimpleTestCase):
+    """A hook registered after MQTT connected still runs for that connect (#164)."""
+
+    def _register(self, mgr: MqttConnectionManager) -> threading.Event:
+        ran = threading.Event()
+        mgr.register_on_connect(ran.set)
+        return ran
+
+    def test_runs_right_away_when_already_connected(self):
+        # The server's MQTT `ready()` starts connecting before the HA app registers its discovery hook.
+        mgr = MqttConnectionManager()
+        mgr._connected = True
+
+        self.assertTrue(self._register(mgr).wait(timeout=5))
+
+    def test_waits_for_the_connect_otherwise(self):
+        mgr = MqttConnectionManager()
+        ran = self._register(mgr)
+
+        self.assertFalse(ran.wait(timeout=0.2))
+
+        mgr._run_on_connect_hooks()
+        self.assertTrue(ran.wait(timeout=5))

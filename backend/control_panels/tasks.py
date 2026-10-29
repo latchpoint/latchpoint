@@ -21,6 +21,7 @@ _SIREN_RESYNC_INTERVAL_SECONDS = 120
     "resync_ring_keypad_siren",
     schedule=Every(seconds=_SIREN_RESYNC_INTERVAL_SECONDS),
     description="Watchdog that re-sounds the keypad siren if it stopped while still triggered (ADR-0104).",
+    connections=("zwavejs",),
 )
 def resync_ring_keypad_siren() -> dict:
     """
@@ -42,4 +43,8 @@ def resync_ring_keypad_siren() -> dict:
 
     logger.info("Ring Keypad v2 siren re-assert: alarm still triggered")
     panel_sync_worker.request_siren_reassert()
+    if not panel_sync_worker.is_running():
+        # Outside the server (ie `manage.py run_task`) there's no worker thread to pick the request up, so
+        # write it here before the process exits (#164).
+        panel_sync_worker.run_pending()
     return {"resynced": True}

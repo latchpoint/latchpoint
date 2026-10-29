@@ -5,9 +5,11 @@ from __future__ import annotations
 import logging
 import queue
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from unittest.mock import patch
 
 from django.test import SimpleTestCase
 
+from alarm import log_handler
 from alarm.log_handler import (
     BufferedWebSocketHandler,
     _broadcast_queue,
@@ -133,7 +135,9 @@ class EmitTests(LogHandlerTestCase):
     def test_emit_below_broadcast_level_skips_queue(self):
         configure(buffer_size=500, capture_level=logging.DEBUG, broadcast_level=logging.ERROR)
         handler = self._make_handler()
-        self._emit_record(handler, level=logging.WARNING)
+        # Stands in for a started worker that doesn't drain the queue (#164).
+        with patch.object(log_handler, "_broadcast_thread", object()):
+            self._emit_record(handler, level=logging.WARNING)
 
         with self.assertRaises(queue.Empty):
             _broadcast_queue.get_nowait()
@@ -141,7 +145,9 @@ class EmitTests(LogHandlerTestCase):
     def test_emit_at_broadcast_level_enqueues(self):
         configure(buffer_size=500, capture_level=logging.DEBUG, broadcast_level=logging.WARNING)
         handler = self._make_handler()
-        self._emit_record(handler, level=logging.WARNING)
+        # Stands in for a started worker that doesn't drain the queue (#164).
+        with patch.object(log_handler, "_broadcast_thread", object()):
+            self._emit_record(handler, level=logging.WARNING)
 
         entry = _broadcast_queue.get_nowait()
         self.assertIsNotNone(entry)

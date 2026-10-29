@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import sys
+
 from django.apps import AppConfig
+
+from config.runtimes import should_start_runtimes
 
 
 class AlarmConfig(AppConfig):
@@ -30,6 +34,9 @@ class AlarmConfig(AppConfig):
             capture_level=getattr(logging, settings.LOG_VIEWER_CAPTURE_LEVEL, logging.DEBUG),
             broadcast_level=getattr(logging, settings.LOG_VIEWER_BROADCAST_LEVEL, logging.WARNING),
         )
+        # Only the server has websocket clients to send log entries to, so only it runs the broadcast thread (#164).
+        if should_start_runtimes(sys.argv):
+            log_handler.start_broadcast_worker()
 
         # Verify the encryption key can decrypt existing values (ADR 0079).
         # Deferred to post-migrate to avoid running during migrations.
