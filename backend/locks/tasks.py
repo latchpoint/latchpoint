@@ -75,13 +75,16 @@ def push_pending_door_codes() -> int:
     A code is considered "pending" if (a) ``push_state=pending`` AND (b) it's
     active with at least one assignment still at ``slot_index IS NULL``, or it
     has a slot clear on record that failed (issue #139; active or not, since an
-    inactive code's PIN may still be on the lock). Failed clears are retried
-    before the push. The use case mutates per-row state; this task is the safety
-    net for transient gateway failures.
+    inactive code's PIN may still be on the lock). An inactive manual code that
+    still holds a slot or has an unconfirmed attempt slot left to check is
+    picked up too, ``pending`` or ``pushed`` (issue #158), and those slots get
+    cleared. Failed clears are retried before the push. The use case mutates
+    per-row state; this task is the safety net for transient gateway failures.
 
     Returns the number of codes attempted this tick.
     """
     from locks.use_cases.lock_push import (
+        inactive_slots_to_clear,
         push_or_settle_after_clear_retry,
         retry_failed_slot_clears,
         settle_clear_failure_state,
@@ -99,18 +102,41 @@ def push_pending_door_codes() -> int:
         event_type=DoorCodeEvent.EventType.CODE_FAILED,
         metadata__action="clear_failed",
     )
+    # A rough cut for inactive codes; inactive_slots_to_clear has the exact rules.
+    holds_slot_subquery = DoorCodeLockAssignment.objects.filter(
+        door_code=OuterRef("pk"),
+        slot_index__isnull=False,
+    )
+    unconfirmed_subquery = DoorCodeEvent.objects.filter(
+        door_code=OuterRef("pk"),
+        event_type=DoorCodeEvent.EventType.CODE_FAILED,
+        metadata__action="push_unconfirmed",
+    )
+    inactive_with_slots = Q(
+        is_active=False,
+        source=DoorCode.Source.MANUAL,
+        push_state__in=[DoorCode.PushState.PENDING, DoorCode.PushState.PUSHED],
+    ) & (Q(_holds_slot=True) | Q(_has_unconfirmed=True))
     pending = (
         DoorCode.objects.annotate(
             _has_unassigned=Exists(unassigned_subquery),
             _has_clear_failures=Exists(clear_failed_subquery),
+            _holds_slot=Exists(holds_slot_subquery),
+            _has_unconfirmed=Exists(unconfirmed_subquery),
         )
-        .filter(push_state=DoorCode.PushState.PENDING)
-        .filter(Q(_has_unassigned=True, is_active=True) | Q(_has_clear_failures=True))
+        .filter(
+            Q(push_state=DoorCode.PushState.PENDING)
+            & (Q(_has_unassigned=True, is_active=True) | Q(_has_clear_failures=True))
+            | inactive_with_slots
+        )
         .prefetch_related("lock_assignments")
     )
 
     attempted = 0
     for code in pending:
+        if code.push_state == DoorCode.PushState.PUSHED and not inactive_slots_to_clear(door_code=code):
+            # Only picked up by the rough cut: nothing left on its locks to clear.
+            continue
         try:
             clear_failures = retry_failed_slot_clears(door_code=code, zwavejs=default_zwavejs_gateway)
             successes, failures = push_or_settle_after_clear_retry(
