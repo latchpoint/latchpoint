@@ -17,8 +17,11 @@ class ZwavejsGateway(Protocol):
 
         ...
 
-    def apply_settings(self, *, settings_obj: ZwavejsConnectionSettings) -> None:
-        """Apply runtime connection settings (typically from the active settings profile)."""
+    def apply_settings(self, *, settings_obj: ZwavejsConnectionSettings, event_bridges: bool = True) -> None:
+        """Apply runtime connection settings (typically from the active settings profile).
+
+        `event_bridges=False` connects without forwarding node events to listeners or the rule dispatcher.
+        """
 
         ...
 
@@ -93,9 +96,9 @@ class DefaultZwavejsGateway:
         """Return the current Z-Wave JS connection status snapshot."""
         return self.manager.get_status()
 
-    def apply_settings(self, *, settings_obj: ZwavejsConnectionSettings) -> None:
+    def apply_settings(self, *, settings_obj: ZwavejsConnectionSettings, event_bridges: bool = True) -> None:
         """Apply runtime connection settings (typically from the active settings profile)."""
-        self.manager.apply_settings(settings_obj=settings_obj)
+        self.manager.apply_settings(settings_obj=settings_obj, event_bridges=event_bridges)
 
     def test_connection(self, *, settings_obj: ZwavejsConnectionSettings, timeout_seconds: float | None = None) -> None:
         """Attempt a short-lived connect/listen handshake to validate settings."""

@@ -107,3 +107,30 @@ class ZwavejsManagerEventListenerTests(SimpleTestCase):
             self.assertTrue(received)
 
         manager.apply_settings(settings_obj={"enabled": False})
+
+    @override_settings(ALLOW_ZWAVEJS_IN_TESTS=True)
+    def test_without_event_bridges_node_events_reach_no_listener_or_dispatcher(self):
+        # `manage.py run_task` connects this way, so its connection doesn't run rules next to the server's (#164).
+        manager = ZwavejsConnectionManager()
+        got_event = threading.Event()
+        manager.register_event_listener(lambda _msg: got_event.set())
+
+        emitted_event = {"source": "node", "nodeId": 12, "args": {"commandClass": 113, "eventType": 6}}
+        with (
+            patch(
+                "integrations_zwavejs.manager._import_zwavejs_client",
+                return_value=_fake_imports(emitted_event=emitted_event),
+            ),
+            patch("alarm.dispatcher.notify_entities_changed") as notify,
+        ):
+            manager.apply_settings(
+                settings_obj={"enabled": True, "ws_url": "ws://example.test:3000", "connect_timeout_seconds": 0.2},
+                event_bridges=False,
+            )
+            manager.ensure_connected(timeout_seconds=1.0)
+
+            self.assertFalse(got_event.wait(timeout=0.8))
+            self.assertEqual(manager._attached_node_ids, set())
+            notify.assert_not_called()
+
+        manager.apply_settings(settings_obj={"enabled": False})

@@ -297,6 +297,18 @@ class MqttConnectionManager:
         with self._lock:
             self._last_error = error
 
+    def _on_connected(self) -> None:
+        """Mark the manager connected, re-apply subscriptions and run the on-connect hooks."""
+        with self._lock:
+            self._connected = True
+            self._last_connect_at = _now()
+            self._last_error = None
+            # Taken under the same lock that sets `_connected`, so a hook registered from here on sees it
+            # connected and runs itself, and one registered before is in this list. Either way it runs once.
+            hooks = list(self._on_connect_hooks)
+        self._resubscribe()
+        self._run_on_connect_hooks(hooks=hooks)
+
     def _disconnect(self) -> None:
         """Disconnect and tear down the current client (idempotent)."""
         with self._lock:
@@ -334,12 +346,7 @@ class MqttConnectionManager:
             except Exception:
                 rc_int = 1
             if rc_int == 0:
-                with self._lock:
-                    self._connected = True
-                    self._last_connect_at = _now()
-                    self._last_error = None
-                self._resubscribe()
-                self._run_on_connect_hooks()
+                self._on_connected()
             else:
                 with self._lock:
                     self._connected = False
@@ -500,9 +507,18 @@ class MqttConnectionManager:
                 self._logger.debug("Unsubscribe failed for %s", topic, exc_info=True)
 
     def register_on_connect(self, callback) -> None:
-        """Register a callback to run on successful connect (best-effort)."""
+        """
+        Register a callback to run on successful connect (best-effort).
+
+        If MQTT is already connected it also runs right away. The server's MQTT `ready()` starts connecting
+        before the HA, Zigbee2MQTT and Frigate apps register their hooks, and against a nearby broker the first
+        connect can land in between, which skipped the HA discovery publish at boot (#164).
+        """
         with self._lock:
             self._on_connect_hooks.append(callback)
+            connected = self._connected
+        if connected:
+            self._run_on_connect_hooks(hooks=[callback])
 
     def _resubscribe(self) -> None:
         """Re-apply topic subscriptions on (re)connect."""
@@ -518,10 +534,11 @@ class MqttConnectionManager:
             except Exception as exc:
                 self._logger.warning("MQTT subscribe failed for %s: %s", topic, exc)
 
-    def _run_on_connect_hooks(self) -> None:
-        """Run registered connect hooks on a background thread."""
-        with self._lock:
-            hooks = list(self._on_connect_hooks)
+    def _run_on_connect_hooks(self, hooks: list | None = None) -> None:
+        """Run the registered connect hooks (or just `hooks`) on a background thread."""
+        if hooks is None:
+            with self._lock:
+                hooks = list(self._on_connect_hooks)
 
         def _run():
             """Invoke each hook in order, swallowing errors."""

@@ -296,6 +296,8 @@ def check_home_assistant() -> None:
     "process_due_rule_runtimes",
     schedule=Every(seconds=5, jitter=1),
     description="Completes “wait for X seconds” rule timers and triggers any rules that become due.",
+    # Rule actions can publish over MQTT (ie Zigbee2MQTT) or write Z-Wave values.
+    connections=("mqtt", "zwavejs"),
 )
 def process_due_rule_runtimes() -> dict:
     """
@@ -427,6 +429,8 @@ def _fire_one_pending_action(pa: PendingAction) -> None:
     "fire_due_pending_actions",
     schedule=Every(seconds=2),
     description="Fires queued rule actions whose delay has elapsed (ADR-0091).",
+    # Rule actions can publish over MQTT (ie Zigbee2MQTT) or write Z-Wave values.
+    connections=("mqtt", "zwavejs"),
 )
 def fire_due_pending_actions() -> dict:
     """Pick up PendingAction rows whose ``fire_at`` has passed and dispatch them.

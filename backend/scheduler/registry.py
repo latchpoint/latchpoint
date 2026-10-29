@@ -29,6 +29,12 @@ class ScheduledTask:
     failure_backoff_max_seconds: int = 0
     failure_suspend_after: int = 0
     failure_suspend_seconds: int = 0
+    connections: tuple[str, ...] = ()
+
+
+# Connections a task can declare. `manage.py run_task` opens them for the run, since the runtimes that hold
+# them only start in the server process (#164).
+TASK_CONNECTIONS = ("mqtt", "zwavejs")
 
 
 def register(
@@ -41,6 +47,7 @@ def register(
     failure_backoff_max_seconds: int = 0,
     failure_suspend_after: int = 0,
     failure_suspend_seconds: int = 0,
+    connections: tuple[str, ...] = (),
 ) -> Callable[[Callable[[], None]], Callable[[], None]]:
     """Decorator to register a scheduled task.
 
@@ -52,7 +59,13 @@ def register(
     The `failure_*` kwargs declare the default retry policy at the call site.
     SCHEDULER_TASK_OVERRIDES still wins when present, so operators retain the
     final say from Django settings.
+
+    `connections` lists the live connections the task needs, out of `TASK_CONNECTIONS`. The server already
+    holds them, so the scheduler ignores this. `manage.py run_task` opens just these for the run.
     """
+    unknown = sorted(set(connections) - set(TASK_CONNECTIONS))
+    if unknown:
+        raise ValueError(f"Task {name!r} declares unknown connections {unknown}, expected some of {TASK_CONNECTIONS}")
 
     def decorator(func: Callable[[], None]) -> Callable[[], None]:
         overrides = getattr(settings, "SCHEDULER_TASK_OVERRIDES", {}) or {}
@@ -103,6 +116,7 @@ def register(
             failure_backoff_max_seconds=resolved_failure_backoff_max_seconds,
             failure_suspend_after=resolved_failure_suspend_after,
             failure_suspend_seconds=resolved_failure_suspend_seconds,
+            connections=tuple(connections),
         )
         return func
 

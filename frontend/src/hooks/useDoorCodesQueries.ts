@@ -4,12 +4,38 @@ import { doorCodesService, locksService } from '@/services'
 import { queryKeys } from '@/types'
 import type { CreateDoorCodeRequest, DoorCode, LockConfigSyncRequest, LockConfigSyncResult, UpdateDoorCodeRequest } from '@/types'
 
+/** How often the door codes refetch while one is waiting on its locks. */
+export const DOOR_CODES_SETTLING_POLL_MS = 15_000
+
+/**
+ * Whether the scheduler is still working on `code`, matching what
+ * push_pending_door_codes retries: a slot it still has to clear (#151), or an
+ * active pending code with a lock that has no slot yet. A failed code isn't,
+ * since the scheduler gives up on those and only a Retry moves them. Nor is a
+ * pending code the scheduler never picks up, like one lock sync created or an
+ * active one with no locks.
+ */
+export function isDoorCodeSettling(code: DoorCode): boolean {
+  if (code.pushState === 'failed') return false
+  if ((code.pendingSlotClears?.length ?? 0) > 0) return true
+  if ((code.lockSlotAssignments ?? []).some((a) => a.pendingRemoval)) return true
+  return (
+    code.pushState === 'pending' && code.isActive && (code.lockSlotAssignments ?? []).some((a) => a.slotIndex == null)
+  )
+}
+
 export function useDoorCodesQuery(params: { userId: string; isAdmin: boolean }) {
   const { userId, isAdmin } = params
   return useQuery<DoorCode[]>({
     queryKey: queryKeys.doorCodes.byUser(userId),
     queryFn: () => doorCodesService.getDoorCodes(isAdmin ? { userId } : undefined),
     enabled: !!userId,
+    // Nothing pushes door code changes to the page (#156), so pick up changes
+    // made in another tab or by the scheduler when the tab becomes visible
+    // again (TanStack listens for visibilitychange), even inside the default
+    // staleTime, and keep checking while a code is still settling.
+    refetchOnWindowFocus: 'always',
+    refetchInterval: (query) => (query.state.data?.some(isDoorCodeSettling) ? DOOR_CODES_SETTLING_POLL_MS : false),
   })
 }
 

@@ -507,6 +507,61 @@ def sync_ring_keypad_v2_devices_state(*, force_siren_edge: bool = False) -> int:
     return failed_devices
 
 
+def reassert_ring_keypad_v2_siren_without_worker() -> int:
+    """
+    Re-sound the burglar siren on every enabled Ring Keypad v2, from a process without the panel-sync worker.
+
+    That's `manage.py run_task resync_ring_keypad_siren` (#164). The server's worker stays the owner of the
+    keypads and keeps writing them meanwhile (ADR-0100), and each write here can take seconds, so this one
+    has to stay out of its way:
+
+    - it re-reads the alarm state right before every write and stops once the alarm isn't triggered. If the
+      user disarms mid-run, the worker selects the disarmed mode, and a siren write landing after that would
+      sound until the next disarm (ADR-0104)
+    - it doesn't save `last_written_indicators` or `last_error`. The worker reconciles from its own saved copy,
+      and one saved from here could be stale by the time it lands
+
+    Returns the number of devices with a failed write.
+    """
+    devices = ControlPanelDevice.objects.filter(
+        enabled=True,
+        integration_type=ControlPanelIntegrationType.ZWAVEJS,
+        kind=ControlPanelKind.RING_KEYPAD_V2,
+    ).only("id", "external_id", "beep_volume", "last_written_indicators")
+
+    failed_devices = 0
+    for device in devices:
+        snapshot = get_current_snapshot(process_timers=False)
+        if snapshot is None or snapshot.current_state != AlarmState.TRIGGERED:
+            logger.info("Ring Keypad v2 siren re-assert stopped: alarm is no longer triggered")
+            return failed_devices
+        writes = _desired_indicator_writes(
+            snapshot=snapshot,
+            now=timezone.now(),
+            device=device,
+            tracked=dict(device.last_written_indicators or {}),
+            force_siren_edge=True,
+        )
+        failed = False
+        for write in writes:
+            current = get_current_snapshot(process_timers=False)
+            if current is None or current.current_state != AlarmState.TRIGGERED:
+                logger.info("Ring Keypad v2 siren re-assert stopped: alarm is no longer triggered")
+                return failed_devices + int(failed)
+            if write.property_id == _IND_BURGLAR_ALARM and write.property_key == 7:
+                logger.info("Ring Keypad v2 burglar siren commanded device_id=%s (run_task)", device.id)
+            ok = _indicator_set(
+                device=device,
+                property_id=write.property_id,
+                property_key=write.property_key,
+                value=write.value,
+                log_failures=write.log_failures,
+            )
+            failed = failed or not ok
+        failed_devices += int(failed)
+    return failed_devices
+
+
 def play_code_rejected(*, device: ControlPanelDevice) -> None:
     """Play the "code not accepted" tone/LED on the keypad (blocking Z-Wave writes)."""
     _apply_ring_keypad_v2_volume(device=device, property_id=_IND_CODE_NOT_ACCEPTED)

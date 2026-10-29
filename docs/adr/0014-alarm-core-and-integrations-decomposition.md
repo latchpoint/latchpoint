@@ -120,3 +120,17 @@ Implementation note:
 - Document and keep stable the signal contracts (`alarm_state_change_committed`, `settings_profile_changed`) so integrations can rely on them safely.
 - See ADR 0015 for the signal contract.
 - Ensure deployment runs `python manage.py apply_integration_settings` after migrations so integrations apply settings on boot without hidden startup side effects.
+
+## Amendment (2026-10-29): the server applies integration settings, not the boot command
+
+The "explicit apply command" above never reached the server. `apply_integration_settings` connected MQTT
+and Z-Wave JS, published the HA MQTT alarm entity discovery and subscribed for Zigbee2MQTT and Frigate in
+its own process, which exits before daphne starts, so daphne had to do all of it again (#160, #164).
+
+Since #164 the server process applies the settings from each integration's `AppConfig.ready()` (gated by
+`config.runtimes.should_start_runtimes()`) and the MQTT on-connect hooks, including the Zigbee2MQTT and
+Frigate subscriptions. `apply_integration_settings` still runs after `migrate` on boot, but only reads the
+settings. It makes sure the active profile and its entries exist, fails the boot if
+`SETTINGS_ENCRYPTION_KEY` can't decrypt the MQTT or Z-Wave JS settings, and reports what the server will
+apply. It opens no connections. The last Todo above now means running it for those checks, not to apply
+anything.
