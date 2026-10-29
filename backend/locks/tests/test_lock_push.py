@@ -1576,24 +1576,19 @@ class UnconfirmedSlotCleanupTests(EncryptionTestMixin, TestCase):
             push_pending_door_codes()
         self.assertNotIn((12, slot), gateway._lock_codes)
 
-    def test_retention_keeps_in_window_unconfirmed_attempts_and_prunes_settled_markers(self):
+    def test_retention_keeps_unsettled_unconfirmed_attempts_and_prunes_settled_ones(self):
         code, gateway, slot = self._pending_unconfirmed([])
-        door_codes_uc.update_door_code(code=code, changes={"is_active": False}, actor_user=self.user, zwavejs=gateway)
         attempt = DoorCodeEvent.objects.get(door_code=code, metadata__action="push_unconfirmed")
 
         self._backdate_events_and_run_retention(code)
 
-        # Nothing is unresolved (the deactivate cleared the slot), but the attempt is
-        # still in its window, so it stays.
+        # Still in its window and nothing has checked the slot, so it stays.
         self.assertEqual(list(DoorCodeEvent.objects.filter(door_code=code).values_list("id", flat=True)), [attempt.id])
 
-        # A later successful push closes the window, and then it can go.
-        DoorCodeEvent.objects.create(
-            door_code=code,
-            lock_entity_id=self.LOCK,
-            event_type=DoorCodeEvent.EventType.CODE_SYNCED,
-            metadata={"action": "pushed", "slot_index": slot},
-        )
+        # Issue #161: the deactivate clears the slot, which settles the attempt, so
+        # it and its marker age out even though no push closed the window.
+        door_codes_uc.update_door_code(code=code, changes={"is_active": False}, actor_user=self.user, zwavejs=gateway)
+        self.assertEqual(self._cleared(gateway), [slot])
         self._backdate_events_and_run_retention(code)
         self.assertFalse(DoorCodeEvent.objects.filter(door_code=code).exists())
 
@@ -2693,7 +2688,10 @@ class LockListChangeApiTests(_TwoLockUpdateTestBase, APITestCase):
         self.assertEqual(data["lock_entity_ids"], [self.BACK, self.FRONT])
         self.assertCountEqual(
             data["lock_slot_assignments"],
-            [{"lock_entity_id": self.BACK, "slot_index": 1}, {"lock_entity_id": self.FRONT, "slot_index": 1}],
+            [
+                {"lock_entity_id": self.BACK, "slot_index": 1, "pending_removal": False},
+                {"lock_entity_id": self.FRONT, "slot_index": 1, "pending_removal": False},
+            ],
         )
         self.assertEqual(data["push_state"], DoorCode.PushState.PUSHED)
         self.assertEqual(self._calls(gateway, "clear"), [(13, [1])])
@@ -2830,7 +2828,7 @@ class LockSlotAssignmentsSerializerTests(EncryptionTestMixin, TestCase):
 
         self.assertEqual(
             data["lock_slot_assignments"],
-            [{"lock_entity_id": self.LOCK_ENTITY_ID, "slot_index": 7}],
+            [{"lock_entity_id": self.LOCK_ENTITY_ID, "slot_index": 7, "pending_removal": False}],
         )
 
     def test_returns_null_slot_index_for_unpushed_assignment(self):
@@ -2848,7 +2846,10 @@ class LockSlotAssignmentsSerializerTests(EncryptionTestMixin, TestCase):
         fetched = DoorCode.objects.prefetch_related("lock_assignments").get(id=code.id)
         data = DoorCodeSerializer(fetched).data
 
-        self.assertEqual(data["lock_slot_assignments"], [{"lock_entity_id": self.LOCK_ENTITY_ID, "slot_index": None}])
+        self.assertEqual(
+            data["lock_slot_assignments"],
+            [{"lock_entity_id": self.LOCK_ENTITY_ID, "slot_index": None, "pending_removal": False}],
+        )
 
     def test_raises_runtime_error_when_lock_assignments_not_prefetched(self):
         from locks.serializers import DoorCodeSerializer

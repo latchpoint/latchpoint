@@ -41,7 +41,8 @@ function makeCode(overrides: Partial<DoorCode> = {}): DoorCode {
     lastUsedLock: null,
     lockAssignments: [{ id: 1, lockEntityId: 'lock.front_door' }],
     lockEntityIds: ['lock.front_door'],
-    lockSlotAssignments: [{ lockEntityId: 'lock.front_door', slotIndex: null }],
+    lockSlotAssignments: [{ lockEntityId: 'lock.front_door', slotIndex: null, pendingRemoval: false }],
+    pendingSlotClears: [],
     pushState: 'failed',
     lastPushError: 'Gateway timeout after 5.0s',
     lastPushAttemptAt: '2026-10-28T10:00:00Z',
@@ -56,7 +57,7 @@ const pushedCode = (lastPushAttemptAt: string) =>
     pushState: 'pushed',
     lastPushError: '',
     lastPushAttemptAt,
-    lockSlotAssignments: [{ lockEntityId: 'lock.front_door', slotIndex: 3 }],
+    lockSlotAssignments: [{ lockEntityId: 'lock.front_door', slotIndex: 3, pendingRemoval: false }],
   })
 
 function conflict() {
@@ -162,6 +163,22 @@ function EditingCardFromQuery() {
 }
 
 describe('DoorCodeCard', () => {
+  it('marks a lock whose removal is still waiting on its slot clear', () => {
+    const code = makeCode({
+      lockEntityIds: ['lock.back_door', 'lock.front_door'],
+      lockSlotAssignments: [
+        { lockEntityId: 'lock.back_door', slotIndex: 2, pendingRemoval: false },
+        { lockEntityId: 'lock.front_door', slotIndex: 1, pendingRemoval: true },
+      ],
+      pendingSlotClears: [{ lockEntityId: 'lock.front_door', slotIndex: 1, removing: true }],
+    })
+
+    renderWithProviders(<CardWithRetry code={code} />)
+
+    expect(screen.getByText('Front Door (removing)')).toBeTruthy()
+    expect(screen.getByText('lock.back_door')).toBeTruthy()
+  })
+
   it('shows a refused delete turning the code off and keeps its error', async () => {
     const refusal =
       "Couldn't clear slot 3 on lock.front_door, it may still hold the PIN. The door code wasn't deleted and is now off, try again when the lock responds."
@@ -174,7 +191,8 @@ describe('DoorCodeCard', () => {
           isActive: false,
           pushState: 'pending',
           lastPushError: "Couldn't clear slot 3 on lock.front_door, it may still hold the PIN",
-          lockSlotAssignments: [{ lockEntityId: 'lock.front_door', slotIndex: 3 }],
+          lockSlotAssignments: [{ lockEntityId: 'lock.front_door', slotIndex: 3, pendingRemoval: false }],
+          pendingSlotClears: [{ lockEntityId: 'lock.front_door', slotIndex: 3, removing: false }],
         })
         return HttpResponse.json({ error: { status: 'gateway_error', message: refusal, gateway: 'zwavejs' } }, { status: 502 })
       }),

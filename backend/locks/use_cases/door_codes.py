@@ -180,8 +180,10 @@ _PUSH_TRIGGER_FIELDS = frozenset({"code", "is_active", "days_of_week", "window_s
 def _changed_push_trigger_fields(*, code: DoorCode, changes: dict, old_pin: str | None) -> set[str]:
     """Return the push trigger fields in ``changes`` whose value differs from ``code``'s.
 
-    The edit form sends every field on every save, so a key being present doesn't
-    mean it changed (issue #139). Call before ``changes`` is applied.
+    The edit form only sends the fields that were edited (#155), but it always
+    sends ``is_active: false`` for an inactive code, and other API clients may
+    send unchanged values, so a key being present doesn't mean it changed
+    (issue #139). Call before ``changes`` is applied.
     """
     from locks.use_cases.lock_push import has_unconfirmed_attempt_slots
 
@@ -771,18 +773,24 @@ def retry_push_door_code(
 
     Retries any slot clears that failed first, then pushes every lock without a
     slot (which includes a kept lock whose stale slot just got cleared). An
-    inactive code is only retried when it has clears outstanding, and is never
-    pushed.
+    inactive code is only retried when it has clears outstanding, which
+    includes a slot it still holds or an unconfirmed attempt slot left to check
+    (issue #158), and is never pushed.
     """
     assert_admin(user=actor_user) if actor_user is not None else None
 
     from locks.use_cases.lock_push import (
+        inactive_slots_to_clear,
         push_or_settle_after_clear_retry,
         retry_failed_slot_clears,
         unresolved_clear_failures,
     )
 
-    if not code.is_active and not unresolved_clear_failures(door_code=code):
+    if (
+        not code.is_active
+        and not unresolved_clear_failures(door_code=code)
+        and not inactive_slots_to_clear(door_code=code)
+    ):
         raise DoorCodeInactive("Door code is inactive. Turn it on before pushing it to its locks.")
 
     retry_failed_slot_clears(door_code=code, zwavejs=zwavejs)

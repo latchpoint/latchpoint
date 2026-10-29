@@ -18,15 +18,20 @@ function describeSlots(code: DoorCode, lockNameByEntityId: Map<string, string>):
     .join(', ')
 }
 
-// The backend never pushes an inactive code, and it only leaves one pushed once
-// no slot clear is outstanding (#144). So for an inactive manual code, pending
-// means a clear that may have left the PIN on a lock is still being retried by
-// the scheduler (a refused delete ends here too), and failed means that clear
-// hit the attempt cap. Retry retries the clear in both.
+// The backend never pushes an inactive code. pendingSlotClears lists the slots
+// it still has to clear for one (#151): a clear that failed, a slot the code
+// still holds, or an unconfirmed slot left to check. The scheduler and Retry
+// clear those, so an inactive manual code with any shows Pending clear (Clear
+// failed once the clear hit the attempt cap), whatever its push state. An
+// inactive code without any gets no Retry, since Retry would only come back
+// with a 409.
 export function DoorCodePushStatusBadge({ code, lockNameByEntityId, canRetry, isRetrying, onRetry }: Props) {
-  if (!code.lockEntityIds?.length) return null
+  // Synced codes don't count. Their slots are the lock's own and lock sync turns
+  // them off without touching push_state (#149), so Retry would only 409.
+  const clearing = !code.isActive && code.source !== 'synced' && (code.pendingSlotClears?.length ?? 0) > 0
+  if (!code.lockEntityIds?.length && !clearing) return null
 
-  if (code.pushState === 'pushed') {
+  if (code.pushState === 'pushed' && !clearing) {
     if (
       !code.isActive &&
       code.lockSlotAssignments.length > 0 &&
@@ -47,11 +52,6 @@ export function DoorCodePushStatusBadge({ code, lockNameByEntityId, canRetry, is
     )
   }
 
-  // Synced codes don't count. Lock sync creates them at the default pending and
-  // turns them off without touching push_state, so for those pending says
-  // nothing about a clear (#149). An inactive synced code gets the plain badge
-  // with no Retry, since Retry would only come back with a 409.
-  const clearing = !code.isActive && code.source !== 'synced'
   const showRetry = canRetry && (code.isActive || clearing)
 
   if (code.pushState === 'failed') {
@@ -75,10 +75,11 @@ export function DoorCodePushStatusBadge({ code, lockNameByEntityId, canRetry, is
     )
   }
 
-  // pending
+  // pending, or pushed with a clear the scheduler hasn't got to yet
+  const waiting = clearing ? 'Waiting for the lock to clear the slot.' : 'Waiting for the lock to accept the code.'
   return (
     <div className="flex items-center gap-2">
-      <Badge variant="outline" title={code.lastPushError || 'Waiting for the lock to accept the code.'}>
+      <Badge variant="outline" title={code.lastPushError || waiting}>
         {clearing ? 'Pending clear' : 'Pending sync'}
       </Badge>
       {showRetry ? (

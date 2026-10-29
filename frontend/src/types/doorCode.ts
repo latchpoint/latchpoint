@@ -10,6 +10,16 @@ export interface DoorCodeLockAssignment {
 export interface DoorCodeLockSlotAssignment {
   lockEntityId: string
   slotIndex: number | null
+  /** The lock is being dropped from the code but its slot clear hasn't worked yet. */
+  pendingRemoval: boolean
+}
+
+/** A slot latchpoint still has to clear (or check and clear) for this code. */
+export interface DoorCodePendingSlotClear {
+  lockEntityId: string
+  slotIndex: number
+  /** Set when the lock is being dropped from the code. */
+  removing: boolean
 }
 
 export interface DoorCode {
@@ -34,6 +44,7 @@ export interface DoorCode {
   lockAssignments: DoorCodeLockAssignment[]
   lockEntityIds: string[]
   lockSlotAssignments: DoorCodeLockSlotAssignment[]
+  pendingSlotClears: DoorCodePendingSlotClear[]
   pushState: DoorCodePushState
   lastPushAttemptAt: string | null
   lastPushError: string
