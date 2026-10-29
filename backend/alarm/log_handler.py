@@ -20,6 +20,7 @@ import itertools
 import logging
 import queue
 import threading
+import time
 import traceback
 from collections import deque
 from datetime import datetime, timezone
@@ -143,20 +144,26 @@ def _format_ansi(entry: dict[str, Any]) -> str:
 # waiting for the result — but if the event loop is busy the request thread
 # hangs, stalling all HTTP responses.
 #
-# To avoid this, we push entries onto a bounded ``queue.Queue`` without blocking
-# and let a single daemon worker thread drain the queue and call
+# To avoid this, we push entries onto a ``queue.SimpleQueue`` (non-blocking,
+# thread-safe and reentrant, so a signal handler that logs mid-put can't
+# deadlock) and let a single daemon worker thread drain the queue and call
 # ``async_to_sync`` from a clean context that has no parent event-loop
-# association. When the queue is full (ie a burst of logging while websocket
-# sends are slow), the oldest entry is dropped and counted (#174).
+# association. The queue is capped at ``_BROADCAST_QUEUE_MAXSIZE``. When it's
+# full (ie a burst of logging while websocket sends are slow), the oldest entry
+# is dropped and counted, and the worker logs the drops at most once a minute (#174).
 # ---------------------------------------------------------------------------
 
 # Twice the default ring buffer. The Logs tab reads the ring buffer, so a dropped broadcast only misses the live view.
 _BROADCAST_QUEUE_MAXSIZE = 1000
+_DROP_REPORT_INTERVAL_SECONDS = 60.0
 
-_broadcast_queue: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=_BROADCAST_QUEUE_MAXSIZE)
-# Held only while enqueueing, so the drop-oldest and the put that follows it can't interleave with another producer.
-_broadcast_enqueue_lock = threading.Lock()
+_broadcast_queue: queue.SimpleQueue[dict[str, Any]] = queue.SimpleQueue()
+# Producers take turns under this lock and only the worker takes entries out, so the size can only shrink between
+# the cap check and the put. Reentrant, so a signal handler that logs while this thread holds it doesn't deadlock.
+_broadcast_enqueue_lock = threading.RLock()
 _broadcast_dropped = 0
+_drops_reported = 0
+_drops_reported_at: float | None = None
 _broadcast_thread: threading.Thread | None = None
 _broadcast_thread_lock = threading.Lock()
 
@@ -181,13 +188,19 @@ def start_broadcast_worker() -> None:
         _broadcast_thread.start()
 
 
-def _broadcast_worker(entries: queue.Queue[dict[str, Any]]) -> None:
+def _broadcast_worker(entries: queue.SimpleQueue[dict[str, Any]]) -> None:
     """Drain the broadcast queue and send entries to the Channels group."""
     from asgiref.sync import async_to_sync
     from channels.layers import get_channel_layer
 
     while True:
-        entry = entries.get()
+        # Wakes up on its own too, so drops from a burst that ended get reported while it's idle.
+        try:
+            entry = entries.get(timeout=_DROP_REPORT_INTERVAL_SECONDS)
+        except queue.Empty:
+            _report_drops()
+            continue
+        _report_drops()
         try:
             channel_layer = get_channel_layer()
             if channel_layer is None:
@@ -213,6 +226,29 @@ def get_broadcast_dropped_count() -> int:
     return _broadcast_dropped
 
 
+def _report_drops(*, now: float | None = None) -> None:
+    """Log a warning about new drops, at most once per `_DROP_REPORT_INTERVAL_SECONDS`.
+
+    Runs on the worker thread, never from `emit()`, so the warning goes through the handler like any other entry.
+    """
+    global _drops_reported, _drops_reported_at
+    dropped = _broadcast_dropped
+    new_drops = dropped - _drops_reported
+    if new_drops <= 0:
+        return
+    now = time.monotonic() if now is None else now
+    if _drops_reported_at is not None and now - _drops_reported_at < _DROP_REPORT_INTERVAL_SECONDS:
+        return
+    _drops_reported = dropped
+    _drops_reported_at = now
+    logging.getLogger(__name__).warning(
+        "Dropped %d log entries from the live log stream because the broadcast queue was full (%d since start). "
+        "Debug > Logs still has them up to its buffer size.",
+        new_drops,
+        dropped,
+    )
+
+
 def _enqueue_broadcast(entry: dict[str, Any]) -> None:
     """Enqueue a log entry for WebSocket broadcast (never blocks; drops the oldest entry when full)."""
     global _broadcast_dropped
@@ -220,22 +256,13 @@ def _enqueue_broadcast(entry: dict[str, Any]) -> None:
         # No worker in this process, so nothing would drain the queue.
         return
     with contextlib.suppress(Exception), _broadcast_enqueue_lock:
-        try:
-            _broadcast_queue.put_nowait(entry)
-            return
-        except queue.Full:
-            pass
-        # Only the worker takes entries out, so after this get there's room for the put below.
-        try:
-            _broadcast_queue.get_nowait()
-        except queue.Empty:
-            pass
-        else:
+        while _broadcast_queue.qsize() >= _BROADCAST_QUEUE_MAXSIZE:
+            try:
+                _broadcast_queue.get_nowait()
+            except queue.Empty:
+                break
             _broadcast_dropped += 1
-        try:
-            _broadcast_queue.put_nowait(entry)
-        except queue.Full:
-            _broadcast_dropped += 1
+        _broadcast_queue.put_nowait(entry)
 
 
 # ---------------------------------------------------------------------------

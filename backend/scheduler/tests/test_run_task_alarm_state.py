@@ -8,6 +8,8 @@ from unittest.mock import patch
 from django.core.management import call_command
 from django.core.management.base import CommandError
 from django.test import TestCase
+from integrations_home_assistant.mqtt_alarm_entity import STATE_TOPIC
+from transports_mqtt.manager import MqttNotReachable, mqtt_connection_manager
 
 from alarm.models import AlarmState, AlarmStateSnapshot
 from alarm.state_machine import transitions
@@ -18,6 +20,25 @@ from scheduler import Every, register, registry
 from scheduler.tests.test_run_task_connections import _FakeMqttGateway, _FakeZwavejsGateway
 
 _KEYPAD_WARNING = "only the server's panel sync worker writes to the keypads"
+
+
+class _FakeMessageInfo:
+    """Stands in for paho's `MQTTMessageInfo`."""
+
+    def __init__(self, *, sent: bool) -> None:
+        self._sent = sent
+        self.waited_for: float | None = None
+
+    def wait_for_publish(self, timeout: float | None = None) -> None:
+        self.waited_for = timeout
+
+    def is_published(self) -> bool:
+        return self._sent
+
+
+def _set_alarm_state(state: str) -> None:
+    """Change the snapshot without the signal, like a commit in the server process would look from here."""
+    AlarmStateSnapshot.objects.update(current_state=state)
 
 
 class RunTaskAlarmStateTests(EncryptionTestMixin, TestCase):
@@ -44,13 +65,21 @@ class RunTaskAlarmStateTests(EncryptionTestMixin, TestCase):
             gateway_patch.start()
             self.addCleanup(gateway_patch.stop)
 
+        # (payload, whether MQTT was connected) for each retained state publish through the manager.
         self.published: list[tuple[str, bool]] = []
+        # Runs after each publish, ie to stand in for the server committing a change while ours is on its way.
+        self.after_publish = None
+        self.sends = True
 
-        def _publish_state(*, state: str) -> None:
-            self.published.append((state, self.mqtt.connected))
+        def _publish(*, topic: str, payload: str, qos: int = 0, retain: bool = False):
+            self.assertEqual((topic, retain), (STATE_TOPIC, True))
+            self.published.append((payload, self.mqtt.connected))
+            if self.after_publish is not None:
+                self.after_publish()
+            return _FakeMessageInfo(sent=self.sends)
 
-        publish_patch = patch("integrations_home_assistant.mqtt_alarm_entity.publish_state", side_effect=_publish_state)
-        publish_patch.start()
+        publish_patch = patch.object(mqtt_connection_manager, "publish", side_effect=_publish)
+        self.publish = publish_patch.start()
         self.addCleanup(publish_patch.stop)
 
         # Any keypad write from this process would go through the panel sync worker or the Indicator CC writes.
@@ -63,13 +92,23 @@ class RunTaskAlarmStateTests(EncryptionTestMixin, TestCase):
             keypad_patch.start()
             self.addCleanup(keypad_patch.stop)
 
-    def _register(self, name: str, *, connections: tuple[str, ...] = (), arms: bool = True, fails: bool = False):
+    def _register(
+        self,
+        name: str,
+        *,
+        connections: tuple[str, ...] = (),
+        arms: bool = True,
+        fails: bool = False,
+        then_server_sets: str | None = None,
+    ):
         @register(name, schedule=Every(seconds=60), connections=connections)
         def _task():
             if arms:
                 # The commit runs the `alarm_state_change_committed` receivers, like a real task's would.
                 with self.captureOnCommitCallbacks(execute=True):
                     transitions.arm(target_state=AlarmState.ARMED_AWAY, reason="test")
+            if then_server_sets is not None:
+                _set_alarm_state(then_server_sets)
             if fails:
                 raise RuntimeError("boom")
 
@@ -98,6 +137,61 @@ class RunTaskAlarmStateTests(EncryptionTestMixin, TestCase):
         self.assertEqual([s["enabled"] for s in self.mqtt.applied], [True, False])
         self.assertFalse(self.mqtt.connected)
         self.assertIn("Published the alarm state (armed_away) to the Home Assistant alarm entity.", out)
+        self.assertEqual(self.publish.call_count, 1)
+
+    def test_publishes_the_state_read_after_the_task_not_the_tasks_change(self):
+        # The task committed armed_away, then the server disarmed before the follow-up read the snapshot.
+        self._register("changes_state", then_server_sets=AlarmState.DISARMED)
+
+        out, _err = self._run("changes_state")
+
+        self.assertEqual(self.published, [(AlarmState.DISARMED, True)])
+        self.assertIn("Published the alarm state (disarmed)", out)
+
+    def test_republishes_when_the_state_moved_while_the_publish_was_on_its_way(self):
+        # The server commits (and publishes) disarmed after our read, so our armed_away could land after its message
+        # and stay retained. The re-read after our publish catches it.
+        self.after_publish = lambda: _set_alarm_state(AlarmState.DISARMED) if len(self.published) == 1 else None
+        self._register("changes_state")
+
+        out, _err = self._run("changes_state")
+
+        self.assertEqual(self.published, [(AlarmState.ARMED_AWAY, True), (AlarmState.DISARMED, True)])
+        self.assertIn("Published the alarm state (disarmed)", out)
+
+    def test_publishes_at_most_twice(self):
+        states = iter([AlarmState.DISARMED, AlarmState.ARMED_HOME, AlarmState.TRIGGERED])
+        self.after_publish = lambda: _set_alarm_state(next(states))
+        self._register("changes_state")
+
+        self._run("changes_state")
+
+        self.assertEqual([state for state, _ in self.published], [AlarmState.ARMED_AWAY, AlarmState.DISARMED])
+
+    def test_says_so_when_the_publish_doesnt_go_out(self):
+        self.sends = False
+        self._register("changes_state")
+
+        out, err = self._run("changes_state")
+
+        self.assertNotIn("Published the alarm state", out)
+        self.assertIn(
+            "Couldn't publish the new alarm state to the Home Assistant alarm entity (it wasn't sent within 5s).", err
+        )
+
+    def test_says_so_when_the_manager_refuses_the_publish(self):
+        # `publish_state` used to swallow this and the command still printed "Published".
+        self.publish.side_effect = MqttNotReachable("MQTT is not connected.")
+        self._register("changes_state")
+
+        out, err = self._run("changes_state")
+
+        self.assertNotIn("Published the alarm state", out)
+        self.assertIn(
+            "Couldn't publish the new alarm state to the Home Assistant alarm entity (MQTT is not connected.)", err
+        )
+        self.assertIn("Task completed", out)
+        self.assertFalse(self.mqtt.connected)
 
     def test_reuses_the_mqtt_connection_the_task_declared(self):
         self._register("rule_task", connections=("mqtt", "zwavejs"))
@@ -173,14 +267,16 @@ class RunTaskAlarmStateTests(EncryptionTestMixin, TestCase):
         self.assertIn(_KEYPAD_WARNING, err.getvalue())
         self.assertFalse(self.mqtt.connected)
 
-    def test_a_failed_follow_up_doesnt_hide_the_task_result(self):
+    def test_a_failed_follow_up_doesnt_hide_the_task_result_or_skip_the_other(self):
+        self._add_keypad()
         self._register("changes_state")
 
         with patch(
-            "integrations_home_assistant.mqtt_alarm_entity.publish_state", side_effect=RuntimeError("broker gone")
+            "scheduler.management.commands.run_task.Command._publish_alarm_entity_state",
+            side_effect=RuntimeError("settings unreadable"),
         ):
             out, err = self._run("changes_state")
 
         self.assertIn("Task completed", out)
-        self.assertIn("Couldn't follow up on the alarm state change (broker gone).", err)
-        self.assertFalse(self.mqtt.connected)
+        self.assertIn("Couldn't follow up on the alarm state change (settings unreadable).", err)
+        self.assertIn(_KEYPAD_WARNING, err)

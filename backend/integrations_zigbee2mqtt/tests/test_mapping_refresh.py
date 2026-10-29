@@ -188,6 +188,50 @@ class MappingRefreshTimeoutTests(SimpleTestCase):
         self.assertEqual(self.refresh_calls, 0)
         self.assertEqual(len(self.timers), 1)
 
+    def test_bailing_out_resets_the_backoff(self):
+        # The refresh after the reconnect (or re-enable) starts over at the initial delay.
+        for disable in (lambda: setattr(self, "connected", False), None):
+            with self.subTest(mqtt_down=disable is not None):
+                self.timers.clear()
+                runtime._mapping_retry_timer = None
+                runtime._mapping_retry_delay = runtime._MAPPING_RETRY_INITIAL_SECONDS
+                self._refresh(error=self._timeout())
+                self._run(self.timers[0].callback, error=self._timeout())
+                self.assertEqual([t.delay for t in self.timers], [30, 60])
+
+                if disable is not None:
+                    disable()
+                    self._run(self.timers[1].callback)
+                else:
+                    with patch.object(runtime, "get_settings", return_value=SimpleNamespace(enabled=False)):
+                        self._run(self.timers[1].callback)
+                self.connected = True
+
+                self.assertEqual(runtime._mapping_retry_delay, runtime._MAPPING_RETRY_INITIAL_SECONDS)
+                self._refresh(error=self._timeout())
+                self.assertEqual([t.delay for t in self.timers], [30, 60, 30])
+
+    def test_overlapping_timeouts_double_the_backoff_once(self):
+        # Ie the on-connect hook's refresh and the timer's retry time out together.
+        both_running = threading.Barrier(2)
+
+        def _timeout_together(**_kwargs):
+            both_running.wait(timeout=5)
+            raise self._timeout()
+
+        with (
+            patch.object(runtime, "refresh_device_mapping_via_mqtt", side_effect=_timeout_together),
+            self.assertLogs(runtime.logger, level="WARNING"),
+        ):
+            threads = [threading.Thread(target=runtime._refresh_device_mapping) for _ in range(2)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join(timeout=5)
+
+        self.assertEqual([t.delay for t in self.timers], [30])
+        self.assertEqual(runtime._mapping_retry_delay, 60)
+
     def test_other_errors_still_log_the_traceback(self):
         records = self._refresh(error=RuntimeError("bad payload"))
 

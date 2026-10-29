@@ -10,6 +10,10 @@ from django.core.management.base import BaseCommand, CommandError
 
 from scheduler import get_task, get_tasks
 
+# The HA alarm entity state publish after a task that changed the alarm state (#173).
+_STATE_PUBLISH_ATTEMPTS = 2
+_STATE_PUBLISH_TIMEOUT_SECONDS = 5.0
+
 
 class Command(BaseCommand):
     """Run a scheduled task manually."""
@@ -74,7 +78,8 @@ class Command(BaseCommand):
 
         The server's HA and control panel apps connect their `alarm_state_change_committed` receivers only in the
         server, so a change made here reaches neither. Publishing the retained state topic from here is safe, since it's
-        the same idempotent publish the server makes, sent once after the task with the state re-read from the DB.
+        the same idempotent publish the server makes, sent after the task with the state re-read from the DB (see
+        `_publish_latest_alarm_state`).
         Writing the keypads isn't, since the server's panel sync worker owns every keypad write (ADR-0100).
         """
         from alarm.signals import alarm_state_change_committed
@@ -122,15 +127,44 @@ class Command(BaseCommand):
                 )
                 return
 
-            from integrations_home_assistant import mqtt_alarm_entity
+            try:
+                published = self._publish_latest_alarm_state()
+            except Exception as exc:
+                self.stderr.write(f"Couldn't publish the new alarm state to the Home Assistant alarm entity ({exc}).")
+                return
+            self.stdout.write(f"Published the alarm state ({published}) to the Home Assistant alarm entity.")
 
-            from alarm.state_machine.transitions import get_current_snapshot
+    def _publish_latest_alarm_state(self) -> str:
+        """
+        Publish the alarm state from the DB to the HA alarm entity's retained state topic. Returns what it published.
 
-            # Re-read right before publishing rather than using the task's changes, so an older state from earlier
-            # in the task doesn't land over one the server committed since.
+        It publishes the state re-read from the DB rather than the task's changes, waits for the message to go out,
+        then reads it once more and publishes again if it moved (at most `_STATE_PUBLISH_ATTEMPTS` publishes). The
+        server publishes every change it commits, so this covers one it committed and published while ours was on its
+        way, which would otherwise leave the broker holding our older state. What's left is a change the server
+        commits after the last read here and whose publish reaches the broker before ours, which is the same race
+        two threads in the server have. Raises if a publish fails or doesn't go out in time.
+        """
+        from integrations_home_assistant import mqtt_alarm_entity_status_store as status_store
+        from integrations_home_assistant.mqtt_alarm_entity import STATE_TOPIC
+        from transports_mqtt.manager import mqtt_connection_manager
+
+        from alarm.state_machine.transitions import get_current_snapshot
+
+        published: str | None = None
+        for _ in range(_STATE_PUBLISH_ATTEMPTS):
             state = get_current_snapshot(process_timers=False).current_state
-            mqtt_alarm_entity.publish_state(state=state)
-            self.stdout.write(f"Published the alarm state ({state}) to the Home Assistant alarm entity.")
+            if state == published:
+                break
+            info = mqtt_connection_manager.publish(topic=STATE_TOPIC, payload=state, retain=True)
+            info.wait_for_publish(timeout=_STATE_PUBLISH_TIMEOUT_SECONDS)
+            if not info.is_published():
+                raise TimeoutError(f"it wasn't sent within {_STATE_PUBLISH_TIMEOUT_SECONDS:g}s")
+            published = state
+
+        with contextlib.suppress(Exception):
+            status_store.mark_state_published()
+        return published
 
     def _warn_keypads_not_synced(self) -> None:
         from control_panels.models import ControlPanelDevice

@@ -352,15 +352,20 @@ def _reset_mapping_retry() -> None:
 
 def _retry_mapping_refresh() -> None:
     """Timer callback: refresh again while Zigbee2MQTT is enabled and MQTT is connected."""
-    global _mapping_retry_timer
+    global _mapping_retry_timer, _mapping_retry_delay
     with _mapping_retry_lock:
         _mapping_retry_timer = None
     try:
-        if not (get_settings().enabled and _mqtt_enabled() and mqtt_connection_manager.get_status().connected):
-            # The on-connect hook refreshes once MQTT is back, and a profile change once Zigbee2MQTT is re-enabled.
-            return
+        ready = get_settings().enabled and _mqtt_enabled() and mqtt_connection_manager.get_status().connected
     except Exception:
         logger.debug("Device mapping retry check failed", exc_info=True)
+        ready = False
+    if not ready:
+        # The on-connect hook refreshes once MQTT is back, and a profile change once Zigbee2MQTT is re-enabled. That's
+        # a fresh start, so a timeout then retries after the initial delay again.
+        with _mapping_retry_lock:
+            if _mapping_retry_timer is None:
+                _mapping_retry_delay = _MAPPING_RETRY_INITIAL_SECONDS
         return
     _refresh_device_mapping()
 
