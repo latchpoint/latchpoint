@@ -965,6 +965,65 @@ class LockConfigSyncReconcileTests(EncryptionTestMixin, APITestCase):
         self.assertEqual(self._slot(body, 2)["action"], "created")
         self.assertNotIn("duplicate_pin", self._slot(body, 2)["warnings"])
 
+    # --- after #167: only unsettled attempts a cleanup would act on count ---
+
+    def _settle(self, code: DoorCode, slot_index: int, lock_entity_id: str | None = None) -> None:
+        lock_push_uc._settle_unconfirmed_slot(
+            door_code=code, lock_entity_id=lock_entity_id or self.LOCK, slot_index=slot_index, outcome="cleared"
+        )
+
+    def test_settled_unconfirmed_attempt_does_not_block_conversion(self):
+        code = self._manual_code(pin="1234", slot_index=1)
+        self._unconfirmed(code, 3, "1234")
+        self._settle(code, 3)
+
+        body = self._sync(SlotGateway({1: (1, "1234"), 3: (0, None)}))
+
+        self.assertNotIn("clear_outstanding", self._slot(body, 1)["warnings"])
+        code.refresh_from_db()
+        self.assertEqual(code.source, DoorCode.Source.SYNCED)
+
+    def test_settled_unconfirmed_attempt_does_not_block_import(self):
+        code = self._manual_code(pin="4321", slot_index=None)
+        self._unconfirmed(code, 2, "4321")
+        self._settle(code, 2)
+
+        body = self._sync(SlotGateway({2: (1, "4321")}))
+
+        self.assertEqual(self._slot(body, 2)["action"], "created")
+
+    def test_unsettled_attempt_on_a_dropped_lock_blocks_conversion(self):
+        code = self._manual_code(pin="1234", slot_index=1)
+        lock_push_uc._record_unconfirmed_slot_attempt(
+            door_code=code, lock_entity_id="lock.back_door", slot_index=2, reason="readback timed out", pin="1234"
+        )
+
+        body = self._sync(SlotGateway({1: (1, "1234")}))
+
+        self.assertIn("clear_outstanding", self._slot(body, 1)["warnings"])
+        code.refresh_from_db()
+        self.assertEqual(code.source, DoorCode.Source.MANUAL)
+
+    def test_attempt_with_no_pin_to_compare_does_not_block_import(self):
+        # The cleanup skips an attempt it has no PIN for, so it would never settle.
+        code = DoorCode.objects.create(
+            user=self.user,
+            source=DoorCode.Source.MANUAL,
+            code_type=DoorCode.CodeType.PERMANENT,
+            push_state=DoorCode.PushState.PENDING,
+        )
+        DoorCodeLockAssignment.objects.create(door_code=code, lock_entity_id=self.LOCK, slot_index=None)
+        DoorCodeEvent.objects.create(
+            door_code=code,
+            lock_entity_id=self.LOCK,
+            event_type=DoorCodeEvent.EventType.CODE_FAILED,
+            metadata={"action": "push_unconfirmed", "slot_index": 2, "reason": "readback timed out"},
+        )
+
+        body = self._sync(SlotGateway({2: (1, "4321")}))
+
+        self.assertEqual(self._slot(body, 2)["action"], "created")
+
     def test_integrity_race_fallback_keeps_the_150_guards(self):
         # Another writer puts this manual code (PIN 5555) on slot 1 between the lookup and the insert.
         winner = self._manual_code(pin="5555", slot_index=None)
@@ -1005,12 +1064,12 @@ class ConfirmedEmptyStatusTests(TestCase):
 
 
 class BackfillSyncedPushStateTests(DjangoTestCase):
-    """Migration 0007 (issue #149)."""
+    """Migration 0008 (issue #149)."""
 
     def _run(self):
         from django.apps import apps
 
-        migration = importlib.import_module("locks.migrations.0007_backfill_synced_code_push_state")
+        migration = importlib.import_module("locks.migrations.0008_backfill_synced_code_push_state")
         migration._backfill_synced_push_state(apps, None)
 
     def _code(self, *, source, push_state, slot_index, user, is_active=True):

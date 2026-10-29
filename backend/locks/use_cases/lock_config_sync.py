@@ -762,10 +762,33 @@ _WARN_DUPLICATE_PIN = "duplicate_pin"
 
 def _has_outstanding_slot_cleanup(*, door_code: DoorCode) -> bool:
     """Whether a slot may still hold an older PIN of ``door_code``: a clear that hasn't
-    gone through yet (#144) or an unconfirmed push still in its window (#111)."""
-    from locks.use_cases.lock_push import has_unconfirmed_attempt_slots, unresolved_clear_failures
+    gone through yet (#144) or an unconfirmed push still in its window (#111).
 
-    return bool(unresolved_clear_failures(door_code=door_code)) or has_unconfirmed_attempt_slots(door_code=door_code)
+    Unconfirmed attempts count on any lock, assigned now or not, but only the
+    ones a cleanup would still act on: not settled since (#161), not in a slot
+    another code holds, and with a PIN to compare against. Anything else would
+    block the sync with nothing ever coming to settle it.
+    """
+    from locks.use_cases.lock_push import (
+        _claimed_slots,
+        _unconfirmed_attempts,
+        decrypt_pin_or_none,
+        unconfirmed_attempt_lock_entity_ids,
+        unresolved_clear_failures,
+    )
+
+    if unresolved_clear_failures(door_code=door_code):
+        return True
+    pin = decrypt_pin_or_none(door_code)
+    for lock_entity_id in unconfirmed_attempt_lock_entity_ids(door_code=door_code):
+        attempts = _unconfirmed_attempts(
+            door_code=door_code,
+            lock_entity_id=lock_entity_id,
+            claimed_slots=_claimed_slots(lock_entity_id=lock_entity_id, door_code=door_code),
+        )
+        if any(attempted_pin or pin for attempted_pin in attempts.values()):
+            return True
+    return False
 
 
 def _slots_with_outstanding_cleanup(*, lock_entity_id: str) -> dict[int, list[tuple[int, str | None]]]:
@@ -814,10 +837,12 @@ def _outstanding_cleanup_owner(*, markers: list[tuple[int, str | None]], raw_pin
     The sync doesn't import such a slot, since that code's own retry reads it
     back and clears it. That's when the slot holds the PIN the marker expects,
     or a PIN the sync can't read. A readable PIN no marker expects is someone
-    else's code (one entered on the keypad, say) and is imported as usual.
+    else's code (one entered on the keypad, say) and is imported as usual, and
+    so is a slot whose markers have no PIN to compare, since the cleanup skips
+    those too and would never settle them (#167).
     """
     for door_code_id, expected_pin in markers:
-        if raw_pin is None or expected_pin is None or raw_pin == expected_pin:
+        if expected_pin is not None and (raw_pin is None or raw_pin == expected_pin):
             return door_code_id
     return None
 

@@ -40,7 +40,7 @@ def _backfill_synced_push_state(apps, schema_editor):
 
 class Migration(migrations.Migration):
     dependencies = [
-        ("locks", "0006_door_code_push_state"),
+        ("locks", "0007_pending_inactive_door_codes_holding_slots"),
     ]
 
     operations = [
