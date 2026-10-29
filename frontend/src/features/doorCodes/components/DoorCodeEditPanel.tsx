@@ -31,7 +31,7 @@ type Props = {
   onEditMaxUsesChange: (next: string) => void
   editIsActive: boolean
   onEditIsActiveChange: (next: boolean) => void
-  /** Whether the code would be expired with the Active until being saved. */
+  /** Whether the code would be expired with the active window end being saved. */
   isExpired?: boolean
 
   editStartAtLocal: string
@@ -170,7 +170,7 @@ export function DoorCodeEditPanel({
         checked={editIsActive}
         onCheckedChange={isSynced ? undefined : onEditIsActiveChange}
         disabled={isBusy || isSynced || blockTurningOn}
-        hint={isSynced ? 'Controlled by lock sync' : blockTurningOn ? 'Expired, set a later Active until to turn it on' : undefined}
+        hint={isSynced ? 'Controlled by lock sync' : blockTurningOn ? 'Expired, set a later end for the active window to turn it on' : undefined}
       />
 
       <ReauthPasswordField

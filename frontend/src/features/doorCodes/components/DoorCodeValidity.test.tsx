@@ -1,6 +1,6 @@
 // #145: a door code is only on its locks between its start and its end.
 import { describe, expect, it, vi } from 'vitest'
-import { fireEvent, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, screen, waitFor } from '@testing-library/react'
 import { renderWithProviders } from '@/test/render'
 import { isDoorCodeSettling } from '@/hooks/useDoorCodesQueries'
 import { DoorCodeCard } from './DoorCodeCard'
@@ -121,6 +121,53 @@ describe('push status badge', () => {
     expect(screen.queryByRole('button', { name: /Retry/ })).toBeNull()
   })
 
+  it('shows a scheduled code whose clear hit the attempt cap as failed, with Retry', () => {
+    const onRetry = vi.fn()
+    renderWithProviders(
+      <DoorCodePushStatusBadge
+        code={makeCode({
+          validity: 'scheduled',
+          startAt: START,
+          pushState: 'failed',
+          lastPushError: "Push gave up after 24 attempts: Couldn't clear slot 2 on lock.front_door",
+          lockSlotAssignments: onSlot,
+          pendingSlotClears: [{ lockEntityId: 'lock.front_door', slotIndex: 2, removing: false }],
+        })}
+        lockNameByEntityId={new Map([['lock.front_door', 'Front Door']])}
+        canRetry
+        isRetrying={false}
+        onRetry={onRetry}
+      />,
+    )
+
+    expect(screen.getByText(/^Clear failed/)).toBeTruthy()
+    expect(screen.queryByText(/taking it off/)).toBeNull()
+    expect(screen.queryByText(/goes on/)).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    expect(onRetry).toHaveBeenCalledTimes(1)
+  })
+
+  it('says its locks for a scheduled or expired code on more than one lock', () => {
+    const twoLocks = {
+      lockEntityIds: ['lock.front_door', 'lock.back_door'],
+      lockAssignments: [
+        { id: 1, lockEntityId: 'lock.front_door' },
+        { id: 2, lockEntityId: 'lock.back_door' },
+      ],
+    }
+    const startsAt = new Date(START).toLocaleString()
+    renderBadge(makeCode({ ...twoLocks, validity: 'scheduled', startAt: START, pushState: 'pushed', lockSlotAssignments: onSlot }))
+    expect(screen.getByText(`(taking it off its locks until ${startsAt})`)).toBeTruthy()
+    cleanup()
+
+    renderBadge(makeCode({ ...twoLocks, validity: 'scheduled', startAt: START, lockSlotAssignments: noSlot }))
+    expect(screen.getByText(`(goes on its locks at ${startsAt})`)).toBeTruthy()
+    cleanup()
+
+    renderBadge(makeCode({ ...twoLocks, validity: 'expired', pushState: 'pushed', lockSlotAssignments: onSlot }))
+    expect(screen.getByText('(removing from its locks)')).toBeTruthy()
+  })
+
   it('shows an expired code that is still on as being removed, without Retry', () => {
     renderBadge(makeCode({ validity: 'expired', pushState: 'pushed', lockSlotAssignments: onSlot }))
 
@@ -202,7 +249,22 @@ describe('edit form', () => {
     renderEditForm(expiredOff())
 
     expect(activeSwitch()).toBeDisabled()
-    expect(screen.getByText('(Expired, set a later Active until to turn it on)')).toBeTruthy()
+    expect(screen.getByText('(Expired, set a later end for the active window to turn it on)')).toBeTruthy()
+  })
+
+  it('keeps the toggle disabled when the end is edited but still in the past', () => {
+    renderEditForm(expiredOff())
+
+    // Move the end's time within the same past day.
+    fireEvent.click(screen.getByRole('button', { name: /→/ }))
+    const untilInput = screen.getByText('Until').parentElement!.querySelector('input')!
+    const edited = untilInput.value === '01:00' ? '02:00' : '01:00'
+    fireEvent.change(untilInput, { target: { value: edited } })
+    fireEvent.click(screen.getByRole('button', { name: 'Done' }))
+    expect(screen.getByRole('button', { name: /→/ }).textContent).toMatch(/[12]:00/)
+
+    expect(activeSwitch()).toBeDisabled()
+    expect(screen.getByText('(Expired, set a later end for the active window to turn it on)')).toBeTruthy()
   })
 
   it('lets the code be turned on once the end date is moved off the past', async () => {
@@ -241,6 +303,24 @@ describe('edit form', () => {
 describe('isDoorCodeSettling', () => {
   it("doesn't poll for a scheduled code, which only waits on the clock", () => {
     expect(isDoorCodeSettling(makeCode({ validity: 'scheduled', lockSlotAssignments: noSlot }))).toBe(false)
+  })
+
+  it('polls while a scheduled code still holds a slot, until the withdraw takes it off', () => {
+    expect(isDoorCodeSettling(makeCode({ validity: 'scheduled', pushState: 'pushed', lockSlotAssignments: onSlot }))).toBe(
+      true,
+    )
+    expect(isDoorCodeSettling(makeCode({ validity: 'scheduled', pushState: 'pending', lockSlotAssignments: noSlot }))).toBe(
+      false,
+    )
+  })
+
+  it("doesn't poll for a scheduled code whose clear hit the attempt cap, which only Retry moves", () => {
+    const clear = { lockEntityId: 'lock.front_door', slotIndex: 2, removing: false }
+    expect(
+      isDoorCodeSettling(
+        makeCode({ validity: 'scheduled', pushState: 'failed', lockSlotAssignments: onSlot, pendingSlotClears: [clear] }),
+      ),
+    ).toBe(false)
   })
 
   it('polls while a scheduled code still has a slot to clear', () => {

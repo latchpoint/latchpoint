@@ -11,6 +11,8 @@ from .use_cases.code_lifecycle import ended_by, validity
 
 _END_AT_IN_PAST = "end_at must be in the future."
 _ACTIVE_WHEN_EXPIRED = "This code has expired. Set a later end_at to turn it back on."
+# end_at is exclusive, so a code that ends when it starts is never valid (issue #145).
+_END_AT_NOT_AFTER_START = "end_at must be after start_at."
 
 
 def _validation_now(serializer: serializers.Serializer):
@@ -216,8 +218,8 @@ class DoorCodeCreateSerializer(serializers.Serializer):
         if code_type == DoorCode.CodeType.ONE_TIME and max_uses is not None:
             raise serializers.ValidationError({"max_uses": "One-time codes automatically expire after one use."})
 
-        if start_at and end_at and start_at > end_at:
-            raise serializers.ValidationError({"end_at": "end_at must be after or equal to start_at."})
+        if start_at and end_at and start_at >= end_at:
+            raise serializers.ValidationError({"end_at": _END_AT_NOT_AFTER_START})
 
         # A new code is always active, so one that's already expired would only be
         # turned off again by the scheduler (issue #145).
@@ -297,8 +299,10 @@ class DoorCodeUpdateSerializer(serializers.Serializer):
 
         # An expired code stays off until it's turned on with a later end_at, and
         # moving end_at later on its own doesn't turn it back on (issue #145).
+        # Only a new end_at has to be in the future: the edit form sends both
+        # dates when either changes, so an expired code's unchanged one comes back.
         now = _validation_now(self)
-        if ended_by(attrs.get("end_at"), now=now):
+        if "end_at" in attrs and attrs["end_at"] != instance.end_at and ended_by(attrs["end_at"], now=now):
             raise serializers.ValidationError({"end_at": _END_AT_IN_PAST})
         if attrs.get("is_active") is True and ended_by(attrs.get("end_at", instance.end_at), now=now):
             raise serializers.ValidationError({"is_active": _ACTIVE_WHEN_EXPIRED})
@@ -316,8 +320,8 @@ class DoorCodeUpdateSerializer(serializers.Serializer):
 
         start_at = attrs.get("start_at", instance.start_at)
         end_at = attrs.get("end_at", instance.end_at)
-        if start_at and end_at and start_at > end_at:
-            raise serializers.ValidationError({"end_at": "end_at must be after or equal to start_at."})
+        if start_at and end_at and start_at >= end_at:
+            raise serializers.ValidationError({"end_at": _END_AT_NOT_AFTER_START})
 
         days_of_week = attrs.get("days_of_week", instance.days_of_week)
         if days_of_week is not None:

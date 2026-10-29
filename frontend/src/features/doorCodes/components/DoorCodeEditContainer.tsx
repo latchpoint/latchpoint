@@ -263,8 +263,8 @@ export function DoorCodeEditContainer({ code, locks, locksIsLoading, locksError,
 
     const startAt = toUtcIsoFromDatetimeLocal(editDateRange.start)
     const endAt = toUtcIsoFromDatetimeLocal(editDateRange.end)
-    if (startAt && endAt && startAt > endAt) {
-      setEditError('Active until must be after active from.')
+    if (startAt && endAt && startAt >= endAt) {
+      setEditError('The active window must end after it starts.')
       return
     }
     const isTemporary = code.codeType === 'temporary'

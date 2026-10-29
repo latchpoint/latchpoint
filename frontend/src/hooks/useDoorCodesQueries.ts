@@ -14,14 +14,22 @@ export const DOOR_CODES_SETTLING_POLL_MS = 15_000
  * since the scheduler gives up on those and only a Retry moves them. Nor is a
  * pending code the scheduler never picks up, like one lock sync created or an
  * active one with no locks. An active code that's expired is, since the
- * scheduler turns it off and clears it within a minute, but a scheduled one
- * isn't, since it only waits on the clock until its start (#145).
+ * scheduler turns it off and clears it within a minute. A scheduled one is
+ * while it still holds a slot or has a clear outstanding, since the scheduler
+ * takes it off its locks until its start, and isn't once that's done, since it
+ * only waits on the clock then. A scheduled code whose clear hit the attempt
+ * cap isn't either, since only a Retry moves it (#145).
  */
 export function isDoorCodeSettling(code: DoorCode): boolean {
   // Retired whatever its push state.
   if (code.isActive && code.validity === 'expired') return true
+  const hasPendingClears = (code.pendingSlotClears?.length ?? 0) > 0
+  if (code.isActive && code.validity === 'scheduled') {
+    if (code.pushState === 'failed' && hasPendingClears) return false
+    return hasPendingClears || (code.lockSlotAssignments ?? []).some((a) => a.slotIndex != null || a.pendingRemoval)
+  }
   if (code.pushState === 'failed') return false
-  if ((code.pendingSlotClears?.length ?? 0) > 0) return true
+  if (hasPendingClears) return true
   if ((code.lockSlotAssignments ?? []).some((a) => a.pendingRemoval)) return true
   if (code.validity === 'scheduled') return false
   return (

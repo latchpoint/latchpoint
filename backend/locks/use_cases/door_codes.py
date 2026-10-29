@@ -321,6 +321,10 @@ def withdraw_door_code(*, code: DoorCode, zwavejs: ZwavejsGateway, now=None) -> 
     already have one are left to that retry. ``enforce_door_code_validity``
     pushes the code again once it starts. Returns whether anything was tried.
     Raises :class:`LockBusy` like an update.
+
+    Checked once before the locks are taken too, so a code with nothing left to
+    withdraw (its slots already cleared or left to the clear retries) doesn't
+    hold every lock it's on each tick and make a push there wait (PR #183 review).
     """
     from locks.use_cases.lock_push import (
         settle_clear_failure_state,
@@ -328,10 +332,15 @@ def withdraw_door_code(*, code: DoorCode, zwavejs: ZwavejsGateway, now=None) -> 
         withdraw_slots_before_start,
     )
 
+    def nothing_to_withdraw() -> bool:
+        check_at = now if now is not None else django_timezone.now()
+        return not code.is_active or is_started(code, now=check_at) or not slots_to_withdraw(door_code=code)
+
+    if nothing_to_withdraw():
+        return False
     try:
         with _hold_door_code_locks(code=code):
-            check_at = now if now is not None else django_timezone.now()
-            if not code.is_active or is_started(code, now=check_at) or not slots_to_withdraw(door_code=code):
+            if nothing_to_withdraw():
                 return False
             cleared, failures = withdraw_slots_before_start(door_code=code, zwavejs=zwavejs)
             # Off its locks until it starts, so it isn't pushed any more.
@@ -876,8 +885,14 @@ def retry_push_door_code(
     slot (which includes a kept lock whose stale slot just got cleared). An
     inactive code is only retried when it has clears outstanding, which
     includes a slot it still holds or an unconfirmed attempt slot left to check
-    (issue #158), and is never pushed. An active code before its ``start_at``
-    isn't retried at all (409), since it can't go on a lock yet (issue #145).
+    (issue #158), and is never pushed.
+
+    The same goes for an active code before its ``start_at`` (issue #145): it's
+    only retried when it has clears outstanding (a clear failure on record, or a
+    slot it may still hold), which are retried and withdrawn without pushing it,
+    and it gets a 409 when there's nothing to clear. An active code past its
+    ``end_at`` that the scheduler hasn't turned off yet is retired right away
+    (:func:`retire_door_code`) instead of being retried (PR #183 review).
     """
     assert_admin(user=actor_user) if actor_user is not None else None
 
@@ -885,8 +900,24 @@ def retry_push_door_code(
         inactive_slots_to_clear,
         push_or_settle_after_clear_retry,
         retry_failed_slot_clears,
+        settle_clear_failure_state,
+        slots_to_withdraw,
         unresolved_clear_failures,
     )
+
+    def fresh() -> DoorCode:
+        return DoorCode.objects.select_related("user").prefetch_related("lock_assignments").get(id=code.id)
+
+    if code.is_active and is_expired(code):
+        # Resetting a failed push to pending here would zero the attempt cap and
+        # could mark it pushed, so take it off its locks now like the scheduler would.
+        if retire_door_code(code=code, reason="expired", zwavejs=zwavejs) is not None:
+            return fresh()
+        # Left alone: turned off, given a later end_at or deleted meanwhile.
+        try:
+            code.refresh_from_db()
+        except DoorCode.DoesNotExist as exc:
+            raise NotFound("Not found.") from exc
 
     if (
         not code.is_active
@@ -894,7 +925,8 @@ def retry_push_door_code(
         and not inactive_slots_to_clear(door_code=code)
     ):
         raise DoorCodeInactive("Door code is inactive. Turn it on before pushing it to its locks.")
-    if code.is_active and not is_started(code):
+    not_started = code.is_active and not is_started(code)
+    if not_started and not unresolved_clear_failures(door_code=code) and not slots_to_withdraw(door_code=code):
         raise DoorCodeNotStarted("Door code hasn't started yet. It goes on its locks at its start time.")
 
     retry_failed_slot_clears(door_code=code, zwavejs=zwavejs)
@@ -909,5 +941,15 @@ def retry_push_door_code(
         code.push_attempt_count = 0
         code.save(update_fields=["push_state", "last_push_error", "push_attempt_count", "updated_at"])
 
+    if not_started:
+        # Never pushed before its start. Take off anything it may still hold that
+        # has no clear failure on record (the retries above handled those), and
+        # keep a clear that's still failing on show so the scheduler retries it.
+        try:
+            withdraw_door_code(code=code, zwavejs=zwavejs)
+        finally:
+            settle_clear_failure_state(door_code=code)
+        return fresh()
+
     push_or_settle_after_clear_retry(door_code=code, zwavejs=zwavejs, actor_user=actor_user)
-    return DoorCode.objects.select_related("user").prefetch_related("lock_assignments").get(id=code.id)
+    return fresh()

@@ -33,10 +33,30 @@ export function DoorCodePushStatusBadge({ code, lockNameByEntityId, canRetry, is
 
   // An active code is only on its locks from its start to its end (#145). The
   // scheduler pushes it at the start and turns it off at the end, so neither
-  // gets a Retry. Once it's off the states below take over.
+  // gets a Retry, except a scheduled code whose clear hit the attempt cap: only
+  // Retry clears that. Once it's off the states below take over.
+  const multiLock = (code.lockEntityIds?.length ?? 0) > 1
   if (code.isActive && code.validity === 'scheduled') {
-    const stillOnALock =
-      code.lockSlotAssignments.some((a) => a.slotIndex != null) || (code.pendingSlotClears?.length ?? 0) > 0
+    const pendingClears = (code.pendingSlotClears?.length ?? 0) > 0
+    if (code.pushState === 'failed' && pendingClears) {
+      return (
+        <div className="flex items-center gap-2">
+          <Badge variant="destructive" title={code.lastPushError || undefined}>
+            Clear failed
+            {code.lastPushError ? `: ${code.lastPushError.slice(0, 80)}` : ''}
+          </Badge>
+          {canRetry ? (
+            <Button size="sm" variant="secondary" disabled={isRetrying} onClick={onRetry}>
+              {isRetrying ? 'Retrying…' : 'Retry'}
+            </Button>
+          ) : null}
+          <span className="text-xs text-muted-foreground">
+            (scheduled, the PIN may still be on a lock before its start, Retry tries the clear again)
+          </span>
+        </div>
+      )
+    }
+    const stillOnALock = code.lockSlotAssignments.some((a) => a.slotIndex != null) || pendingClears
     const startsAt = code.startAt ? new Date(code.startAt).toLocaleString() : 'its start'
     return (
       <div className="flex items-center gap-2">
@@ -44,7 +64,9 @@ export function DoorCodePushStatusBadge({ code, lockNameByEntityId, canRetry, is
           Scheduled
         </Badge>
         <span className="text-xs text-muted-foreground">
-          {stillOnALock ? `(taking it off the lock until ${startsAt})` : `(goes on lock at ${startsAt})`}
+          {stillOnALock
+            ? `(taking it off ${multiLock ? 'its locks' : 'the lock'} until ${startsAt})`
+            : `(goes on ${multiLock ? 'its locks' : 'lock'} at ${startsAt})`}
         </span>
       </div>
     )
@@ -55,7 +77,9 @@ export function DoorCodePushStatusBadge({ code, lockNameByEntityId, canRetry, is
         <Badge variant="outline" title={code.lastPushError || undefined}>
           Expired
         </Badge>
-        <span className="text-xs text-muted-foreground">(removing from lock)</span>
+        <span className="text-xs text-muted-foreground">
+          {`(removing from ${multiLock ? 'its locks' : 'lock'})`}
+        </span>
       </div>
     )
   }

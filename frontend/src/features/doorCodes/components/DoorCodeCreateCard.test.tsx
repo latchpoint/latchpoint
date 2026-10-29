@@ -59,7 +59,7 @@ describe('DoorCodeCreateCard', () => {
     fireEvent.click(screen.getByRole('button', { name: 'past end' }))
     fireEvent.click(screen.getByRole('button', { name: 'submit' }))
 
-    expect(screen.getByRole('alert')).toHaveTextContent('Active until must be in the future.')
+    expect(screen.getByRole('alert')).toHaveTextContent('The active window must end in the future.')
     expect(onCreate).not.toHaveBeenCalled()
   })
 

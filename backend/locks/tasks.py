@@ -229,10 +229,34 @@ def enforce_door_code_validity() -> int:
             logger.warning("Couldn't retire expired door code id=%d this tick", code.id, exc_info=True)
 
     holds_slot = DoorCodeLockAssignment.objects.filter(door_code=OuterRef("pk"), slot_index__isnull=False)
-    unconfirmed = DoorCodeEvent.objects.filter(
-        door_code=OuterRef("pk"),
-        event_type=DoorCodeEvent.EventType.CODE_FAILED,
-        metadata__action="push_unconfirmed",
+    # Unconfirmed attempts nothing has settled since: no later push landed on that
+    # lock, and no later marker says the slot was checked or emptied. A rough cut,
+    # it can only match too much (slots_to_withdraw has the exact rules), so a
+    # code whose markers are all settled isn't looked at every tick.
+    settled_since = DoorCodeEvent.objects.filter(
+        door_code=OuterRef("door_code"),
+        lock_entity_id=OuterRef("lock_entity_id"),
+        id__gt=OuterRef("id"),
+    ).filter(
+        Q(event_type=DoorCodeEvent.EventType.CODE_SYNCED)
+        | Q(metadata__action="unconfirmed_resolved", metadata__slot_index=OuterRef("metadata__slot_index"))
+        | Q(
+            metadata__action="clear_resolved",
+            metadata__outcome__in=["cleared", "lock_missing"],
+            metadata__slot_index=OuterRef("metadata__slot_index"),
+        )
+    )
+    still_on_lock = DoorCodeLockAssignment.objects.filter(
+        door_code=OuterRef("door_code"), lock_entity_id=OuterRef("lock_entity_id")
+    )
+    unconfirmed = (
+        DoorCodeEvent.objects.filter(
+            door_code=OuterRef("pk"),
+            event_type=DoorCodeEvent.EventType.CODE_FAILED,
+            metadata__action="push_unconfirmed",
+        )
+        .filter(Exists(still_on_lock))
+        .exclude(Exists(settled_since))
     )
     not_started = (
         DoorCode.objects.filter(is_active=True)

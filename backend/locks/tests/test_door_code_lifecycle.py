@@ -371,6 +371,38 @@ class ExpiryTests(_LifecycleTestBase):
 
         self.assertEqual(gateway.invoke_calls, [])
 
+    def test_retry_on_an_expired_code_that_is_still_on_retires_it(self):
+        code, gateway = self._temporary_code([self.BACK])
+        # The push gave up, and it expired before the scheduler turned it off.
+        DoorCode.objects.filter(id=code.id).update(
+            push_state=DoorCode.PushState.FAILED, push_attempt_count=5, last_push_error="gave up"
+        )
+        code = self._move(code, end_at=self._ago(minutes=1))
+
+        door_codes_uc.retry_push_door_code(code=code, actor_user=self.user, zwavejs=gateway)
+
+        code.refresh_from_db()
+        self.assertFalse(code.is_active)
+        self.assertEqual(self._lock_codes(gateway, 12), {})
+        self.assertEqual(self._slots(code), {self.BACK: None})
+        self.assertEqual(self._calls(gateway, "set"), [])
+        self.assertEqual(self._updated_event(code).metadata["reason"], "expired")
+        self.assertEqual(code.push_state, DoorCode.PushState.PUSHED)
+
+    def test_retry_on_an_expired_code_whose_clear_fails_leaves_it_off_and_pending(self):
+        code, gateway = self._temporary_code([self.BACK])
+        DoorCode.objects.filter(id=code.id).update(push_state=DoorCode.PushState.FAILED)
+        code = self._move(code, end_at=self._ago(minutes=1))
+        gateway.clear_fails_on = {12}
+
+        door_codes_uc.retry_push_door_code(code=code, actor_user=self.user, zwavejs=gateway)
+
+        code.refresh_from_db()
+        self.assertFalse(code.is_active)
+        self.assertEqual(code.push_state, DoorCode.PushState.PENDING)
+        self.assertIn(f"Couldn't clear slot 1 on {self.BACK}", code.last_push_error)
+        self.assertEqual(self._calls(gateway, "set"), [])
+
     def test_an_expired_code_is_never_pushed(self):
         code = door_codes_uc.create_door_code(
             user=self.user,
@@ -555,6 +587,118 @@ class StartTests(_LifecycleTestBase):
 
         self.assertEqual(gateway.invoke_calls, [])
 
+    def _withdraw_that_hit_the_cap(self) -> tuple[DoorCode, ClearFailingGateway]:
+        """An early-pushed code whose withdraw clear kept failing until the scheduler gave up."""
+        code, gateway = self._temporary_code([self.BACK])
+        self._move(code, start_at=self._from_now(hours=1))
+        gateway.clear_fails_on = {12}
+        self._enforce(gateway)
+        with patch("locks.tasks._get_push_max_attempts", return_value=2):
+            self._push_pending(gateway)
+            self._push_pending(gateway)
+        code.refresh_from_db()
+        self.assertEqual(code.push_state, DoorCode.PushState.FAILED)
+        self.assertEqual(self._lock_codes(gateway, 12), {1: self.PIN})
+        return code, gateway
+
+    def test_retry_clears_a_withdraw_that_hit_the_attempt_cap(self):
+        code, gateway = self._withdraw_that_hit_the_cap()
+
+        # Nothing else picks it up: the PIN would keep working until its start.
+        gateway.clear_fails_on = set()
+        gateway.invoke_calls.clear()
+        self.assertEqual(self._enforce(gateway), 0)
+        self.assertEqual(self._push_pending(gateway), 0)
+        self.assertEqual(gateway.invoke_calls, [])
+
+        door_codes_uc.retry_push_door_code(code=code, actor_user=self.user, zwavejs=gateway)
+
+        code.refresh_from_db()
+        self.assertTrue(code.is_active)
+        self.assertEqual(self._lock_codes(gateway, 12), {})
+        self.assertEqual(self._slots(code), {self.BACK: None})
+        self.assertEqual(self._calls(gateway, "set"), [])
+        self.assertEqual(lock_push_uc.unresolved_clear_failures(door_code=code), [])
+        self.assertEqual(code.push_state, DoorCode.PushState.PENDING)
+        self.assertEqual(code.last_push_error, "")
+        self.assertEqual(code.push_attempt_count, 0)
+
+        # Nothing left to clear, so another Retry is refused, and it goes on at its start.
+        with self.assertRaises(door_codes_uc.DoorCodeNotStarted):
+            door_codes_uc.retry_push_door_code(code=code, actor_user=self.user, zwavejs=gateway)
+        self._move(code, start_at=timezone.now())
+        self._enforce(gateway)
+        self.assertEqual(self._lock_codes(gateway, 12), {1: self.PIN})
+
+    def test_retry_of_a_withdraw_that_still_fails_goes_back_to_the_scheduler(self):
+        code, gateway = self._withdraw_that_hit_the_cap()
+
+        door_codes_uc.retry_push_door_code(code=code, actor_user=self.user, zwavejs=gateway)
+
+        code.refresh_from_db()
+        self.assertTrue(code.is_active)
+        self.assertEqual(self._slots(code), {self.BACK: 1})
+        self.assertEqual(code.push_state, DoorCode.PushState.PENDING)
+        self.assertIn(f"Couldn't clear slot 1 on {self.BACK}", code.last_push_error)
+        self.assertEqual(self._calls(gateway, "set"), [])
+
+        # Re-armed, so the clear retry finishes it once the lock answers.
+        gateway.clear_fails_on = set()
+        self._push_pending(gateway)
+        self.assertEqual(self._lock_codes(gateway, 12), {})
+        self.assertEqual(self._slots(code), {self.BACK: None})
+        self.assertEqual(self._calls(gateway, "set"), [])
+
+    def test_retry_withdraws_a_slot_a_scheduled_code_still_holds(self):
+        # Pushed early, and Retry got there before the validity task.
+        code, gateway = self._temporary_code([self.BACK])
+        code = self._move(code, start_at=self._from_now(hours=1))
+
+        door_codes_uc.retry_push_door_code(code=code, actor_user=self.user, zwavejs=gateway)
+
+        code.refresh_from_db()
+        self.assertTrue(code.is_active)
+        self.assertEqual(self._lock_codes(gateway, 12), {})
+        self.assertEqual(self._slots(code), {self.BACK: None})
+        self.assertEqual(self._calls(gateway, "set"), [])
+        self.assertEqual(code.push_state, DoorCode.PushState.PENDING)
+
+    def test_withdraw_with_nothing_to_do_does_not_take_the_locks(self):
+        # Its slot's clear failed and is left to the clear retries.
+        code, gateway = self._temporary_code([self.BACK])
+        self._move(code, start_at=self._from_now(hours=1))
+        gateway.clear_fails_on = {12}
+        self._enforce(gateway)
+
+        with patch.object(door_codes_uc, "_hold_door_code_locks", wraps=door_codes_uc._hold_door_code_locks) as held:
+            self.assertEqual(self._enforce(gateway), 0)
+
+        held.assert_not_called()
+
+    def test_a_scheduled_code_with_only_settled_unconfirmed_attempts_is_not_withdrawn_again(self):
+        gateway = ClearFailingGateway(usersNumber=5, cache_updates_on_set=True, get_responses={13: _timeouts()})
+        code = door_codes_uc.create_door_code(
+            user=self.user,
+            raw_code=self.PIN,
+            code_type=DoorCode.CodeType.TEMPORARY,
+            end_at=self._from_now(days=1),
+            lock_entity_ids=[self.SIDE],
+            actor_user=self.user,
+            zwavejs=gateway,
+        )
+        # Only an unconfirmed attempt slot, no tracked one, so the query has to find it.
+        self.assertEqual(self._slots(code), {self.SIDE: None})
+        self.assertEqual(lock_push_uc.unconfirmed_attempt_lock_entity_ids(door_code=code), [self.SIDE])
+        self._move(code, start_at=self._from_now(hours=1))
+        self.assertEqual(self._enforce(gateway), 1)
+        self.assertEqual(self._lock_codes(gateway, 13), {})
+        self.assertEqual(lock_push_uc.unconfirmed_attempt_lock_entity_ids(door_code=code), [])
+
+        # Its push_unconfirmed event is still on record, but settled.
+        with patch.object(door_codes_uc, "withdraw_door_code") as withdraw:
+            self.assertEqual(self._enforce(gateway), 0)
+        withdraw.assert_not_called()
+
 
 class StartAtUpdateTests(_LifecycleTestBase, APITestCase):
     """Moving start_at across now on an update takes the code off its locks or puts it on."""
@@ -634,6 +778,21 @@ class StartAtUpdateTests(_LifecycleTestBase, APITestCase):
         self.assertEqual(response.status_code, 409, response.content)
         self.assertIn("hasn't started", response.json()["error"]["message"])
         self.assertEqual(gateway.invoke_calls, [])
+
+    def test_retry_through_the_api_clears_a_failed_withdraw_before_the_start(self):
+        code, gateway = self._temporary_code([self.BACK])
+        self._move(code, start_at=self._from_now(hours=1))
+        gateway.clear_fails_on = {12}
+        self._enforce(gateway)
+        DoorCode.objects.filter(id=code.id).update(push_state=DoorCode.PushState.FAILED)
+        gateway.clear_fails_on = set()
+
+        with patch("locks.views.door_codes.default_zwavejs_gateway", gateway):
+            response = self.client.post(reverse("door-code-push", args=[code.id]))
+
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(self._lock_codes(gateway, 12), {})
+        self.assertEqual(response.json()["data"]["push_state"], DoorCode.PushState.PENDING)
 
 
 class ValidationTests(_LifecycleTestBase, APITestCase):
@@ -720,6 +879,63 @@ class ValidationTests(_LifecycleTestBase, APITestCase):
         self.assertFalse(valid(end_at=_iso(now)))
         self.assertTrue(valid(end_at=_iso(now + timedelta(seconds=1))))
         self.assertTrue(valid(end_at=None))
+
+    def test_an_unchanged_past_end_at_can_be_sent_back(self):
+        code, gateway = self._expired_code()
+
+        response = self._patch(code, gateway, {"end_at": _iso(code.end_at), "label": "Renamed"})
+
+        self.assertEqual(response.status_code, 200, response.content)
+        code.refresh_from_db()
+        self.assertEqual(code.label, "Renamed")
+        self.assertFalse(code.is_active)
+
+    def test_moving_only_start_at_on_an_expired_code_sends_its_end_at_back(self):
+        # The edit form sends both dates when either one changes.
+        code, gateway = self._expired_code()
+        new_start = code.end_at - timedelta(days=2)
+
+        response = self._patch(code, gateway, {"start_at": _iso(new_start), "end_at": _iso(code.end_at)})
+
+        self.assertEqual(response.status_code, 200, response.content)
+        code.refresh_from_db()
+        self.assertEqual(code.start_at, new_start)
+        self.assertFalse(code.is_active)
+        self.assertEqual(self._calls(gateway, "set"), [])
+
+    def test_a_changed_past_end_at_is_still_rejected_on_an_expired_code(self):
+        code, gateway = self._expired_code()
+
+        response = self._patch(code, gateway, {"end_at": _iso(code.end_at - timedelta(minutes=5))})
+
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertIn("end_at", response.json()["error"]["details"])
+
+    def test_turning_on_with_the_unchanged_past_end_at_is_rejected(self):
+        code, gateway = self._expired_code()
+
+        response = self._patch(code, gateway, {"is_active": True, "end_at": _iso(code.end_at)})
+
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertIn("is_active", response.json()["error"]["details"])
+        self.assertFalse(DoorCode.objects.get(id=code.id).is_active)
+
+    def test_start_at_equal_to_end_at_is_rejected(self):
+        at = _iso(self._from_now(days=1))
+
+        response = self.client.post(reverse("door-codes"), self._create_body(start_at=at, end_at=at), format="json")
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertEqual(response.json()["error"]["details"]["end_at"], ["end_at must be after start_at."])
+        self.assertFalse(DoorCode.objects.exists())
+
+        code, gateway = self._temporary_code([self.BACK])
+        response = self._patch(code, gateway, {"start_at": at, "end_at": at})
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertEqual(response.json()["error"]["details"]["end_at"], ["end_at must be after start_at."])
+
+        response = self._patch(code, gateway, {"start_at": _iso(code.end_at)})
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertIn("end_at", response.json()["error"]["details"])
 
     def test_turning_on_an_expired_code_is_rejected(self):
         code, gateway = self._expired_code()

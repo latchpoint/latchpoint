@@ -79,13 +79,13 @@ export function DoorCodeCreateCard({ userId, locks, locksIsLoading, locksError, 
     const isTemporary = createCodeType === 'temporary'
     const startAt = isTemporary ? toUtcIsoFromDatetimeLocal(createStartAtLocal) : null
     const endAt = isTemporary ? toUtcIsoFromDatetimeLocal(createEndAtLocal) : null
-    if (isTemporary && startAt && endAt && startAt > endAt) {
-      setCreateError('Active until must be after active from.')
+    if (isTemporary && startAt && endAt && startAt >= endAt) {
+      setCreateError('The active window must end after it starts.')
       return
     }
     // The backend refuses a code that's already expired (#145).
     if (isTemporary && endAt && new Date(endAt).getTime() <= Date.now()) {
-      setCreateError('Active until must be in the future.')
+      setCreateError('The active window must end in the future.')
       return
     }
     const daysOfWeek = isTemporary ? daysSetToMask(createDays) : null

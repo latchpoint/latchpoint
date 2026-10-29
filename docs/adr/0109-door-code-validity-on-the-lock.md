@@ -4,7 +4,7 @@
 **Date:** 2026-10-29
 **Author:** Leonardo Merza
 
-Amends [ADR-0092](0092-zwavejs-lock-push-sync.md).
+**Amends:** ADR-0092 (`start_at` and `end_at` left out of the push)
 
 ## Context
 
@@ -36,8 +36,10 @@ after it (#144, #157, #167) already use.
   without pushing for a code that hasn't started or has expired, and
   `push_door_code_to_lock` raises `PushSuperseded` when it finds that under the
   `lock_sync:` lock. `push_pending_door_codes` only retries pushes for codes in
-  their window (clear retries still run for everything). Retry answers 409 for
-  an active code that hasn't started.
+  their window (clear retries still run for everything). Retry on an active
+  code that hasn't started only retries and withdraws the clears it still has
+  outstanding, without pushing it, and answers 409 when there are none. Retry
+  on an active code past `end_at` retires it straight away.
 - **`start_at` crossing now is a push trigger.** An update that moves
   `start_at` into the future clears the code off its locks like a schedule
   change does, and one that moves it into the past pushes it. Moving it within
@@ -55,9 +57,10 @@ after it (#144, #157, #167) already use.
   hold a slot (codes pushed before this ADR), and pushes codes whose `start_at`
   has passed and that haven't had a push attempt since. It catches errors per
   code, a busy lock included, and never raises.
-- **API.** `end_at` must be in the future on create and update, `is_active:
-  true` is refused while the code would be expired, and the serializer adds
-  `validity` (`scheduled`, `valid`, `expired`, `exhausted`).
+- **API.** `end_at` must be after `start_at`, and in the future on create or
+  when an update changes it (an unchanged past `end_at` sent back is fine).
+  `is_active: true` is refused while the code would be expired, and the
+  serializer adds `validity` (`scheduled`, `valid`, `expired`, `exhausted`).
 - **No migration.** The first tick after deploy retires codes already past
   `end_at` and clears codes pushed before their start.
 
@@ -85,6 +88,15 @@ notifications and retiring used up codes is a separate change.
   expiry keeps the PIN until a retried clear reaches it, and the code shows
   pending with that lock and slot in its error the whole time.
 - A scheduled code goes on its locks up to a minute after `start_at`.
+- A scheduled code's withdraw clear that keeps failing hits the attempt cap
+  like any other clear. Retry then tries those clears again and takes off
+  anything else it still holds, so the PIN doesn't keep working until its
+  start.
+- A push that's already running when `end_at` passes can still land, since it
+  only checks the dates once it holds the lock. The next tick retires the code
+  and clears it.
+- `exhausted` is reported in `validity` but nothing enforces it until use
+  counting lands in PR2, so a used up code stays on its locks.
 - Latchpoint has to be running for codes to start and expire on time.
 - Synced codes with dates are retired too, which clears their slot on the
   lock. A synced code without dates is never touched.
