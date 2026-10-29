@@ -7,7 +7,7 @@ import threading
 from datetime import timedelta
 from unittest.mock import patch
 
-from django.test import TestCase, override_settings
+from django.test import TestCase, TransactionTestCase, override_settings
 from django.utils import timezone
 
 import scheduler.runner as runner
@@ -118,10 +118,13 @@ class SchedulerStatusTests(TestCase):
         self.assertIsInstance(status["tasks"], dict)
 
 
-class RunnerThrottledFinishTests(TestCase):
+class RunnerThrottledFinishTests(TransactionTestCase):
     """ADR-0103: the supervisor persists is_running=True for an overdue run whose `started`
     write the throttle skipped, so a throttled run that turns out to be slow must still
-    write its finish — otherwise the health row stays stuck at is_running=True."""
+    write its finish — otherwise the health row stays stuck at is_running=True.
+
+    TransactionTestCase: `_run_task_loop` calls `close_old_connections()`, which closes the
+    connection inside TestCase's transaction on Postgres (a no-op on in-memory SQLite)."""
 
     def setUp(self) -> None:
         telemetry_module._last_health_persist_at.clear()

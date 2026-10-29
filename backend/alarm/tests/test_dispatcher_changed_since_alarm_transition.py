@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import timedelta
 
-from django.test import TestCase
+from django.test import TransactionTestCase
 
 from accounts.models import User
 from alarm.dispatcher.dispatcher import EntityChangeBatch, RuleDispatcher, invalidate_entity_rule_cache
@@ -16,7 +16,9 @@ from alarm.tests.settings_test_utils import set_profile_settings
 DOOR = "binary_sensor.side_fence_door_sensor_door"
 
 
-class ChangedSinceAlarmTransitionDispatcherTests(TestCase):
+# TransactionTestCase: `_dispatch_batch` calls `close_old_connections()`, which closes the
+# connection inside TestCase's transaction on Postgres (a no-op on in-memory SQLite).
+class ChangedSinceAlarmTransitionDispatcherTests(TransactionTestCase):
     def setUp(self):
         invalidate_entity_rule_cache()
         self.user = User.objects.create_user(email="adr0108-dispatch@example.com", password="pass")

@@ -27,8 +27,43 @@ jobs:
       codecov-frontend-flags: frontend
     secrets: inherit
 
+  # The shared fullstack-tests workflow has no way to attach a service container, so the
+  # Postgres run lives here. It reuses the same python-test action and env as the SQLite
+  # job; only DATABASE_URL differs. Coverage is uploaded by the SQLite job only.
+  backend-test-postgres:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: latchpoint
+          POSTGRES_PASSWORD: latchpoint
+          POSTGRES_DB: latchpoint
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U latchpoint"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ljmerza/misc-actions/actions/python-test@v1
+        with:
+          python-version: "3.12"
+          coverage-source: accounts,alarm,control_panels,locks,notifications,scheduler
+          env-vars: |
+            SECRET_KEY=ci
+            DEBUG=True
+            API_RESPONSE_ENVELOPE_ENABLED=True
+            LOG_LEVEL=INFO
+            ALLOWED_HOSTS=localhost,127.0.0.1
+            DATABASE_URL=postgres://latchpoint:latchpoint@localhost:5432/latchpoint
+
   build:
-    needs: tests
+    needs: [tests, backend-test-postgres]
     permissions:
       contents: read
       packages: write

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from django.test import TestCase
+from django.test import TestCase, TransactionTestCase
 from django.utils import timezone
 
 from alarm.dispatcher.dispatcher import EntityChangeBatch, RuleDispatcher, invalidate_entity_rule_cache
@@ -10,8 +10,12 @@ from alarm.dispatcher.stats import DispatcherStats
 from alarm.models import Entity, Rule, RuleEntityRef, RuleKind
 
 
-class DispatcherStopProcessingTests(TestCase):
-    """Tests for _dispatch_batch stop_processing logic scoped by stop_group (ADR 0084)."""
+class DispatcherStopProcessingTests(TransactionTestCase):
+    """Tests for _dispatch_batch stop_processing logic scoped by stop_group (ADR 0084).
+
+    TransactionTestCase: `_dispatch_batch` calls `close_old_connections()`, which closes the
+    connection inside TestCase's transaction on Postgres (a no-op on in-memory SQLite).
+    """
 
     def setUp(self):
         invalidate_entity_rule_cache()
