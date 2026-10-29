@@ -15,7 +15,7 @@ import {
   useRetryDoorCodePushMutation,
 } from './useDoorCodesQueries'
 
-function createClient(queries: { staleTime?: number } = {}) {
+function createClient(queries: { staleTime?: number; refetchOnWindowFocus?: boolean } = {}) {
   return new QueryClient({
     defaultOptions: { queries: { retry: false, ...queries }, mutations: { retry: false } },
   })
@@ -53,6 +53,14 @@ function makeCode(overrides: Partial<DoorCode> = {}): DoorCode {
     ...overrides,
   }
 }
+
+// An active code the scheduler is still pushing, its lock has no slot yet.
+const pendingPush = (overrides: Partial<DoorCode> = {}) =>
+  makeCode({
+    pushState: 'pending',
+    lockSlotAssignments: [{ lockEntityId: 'lock.front_door', slotIndex: null, pendingRemoval: false }],
+    ...overrides,
+  })
 
 // Serves state.codes from the codes endpoint and counts the fetches.
 function serveCodes(initial: DoorCode[]) {
@@ -164,8 +172,24 @@ describe('useDoorCodesQueries', () => {
   })
 
   describe('isDoorCodeSettling', () => {
-    it('is settling while a push is pending', () => {
-      expect(isDoorCodeSettling(makeCode({ pushState: 'pending' }))).toBe(true)
+    it('is settling while an active code waits for a slot on one of its locks', () => {
+      expect(isDoorCodeSettling(pendingPush())).toBe(true)
+    })
+
+    it('is settled for a pending code lock sync created, since the scheduler never pushes it', () => {
+      expect(isDoorCodeSettling(makeCode({ source: 'synced', pushState: 'pending' }))).toBe(false)
+    })
+
+    it('is settled for an active pending code with no locks', () => {
+      expect(
+        isDoorCodeSettling(
+          makeCode({ pushState: 'pending', lockAssignments: [], lockEntityIds: [], lockSlotAssignments: [] }),
+        ),
+      ).toBe(false)
+    })
+
+    it('is settled for an inactive pending code with nothing to clear', () => {
+      expect(isDoorCodeSettling(pendingPush({ isActive: false }))).toBe(false)
     })
 
     it('is settling while a slot is left to clear', () => {
@@ -198,7 +222,7 @@ describe('useDoorCodesQueries', () => {
 
     it('polls while a code is pending and stops once it settles', async () => {
       vi.useFakeTimers({ shouldAdvanceTime: true })
-      const served = serveCodes([makeCode({ pushState: 'pending' })])
+      const served = serveCodes([pendingPush()])
       const { result } = renderCodes()
       await waitFor(() => expect(result.current.data?.[0].pushState).toBe('pending'))
       expect(served.fetches).toBe(1)
@@ -219,7 +243,12 @@ describe('useDoorCodesQueries', () => {
 
     it("doesn't poll when nothing is settling", async () => {
       vi.useFakeTimers({ shouldAdvanceTime: true })
-      const served = serveCodes([makeCode(), makeCode({ id: 8, pushState: 'failed', lastPushError: 'Lock timed out' })])
+      const served = serveCodes([
+        makeCode(),
+        makeCode({ id: 8, pushState: 'failed', lastPushError: 'Lock timed out' }),
+        makeCode({ id: 9, source: 'synced', pushState: 'pending' }),
+        makeCode({ id: 10, pushState: 'pending', lockAssignments: [], lockEntityIds: [], lockSlotAssignments: [] }),
+      ])
       const { result } = renderCodes()
       await waitFor(() => expect(result.current.isSuccess).toBe(true))
 
@@ -227,14 +256,14 @@ describe('useDoorCodesQueries', () => {
       expect(served.fetches).toBe(1)
     })
 
-    it('refetches when the window gets focus, even while the codes are fresh', async () => {
+    it('refetches when the tab becomes visible again, even while the codes are fresh', async () => {
       const served = serveCodes([makeCode()])
-      // The app's one minute staleTime.
-      const { result } = renderCodes(createClient({ staleTime: 60_000 }))
+      // The app's defaults, a one minute staleTime and no focus refetch.
+      const { result } = renderCodes(createClient({ staleTime: 60_000, refetchOnWindowFocus: false }))
       await waitFor(() => expect(result.current.isSuccess).toBe(true))
       expect(served.fetches).toBe(1)
 
-      // Turned off in another tab.
+      // Turned off in another tab, then this tab comes back.
       served.codes = [makeCode({ isActive: false })]
       act(() => {
         window.dispatchEvent(new Event('visibilitychange'))

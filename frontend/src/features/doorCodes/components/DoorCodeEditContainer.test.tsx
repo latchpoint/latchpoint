@@ -86,10 +86,16 @@ function EditFormFromQuery({ onUpdate = vi.fn(), locks = [] }: { onUpdate?: OnUp
   )
 }
 
-// Serves state.code from the codes endpoint. Tests change it, then refetch.
+// Serves state.code from the codes endpoint and counts the fetches. Tests
+// change it, then refetch.
 function serveCode(initial: DoorCode) {
-  const state = { code: initial }
-  server.use(http.get('/api/door-codes/', () => HttpResponse.json({ data: [state.code] })))
+  const state = { code: initial, fetches: 0 }
+  server.use(
+    http.get('/api/door-codes/', () => {
+      state.fetches += 1
+      return HttpResponse.json({ data: [state.code] })
+    }),
+  )
   return state
 }
 
@@ -138,9 +144,16 @@ describe('DoorCodeEditContainer', () => {
     it('keeps an edit in progress across polls while the code is pending', async () => {
       vi.useFakeTimers({ shouldAdvanceTime: true })
       const nextPoll = () => act(() => vi.advanceTimersByTimeAsync(DOOR_CODES_SETTLING_POLL_MS))
-      const served = serveCode(makeCode({ pushState: 'pending', lockSlotAssignments: [] }))
+      // Its lock has no slot yet, so the scheduler is still pushing it.
+      const served = serveCode(
+        makeCode({
+          pushState: 'pending',
+          lockSlotAssignments: [{ lockEntityId: 'lock.front_door', slotIndex: null, pendingRemoval: false }],
+        }),
+      )
       renderWithProviders(<EditFormFromQuery />)
       expect(await screen.findByDisplayValue('Front')).toBeTruthy()
+      expect(served.fetches).toBe(1)
 
       fireEvent.change(labelInput(), { target: { value: 'Back door' } })
       fireEvent.change(newCodeInput(), { target: { value: '2468' } })
@@ -149,11 +162,15 @@ describe('DoorCodeEditContainer', () => {
 
       // A poll with nothing new.
       await nextPoll()
+      await waitFor(() => expect(served.fetches).toBe(2))
       expect(labelInput().value).toBe('Back door')
+      expect(newCodeInput().value).toBe('2468')
+      expect(dayCheckbox('Sun')).not.toBeChecked()
 
       // The scheduler pushes it, and another tab sets max uses.
       served.code = makeCode({ maxUses: 5, lastPushAttemptAt: '2026-10-28T10:05:00Z' })
       await nextPoll()
+      await waitFor(() => expect(served.fetches).toBe(3))
       await waitFor(() => expect(maxUsesInput().value).toBe('5'))
 
       expect(labelInput().value).toBe('Back door')

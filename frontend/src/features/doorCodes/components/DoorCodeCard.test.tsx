@@ -464,8 +464,12 @@ describe('DoorCodeCard', () => {
     it('keeps a Retry error through a poll with nothing new and drops it once the code is pushed', async () => {
       vi.useFakeTimers({ shouldAdvanceTime: true })
       let serverCode = makeCode({ pushState: 'pending', lastPushError: '' })
+      let fetches = 0
       server.use(
-        http.get('/api/door-codes/', () => HttpResponse.json({ data: [serverCode] })),
+        http.get('/api/door-codes/', () => {
+          fetches += 1
+          return HttpResponse.json({ data: [serverCode] })
+        }),
         http.post('/api/door-codes/7/push/', () => {
           serverCode = makeCode({ pushState: 'pending', lastPushError: '', lastPushAttemptAt: '2026-10-28T10:10:00Z' })
           return timeout()
@@ -475,8 +479,11 @@ describe('DoorCodeCard', () => {
       renderWithProviders(<CardsFromQuery />)
       fireEvent.click(await screen.findByRole('button', { name: 'Retry now' }))
       expect(await screen.findByRole('alert')).toHaveTextContent('Lock timed out')
+      await settle()
+      const fetchesBeforePoll = fetches
 
       await nextPoll()
+      await waitFor(() => expect(fetches).toBe(fetchesBeforePoll + 1))
       await settle()
       expect(screen.getByText('Pending sync')).toBeTruthy()
       expect(screen.getByRole('alert')).toHaveTextContent('Lock timed out')
