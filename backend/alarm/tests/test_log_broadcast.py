@@ -172,18 +172,24 @@ class BoundedBroadcastQueueTests(SimpleTestCase):
         finished = threading.Event()
 
         def _emit() -> None:
-            with (
-                patch.object(
-                    log_handler, "_broadcast_queue", SimpleNamespace(qsize=entries.qsize, put_nowait=_put_and_log_again)
-                ),
-                patch.object(log_handler, "_broadcast_thread", object()),
-            ):
-                handler.emit(_warning("outer"))
+            handler.emit(_warning("outer"))
             finished.set()
 
-        threading.Thread(target=_emit, daemon=True).start()
+        # Patched from this thread with a lock of the module's own kind, so if the emit does deadlock, the stuck
+        # thread holds only this throwaway lock and the module goes back to normal for the tests after this one.
+        reentrant = isinstance(log_handler._broadcast_enqueue_lock, type(threading.RLock()))
+        new_lock = threading.RLock if reentrant else threading.Lock
+        with (
+            patch.object(
+                log_handler, "_broadcast_queue", SimpleNamespace(qsize=entries.qsize, put_nowait=_put_and_log_again)
+            ),
+            patch.object(log_handler, "_broadcast_thread", object()),
+            patch.object(log_handler, "_broadcast_enqueue_lock", new_lock()),
+        ):
+            threading.Thread(target=_emit, daemon=True).start()
+            deadlock_free = finished.wait(timeout=5)
 
-        self.assertTrue(finished.wait(timeout=5), "the nested emit deadlocked")
+        self.assertTrue(deadlock_free, "the nested emit deadlocked")
         self.assertEqual(self._messages(entries), ["from a signal handler", "outer"])
 
 

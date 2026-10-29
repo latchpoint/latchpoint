@@ -142,4 +142,6 @@ from looking "changed since armed" (ADR-0108).
 A mapping refresh whose devices request times out (Z2M slow or down, often at boot) logs one warning line
 without a traceback and retries on a timer, 30s then doubling up to 10 minutes, until one succeeds (#174).
 The retry skips while MQTT is disconnected or Zigbee2MQTT is disabled, since the on-connect hook or the
-profile change refreshes again then.
+profile change refreshes again then, and it resets the backoff to 30s when it skips. Only one retry is
+pending at a time, so two refreshes that time out together (ie the on-connect hook and the timer) double the
+delay once.
