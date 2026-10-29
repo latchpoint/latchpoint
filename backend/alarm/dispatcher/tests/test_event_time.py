@@ -4,14 +4,16 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-from django.test import TestCase
+from django.test import TransactionTestCase
 from django.utils import timezone
 
 from alarm.dispatcher.config import DispatcherConfig
 from alarm.dispatcher.dispatcher import EntityChangeBatch, RuleDispatcher
 
 
-class TestDispatcherEventTime(TestCase):
+# TransactionTestCase: `_dispatch_batch` calls `close_old_connections()`, which closes the
+# connection inside TestCase's transaction on Postgres (a no-op on in-memory SQLite).
+class TestDispatcherEventTime(TransactionTestCase):
     def test_rules_engine_run_uses_batch_changed_at(self):
         """
         The dispatcher should evaluate rules using the integration event timestamp,

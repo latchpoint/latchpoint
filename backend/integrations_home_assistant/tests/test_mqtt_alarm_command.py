@@ -4,7 +4,7 @@ import json
 from unittest.mock import patch
 
 from django.core.cache import cache
-from django.test import TestCase
+from django.test import TransactionTestCase
 
 from accounts.models import User
 from accounts.use_cases.user_codes import create_user_code
@@ -19,7 +19,9 @@ def _cmd(action: str, code: str | None = "1996") -> str:
     return json.dumps({"action": action, "code": code or ""})
 
 
-class MqttAlarmCommandTests(TestCase):
+# TransactionTestCase: `handle_mqtt_alarm_command` calls `close_old_connections()`, which closes
+# the connection inside TestCase's transaction on Postgres (a no-op on in-memory SQLite).
+class MqttAlarmCommandTests(TransactionTestCase):
     def setUp(self):
         cache.clear()
         self.user = User.objects.create_user(email="test@example.com", password="pass")
