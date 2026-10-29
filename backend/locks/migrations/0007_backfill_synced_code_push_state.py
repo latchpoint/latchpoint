@@ -1,10 +1,11 @@
-"""Mark synced door codes that hold a slot as pushed (issue #149). Data only, no schema change.
+"""Mark active synced door codes that hold a slot as pushed (issue #149). Data only, no schema change.
 
 Lock config sync created synced codes without setting ``push_state``, so every
 code it imported after 0006 got the model default ``pending`` and kept it. A
 synced code is read off the lock, so one that still holds a slot is on it.
 
-Left alone, so they keep showing pending:
+Left as they are:
+  - inactive synced codes
   - synced codes with no tracked slot
   - synced codes with any ``clear_failed`` or ``push_unconfirmed`` event, since
     a slot of theirs may hold an older PIN (#111, #144) and those codes must not
@@ -30,7 +31,7 @@ def _backfill_synced_push_state(apps, schema_editor):
         metadata__action__in=["clear_failed", "push_unconfirmed"],
     )
     (
-        DoorCode.objects.filter(source="synced", push_state="pending")
+        DoorCode.objects.filter(source="synced", push_state="pending", is_active=True)
         .filter(Exists(holds_slot))
         .exclude(Exists(slot_cleanup_on_record))
         .update(push_state="pushed", last_push_error="", push_attempt_count=0)

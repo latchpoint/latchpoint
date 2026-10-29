@@ -15,7 +15,7 @@ from django.db import IntegrityError, connection, transaction
 from django.utils import timezone as django_timezone
 
 from accounts.models import User
-from alarm.crypto import InvalidToken, SettingsEncryption
+from alarm.crypto import SettingsEncryption
 from alarm.gateways.zwavejs import ZwavejsGateway
 from alarm.models import Entity
 from config.domain_exceptions import ConflictError, NotFoundError, ValidationError
@@ -768,16 +768,18 @@ def _has_outstanding_slot_cleanup(*, door_code: DoorCode) -> bool:
     return bool(unresolved_clear_failures(door_code=door_code)) or has_unconfirmed_attempt_slots(door_code=door_code)
 
 
-def _slots_with_outstanding_cleanup(*, lock_entity_id: str) -> dict[int, int]:
-    """Untracked slots on this lock that a code still has a clear or unconfirmed push on record for.
+def _slots_with_outstanding_cleanup(*, lock_entity_id: str) -> dict[int, list[tuple[int, str | None]]]:
+    """Slots on this lock that a code still has a clear or unconfirmed push on record for.
 
-    Maps slot -> door code id. The sync doesn't import those slots as new codes,
-    since that code's own retry reads them back and clears them (issue #150).
+    Maps slot -> [(door code id, PIN the slot is expected to hold)]. The PIN is
+    the one stored with the marker, or the code's current PIN for markers from
+    before it was stored, and ``None`` when neither can be read.
     """
     from locks.use_cases.lock_push import (
         _CLEAR_FAILED_ACTION,
         _UNCONFIRMED_PUSH_ACTION,
-        _unconfirmed_attempt_slots,
+        _unconfirmed_attempts,
+        decrypt_pin_or_none,
         unresolved_clear_failures,
     )
 
@@ -791,14 +793,33 @@ def _slots_with_outstanding_cleanup(*, lock_entity_id: str) -> dict[int, int]:
         .values_list("door_code_id", flat=True)
         .distinct()
     )
-    slots: dict[int, int] = {}
+    slots: dict[int, list[tuple[int, str | None]]] = {}
     for door_code in DoorCode.objects.filter(id__in=list(code_ids)).order_by("id"):
+        current_pin = decrypt_pin_or_none(door_code)
         for failure in unresolved_clear_failures(door_code=door_code):
             if failure.lock_entity_id == lock_entity_id:
-                slots.setdefault(int(failure.slot_index), door_code.id)
-        for slot_index in _unconfirmed_attempt_slots(door_code=door_code, lock_entity_id=lock_entity_id):
-            slots.setdefault(int(slot_index), door_code.id)
+                slots.setdefault(int(failure.slot_index), []).append(
+                    (door_code.id, failure.expected_pin or current_pin)
+                )
+        for slot_index, expected_pin in _unconfirmed_attempts(
+            door_code=door_code, lock_entity_id=lock_entity_id
+        ).items():
+            slots.setdefault(int(slot_index), []).append((door_code.id, expected_pin or current_pin))
     return slots
+
+
+def _outstanding_cleanup_owner(*, markers: list[tuple[int, str | None]], raw_pin: str | None) -> int | None:
+    """The code whose outstanding clear or unconfirmed push this untracked slot may still be (issue #150).
+
+    The sync doesn't import such a slot, since that code's own retry reads it
+    back and clears it. That's when the slot holds the PIN the marker expects,
+    or a PIN the sync can't read. A readable PIN no marker expects is someone
+    else's code (one entered on the keypad, say) and is imported as usual.
+    """
+    for door_code_id, expected_pin in markers:
+        if raw_pin is None or expected_pin is None or raw_pin == expected_pin:
+            return door_code_id
+    return None
 
 
 def _assigned_code_pins(*, lock_entity_id: str) -> list[tuple[int, int | None, str]]:
@@ -818,19 +839,52 @@ def _assigned_code_pins(*, lock_entity_id: str) -> list[tuple[int, int | None, s
     return pins
 
 
-def _duplicate_pin_code_ids(
-    *, assigned_pins: list[tuple[int, int | None, str]], slot_index: int, pin: str | None
-) -> list[int]:
-    """Codes on this lock whose PIN ``slot_index`` holds while it isn't their tracked slot (issue #140).
+def _flag_duplicate_pins(
+    *,
+    lock_entity_id: str,
+    pin_by_slot: dict[int, str | None],
+    pre_sync_owner_by_slot: dict[int, int],
+    slot_results: dict[int, SlotSyncResult],
+    slot_events: dict[int, DoorCodeEvent],
+) -> None:
+    """Flag slots holding the PIN of another code on this lock outside that code's tracked slot (issue #140).
 
-    Catches copies stranded before #136 (#133), which nothing tracks. Only
-    flagged; the sync never clears a slot.
+    Catches copies stranded before #136 (#133), which nothing tracks. Runs once
+    the sync has written its changes, so it compares against the PINs codes have
+    now. A slot that was already tracked by a code with that same PIN isn't
+    flagged, since 2 codes can share a PIN in their own slots. Only flagged; the
+    sync never clears a slot.
     """
-    if pin is None:
-        return []
-    return sorted(
-        {code_id for code_id, tracked, code_pin in assigned_pins if code_pin == pin and tracked != slot_index}
-    )
+    assigned_pins = _assigned_code_pins(lock_entity_id=lock_entity_id)
+    pin_by_code = {door_code_id: pin for door_code_id, _tracked, pin in assigned_pins}
+    for slot_index, row in sorted(slot_results.items()):
+        pin = pin_by_slot.get(slot_index)
+        if pin is None:
+            continue
+        owner_id = pre_sync_owner_by_slot.get(slot_index)
+        if owner_id is not None and pin_by_code.get(owner_id) == pin:
+            continue
+        duplicate_ids = sorted(
+            {
+                door_code_id
+                for door_code_id, tracked, code_pin in assigned_pins
+                if code_pin == pin and tracked != slot_index and door_code_id != owner_id
+            }
+        )
+        if not duplicate_ids:
+            continue
+        logger.warning(
+            "Slot %d on %s holds the PIN of door code(s) %s, which don't track that slot",
+            slot_index,
+            lock_entity_id,
+            duplicate_ids,
+        )
+        row.warnings.append(_WARN_DUPLICATE_PIN)
+        row.duplicate_pin_door_code_ids = duplicate_ids
+        event = slot_events.get(slot_index)
+        if event is not None:
+            event.metadata = {**event.metadata, "duplicate_pin_door_code_ids": duplicate_ids}
+            event.save(update_fields=["metadata"])
 
 
 def _existing_code_skip_reason(*, code: DoorCode, raw_pin: str | None) -> str | None:
@@ -857,10 +911,31 @@ def _existing_code_skip_reason(*, code: DoorCode, raw_pin: str | None) -> str | 
     return None
 
 
+def _apply_slot_pin(*, code: DoorCode, raw_pin: str | None) -> list[str]:
+    """Take a PIN read off the code's slot onto ``code``; returns the fields changed.
+
+    Only a readable PIN that differs replaces the stored one. A masked or
+    unreadable read says nothing about the PIN, so the stored PIN and
+    ``pin_length`` stay (issue #150).
+    """
+    if raw_pin is None:
+        return []
+    from locks.use_cases.lock_push import decrypt_pin_or_none
+
+    fields: list[str] = []
+    if decrypt_pin_or_none(code) != raw_pin:
+        code.encrypted_pin = SettingsEncryption.get().encrypt(raw_pin)
+        fields.append("encrypted_pin")
+    if code.pin_length != len(raw_pin):
+        code.pin_length = len(raw_pin)
+        fields.append("pin_length")
+    return fields
+
+
 def _record_sync_skip(
     *, code: DoorCode, actor_user: User, lock_entity_id: str, slot_index: int, reason: str, pin_known: bool
-) -> None:
-    DoorCodeEvent.objects.create(
+) -> DoorCodeEvent:
+    return DoorCodeEvent.objects.create(
         door_code=code,
         user=actor_user,
         lock_entity_id=lock_entity_id,
@@ -1050,9 +1125,47 @@ def _sync_lock_config_atomically(
             timeout_seconds=10.0,
         )
 
-        # Read before anything below changes the assignments or PINs.
+        # Read before anything below changes the assignments.
         outstanding_cleanup_by_slot = _slots_with_outstanding_cleanup(lock_entity_id=lock_entity_id)
-        assigned_pins = _assigned_code_pins(lock_entity_id=lock_entity_id)
+        pre_sync_owner_by_slot: dict[int, int] = dict(
+            DoorCodeLockAssignment.objects.filter(lock_entity_id=lock_entity_id, slot_index__isnull=False).values_list(
+                "slot_index", "door_code_id"
+            )
+        )
+        # Rows and events per slot, for the duplicate PIN flags added at the end.
+        slot_results: dict[int, SlotSyncResult] = {}
+        slot_events: dict[int, DoorCodeEvent] = {}
+
+        def add_slot_result(row: SlotSyncResult, event: DoorCodeEvent | None = None) -> None:
+            result.slots.append(row)
+            slot_results[row.slot_index] = row
+            if event is not None:
+                slot_events[row.slot_index] = event
+
+        def skip_slot(
+            *, code: DoorCode, slot_index: int, reason: str, pin_known: bool | None, is_active, warnings: list[str]
+        ) -> None:
+            logger.warning("Slot %d on %s: skipped (%s, code_id=%d)", slot_index, lock_entity_id, reason, code.id)
+            event = _record_sync_skip(
+                code=code,
+                actor_user=actor_user,
+                lock_entity_id=lock_entity_id,
+                slot_index=slot_index,
+                reason=reason,
+                pin_known=bool(pin_known),
+            )
+            result.skipped += 1
+            add_slot_result(
+                SlotSyncResult(
+                    slot_index=slot_index,
+                    action="skipped",
+                    door_code_id=code.id,
+                    pin_known=pin_known,
+                    is_active=bool(is_active) if is_active is not None else None,
+                    warnings=[*warnings, reason],
+                ),
+                event,
+            )
 
         # Import occupied slots.
         for slot_index in sorted(occupied_slots):
@@ -1072,15 +1185,6 @@ def _sync_lock_config_atomically(
             warnings: list[str] = []
             if schedule_unsupported_reason:
                 warnings.append("schedule_unsupported")
-            duplicate_pin_ids = _duplicate_pin_code_ids(assigned_pins=assigned_pins, slot_index=slot_index, pin=raw_pin)
-            if duplicate_pin_ids:
-                warnings.append(_WARN_DUPLICATE_PIN)
-                logger.warning(
-                    "Slot %d on %s holds the PIN of door code(s) %s, which don't track that slot",
-                    slot_index,
-                    lock_entity_id,
-                    duplicate_pin_ids,
-                )
 
             skip_code: DoorCode | None = None
             skip_reason: str | None = None
@@ -1088,40 +1192,24 @@ def _sync_lock_config_atomically(
                 skip_reason = _existing_code_skip_reason(code=existing.door_code, raw_pin=raw_pin)
                 skip_code = existing.door_code if skip_reason else None
             elif slot_index in outstanding_cleanup_by_slot:
-                skip_reason = _SKIP_CLEAR_OUTSTANDING
-                skip_code = DoorCode.objects.filter(id=outstanding_cleanup_by_slot[slot_index]).first()
+                owner_id = _outstanding_cleanup_owner(markers=outstanding_cleanup_by_slot[slot_index], raw_pin=raw_pin)
+                if owner_id is not None:
+                    skip_reason = _SKIP_CLEAR_OUTSTANDING
+                    skip_code = DoorCode.objects.filter(id=owner_id).first()
             if skip_reason and skip_code is not None:
-                logger.warning(
-                    "Slot %d on %s: skipped (%s, code_id=%d)", slot_index, lock_entity_id, skip_reason, skip_code.id
-                )
-                _record_sync_skip(
+                skip_slot(
                     code=skip_code,
-                    actor_user=actor_user,
-                    lock_entity_id=lock_entity_id,
                     slot_index=slot_index,
                     reason=skip_reason,
                     pin_known=pin_known,
-                )
-                result.skipped += 1
-                result.slots.append(
-                    SlotSyncResult(
-                        slot_index=slot_index,
-                        action="skipped",
-                        door_code_id=skip_code.id,
-                        pin_known=pin_known,
-                        is_active=bool(is_active) if is_active is not None else None,
-                        warnings=[*warnings, skip_reason],
-                        duplicate_pin_door_code_ids=duplicate_pin_ids,
-                    )
+                    is_active=is_active,
+                    warnings=warnings,
                 )
                 continue
 
             if existing:
                 code = existing.door_code
                 updated_fields: list[str] = []
-                # A manual code only gets here when the slot holds its PIN or a
-                # masked one, so its own PIN stays (issue #150).
-                converting = code.source != DoorCode.Source.SYNCED
 
                 if code.user_id != target_user.id:
                     code.user = target_user
@@ -1132,22 +1220,9 @@ def _sync_lock_config_atomically(
                     code.source = DoorCode.Source.SYNCED
                     updated_fields.append("source")
 
-                enc = SettingsEncryption.get()
-                if not converting:
-                    if raw_pin is not None:
-                        stored_pin = None
-                        if code.encrypted_pin:
-                            with contextlib.suppress(ValueError, InvalidToken):
-                                stored_pin = enc.decrypt(code.encrypted_pin)
-                        if stored_pin != raw_pin:
-                            code.encrypted_pin = enc.encrypt(raw_pin)
-                            updated_fields.append("encrypted_pin")
-                    elif code.encrypted_pin is not None:
-                        code.encrypted_pin = None
-                        updated_fields.append("encrypted_pin")
-                    if code.pin_length != pin_length:
-                        code.pin_length = pin_length
-                        updated_fields.append("pin_length")
+                # A manual code only gets this far when the slot holds its PIN or
+                # a masked one, so its own PIN stays either way.
+                updated_fields.extend(_apply_slot_pin(code=code, raw_pin=raw_pin))
                 if is_active is not None and code.is_active != bool(is_active):
                     code.is_active = bool(is_active)
                     updated_fields.append("is_active")
@@ -1203,7 +1278,7 @@ def _sync_lock_config_atomically(
                     result.unchanged += 1
                     logger.debug("Slot %d on %s: unchanged", slot_index, lock_entity_id)
 
-                DoorCodeEvent.objects.create(
+                event = DoorCodeEvent.objects.create(
                     door_code=code,
                     user=actor_user,
                     lock_entity_id=lock_entity_id,
@@ -1214,11 +1289,10 @@ def _sync_lock_config_atomically(
                         "pin_known": pin_known,
                         "schedule_applied": schedule_applied,
                         "schedule_unsupported": schedule_unsupported,
-                        **({"duplicate_pin_door_code_ids": duplicate_pin_ids} if duplicate_pin_ids else {}),
                     },
                 )
 
-                result.slots.append(
+                add_slot_result(
                     SlotSyncResult(
                         slot_index=slot_index,
                         action=action,
@@ -1229,8 +1303,8 @@ def _sync_lock_config_atomically(
                         schedule_unsupported=schedule_unsupported,
                         schedule=schedule_obj,
                         warnings=warnings,
-                        duplicate_pin_door_code_ids=duplicate_pin_ids,
-                    )
+                    ),
+                    event,
                 )
                 continue
 
@@ -1267,11 +1341,13 @@ def _sync_lock_config_atomically(
             code.save()
 
             try:
-                DoorCodeLockAssignment.objects.create(
-                    door_code=code,
-                    lock_entity_id=lock_entity_id,
-                    slot_index=slot_index,
-                )
+                # A savepoint, so the transaction is still usable for the fallback below.
+                with transaction.atomic():
+                    DoorCodeLockAssignment.objects.create(
+                        door_code=code,
+                        lock_entity_id=lock_entity_id,
+                        slot_index=slot_index,
+                    )
             except IntegrityError:
                 # Race: another sync created the assignment first. Update the winner's code
                 # with our freshly-read data so it isn't silently discarded.
@@ -1288,15 +1364,26 @@ def _sync_lock_config_atomically(
                 if existing:
                     code.delete()
                     existing_code = existing.door_code
-                    existing_code.encrypted_pin = (
-                        SettingsEncryption.get().encrypt(raw_pin) if raw_pin is not None else None
-                    )
-                    existing_code.pin_length = pin_length
-                    if is_active is not None:
+                    # Same guards as a code that already held the slot (issue #150).
+                    race_skip_reason = _existing_code_skip_reason(code=existing_code, raw_pin=raw_pin)
+                    if race_skip_reason:
+                        skip_slot(
+                            code=existing_code,
+                            slot_index=slot_index,
+                            reason=race_skip_reason,
+                            pin_known=pin_known,
+                            is_active=is_active,
+                            warnings=[*warnings, "integrity_race"],
+                        )
+                        continue
+                    race_fields = _apply_slot_pin(code=existing_code, raw_pin=raw_pin)
+                    if is_active is not None and existing_code.is_active != bool(is_active):
                         existing_code.is_active = bool(is_active)
-                    existing_code.save(update_fields=["encrypted_pin", "pin_length", "is_active", "updated_at"])
+                        race_fields.append("is_active")
+                    if race_fields:
+                        existing_code.save(update_fields=[*race_fields, "updated_at"])
                     result.updated += 1
-                    result.slots.append(
+                    add_slot_result(
                         SlotSyncResult(
                             slot_index=slot_index,
                             action="updated",
@@ -1312,7 +1399,7 @@ def _sync_lock_config_atomically(
                     continue
                 raise
 
-            DoorCodeEvent.objects.create(
+            event = DoorCodeEvent.objects.create(
                 door_code=code,
                 user=actor_user,
                 lock_entity_id=lock_entity_id,
@@ -1323,7 +1410,6 @@ def _sync_lock_config_atomically(
                     "pin_known": pin_known,
                     "schedule_applied": schedule_applied,
                     "schedule_unsupported": schedule_unsupported,
-                    **({"duplicate_pin_door_code_ids": duplicate_pin_ids} if duplicate_pin_ids else {}),
                 },
             )
 
@@ -1331,7 +1417,7 @@ def _sync_lock_config_atomically(
             logger.info(
                 "Slot %d on %s: created (code_id=%d, pin_known=%s)", slot_index, lock_entity_id, code.id, pin_known
             )
-            result.slots.append(
+            add_slot_result(
                 SlotSyncResult(
                     slot_index=slot_index,
                     action="created",
@@ -1342,13 +1428,15 @@ def _sync_lock_config_atomically(
                     schedule_unsupported=schedule_unsupported,
                     schedule=schedule_obj,
                     warnings=warnings,
-                    duplicate_pin_door_code_ids=duplicate_pin_ids,
-                )
+                ),
+                event,
             )
 
         # Turn off synced codes whose slot read back empty and stop tracking the slot.
         # A slot whose read failed or was inconclusive isn't touched: its PIN may
-        # still be on the lock (issue #149).
+        # still be on the lock (issue #149). Nor is a code with a clear or unconfirmed
+        # push outstanding, since the code_synced event would end its push_unconfirmed
+        # window, and its own retry settles the slot.
         previously_synced = DoorCodeLockAssignment.objects.select_related("door_code").filter(
             lock_entity_id=lock_entity_id, slot_index__isnull=False
         )
@@ -1362,6 +1450,16 @@ def _sync_lock_config_atomically(
                 continue
             code = assignment.door_code
             if not code or code.source != DoorCode.Source.SYNCED:
+                continue
+            if _has_outstanding_slot_cleanup(door_code=code):
+                skip_slot(
+                    code=code,
+                    slot_index=slot_index,
+                    reason=_SKIP_CLEAR_OUTSTANDING,
+                    pin_known=None,
+                    is_active=None,
+                    warnings=[],
+                )
                 continue
             was_active = code.is_active
             logger.info(
@@ -1387,6 +1485,14 @@ def _sync_lock_config_atomically(
                     "action": "deactivated" if was_active else "slot_released",
                 },
             )
+
+        _flag_duplicate_pins(
+            lock_entity_id=lock_entity_id,
+            pin_by_slot=pin_by_slot,
+            pre_sync_owner_by_slot=pre_sync_owner_by_slot,
+            slot_results=slot_results,
+            slot_events=slot_events,
+        )
 
         result.timestamp = django_timezone.now()
 
