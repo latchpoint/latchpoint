@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import logging
 from typing import TYPE_CHECKING
 
@@ -208,7 +209,55 @@ def _changed_push_trigger_fields(*, code: DoorCode, changes: dict, old_pin: str 
     return changed
 
 
+@contextlib.contextmanager
+def _hold_door_code_locks(*, code: DoorCode, extra_lock_entity_ids=()):
+    """Hold ``lock_sync:`` for every lock an update or delete of ``code`` may touch (issue #131).
+
+    Waits for each lock (bounded, :class:`LockBusy` past it) in sorted order.
+    Once they're held the set is worked out again, and if it grew meanwhile (a
+    concurrent save added a lock) they're released and taken again with the
+    extra ones, so the order stays sorted. Pushes nested inside stack on these.
+    Every wait, retakes included, shares one deadline so the whole request waits
+    at most :data:`SYNC_LOCK_WAIT_SECONDS`.
+    Re-reads ``code`` from the DB once held, raising :class:`NotFound` if it's gone.
+    """
+    from locks.use_cases.lock_config_sync import hold_lock_sync, sync_lock_deadline
+    from locks.use_cases.lock_push import affected_lock_entity_ids
+
+    deadline = sync_lock_deadline()
+    extra = set(extra_lock_entity_ids or ())
+    wanted = extra | affected_lock_entity_ids(door_code=code)
+    while True:
+        with hold_lock_sync(wanted, deadline=deadline):
+            needed = extra | affected_lock_entity_ids(door_code=code)
+            if needed <= wanted:
+                try:
+                    code.refresh_from_db()
+                except DoorCode.DoesNotExist as exc:
+                    raise NotFound("Not found.") from exc
+                yield
+                return
+        wanted |= needed
+
+
 def update_door_code(
+    *,
+    code: DoorCode,
+    changes: dict,
+    actor_user: User | None = None,
+    zwavejs: ZwavejsGateway | None = None,
+) -> DoorCode:
+    """Update a door code while holding the ``lock_sync:`` lock of every lock it touches (issue #131).
+
+    Waits for a push or config sync already running on one of those locks, and
+    raises :class:`LockBusy` (409) without changing anything when one is still
+    running at the wait limit. See :func:`_update_door_code_locked`.
+    """
+    with _hold_door_code_locks(code=code, extra_lock_entity_ids=changes.get("lock_entity_ids") or ()):
+        return _update_door_code_locked(code=code, changes=changes, actor_user=actor_user, zwavejs=zwavejs)
+
+
+def _update_door_code_locked(
     *,
     code: DoorCode,
     changes: dict,
@@ -360,9 +409,9 @@ def update_door_code(
     if updated_fields:
         metadata: dict[str, object] = {"updated_fields": updated_fields}
         if added_lock_entity_ids:
-            metadata["added_lock_entity_ids"] = added_lock_entity_ids
+            metadata["added_lock_entity_ids"] = sorted(added_lock_entity_ids)
         if removed_lock_entity_ids:
-            metadata["removed_lock_entity_ids"] = removed_lock_entity_ids
+            metadata["removed_lock_entity_ids"] = sorted(removed_lock_entity_ids)
         updated_event = DoorCodeEvent.objects.create(
             door_code=code,
             user=actor_user,
@@ -462,10 +511,51 @@ def update_door_code(
             updated_event.metadata["failed_slot_clears"] = [f.as_metadata() for f in failed_slot_clears]
             updated_event.save(update_fields=["metadata"])
 
+    if "lock_entity_ids" in changes:
+        _reset_push_state_without_locks(code=code)
+
     return code
 
 
+def _reset_push_state_without_locks(*, code: DoorCode) -> None:
+    """Clear the push state a code left with no locks carried from the locks it was on (issue #142).
+
+    An active code goes back to ``pending`` like a new code without locks. An
+    inactive one is ``pushed``, as after a deactivate (issue #144), since no
+    lock holds anything for it. Kept while a clear is still outstanding, since
+    that slot may still hold the PIN and ``settle_clear_failure_state`` reports it.
+    """
+    from locks.use_cases.lock_push import unresolved_clear_failures
+
+    if DoorCodeLockAssignment.objects.filter(door_code=code).exists() or unresolved_clear_failures(door_code=code):
+        return
+    code.refresh_from_db(fields=["is_active", "push_state", "last_push_error", "push_attempt_count"])
+    state = DoorCode.PushState.PENDING if code.is_active else DoorCode.PushState.PUSHED
+    if (code.push_state, code.last_push_error, code.push_attempt_count) != (state, "", 0):
+        code.push_state = state
+        code.last_push_error = ""
+        code.push_attempt_count = 0
+        code.save(update_fields=["push_state", "last_push_error", "push_attempt_count", "updated_at"])
+
+
 def delete_door_code(
+    *,
+    code: DoorCode,
+    actor_user: User | None = None,
+    zwavejs: ZwavejsGateway | None = None,
+) -> None:
+    """Delete a door code while holding the ``lock_sync:`` lock of every lock it touches (issue #131).
+
+    Waits for a push or config sync already running on one of those locks, so
+    a push that lands while the delete waits is in the slots it clears, and
+    raises :class:`LockBusy` (409) without touching the code when one is still
+    running at the wait limit. See :func:`_delete_door_code_locked`.
+    """
+    with _hold_door_code_locks(code=code):
+        _delete_door_code_locked(code=code, actor_user=actor_user, zwavejs=zwavejs)
+
+
+def _delete_door_code_locked(
     *,
     code: DoorCode,
     actor_user: User | None = None,
@@ -544,12 +634,22 @@ def delete_door_code(
 
     # A still-pending push may have left the PIN in a slot recorded only as an
     # unconfirmed attempt; those events cascade away with the row, so check now.
+    # That includes locks the code was dropped from since (issue #134).
     if zwavejs is not None:
-        from locks.use_cases.lock_push import clear_unconfirmed_slots_holding_pin, decrypt_pin_or_none
+        from locks.use_cases.lock_push import (
+            clear_unconfirmed_slots_holding_pin,
+            decrypt_pin_or_none,
+            unconfirmed_attempt_lock_entity_ids,
+        )
 
         pin = decrypt_pin_or_none(code)
         lock_entity_ids = list(
-            DoorCodeLockAssignment.objects.filter(door_code=code).values_list("lock_entity_id", flat=True)
+            dict.fromkeys(
+                [
+                    *DoorCodeLockAssignment.objects.filter(door_code=code).values_list("lock_entity_id", flat=True),
+                    *unconfirmed_attempt_lock_entity_ids(door_code=code),
+                ]
+            )
         )
         if pin and lock_entity_ids:
             unconfirmed_cleared, unconfirmed_failures = clear_unconfirmed_slots_holding_pin(
@@ -561,8 +661,14 @@ def delete_door_code(
             if unconfirmed_cleared:
                 extra_metadata["cleared_from_lock"] = True
                 extra_metadata["cleared_unconfirmed_slots"] = unconfirmed_cleared
-            if manual:
-                transient_failures.extend(unconfirmed_failures)
+            # A manual code's delete is refused while a slot might still be cleared.
+            # Whatever the delete goes ahead without checking (a lock latchpoint
+            # can't reach any more, or any failure on a synced code) is kept in
+            # the delete event, since its push_unconfirmed events go with the row.
+            unchecked = [f for f in unconfirmed_failures if f.permanent or not manual]
+            transient_failures.extend(f for f in unconfirmed_failures if manual and not f.permanent)
+            if unchecked:
+                extra_metadata["unconfirmed_slots_unchecked"] = [f.as_metadata() for f in unchecked]
 
     if transient_failures:
         _refuse_delete_after_failed_clears(

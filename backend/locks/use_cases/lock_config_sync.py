@@ -6,6 +6,7 @@ import json
 import logging
 import re
 import threading
+import time as _time
 from dataclasses import dataclass, field
 from datetime import datetime, time, timedelta, timezone
 from typing import Any
@@ -37,6 +38,10 @@ class InvalidRequest(ValidationError):
 
 class SyncInProgress(ConflictError):
     pass
+
+
+class LockBusy(SyncInProgress):
+    """Waited too long for another operation on a lock to finish (issue #131)."""
 
 
 @dataclass
@@ -97,6 +102,14 @@ class SyncResult:
 
 _in_flight_lock = threading.Lock()
 _in_flight_keys: set[str] = set()
+# Per-thread hold counts for the in-process guard, so it's re-entrant like a
+# Postgres session advisory lock (each thread has its own DB connection).
+_held_by_thread = threading.local()
+
+# How long door code update / delete and the slot clears wait for another
+# operation on the same lock (a push, a config sync) before giving up.
+SYNC_LOCK_WAIT_SECONDS = 30.0
+_SYNC_LOCK_POLL_SECONDS = (0.05, 1.0)  # first delay, cap
 
 
 def _pg_lock_id(text: str) -> int:
@@ -105,12 +118,20 @@ def _pg_lock_id(text: str) -> int:
     return int.from_bytes(digest[:8], "big", signed=False) & 0x7FFF_FFFF_FFFF_FFFF
 
 
+def _thread_hold_counts() -> dict[str, int]:
+    counts = getattr(_held_by_thread, "counts", None)
+    if counts is None:
+        counts = _held_by_thread.counts = {}
+    return counts
+
+
 def _try_acquire_sync_lock(*, lock_key: str) -> tuple[bool, int | None]:
     """
-    Best-effort per-lock concurrency guard.
+    Best-effort per-lock concurrency guard. Re-entrant: a caller that already
+    holds ``lock_key`` gets it again and has to release it once per acquire.
 
-    - Postgres: pg_try_advisory_lock (cross-process).
-    - Other DBs: in-process guard only.
+    - Postgres: pg_try_advisory_lock (cross-process; session locks stack per connection).
+    - Other DBs: in-process guard only, counted per thread.
     """
     if connection.vendor == "postgresql":
         lock_id = _pg_lock_id(lock_key)
@@ -119,10 +140,15 @@ def _try_acquire_sync_lock(*, lock_key: str) -> tuple[bool, int | None]:
             acquired = bool(cursor.fetchone()[0])
         return acquired, lock_id
 
+    counts = _thread_hold_counts()
+    if counts.get(lock_key):
+        counts[lock_key] += 1
+        return True, None
     with _in_flight_lock:
         if lock_key in _in_flight_keys:
             return False, None
         _in_flight_keys.add(lock_key)
+    counts[lock_key] = 1
     return True, None
 
 
@@ -135,8 +161,65 @@ def _release_sync_lock(*, lock_key: str, lock_id: int | None) -> None:
             logger.warning("Failed to release advisory lock %s for key %s", lock_id, lock_key, exc_info=True)
         return
 
+    counts = _thread_hold_counts()
+    remaining = counts.get(lock_key, 0) - 1
+    if remaining > 0:
+        counts[lock_key] = remaining
+        return
+    counts.pop(lock_key, None)
     with _in_flight_lock:
         _in_flight_keys.discard(lock_key)
+
+
+def _acquire_sync_lock_waiting(*, lock_key: str, deadline: float) -> int | None:
+    """Like :func:`_try_acquire_sync_lock` but retries with backoff until ``deadline`` (monotonic).
+
+    Raises :class:`LockBusy` when the lock is still held elsewhere at the deadline.
+    """
+    delay, max_delay = _SYNC_LOCK_POLL_SECONDS
+    while True:
+        acquired, lock_id = _try_acquire_sync_lock(lock_key=lock_key)
+        if acquired:
+            return lock_id
+        remaining = deadline - _time.monotonic()
+        if remaining <= 0:
+            lock_entity_id = lock_key.removeprefix("lock_sync:")
+            raise LockBusy(f"Another operation on {lock_entity_id} is still running. Try again in a moment.")
+        _time.sleep(min(delay, remaining))
+        delay = min(delay * 2, max_delay)
+
+
+def sync_lock_deadline(timeout_seconds: float | None = None) -> float:
+    """A ``time.monotonic()`` deadline for :func:`hold_lock_sync`, :data:`SYNC_LOCK_WAIT_SECONDS` away by default.
+
+    Compute it once per request and pass it to every hold in that request, so
+    all of its waits together stay within the limit.
+    """
+    return _time.monotonic() + (SYNC_LOCK_WAIT_SECONDS if timeout_seconds is None else timeout_seconds)
+
+
+@contextlib.contextmanager
+def hold_lock_sync(lock_entity_ids, *, deadline: float | None = None):
+    """Hold ``lock_sync:<lock>`` for every lock in ``lock_entity_ids``, waiting for each (issue #131).
+
+    Locks are taken in sorted order so two callers that need overlapping locks
+    can't deadlock, and released in reverse. Waiting stops at ``deadline`` (a
+    ``time.monotonic()`` value from :func:`sync_lock_deadline`, a fresh one
+    when omitted) and :class:`LockBusy` is raised with nothing left held.
+    Re-entrant, so a caller that already holds a lock (or a push nested
+    inside) just stacks on it and the outer hold stays until the outer block exits.
+    """
+    if deadline is None:
+        deadline = sync_lock_deadline()
+    held: list[tuple[str, int | None]] = []
+    try:
+        for lock_entity_id in sorted({str(e) for e in lock_entity_ids if e}):
+            lock_key = f"lock_sync:{lock_entity_id}"
+            held.append((lock_key, _acquire_sync_lock_waiting(lock_key=lock_key, deadline=deadline)))
+        yield
+    finally:
+        for lock_key, lock_id in reversed(held):
+            _release_sync_lock(lock_key=lock_key, lock_id=lock_id)
 
 
 def _coerce_int(value: object) -> int | None:
@@ -614,16 +697,21 @@ def clear_lock_user_code_slot(
     zwavejs: ZwavejsGateway,
     timeout_seconds: float = 10.0,
 ) -> None:
-    """Clear a user code slot on a physical Z-Wave JS lock (CC 99 clear)."""
+    """Clear a user code slot on a physical Z-Wave JS lock (CC 99 clear).
+
+    Holds ``lock_sync:<lock>`` for the clear, which is a no-op for a caller that
+    already holds it and waits (raising :class:`LockBusy`) otherwise.
+    """
     node_id = _resolve_lock_node_id(lock_entity_id=lock_entity_id)
-    logger.info("Clearing user code slot %d on %s (node %d)", slot_index, lock_entity_id, node_id)
-    zwavejs.invoke_cc_api(
-        node_id=node_id,
-        command_class=CC_USER_CODE,
-        method_name="clear",
-        args=[slot_index],
-        timeout_seconds=timeout_seconds,
-    )
+    with hold_lock_sync([lock_entity_id]):
+        logger.info("Clearing user code slot %d on %s (node %d)", slot_index, lock_entity_id, node_id)
+        zwavejs.invoke_cc_api(
+            node_id=node_id,
+            command_class=CC_USER_CODE,
+            method_name="clear",
+            args=[slot_index],
+            timeout_seconds=timeout_seconds,
+        )
 
 
 def _resolve_lock_node_id(*, lock_entity_id: str) -> int:
@@ -644,7 +732,6 @@ def _resolve_lock_node_id(*, lock_entity_id: str) -> int:
     return int(node_id)
 
 
-@transaction.atomic
 def sync_lock_config(
     *,
     lock_entity_id: str,
@@ -657,6 +744,11 @@ def sync_lock_config(
     Pull user codes (CC 99) and supported weekday schedules (CC 76) from Z-Wave JS into DoorCode rows.
 
     Z-Wave JS is authoritative for synced codes. Raw PINs are never returned or persisted.
+
+    The ``lock_sync:`` lock is released only after the sync's transaction has
+    committed, so the next push on this lock reads the synced assignments
+    (issue #131). Called inside an outer transaction (the dry-run view), the
+    sync's block is a savepoint and the lock goes when it's released.
     """
     node_id = _resolve_lock_node_id(lock_entity_id=lock_entity_id)
     logger.info("Starting lock config sync for %s (node %d)", lock_entity_id, node_id)
@@ -669,8 +761,31 @@ def sync_lock_config(
         logger.info("Sync already in progress for %s, rejecting", lock_entity_id)
         raise SyncInProgress("A sync is already in progress for this lock.")
 
-    result = SyncResult(lock_entity_id=lock_entity_id, node_id=node_id, slots=[])
     try:
+        return _sync_lock_config_atomically(
+            lock_entity_id=lock_entity_id,
+            node_id=node_id,
+            target_user=target_user,
+            actor_user=actor_user,
+            zwavejs=zwavejs,
+            dry_run=dry_run,
+        )
+    finally:
+        _release_sync_lock(lock_key=lock_key, lock_id=lock_id)
+
+
+def _sync_lock_config_atomically(
+    *,
+    lock_entity_id: str,
+    node_id: int,
+    target_user: User,
+    actor_user: User,
+    zwavejs: ZwavejsGateway,
+    dry_run: bool,
+) -> SyncResult:
+    """The body of :func:`sync_lock_config`, run in one transaction while the caller holds the lock."""
+    result = SyncResult(lock_entity_id=lock_entity_id, node_id=node_id, slots=[])
+    with transaction.atomic():
         value_ids = zwavejs.node_get_defined_value_ids(node_id=node_id, timeout_seconds=10.0)
         if not isinstance(value_ids, list):
             value_ids = []
@@ -1103,5 +1218,3 @@ def sync_lock_config(
                 logger.warning("Failed to notify dispatcher after sync for %s", lock_entity_id, exc_info=True)
 
         return result
-    finally:
-        _release_sync_lock(lock_key=lock_key, lock_id=lock_id)

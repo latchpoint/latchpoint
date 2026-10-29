@@ -126,7 +126,12 @@ def push_pending_door_codes() -> int:
         attempted += 1
         # ``push_door_code_to_assigned_locks`` already increments ``push_attempt_count``
         # via _record_push_failure for each transient failure and resets it on success.
-        code.refresh_from_db(fields=["push_state", "push_attempt_count", "last_push_error"])
+        try:
+            code.refresh_from_db(fields=["push_state", "push_attempt_count", "last_push_error"])
+        except DoorCode.DoesNotExist:
+            # Deleted while this tick worked on it; nothing left to cap.
+            logger.info("Door code id=%d was deleted during the push retry; skipping", code.id)
+            continue
 
         if not successes and failures and max_attempts > 0 and code.push_attempt_count >= max_attempts:
             # Consecutive-failure cap reached — give up and surface to operators.
