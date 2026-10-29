@@ -1,59 +1,63 @@
+"""
+Check the integration settings on boot. `docker/entrypoint.sh` runs this after `migrate`, before daphne.
+
+It used to apply them as well: connect MQTT and Z-Wave JS, publish the HA MQTT alarm entity discovery and
+subscribe for Zigbee2MQTT and Frigate. All of that lived in this process, which exits before daphne starts,
+so none of it carried over to the server, and daphne connected again a few seconds later. The server
+applies the settings itself from `AppConfig.ready()` and the MQTT on-connect hooks, so this only reads
+them now and opens no connections (#164).
+
+Reading them still makes sure the active profile and its settings entries exist, and decrypting the MQTT and
+Z-Wave JS settings fails the boot here if SETTINGS_ENCRYPTION_KEY can't read them. The server's `ready()`
+swallows that error and would start without its connections.
+"""
+
 from __future__ import annotations
 
 from django.core.management.base import BaseCommand
 
-from alarm.gateways.mqtt import default_mqtt_gateway
-from alarm.gateways.zwavejs import default_zwavejs_gateway
 from alarm.state_machine.settings import get_active_settings_profile, get_setting_json
 
 
+def _enabled(raw: object) -> bool:
+    return isinstance(raw, dict) and bool(raw.get("enabled"))
+
+
 class Command(BaseCommand):
-    help = "Apply integration settings to runtimes (MQTT, Z-Wave JS, HA MQTT alarm entity)."
+    help = (
+        "Check the integration settings (MQTT, Z-Wave JS, HA MQTT alarm entity, Zigbee2MQTT, Frigate) on boot. "
+        "Opens no connections, the server process applies them when it starts."
+    )
 
     def handle(self, *args, **options):
-        """Apply integration settings to runtime gateways (best-effort)."""
+        """Read the integration settings and report what the server will apply."""
         from integrations_zwavejs.views import get_zwavejs_settings
         from transports_mqtt.views import get_mqtt_settings
 
         mqtt_settings = get_mqtt_settings()
-        default_mqtt_gateway.apply_settings(settings=mqtt_settings)
-        self.stdout.write("Applied MQTT settings from DB-backed settings.")
-
         zwavejs_settings = get_zwavejs_settings()
-        default_zwavejs_gateway.apply_settings(settings_obj=zwavejs_settings)
-        self.stdout.write("Applied Z-Wave JS settings from DB-backed settings.")
-
-        # Best-effort: if HA MQTT alarm entity is enabled, republish discovery/state.
         profile = get_active_settings_profile()
-        ha_entity_raw = get_setting_json(profile, "home_assistant_alarm_entity") or {}
-        if isinstance(ha_entity_raw, dict) and ha_entity_raw.get("enabled"):
-            try:
-                from integrations_home_assistant import mqtt_alarm_entity
 
-                mqtt_alarm_entity.initialize_home_assistant_mqtt_alarm_entity_integration()
-                mqtt_alarm_entity.publish_discovery(force=True)
-                self.stdout.write("Published Home Assistant MQTT alarm entity discovery.")
-            except Exception as exc:
-                self.stderr.write(f"Failed to publish HA MQTT alarm entity discovery: {exc}")
+        self._report("MQTT", _enabled(mqtt_settings), "the server connects when it starts")
+        self._report("Z-Wave JS", _enabled(zwavejs_settings), "the server connects when it starts")
+        self._report(
+            "Home Assistant MQTT alarm entity",
+            _enabled(get_setting_json(profile, "home_assistant_alarm_entity")),
+            "the server publishes discovery once MQTT connects",
+        )
+        self._report(
+            "Zigbee2MQTT",
+            _enabled(get_setting_json(profile, "zigbee2mqtt")),
+            "the server subscribes once MQTT connects",
+        )
+        self._report(
+            "Frigate",
+            _enabled(get_setting_json(profile, "frigate")),
+            "the server subscribes once MQTT connects",
+        )
 
-        # Best-effort: if Zigbee2MQTT is enabled, set up subscriptions and allow sync/ingest.
-        z2m_raw = get_setting_json(profile, "zigbee2mqtt") or {}
-        if isinstance(z2m_raw, dict) and z2m_raw.get("enabled"):
-            try:
-                from integrations_zigbee2mqtt.runtime import apply_runtime_settings_from_active_profile
-
-                apply_runtime_settings_from_active_profile()
-                self.stdout.write("Applied Zigbee2MQTT integration runtime settings.")
-            except Exception as exc:
-                self.stderr.write(f"Failed to apply Zigbee2MQTT integration settings: {exc}")
-
-        # Best-effort: if Frigate is enabled, set up MQTT subscriptions for event ingest.
-        frigate_raw = get_setting_json(profile, "frigate") or {}
-        if isinstance(frigate_raw, dict) and frigate_raw.get("enabled"):
-            try:
-                from integrations_frigate.runtime import apply_runtime_settings_from_active_profile
-
-                apply_runtime_settings_from_active_profile()
-                self.stdout.write("Applied Frigate integration runtime settings.")
-            except Exception as exc:
-                self.stderr.write(f"Failed to apply Frigate integration settings: {exc}")
+    def _report(self, name: str, enabled: bool, when_enabled: str) -> None:
+        if enabled:
+            self.stdout.write(f"{name} is enabled, {when_enabled}.")
+        else:
+            self.stdout.write(f"{name} is disabled.")

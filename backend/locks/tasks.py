@@ -68,6 +68,7 @@ def cleanup_door_code_events() -> int:
     failure_backoff_base_seconds=60,
     failure_backoff_max_seconds=3600,
     description="Re-attempt programming pending door codes onto physical locks.",
+    connections=("zwavejs",),
 )
 def push_pending_door_codes() -> int:
     """Iterate over pending door codes with unassigned slots or failed clears and retry them.

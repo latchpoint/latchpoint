@@ -123,3 +123,18 @@ Support controlling the alarm from Zigbee keypads/buttons via Zigbee2MQTT “act
 ## Todos
 - Completed MVP implementation (backend integration app, settings, API endpoints, UI tab, tests).
 - See ADR 0019 for follow-up hardening work (validation endpoint, ingest mapping improvements, and alarm-control semantics).
+
+## Amendment (2026-10-29): subscriptions start with the server
+
+"On startup, rely on `python manage.py apply_integration_settings`" no longer holds. That command ran in
+its own process, so the server only subscribed once a status or settings request called
+`apply_runtime_settings_from_active_profile()` (#164). The server's `IntegrationsZigbee2mqttConfig.ready()`
+now calls `runtime.initialize()`, which subscribes for ingest and registers the on-connect hook that
+refreshes the device mapping (only while Zigbee2MQTT is enabled). The command only reads the settings now
+(see the ADR 0014 amendment).
+
+Because the server subscribes at startup, it gets each device's retained state again on every restart, and
+Z2M repeats a device's full state in every report. Ingest only counts a value that differs from the stored
+`Entity.last_state` as a change. Only then does it bump `last_changed` and notify the rule dispatcher,
+otherwise it just updates `last_seen`. This matches the HA state stream, and keeps an unchanged open door
+from looking "changed since armed" (ADR-0108).

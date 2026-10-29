@@ -416,3 +416,19 @@ Consider adding prometheus-style metrics:
 - [ ] Add Prometheus-style metrics
 - [ ] Add `Cron(expression)` schedule type
 - [ ] Add optional Redis-based distributed locking
+
+## Amendment (2026-10-29): tasks declare the connections `run_task` opens
+
+The MQTT, Z-Wave JS and other runtimes start only in the server process since #160, so a task run with
+`python manage.py run_task` gets no live connection from `ready()`. `register()` takes
+`connections=("mqtt", "zwavejs")` (any subset of `scheduler.registry.TASK_CONNECTIONS`, anything else
+raises `ValueError`) for tasks that need one. The scheduler ignores it because the server already holds the
+connections. `run_task` opens just the declared ones for the run, waits up to each one's
+`connect_timeout_seconds`, and closes them when the task finishes or fails. A connection that's disabled or
+doesn't come up is reported and the task runs anyway. The Z-Wave JS connection is opened with
+`event_bridges=False`, so node events don't reach a rule dispatcher in that process next to the server's.
+
+`resync_ring_keypad_siren` and `push_pending_door_codes` declare `zwavejs`, and `process_due_rule_runtimes`
+and `fire_due_pending_actions` declare both, because rule actions can use either. `START_RUNTIMES=true`
+isn't the way to give a task its connections, since it also starts a second scheduler, the HA state stream
+and the control panel listener in that process.

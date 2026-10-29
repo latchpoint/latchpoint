@@ -150,19 +150,37 @@ def _format_ansi(entry: dict[str, Any]) -> str:
 # ---------------------------------------------------------------------------
 
 _broadcast_queue: queue.SimpleQueue[dict[str, Any]] = queue.SimpleQueue()
+_broadcast_thread: threading.Thread | None = None
+_broadcast_thread_lock = threading.Lock()
 
 
-def _broadcast_worker() -> None:
-    """Drain the broadcast queue and send entries to the Channels group.
+def start_broadcast_worker() -> None:
+    """Start the broadcast worker thread (idempotent).
 
-    Runs in a daemon thread started at module import time so it is always
-    available — even before ``AppConfig.ready()`` fires.
+    Only the server process calls this, from ``AlarmConfig.ready()`` (#164). The channel layer is in-memory,
+    so only websocket clients connected to this same process can get the entries, and a management command
+    or test run has none.
     """
+    global _broadcast_thread
+    with _broadcast_thread_lock:
+        if _broadcast_thread is not None and _broadcast_thread.is_alive():
+            return
+        _broadcast_thread = threading.Thread(
+            target=_broadcast_worker,
+            args=(_broadcast_queue,),
+            name="log-broadcast",
+            daemon=True,
+        )
+        _broadcast_thread.start()
+
+
+def _broadcast_worker(entries: queue.SimpleQueue[dict[str, Any]]) -> None:
+    """Drain the broadcast queue and send entries to the Channels group."""
     from asgiref.sync import async_to_sync
     from channels.layers import get_channel_layer
 
     while True:
-        entry = _broadcast_queue.get()
+        entry = entries.get()
         try:
             channel_layer = get_channel_layer()
             if channel_layer is None:
@@ -183,12 +201,11 @@ def _broadcast_worker() -> None:
             pass
 
 
-_broadcast_thread = threading.Thread(target=_broadcast_worker, daemon=True)
-_broadcast_thread.start()
-
-
 def _enqueue_broadcast(entry: dict[str, Any]) -> None:
     """Enqueue a log entry for WebSocket broadcast (non-blocking)."""
+    if _broadcast_thread is None:
+        # No worker in this process, so nothing would drain the queue and it would only grow.
+        return
     with contextlib.suppress(Exception):
         _broadcast_queue.put_nowait(entry)
 

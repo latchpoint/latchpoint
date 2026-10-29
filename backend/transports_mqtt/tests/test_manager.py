@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from unittest.mock import patch
 
 from django.test import SimpleTestCase
@@ -217,3 +218,64 @@ class MqttClientIdSuffixTests(SimpleTestCase):
             mgr._client_id_suffix,
             "test_connection's per-call suffix must differ from the live manager suffix",
         )
+
+
+class MqttOnConnectHookTests(SimpleTestCase):
+    """A hook registered after MQTT connected still runs for that connect (#164)."""
+
+    def _register(self, mgr: MqttConnectionManager) -> threading.Event:
+        ran = threading.Event()
+        mgr.register_on_connect(ran.set)
+        return ran
+
+    def test_runs_right_away_when_already_connected(self):
+        # The server's MQTT `ready()` starts connecting before the HA app registers its discovery hook.
+        mgr = MqttConnectionManager()
+        mgr._connected = True
+
+        self.assertTrue(self._register(mgr).wait(timeout=5))
+
+    def test_a_hook_registered_during_the_connect_runs_once(self):
+        # A hook registered while the connect is resubscribing, after `_connected` is set but before the hooks
+        # run (the boot ordering in `ready()`), used to run from both `register_on_connect()` and the connect.
+        mgr = MqttConnectionManager()
+        runs: list[int] = []
+
+        def hook():
+            runs.append(1)
+
+        class _RegisterWhileResubscribing:
+            def subscribe(self, topic, qos=0):
+                mgr.register_on_connect(hook)
+
+        mgr._subscriptions = {"some/topic": {"qos": 0, "callbacks": []}}
+        mgr._client = _RegisterWhileResubscribing()
+
+        def run_now(hooks=None):
+            # The hook threads, run inline so the count is final when `_on_connected()` returns.
+            for h in hooks if hooks is not None else list(mgr._on_connect_hooks):
+                h()
+
+        with patch.object(mgr, "_run_on_connect_hooks", side_effect=run_now):
+            mgr._on_connected()
+
+        self.assertEqual(runs, [1])
+
+    def test_a_hook_registered_before_the_connect_runs_once(self):
+        mgr = MqttConnectionManager()
+        runs: list[int] = []
+        mgr.register_on_connect(lambda: runs.append(1))
+
+        with patch.object(mgr, "_run_on_connect_hooks", side_effect=lambda hooks=None: [h() for h in hooks]):
+            mgr._on_connected()
+
+        self.assertEqual(runs, [1])
+
+    def test_waits_for_the_connect_otherwise(self):
+        mgr = MqttConnectionManager()
+        ran = self._register(mgr)
+
+        self.assertFalse(ran.wait(timeout=0.2))
+
+        mgr._run_on_connect_hooks()
+        self.assertTrue(ran.wait(timeout=5))

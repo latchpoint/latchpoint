@@ -211,6 +211,8 @@ class ZwavejsConnectionManager:
         self._driver_ready_event = threading.Event()
         self._event_listeners: list[Callable[[dict[str, Any]], None]] = []
         self._attached_node_ids: set[int] = set()
+        # Off for `manage.py run_task`, which only needs to write values (#164).
+        self._event_bridges = True
         self._event_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="zwavejs-events")
 
     def register_event_listener(self, _listener: Callable[[dict[str, Any]], None]) -> None:
@@ -329,6 +331,17 @@ class ZwavejsConnectionManager:
         except Exception:
             return {"event": "unserializable"}
 
+    def _on_driver_ready(self, *, client) -> None:
+        """Attach the node event bridges once the driver is ready, unless they're turned off (#164)."""
+        with self._lock:
+            event_bridges = self._event_bridges
+        if not event_bridges:
+            return
+        try:
+            self._attach_event_bridges(client=client)
+        except Exception:
+            self._logger.debug("Event bridge attachment failed", exc_info=True)
+
     def _attach_event_bridges(self, *, client) -> None:
         """
         Wire raw node events to registered listeners.
@@ -419,9 +432,16 @@ class ZwavejsConnectionManager:
                 last_error=self._last_error,
             )
 
-    def apply_settings(self, *, settings_obj: ZwavejsConnectionSettings) -> None:
-        """Apply runtime settings and start/stop the background connection thread as needed."""
+    def apply_settings(self, *, settings_obj: ZwavejsConnectionSettings, event_bridges: bool = True) -> None:
+        """
+        Apply runtime settings and start/stop the background connection thread as needed.
+
+        `event_bridges=False` connects without attaching node event listeners, so node events don't reach the
+        registered listeners or the rule dispatcher. `manage.py run_task` uses it so its short lived connection
+        doesn't run rules (or keypad handlers) alongside the server's (#164). It applies from the next connect.
+        """
         with self._lock:
+            self._event_bridges = bool(event_bridges)
             if dict(self._settings) == dict(settings_obj):
                 return
             self._settings = dict(settings_obj)
@@ -725,10 +745,7 @@ class ZwavejsConnectionManager:
                             with self._lock:
                                 self._driver_ready = True
                             self._driver_ready_event.set()
-                            try:
-                                self._attach_event_bridges(client=client)
-                            except Exception:
-                                self._logger.debug("Event bridge attachment failed", exc_info=True)
+                            self._on_driver_ready(client=client)
                             break
                         await asyncio.sleep(0.05)
 

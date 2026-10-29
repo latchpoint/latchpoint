@@ -10,6 +10,7 @@ from django.test import TestCase
 from django.utils import timezone
 
 from alarm.models import AlarmEvent, AlarmEventType, AlarmState
+from control_panels.sync_worker import PanelSyncWorker
 from control_panels.tasks import resync_ring_keypad_siren
 
 
@@ -68,3 +69,41 @@ class ResyncRingKeypadSirenTests(TestCase):
 
         self.assertEqual(result, {"resynced": True})
         mock_worker.request_siren_reassert.assert_called_once()
+
+
+@patch("control_panels.tasks.get_current_snapshot")
+class ResyncRingKeypadSirenOutsideTheServerTests(TestCase):
+    """`manage.py run_task` has no panel-sync worker thread, so the task writes the siren itself (#164)."""
+
+    def test_writes_the_siren_when_no_worker_is_running(self, mock_snapshot):
+        mock_snapshot.return_value = _snapshot(AlarmState.TRIGGERED)
+        worker = PanelSyncWorker()
+
+        with (
+            patch("control_panels.tasks.panel_sync_worker", worker),
+            patch(
+                "control_panels.zwave_ring_keypad_v2.reassert_ring_keypad_v2_siren_without_worker", return_value=0
+            ) as reassert,
+            patch.object(worker, "request_siren_reassert") as request,
+        ):
+            result = resync_ring_keypad_siren()
+
+        self.assertEqual(result, {"resynced": True, "failed_devices": 0})
+        reassert.assert_called_once_with()
+        request.assert_not_called()
+
+    def test_leaves_it_to_the_worker_in_the_server(self, mock_snapshot):
+        mock_snapshot.return_value = _snapshot(AlarmState.TRIGGERED)
+        worker = PanelSyncWorker()
+
+        with (
+            patch("control_panels.tasks.panel_sync_worker", worker),
+            patch.object(worker, "is_running", return_value=True),
+            patch.object(worker, "request_siren_reassert") as request,
+            patch("control_panels.zwave_ring_keypad_v2.reassert_ring_keypad_v2_siren_without_worker") as reassert,
+        ):
+            result = resync_ring_keypad_siren()
+
+        self.assertEqual(result, {"resynced": True})
+        request.assert_called_once_with()
+        reassert.assert_not_called()

@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import logging
 import sys
+import warnings
 
 from django.apps import AppConfig
 
 from config.runtimes import should_start_runtimes
+
+logger = logging.getLogger(__name__)
 
 
 class IntegrationsZigbee2mqttConfig(AppConfig):
@@ -21,6 +25,7 @@ class IntegrationsZigbee2mqttConfig(AppConfig):
             from alarm.signals import settings_profile_changed
             from integrations_zigbee2mqtt.runtime import (
                 apply_runtime_settings_from_active_profile,
+                initialize,
             )
         except Exception:
             return
@@ -34,3 +39,13 @@ class IntegrationsZigbee2mqttConfig(AppConfig):
             dispatch_uid="zigbee2mqtt_profile_changed",
             weak=False,
         )
+
+        # Subscribe for ingest and hook into MQTT connects at startup. `apply_integration_settings` used to do this
+        # on boot, but in its own process, so the server only subscribed on the first status or settings request
+        # (#164).
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message="Accessing the database during app initialization")
+            try:
+                initialize()
+            except Exception:
+                logger.warning("Zigbee2MQTT startup failed", exc_info=True)
