@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import timezone as dt_timezone
+
 from cryptography.fernet import InvalidToken
 from django.utils import timezone
 from rest_framework import serializers
@@ -13,6 +15,15 @@ _END_AT_IN_PAST = "end_at must be in the future."
 _ACTIVE_WHEN_EXPIRED = "This code has expired. Set a later end_at to turn it back on."
 # end_at is exclusive, so a code that ends when it starts is never valid (issue #145).
 _END_AT_NOT_AFTER_START = "end_at must be after start_at."
+
+
+def _same_minute(a, b) -> bool:
+    """Whether two optional datetimes match to the minute. The edit form drops the seconds."""
+    if a is None or b is None:
+        return a is b
+    return a.astimezone(dt_timezone.utc).replace(second=0, microsecond=0) == b.astimezone(dt_timezone.utc).replace(
+        second=0, microsecond=0
+    )
 
 
 def _validation_now(serializer: serializers.Serializer):
@@ -282,6 +293,23 @@ class DoorCodeUpdateSerializer(serializers.Serializer):
             "lock_entity_ids",
         }
     )
+    # What an off synced code with an end_at can still edit (issue #145, N2).
+    _SYNCED_VALIDITY_FIELDS = frozenset({"is_active", "start_at", "end_at"})
+
+    @staticmethod
+    def synced_validity_editable(code: DoorCode) -> bool:
+        """Whether ``code`` is a synced code that's off and has an ``end_at``, ie one retiring can leave off.
+
+        The scheduler retires synced codes at ``end_at`` like manual ones, and
+        with every field read-only one could never come back on. Those can set
+        ``is_active``, ``start_at`` and ``end_at`` with the manual rules, and
+        turning one on goes through the normal push. It's keyed on the row, not
+        on the retire event, since event retention would delete that and leave
+        the code stuck. Synced codes without an ``end_at`` (the scheduler never
+        turns those off) and synced codes that are on keep every field but
+        ``label`` read-only (ADR 0082), so lock sync stays the say for them.
+        """
+        return code.source == DoorCode.Source.SYNCED and not code.is_active and code.end_at is not None
 
     def validate(self, attrs):
         """Validate updates, including time-range edits for eligible code types only."""
@@ -290,19 +318,31 @@ class DoorCodeUpdateSerializer(serializers.Serializer):
         if instance is None:
             return attrs
 
+        synced_validity = self.synced_validity_editable(instance)
         if instance.source == DoorCode.Source.SYNCED:
-            disallowed = self._SYNCED_READONLY_FIELDS & attrs.keys()
+            readonly = self._SYNCED_READONLY_FIELDS
+            if synced_validity:
+                readonly = readonly - self._SYNCED_VALIDITY_FIELDS
+            disallowed = readonly & attrs.keys()
             if disallowed:
                 raise serializers.ValidationError(
                     {field: "This field cannot be modified on synced codes." for field in sorted(disallowed)}
                 )
 
+        # The edit form sends both dates when either changes, without the seconds,
+        # so an end_at that matches the stored one to the minute is the unchanged
+        # one coming back. It's dropped, so the stored value keeps its seconds,
+        # but the order check below still compares the dates that were sent.
+        sent_end_at = attrs.get("end_at", instance.end_at)
+        if "end_at" in attrs and _same_minute(attrs["end_at"], instance.end_at):
+            attrs.pop("end_at")
+        dates_changed = "end_at" in attrs or ("start_at" in attrs and attrs["start_at"] != instance.start_at)
+
         # An expired code stays off until it's turned on with a later end_at, and
         # moving end_at later on its own doesn't turn it back on (issue #145).
-        # Only a new end_at has to be in the future: the edit form sends both
-        # dates when either changes, so an expired code's unchanged one comes back.
+        # Only a new end_at has to be in the future.
         now = _validation_now(self)
-        if "end_at" in attrs and attrs["end_at"] != instance.end_at and ended_by(attrs["end_at"], now=now):
+        if "end_at" in attrs and ended_by(attrs["end_at"], now=now):
             raise serializers.ValidationError({"end_at": _END_AT_IN_PAST})
         if attrs.get("is_active") is True and ended_by(attrs.get("end_at", instance.end_at), now=now):
             raise serializers.ValidationError({"is_active": _ACTIVE_WHEN_EXPIRED})
@@ -313,14 +353,18 @@ class DoorCodeUpdateSerializer(serializers.Serializer):
         if not updates_time_range:
             return attrs
 
-        if instance.code_type not in (DoorCode.CodeType.TEMPORARY, DoorCode.CodeType.ONE_TIME):
+        # Lock sync sets a synced code's code_type from the lock's schedule but
+        # keeps its dates, so one that can edit them may be permanent.
+        if not synced_validity and instance.code_type not in (DoorCode.CodeType.TEMPORARY, DoorCode.CodeType.ONE_TIME):
             raise serializers.ValidationError(
                 {"code_type": "Only temporary or one-time codes can set an active time range."}
             )
 
+        # Only checked when a date changes, so editing the days or time window
+        # of an existing row whose dates are equal doesn't fail on them.
         start_at = attrs.get("start_at", instance.start_at)
-        end_at = attrs.get("end_at", instance.end_at)
-        if start_at and end_at and start_at >= end_at:
+        end_at = sent_end_at
+        if dates_changed and start_at and end_at and start_at >= end_at:
             raise serializers.ValidationError({"end_at": _END_AT_NOT_AFTER_START})
 
         days_of_week = attrs.get("days_of_week", instance.days_of_week)

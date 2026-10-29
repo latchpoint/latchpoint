@@ -8,14 +8,16 @@ import { DoorCodeEditActions } from '@/features/doorCodes/components/DoorCodeEdi
 import { DoorCodeEditBasicsFields } from '@/features/doorCodes/components/DoorCodeEditBasicsFields'
 import { DoorCodeLocksSection } from '@/features/doorCodes/components/DoorCodeLocksSection'
 import { DoorCodeTemporaryRestrictionsFields } from '@/features/doorCodes/components/DoorCodeTemporaryRestrictionsFields'
+import { isSyncedValidityEditable } from '@/features/doorCodes/utils/syncedValidity'
 import type { DoorCode, Entity } from '@/types'
 
-function SyncedFieldsWarning() {
+function SyncedFieldsWarning({ validityEditable }: { validityEditable: boolean }) {
   return (
     <Alert variant="warning" layout="inline">
       <AlertDescription>
-        This code is synced from the lock. The PIN, active status, schedule, max uses, and lock assignments are controlled
-        by the lock and will be overwritten on the next sync. Only the label can be edited here.
+        {validityEditable
+          ? "This code is synced from the lock and is off. Its active window can be changed and it can be turned back on, which puts it back on its locks. The PIN, schedule, max uses, and lock assignments are controlled by the lock and will be overwritten on the next sync."
+          : 'This code is synced from the lock. The PIN, active status, schedule, max uses, and lock assignments are controlled by the lock and will be overwritten on the next sync. Only the label can be edited here.'}
       </AlertDescription>
     </Alert>
   )
@@ -110,6 +112,10 @@ export function DoorCodeEditPanel({
 }: Props) {
   const isBusy = isSaving || isDeleting
   const isSynced = code.source === 'synced'
+  // A synced code that's off with an end date, eg retired at its end, can
+  // change its active window and come back on (#145). The rest stays the lock's.
+  const syncedValidityEditable = isSyncedValidityEditable(code)
+  const activeLocked = isSynced && !syncedValidityEditable
   // The backend won't turn on an expired code, and moving its end later doesn't
   // turn it back on by itself (#145). A code that's still on can be turned off
   // and back again, since that only undoes the edit.
@@ -118,7 +124,7 @@ export function DoorCodeEditPanel({
 
   return (
     <div className="mt-4 space-y-4 border-t border-input pt-4">
-      {isSynced && <SyncedFieldsWarning />}
+      {isSynced && <SyncedFieldsWarning validityEditable={syncedValidityEditable} />}
 
       <DoorCodeEditBasicsFields
         codeId={code.id}
@@ -132,9 +138,11 @@ export function DoorCodeEditPanel({
         isSynced={isSynced}
       />
 
-      {isTemporary && (
+      {(isTemporary || syncedValidityEditable) && (
         <DoorCodeTemporaryRestrictionsFields
           disabled={isBusy || isSynced}
+          activeWindowDisabled={isBusy || activeLocked}
+          showSchedule={isTemporary}
           activeWindow={{ start: editStartAtLocal, end: editEndAtLocal }}
           onActiveWindowChange={onActiveWindowChange}
           days={editDays}
@@ -168,9 +176,9 @@ export function DoorCodeEditPanel({
       <DoorCodeActiveToggle
         id={`door-code-active-label-${code.id}`}
         checked={editIsActive}
-        onCheckedChange={isSynced ? undefined : onEditIsActiveChange}
-        disabled={isBusy || isSynced || blockTurningOn}
-        hint={isSynced ? 'Controlled by lock sync' : blockTurningOn ? 'Expired, set a later end for the active window to turn it on' : undefined}
+        onCheckedChange={activeLocked ? undefined : onEditIsActiveChange}
+        disabled={isBusy || activeLocked || blockTurningOn}
+        hint={activeLocked ? 'Controlled by lock sync' : blockTurningOn ? 'Expired, set a later end for the active window to turn it on' : undefined}
       />
 
       <ReauthPasswordField

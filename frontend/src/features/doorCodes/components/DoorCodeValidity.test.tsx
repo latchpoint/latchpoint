@@ -300,6 +300,65 @@ describe('edit form', () => {
   })
 })
 
+describe('edit form for a synced code', () => {
+  // Lock sync made it permanent and kept its dates, then the scheduler retired it.
+  const retiredSynced = () =>
+    makeCode({
+      source: 'synced',
+      codeType: 'permanent',
+      validity: 'expired',
+      isActive: false,
+      pushState: 'pushed',
+      startAt: '2026-10-01T12:00:00Z',
+      endAt: '2026-10-02T12:00:00Z',
+    })
+
+  it('shows the active window and lets a retired synced code be turned back on', async () => {
+    const onUpdate = renderEditForm(retiredSynced())
+
+    expect(screen.getByText(/Its active window can be changed and it can be turned back on/)).toBeTruthy()
+    // Its schedule is still the lock's.
+    expect(screen.queryByText('Days of week')).toBeNull()
+    expect(activeSwitch()).toBeDisabled()
+    expect(screen.getByText('(Expired, set a later end for the active window to turn it on)')).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: /→/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Clear' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Done' }))
+
+    expect(activeSwitch()).not.toBeDisabled()
+    fireEvent.click(activeSwitch())
+    fireEvent.change(screen.getByLabelText(/Re-authenticate/), { target: { value: 'pw' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => expect(onUpdate).toHaveBeenCalledTimes(1))
+    expect(onUpdate.mock.calls[0][1]).toEqual({ reauthPassword: 'pw', isActive: true, startAt: null, endAt: null })
+  })
+
+  it('only sends the label for a retired synced code when nothing else changed', async () => {
+    const onUpdate = renderEditForm(retiredSynced())
+
+    fireEvent.change(screen.getByLabelText(/Re-authenticate/), { target: { value: 'pw' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => expect(onUpdate).toHaveBeenCalledTimes(1))
+    expect(onUpdate.mock.calls[0][1]).toEqual({ reauthPassword: 'pw' })
+  })
+
+  it('keeps an active synced code, or one without an end date, controlled by lock sync', () => {
+    renderEditForm(makeCode({ source: 'synced', codeType: 'temporary', endAt: '2026-12-02T12:00:00Z' }))
+    expect(activeSwitch()).toBeDisabled()
+    expect(screen.getByText('(Controlled by lock sync)')).toBeTruthy()
+    expect(screen.getByRole('button', { name: /→/ })).toBeDisabled()
+    cleanup()
+
+    renderEditForm(makeCode({ source: 'synced', codeType: 'permanent', isActive: false, pushState: 'pushed' }))
+    expect(activeSwitch()).toBeDisabled()
+    expect(screen.getByText('(Controlled by lock sync)')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /→|Select date range/ })).toBeNull()
+  })
+})
+
 describe('isDoorCodeSettling', () => {
   it("doesn't poll for a scheduled code, which only waits on the clock", () => {
     expect(isDoorCodeSettling(makeCode({ validity: 'scheduled', lockSlotAssignments: noSlot }))).toBe(false)

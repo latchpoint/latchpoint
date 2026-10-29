@@ -1011,3 +1011,187 @@ class ValidationTests(_LifecycleTestBase, APITestCase):
                     DoorCode.objects.prefetch_related("lock_assignments").get(id=code.id), context={"now": now}
                 ).data
                 self.assertEqual(data["validity"], expected)
+
+
+class SyncedCodeValidityTests(_LifecycleTestBase, APITestCase):
+    """A synced code the scheduler retired at its end_at can be turned back on (issue #145, N2)."""
+
+    def setUp(self):
+        super().setUp()
+        self.client.force_authenticate(self.user)
+
+    def _sync(self, gateway: FakeGateway) -> lock_config_sync_uc.SyncResult:
+        return lock_config_sync_uc.sync_lock_config(
+            lock_entity_id=self.BACK, target_user=self.user, actor_user=self.user, zwavejs=gateway
+        )
+
+    def _patch(self, code: DoorCode, gateway: FakeGateway, body: dict):
+        url = reverse("door-code-detail", args=[code.id])
+        with patch("locks.views.door_codes.default_zwavejs_gateway", gateway):
+            return self.client.patch(url, {**body, "reauth_password": "pass"}, format="json")
+
+    def _synced_code(self) -> tuple[DoorCode, ClearFailingGateway]:
+        """A dated code lock sync took over, the way the conversion leaves them: synced and permanent."""
+        code, gateway = self._temporary_code([self.BACK])
+        self._sync(gateway)
+        code.refresh_from_db()
+        self.assertEqual(code.source, DoorCode.Source.SYNCED)
+        self.assertIsNotNone(code.end_at)
+        # A sync that reads no schedule off the slot makes it permanent and keeps its dates.
+        code = self._move(code, code_type=DoorCode.CodeType.PERMANENT)
+        gateway.invoke_calls.clear()
+        return code, gateway
+
+    def _retired_synced_code(self) -> tuple[DoorCode, ClearFailingGateway]:
+        code, gateway = self._synced_code()
+        self._move(code, end_at=self._ago(minutes=5))
+        self.assertEqual(self._enforce(gateway), 1)
+        code.refresh_from_db()
+        self.assertFalse(code.is_active)
+        self.assertEqual(self._lock_codes(gateway, 12), {})
+        self.assertEqual(self._slots(code), {self.BACK: None})
+        gateway.invoke_calls.clear()
+        return code, gateway
+
+    def test_a_retired_synced_code_is_turned_back_on_pushed_and_left_alone_by_lock_sync(self):
+        code, gateway = self._retired_synced_code()
+        # A sync while it's off and cleared doesn't touch it.
+        self._sync(gateway)
+        self.assertEqual(DoorCode.objects.count(), 1)
+        self.assertFalse(DoorCode.objects.get(id=code.id).is_active)
+
+        response = self._patch(
+            code,
+            gateway,
+            {
+                "is_active": True,
+                "start_at": _iso(code.start_at) if code.start_at else None,
+                "end_at": _iso(self._from_now(days=2)),
+            },
+        )
+
+        self.assertEqual(response.status_code, 200, response.content)
+        code.refresh_from_db()
+        self.assertTrue(code.is_active)
+        self.assertEqual(self._calls(gateway, "set"), [(12, [1, 1, self.PIN])])
+        self.assertEqual(self._lock_codes(gateway, 12), {1: self.PIN})
+        self.assertEqual(self._slots(code), {self.BACK: 1})
+        self.assertEqual(code.push_state, DoorCode.PushState.PUSHED)
+        self.assertEqual(response.json()["data"]["validity"], "valid")
+
+        # Lock sync keeps it on, with its PIN and slot, and doesn't import a copy.
+        gateway.invoke_calls.clear()
+        result = self._sync(gateway)
+        code.refresh_from_db()
+        self.assertTrue(code.is_active)
+        self.assertEqual(code.source, DoorCode.Source.SYNCED)
+        self.assertEqual(self._slots(code), {self.BACK: 1})
+        self.assertEqual(lock_push_uc.decrypt_pin_or_none(code), self.PIN)
+        self.assertEqual(DoorCode.objects.count(), 1)
+        self.assertEqual(result.created, 0)
+        self.assertEqual([s.action for s in result.slots], ["unchanged"])
+        self.assertEqual(self._calls(gateway, "clear"), [])
+        self.assertEqual(self._enforce(gateway), 0)
+
+    def test_moving_only_the_end_later_leaves_it_off_and_it_can_still_be_turned_on(self):
+        code, gateway = self._retired_synced_code()
+
+        response = self._patch(code, gateway, {"end_at": _iso(self._from_now(days=2))})
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertFalse(DoorCode.objects.get(id=code.id).is_active)
+        self.assertEqual(self._calls(gateway, "set"), [])
+
+        response = self._patch(code, gateway, {"is_active": True})
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(self._lock_codes(gateway, 12), {1: self.PIN})
+
+    def test_the_manual_rules_apply_to_a_retired_synced_code(self):
+        code, gateway = self._retired_synced_code()
+
+        response = self._patch(code, gateway, {"is_active": True})
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertIn("is_active", response.json()["error"]["details"])
+
+        response = self._patch(code, gateway, {"end_at": _iso(code.end_at - timedelta(hours=1))})
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertIn("end_at", response.json()["error"]["details"])
+
+        # Its unchanged end_at can come back, like the edit form sends it.
+        response = self._patch(code, gateway, {"end_at": _iso(code.end_at), "label": "Guest"})
+        self.assertEqual(response.status_code, 200, response.content)
+
+        # The rest stays the lock's.
+        for body in ({"code": "8642"}, {"days_of_week": 3}, {"lock_entity_ids": [self.SIDE]}):
+            with self.subTest(body=body):
+                response = self._patch(code, gateway, body)
+                self.assertEqual(response.status_code, 400, response.content)
+        self.assertEqual(self._calls(gateway, "set"), [])
+
+    def test_an_active_synced_code_or_one_without_an_end_at_stays_read_only(self):
+        active, gateway = self._synced_code()
+        for body in ({"is_active": False}, {"end_at": _iso(self._from_now(days=5))}):
+            with self.subTest(code="active", body=body):
+                response = self._patch(active, gateway, body)
+                self.assertEqual(response.status_code, 400, response.content)
+
+        undated = DoorCode.objects.create(
+            user=self.user,
+            source=DoorCode.Source.SYNCED,
+            encrypted_pin=SettingsEncryption.get().encrypt("9753"),
+            pin_length=4,
+            code_type=DoorCode.CodeType.PERMANENT,
+            is_active=False,
+        )
+        for body in ({"is_active": True}, {"end_at": _iso(self._from_now(days=5))}):
+            with self.subTest(code="undated", body=body):
+                response = self._patch(undated, gateway, body)
+                self.assertEqual(response.status_code, 400, response.content)
+        self.assertFalse(DoorCode.objects.get(id=undated.id).is_active)
+
+
+class DateComparisonTests(_LifecycleTestBase, APITestCase):
+    """The update serializer compares dates the way the edit form sends them back."""
+
+    def setUp(self):
+        super().setUp()
+        self.client.force_authenticate(self.user)
+
+    def _patch(self, code: DoorCode, gateway: FakeGateway, body: dict):
+        url = reverse("door-code-detail", args=[code.id])
+        with patch("locks.views.door_codes.default_zwavejs_gateway", gateway):
+            return self.client.patch(url, {**body, "reauth_password": "pass"}, format="json")
+
+    def test_a_past_end_at_with_seconds_sent_back_without_them_is_unchanged(self):
+        code, gateway = self._temporary_code([self.BACK])
+        stored = (self._ago(days=1)).replace(second=37, microsecond=123456)
+        code = self._move(code, end_at=stored)
+        door_codes_uc.retire_door_code(code=code, reason="expired", zwavejs=gateway)
+
+        form_value = stored.replace(second=0, microsecond=0)
+        response = self._patch(
+            code, gateway, {"start_at": _iso(stored - timedelta(days=3)), "end_at": _iso(form_value)}
+        )
+
+        self.assertEqual(response.status_code, 200, response.content)
+        code.refresh_from_db()
+        # Treated as unchanged, so the stored value keeps its seconds.
+        self.assertEqual(code.end_at, stored)
+
+        # A different minute is a change, and a past one is refused.
+        response = self._patch(code, gateway, {"end_at": _iso(form_value - timedelta(minutes=1))})
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertIn("end_at", response.json()["error"]["details"])
+
+    def test_an_unrelated_edit_on_a_row_with_equal_dates_is_allowed(self):
+        code, gateway = self._temporary_code([self.BACK])
+        at = self._from_now(days=1)
+        code = self._move(code, start_at=at, end_at=at)
+
+        response = self._patch(code, gateway, {"days_of_week": 0b0011111})
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(DoorCode.objects.get(id=code.id).days_of_week, 0b0011111)
+
+        # Changing a date still checks them.
+        response = self._patch(code, gateway, {"start_at": _iso(at + timedelta(hours=1))})
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertIn("end_at", response.json()["error"]["details"])

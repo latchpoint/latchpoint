@@ -6,6 +6,7 @@ import { toDatetimeLocalValue, toUtcIsoFromDatetimeLocal } from '@/features/code
 import { daysMaskToSet, daysSetToMask } from '@/features/codes/utils/daysOfWeek'
 import { parseOptionalTimeWindow, validateDigitsPin } from '@/features/codes/utils/validation'
 import { parseOptionalMaxUses } from '@/features/doorCodes/utils/maxUses'
+import { isSyncedValidityEditable } from '@/features/doorCodes/utils/syncedValidity'
 
 type Props = {
   code: DoorCode
@@ -247,6 +248,21 @@ export function DoorCodeEditContainer({ code, locks, locksIsLoading, locksError,
 
     const isSynced = code.source === 'synced'
     if (isSynced) {
+      // An off synced code with an end date can change its active window and
+      // come back on (#145). Everything else on a synced code is the lock's.
+      if (isSyncedValidityEditable(code)) {
+        if (isActiveField.isEdited) req.isActive = editIsActive
+        if (dateRangeField.isEdited) {
+          const syncedStartAt = toUtcIsoFromDatetimeLocal(editDateRange.start)
+          const syncedEndAt = toUtcIsoFromDatetimeLocal(editDateRange.end)
+          if (syncedStartAt && syncedEndAt && syncedStartAt >= syncedEndAt) {
+            setEditError('The active window must end after it starts.')
+            return
+          }
+          req.startAt = syncedStartAt
+          req.endAt = syncedEndAt
+        }
+      }
       try {
         await onUpdate(code.id, req)
         onClose()

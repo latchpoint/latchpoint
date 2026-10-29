@@ -4,7 +4,7 @@
 **Date:** 2026-10-29
 **Author:** Leonardo Merza
 
-**Amends:** ADR-0092 (`start_at` and `end_at` left out of the push)
+**Amends:** ADR-0092 (`start_at` and `end_at` left out of the push), ADR-0082 (synced codes read-only except `label`)
 
 ## Context
 
@@ -58,9 +58,23 @@ after it (#144, #157, #167) already use.
   has passed and that haven't had a push attempt since. It catches errors per
   code, a busy lock included, and never raises.
 - **API.** `end_at` must be after `start_at`, and in the future on create or
-  when an update changes it (an unchanged past `end_at` sent back is fine).
-  `is_active: true` is refused while the code would be expired, and the
-  serializer adds `validity` (`scheduled`, `valid`, `expired`, `exhausted`).
+  when an update changes it. An update's `end_at` that matches the stored one
+  to the minute counts as unchanged (the edit form drops the seconds) and isn't
+  written, and the order check only runs when an update changes a date, so an
+  unrelated edit on an older row with equal dates still saves. `is_active:
+  true` is refused while the code would be expired, and the serializer adds
+  `validity` (`scheduled`, `valid`, `expired`, `exhausted`).
+- **Synced codes can come back on.** ADR-0082 makes every field but `label`
+  read-only on a synced code. A synced code that's off and has an `end_at` (the
+  only kind the scheduler turns off) can also set `is_active`, `start_at` and
+  `end_at`, with the rules above, and the `code_type` check for a time range is
+  skipped for it since lock sync sets that from the lock's schedule but keeps
+  the dates. Turning it on goes through the normal push, and the next lock sync
+  finds its PIN in the slot it's tracked in, so it stays on and nothing is
+  imported. It's keyed on the row rather than on the retire event because
+  event retention deletes old events. Every other synced code keeps ADR-0082's
+  rule, and the PIN, schedule, max uses and locks stay read-only on all of
+  them.
 - **No migration.** The first tick after deploy retires codes already past
   `end_at` and clears codes pushed before their start.
 
@@ -100,9 +114,12 @@ notifications and retiring used up codes is a separate change.
 - Latchpoint has to be running for codes to start and expire on time.
 - Synced codes with dates are retired too, which clears their slot on the
   lock. A synced code without dates is never touched.
+- A synced code with an `end_at` that lock sync turned off (its slot read
+  empty) can be turned back on from latchpoint too, since the row looks the
+  same as a retired one. That puts its PIN back on the lock.
 
 ## Related ADRs
 
 - [ADR-0068](0068-zwavejs-lock-config-sync.md): lock config sync, which can turn manual codes into synced ones.
-- [ADR-0082](0082-zwavejs-lock-domain-and-synced-code-lifecycle.md): synced code lifecycle and CC 99 clear.
+- [ADR-0082](0082-zwavejs-lock-domain-and-synced-code-lifecycle.md): synced code lifecycle and CC 99 clear, its read-only rule amended here.
 - [ADR-0092](0092-zwavejs-lock-push-sync.md): push sync, amended here.
