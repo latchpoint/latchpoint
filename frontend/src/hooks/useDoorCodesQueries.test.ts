@@ -1,17 +1,69 @@
 import { createElement, type PropsWithChildren } from 'react'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { renderHook } from '@testing-library/react'
+import { act, renderHook, waitFor } from '@testing-library/react'
 import { http, HttpResponse } from 'msw'
 import { server } from '@/test/msw/server'
 import { queryKeys } from '@/types'
 import type { DoorCode } from '@/types'
-import { useDeleteDoorCodeMutation, useReadCachedDoorCode, useRetryDoorCodePushMutation } from './useDoorCodesQueries'
+import {
+  DOOR_CODES_SETTLING_POLL_MS,
+  isDoorCodeSettling,
+  useDeleteDoorCodeMutation,
+  useDoorCodesQuery,
+  useReadCachedDoorCode,
+  useRetryDoorCodePushMutation,
+} from './useDoorCodesQueries'
 
-function createClient() {
+function createClient(queries: { staleTime?: number } = {}) {
   return new QueryClient({
-    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    defaultOptions: { queries: { retry: false, ...queries }, mutations: { retry: false } },
   })
+}
+
+function makeCode(overrides: Partial<DoorCode> = {}): DoorCode {
+  return {
+    id: 7,
+    userId: 'user-1',
+    userDisplayName: 'Test',
+    source: 'manual',
+    label: 'Front',
+    codeType: 'permanent',
+    pin: null,
+    pinLength: 4,
+    isActive: true,
+    maxUses: null,
+    usesCount: 0,
+    startAt: null,
+    endAt: null,
+    daysOfWeek: null,
+    windowStart: null,
+    windowEnd: null,
+    lastUsedAt: null,
+    lastUsedLock: null,
+    lockAssignments: [{ id: 1, lockEntityId: 'lock.front_door' }],
+    lockEntityIds: ['lock.front_door'],
+    lockSlotAssignments: [{ lockEntityId: 'lock.front_door', slotIndex: 3, pendingRemoval: false }],
+    pendingSlotClears: [],
+    pushState: 'pushed',
+    lastPushError: '',
+    lastPushAttemptAt: null,
+    createdAt: '',
+    updatedAt: '',
+    ...overrides,
+  }
+}
+
+// Serves state.codes from the codes endpoint and counts the fetches.
+function serveCodes(initial: DoorCode[]) {
+  const state = { codes: initial, fetches: 0 }
+  server.use(
+    http.get('/api/door-codes/', () => {
+      state.fetches += 1
+      return HttpResponse.json({ data: state.codes })
+    }),
+  )
+  return state
 }
 
 function wrap(client: QueryClient) {
@@ -109,5 +161,87 @@ describe('useDoorCodesQueries', () => {
 
     await result.current.mutateAsync(7)
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: queryKeys.doorCodes.byUser('user-1') })
+  })
+
+  describe('isDoorCodeSettling', () => {
+    it('is settling while a push is pending', () => {
+      expect(isDoorCodeSettling(makeCode({ pushState: 'pending' }))).toBe(true)
+    })
+
+    it('is settling while a slot is left to clear', () => {
+      const clear = { lockEntityId: 'lock.front_door', slotIndex: 3, removing: false }
+      expect(isDoorCodeSettling(makeCode({ isActive: false, pendingSlotClears: [clear] }))).toBe(true)
+    })
+
+    it('is settling while a lock is waiting on its removal', () => {
+      const removing = [{ lockEntityId: 'lock.front_door', slotIndex: 3, pendingRemoval: true }]
+      expect(isDoorCodeSettling(makeCode({ lockSlotAssignments: removing }))).toBe(true)
+    })
+
+    it('is settled once pushed with nothing to clear', () => {
+      expect(isDoorCodeSettling(makeCode())).toBe(false)
+    })
+
+    it('is settled once failed, even with a clear left, since only a Retry moves it', () => {
+      const clear = { lockEntityId: 'lock.front_door', slotIndex: 3, removing: true }
+      expect(isDoorCodeSettling(makeCode({ pushState: 'failed', pendingSlotClears: [clear] }))).toBe(false)
+    })
+  })
+
+  describe('useDoorCodesQuery', () => {
+    afterEach(() => {
+      vi.useRealTimers()
+    })
+
+    const renderCodes = (client = createClient()) =>
+      renderHook(() => useDoorCodesQuery({ userId: 'user-1', isAdmin: true }), { wrapper: wrap(client) })
+
+    it('polls while a code is pending and stops once it settles', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true })
+      const served = serveCodes([makeCode({ pushState: 'pending' })])
+      const { result } = renderCodes()
+      await waitFor(() => expect(result.current.data?.[0].pushState).toBe('pending'))
+      expect(served.fetches).toBe(1)
+
+      await act(() => vi.advanceTimersByTimeAsync(DOOR_CODES_SETTLING_POLL_MS))
+      await waitFor(() => expect(served.fetches).toBe(2))
+
+      // The scheduler pushes it, and the next poll picks that up.
+      served.codes = [makeCode()]
+      await act(() => vi.advanceTimersByTimeAsync(DOOR_CODES_SETTLING_POLL_MS))
+      await waitFor(() => expect(result.current.data?.[0].pushState).toBe('pushed'))
+      expect(served.fetches).toBe(3)
+
+      // Nothing is settling now, so it stops.
+      await act(() => vi.advanceTimersByTimeAsync(DOOR_CODES_SETTLING_POLL_MS * 4))
+      expect(served.fetches).toBe(3)
+    })
+
+    it("doesn't poll when nothing is settling", async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true })
+      const served = serveCodes([makeCode(), makeCode({ id: 8, pushState: 'failed', lastPushError: 'Lock timed out' })])
+      const { result } = renderCodes()
+      await waitFor(() => expect(result.current.isSuccess).toBe(true))
+
+      await act(() => vi.advanceTimersByTimeAsync(DOOR_CODES_SETTLING_POLL_MS * 4))
+      expect(served.fetches).toBe(1)
+    })
+
+    it('refetches when the window gets focus, even while the codes are fresh', async () => {
+      const served = serveCodes([makeCode()])
+      // The app's one minute staleTime.
+      const { result } = renderCodes(createClient({ staleTime: 60_000 }))
+      await waitFor(() => expect(result.current.isSuccess).toBe(true))
+      expect(served.fetches).toBe(1)
+
+      // Turned off in another tab.
+      served.codes = [makeCode({ isActive: false })]
+      act(() => {
+        window.dispatchEvent(new Event('visibilitychange'))
+      })
+
+      await waitFor(() => expect(result.current.data?.[0].isActive).toBe(false))
+      expect(served.fetches).toBe(2)
+    })
   })
 })

@@ -1,10 +1,10 @@
 import { StrictMode } from 'react'
-import { describe, expect, it, vi } from 'vitest'
-import { fireEvent, screen, waitFor } from '@testing-library/react'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { act, fireEvent, screen, waitFor } from '@testing-library/react'
 import { http, HttpResponse } from 'msw'
 import { server } from '@/test/msw/server'
 import { renderWithProviders } from '@/test/render'
-import { useDoorCodesQuery } from '@/hooks/useDoorCodesQueries'
+import { DOOR_CODES_SETTLING_POLL_MS, useDoorCodesQuery } from '@/hooks/useDoorCodesQueries'
 import { DoorCodeEditContainer } from './DoorCodeEditContainer'
 import type { DoorCode, Entity, UpdateDoorCodeRequest } from '@/types'
 
@@ -131,6 +131,38 @@ describe('DoorCodeEditContainer', () => {
   })
 
   describe('refetches', () => {
+    afterEach(() => {
+      vi.useRealTimers()
+    })
+
+    it('keeps an edit in progress across polls while the code is pending', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true })
+      const nextPoll = () => act(() => vi.advanceTimersByTimeAsync(DOOR_CODES_SETTLING_POLL_MS))
+      const served = serveCode(makeCode({ pushState: 'pending', lockSlotAssignments: [] }))
+      renderWithProviders(<EditFormFromQuery />)
+      expect(await screen.findByDisplayValue('Front')).toBeTruthy()
+
+      fireEvent.change(labelInput(), { target: { value: 'Back door' } })
+      fireEvent.change(newCodeInput(), { target: { value: '2468' } })
+      fireEvent.click(dayCheckbox('Sun'))
+      fireEvent.change(screen.getByLabelText(/Re-authenticate/), { target: { value: 'pw' } })
+
+      // A poll with nothing new.
+      await nextPoll()
+      expect(labelInput().value).toBe('Back door')
+
+      // The scheduler pushes it, and another tab sets max uses.
+      served.code = makeCode({ maxUses: 5, lastPushAttemptAt: '2026-10-28T10:05:00Z' })
+      await nextPoll()
+      await waitFor(() => expect(maxUsesInput().value).toBe('5'))
+
+      expect(labelInput().value).toBe('Back door')
+      expect(newCodeInput().value).toBe('2468')
+      expect(dayCheckbox('Sun')).not.toBeChecked()
+      expect((screen.getByLabelText(/Re-authenticate/) as HTMLInputElement).value).toBe('pw')
+      expect(notice()).toBeEmptyDOMElement()
+    })
+
     it('keeps an edit in progress when the code changes on the server', async () => {
       const { serverChanges } = renderForm(makeCode())
       expect(await screen.findByDisplayValue('Front')).toBeTruthy()

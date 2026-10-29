@@ -1,11 +1,12 @@
-import { describe, expect, it, vi } from 'vitest'
-import { fireEvent, screen, waitFor } from '@testing-library/react'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { act, fireEvent, screen, waitFor } from '@testing-library/react'
 import { http, HttpResponse } from 'msw'
 import { server } from '@/test/msw/server'
 import { renderWithProviders } from '@/test/render'
 import type { ComponentProps } from 'react'
 import {
   type CachedDoorCode,
+  DOOR_CODES_SETTLING_POLL_MS,
   useDeleteDoorCodeMutation,
   useDoorCodesQuery,
   useReadCachedDoorCode,
@@ -430,5 +431,61 @@ describe('DoorCodeCard', () => {
     expect(screen.getByText('Inactive')).toBeTruthy()
     expect(screen.getByText('Not on lock')).toBeTruthy()
     expect(screen.queryByRole('button', { name: /Retry/ })).toBeNull()
+  })
+
+  describe('while a code settles', () => {
+    afterEach(() => {
+      vi.useRealTimers()
+    })
+
+    const nextPoll = () => act(() => vi.advanceTimersByTimeAsync(DOOR_CODES_SETTLING_POLL_MS))
+
+    it('moves from Pending clear to Not on lock once the scheduler clears the slot', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true })
+      let serverCode = makeCode({
+        isActive: false,
+        pushState: 'pushed',
+        lastPushError: '',
+        lockSlotAssignments: [{ lockEntityId: 'lock.front_door', slotIndex: 3, pendingRemoval: false }],
+        pendingSlotClears: [{ lockEntityId: 'lock.front_door', slotIndex: 3, removing: false }],
+      })
+      server.use(http.get('/api/door-codes/', () => HttpResponse.json({ data: [serverCode] })))
+
+      renderWithProviders(<CardsFromQuery />)
+      expect(await screen.findByText('Pending clear')).toBeTruthy()
+
+      serverCode = makeCode({ isActive: false, pushState: 'pushed', lastPushError: '' })
+      await nextPoll()
+
+      expect(await screen.findByText('Not on lock')).toBeTruthy()
+      expect(screen.queryByText('Pending clear')).toBeNull()
+    })
+
+    it('keeps a Retry error through a poll with nothing new and drops it once the code is pushed', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true })
+      let serverCode = makeCode({ pushState: 'pending', lastPushError: '' })
+      server.use(
+        http.get('/api/door-codes/', () => HttpResponse.json({ data: [serverCode] })),
+        http.post('/api/door-codes/7/push/', () => {
+          serverCode = makeCode({ pushState: 'pending', lastPushError: '', lastPushAttemptAt: '2026-10-28T10:10:00Z' })
+          return timeout()
+        }),
+      )
+
+      renderWithProviders(<CardsFromQuery />)
+      fireEvent.click(await screen.findByRole('button', { name: 'Retry now' }))
+      expect(await screen.findByRole('alert')).toHaveTextContent('Lock timed out')
+
+      await nextPoll()
+      await settle()
+      expect(screen.getByText('Pending sync')).toBeTruthy()
+      expect(screen.getByRole('alert')).toHaveTextContent('Lock timed out')
+
+      serverCode = pushedCode('2026-10-28T10:15:00Z')
+      await nextPoll()
+
+      expect(await screen.findByText(/On lock:.*Front Door.*slot 3/)).toBeTruthy()
+      expect(screen.queryByRole('alert')).toBeNull()
+    })
   })
 })
