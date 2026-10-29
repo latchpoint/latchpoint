@@ -6,6 +6,7 @@ import { toDatetimeLocalValue, toUtcIsoFromDatetimeLocal } from '@/features/code
 import { daysMaskToSet, daysSetToMask } from '@/features/codes/utils/daysOfWeek'
 import { parseOptionalTimeWindow, validateDigitsPin } from '@/features/codes/utils/validation'
 import { parseOptionalMaxUses } from '@/features/doorCodes/utils/maxUses'
+import { isSyncedValidityEditable } from '@/features/doorCodes/utils/syncedValidity'
 
 type Props = {
   code: DoorCode
@@ -212,6 +213,15 @@ export function DoorCodeEditContainer({ code, locks, locksIsLoading, locksError,
     setEditManualLockIds('')
   }
 
+  // Expired with the end date the save would send. An untouched range goes by
+  // the backend's validity, since the input drops the seconds. An edited one is
+  // checked against when it was last edited, since render can't read the clock.
+  const [rangeEditedAt, setRangeEditedAt] = useState(() => Date.now())
+  const editedEndAt = toUtcIsoFromDatetimeLocal(editDateRange.end)
+  const isExpired = dateRangeField.isEdited
+    ? editedEndAt != null && new Date(editedEndAt).getTime() <= rangeEditedAt
+    : code.validity === 'expired'
+
   const resolvedLockEntityIds = useMemo(() => {
     const locksFromPicker = Array.from(editSelectedLocks)
     if (locksFromPicker.length) return locksFromPicker
@@ -238,6 +248,21 @@ export function DoorCodeEditContainer({ code, locks, locksIsLoading, locksError,
 
     const isSynced = code.source === 'synced'
     if (isSynced) {
+      // An off synced code with an end date can change its active window and
+      // come back on (#145). Everything else on a synced code is the lock's.
+      if (isSyncedValidityEditable(code)) {
+        if (isActiveField.isEdited) req.isActive = editIsActive
+        if (dateRangeField.isEdited) {
+          const syncedStartAt = toUtcIsoFromDatetimeLocal(editDateRange.start)
+          const syncedEndAt = toUtcIsoFromDatetimeLocal(editDateRange.end)
+          if (syncedStartAt && syncedEndAt && syncedStartAt >= syncedEndAt) {
+            setEditError('The active window must end after it starts.')
+            return
+          }
+          req.startAt = syncedStartAt
+          req.endAt = syncedEndAt
+        }
+      }
       try {
         await onUpdate(code.id, req)
         onClose()
@@ -254,8 +279,8 @@ export function DoorCodeEditContainer({ code, locks, locksIsLoading, locksError,
 
     const startAt = toUtcIsoFromDatetimeLocal(editDateRange.start)
     const endAt = toUtcIsoFromDatetimeLocal(editDateRange.end)
-    if (startAt && endAt && startAt > endAt) {
-      setEditError('Active until must be after active from.')
+    if (startAt && endAt && startAt >= endAt) {
+      setEditError('The active window must end after it starts.')
       return
     }
     const isTemporary = code.codeType === 'temporary'
@@ -340,9 +365,13 @@ export function DoorCodeEditContainer({ code, locks, locksIsLoading, locksError,
       onEditMaxUsesChange={setEditMaxUses}
       editIsActive={editIsActive}
       onEditIsActiveChange={setEditIsActive}
+      isExpired={isExpired}
       editStartAtLocal={editDateRange.start}
       editEndAtLocal={editDateRange.end}
-      onActiveWindowChange={(next) => setEditDateRange({ start: next.start, end: next.end })}
+      onActiveWindowChange={(next) => {
+        setRangeEditedAt(Date.now())
+        setEditDateRange({ start: next.start, end: next.end })
+      }}
       editDays={editDays}
       onEditDaysChange={setEditDays}
       editWindowStart={editTimeWindow.start}

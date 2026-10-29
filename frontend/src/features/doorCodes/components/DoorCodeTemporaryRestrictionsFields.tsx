@@ -16,6 +16,10 @@ type Props = {
   endId: string
   showActiveWindowHelper?: boolean
   showTimeWindowHelp?: boolean
+  /** Defaults to `disabled`. A synced code can have its window editable while the schedule isn't. */
+  activeWindowDisabled?: boolean
+  /** Hide the days and time window, for a code with dates but no schedule of its own. */
+  showSchedule?: boolean
 }
 
 export function DoorCodeTemporaryRestrictionsFields({
@@ -31,6 +35,8 @@ export function DoorCodeTemporaryRestrictionsFields({
   endId,
   showActiveWindowHelper = true,
   showTimeWindowHelp = true,
+  activeWindowDisabled = disabled,
+  showSchedule = true,
 }: Props) {
   return (
     <div className="space-y-4">
@@ -39,31 +45,35 @@ export function DoorCodeTemporaryRestrictionsFields({
           <div className="text-sm font-medium">Active date range (optional)</div>
           <HelpTip content="If set, the code is only valid between these timestamps." />
         </div>
-        <ActiveWindowPicker value={activeWindow} onChange={onActiveWindowChange} disabled={disabled} showHelper={showActiveWindowHelper} />
+        <ActiveWindowPicker value={activeWindow} onChange={onActiveWindowChange} disabled={activeWindowDisabled} showHelper={showActiveWindowHelper} />
       </div>
 
-      <DaysOfWeekPicker
-        header={
-          <div className="flex items-center gap-2">
-            <div className="text-sm font-medium">Days of week</div>
-            <HelpTip content="Select which days this code is allowed." />
-          </div>
-        }
-        value={days}
-        onChange={onDaysChange}
-        disabled={disabled}
-      />
+      {showSchedule ? (
+        <>
+          <DaysOfWeekPicker
+            header={
+              <div className="flex items-center gap-2">
+                <div className="text-sm font-medium">Days of week</div>
+                <HelpTip content="Select which days this code is allowed." />
+              </div>
+            }
+            value={days}
+            onChange={onDaysChange}
+            disabled={disabled}
+          />
 
-      <TimeWindowFields
-        startId={startId}
-        endId={endId}
-        startValue={timeWindow.start}
-        endValue={timeWindow.end}
-        onStartChange={onTimeWindowStartChange}
-        onEndChange={onTimeWindowEndChange}
-        disabled={disabled}
-        showHelp={showTimeWindowHelp}
-      />
+          <TimeWindowFields
+            startId={startId}
+            endId={endId}
+            startValue={timeWindow.start}
+            endValue={timeWindow.end}
+            onStartChange={onTimeWindowStartChange}
+            onEndChange={onTimeWindowEndChange}
+            disabled={disabled}
+            showHelp={showTimeWindowHelp}
+          />
+        </>
+      ) : null}
     </div>
   )
 }

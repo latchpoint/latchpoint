@@ -9,6 +9,7 @@ import { Button } from '@/components/ui/button'
 import { formatDaysMask } from '@/features/codes/utils/daysOfWeek'
 import { DoorCodeEditContainer } from '@/features/doorCodes/components/DoorCodeEditContainer'
 import { DoorCodePushStatusBadge } from '@/features/doorCodes/components/DoorCodePushStatusBadge'
+import { MAX_USES_ENFORCED } from '@/features/doorCodes/utils/maxUses'
 
 type Props = {
   code: DoorCode
@@ -138,6 +139,8 @@ export function DoorCodeCard({
             <div className="font-medium">{code.label || 'Untitled door code'}</div>
             <Badge variant={code.isActive ? 'secondary' : 'outline'}>{code.isActive ? 'Active' : 'Inactive'}</Badge>
             {code.source === 'synced' ? <Badge variant="outline">Synced</Badge> : null}
+            {/* Says why an expired code is off; the push badge covers an active one (#145). */}
+            {code.validity === 'expired' && !code.isActive ? <Badge variant="outline">Expired</Badge> : null}
           </div>
           <div className="flex items-center gap-1 text-sm text-muted-foreground">
             <span>PIN: {pinDisplay}</span>
@@ -154,6 +157,9 @@ export function DoorCodeCard({
             <span> • Type: {code.codeType}</span>
             {code.maxUses != null ? <span> • Max uses: {code.maxUses}</span> : null}
           </div>
+          {code.maxUses != null && !MAX_USES_ENFORCED ? (
+            <div className="text-xs text-muted-foreground">Max uses isn't enforced yet</div>
+          ) : null}
           {code.codeType === 'temporary' ? (
             <>
               <div className="text-sm text-muted-foreground">

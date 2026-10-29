@@ -44,6 +44,7 @@ function makeCode(overrides: Partial<DoorCode> = {}): DoorCode {
     lockEntityIds: ['lock.front_door'],
     lockSlotAssignments: [{ lockEntityId: 'lock.front_door', slotIndex: null, pendingRemoval: false }],
     pendingSlotClears: [],
+    validity: 'valid',
     pushState: 'failed',
     lastPushError: 'Gateway timeout after 5.0s',
     lastPushAttemptAt: '2026-10-28T10:00:00Z',

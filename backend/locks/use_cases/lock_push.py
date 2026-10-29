@@ -32,6 +32,7 @@ from integrations_zwavejs.manager import (
 from alarm.crypto import InvalidToken, SettingsEncryption
 from config.domain_exceptions import ConflictError, GatewayError, ValidationError
 from locks.models import DoorCode, DoorCodeEvent, DoorCodeLockAssignment
+from locks.use_cases.code_lifecycle import belongs_on_lock
 from locks.use_cases.lock_config_sync import (
     CC_SCHEDULE_ENTRY_LOCK,
     CC_USER_CODE,
@@ -119,6 +120,8 @@ class PushSuperseded(LockUnreachable):
 
 # DoorCode fields a push writes to the lock, re-read once the push holds the lock.
 _PUSHED_FIELDS = ["encrypted_pin", "is_active", "days_of_week", "window_start", "window_end"]
+# Never sent to the lock, but a code is only pushed between them (issue #145), so re-read too.
+_VALIDITY_FIELDS = ["start_at", "end_at"]
 
 
 @dataclass
@@ -1286,6 +1289,13 @@ def inactive_slots_to_clear(
     """
     if door_code.is_active or door_code.source == DoorCode.Source.SYNCED:
         return []
+    return _slots_that_may_hold_pin(door_code=door_code, failures=failures)
+
+
+def _slots_that_may_hold_pin(
+    *, door_code: DoorCode, failures: list[ClearFailure] | None = None
+) -> list[tuple[str, int]]:
+    """The tracked and unconfirmed slots :func:`inactive_slots_to_clear` describes, for any code."""
     if failures is None:
         failures = unresolved_clear_failures(door_code=door_code)
     failing = {(f.lock_entity_id, f.slot_index) for f in failures}
@@ -1517,6 +1527,83 @@ def clear_inactive_code_slots(
     return still_failing
 
 
+def slots_to_withdraw(*, door_code: DoorCode) -> list[tuple[str, int]]:
+    """``(lock_entity_id, slot_index)`` pairs an active code may have its PIN in before its start (issue #145).
+
+    The same slots :func:`inactive_slots_to_clear` finds for an inactive code:
+    tracked ones and unsettled unconfirmed ones, without slots another code
+    holds or that already have a clear failure on record for the retries.
+    """
+    if not door_code.is_active:
+        return []
+    return _slots_that_may_hold_pin(door_code=door_code)
+
+
+def withdraw_slots_before_start(
+    *,
+    door_code: DoorCode,
+    zwavejs: ZwavejsGateway,
+    timeout_seconds: float = 5.0,
+) -> tuple[list[dict[str, object]], list[ClearFailure]]:
+    """Clear what :func:`slots_to_withdraw` finds; the caller holds every lock's ``lock_sync:`` lock.
+
+    A tracked slot is cleared as is and forgotten, the way a schedule change
+    clears it before the re-push. An unconfirmed slot is read back and only
+    cleared when it holds the PIN that attempt sent, then settled
+    (:func:`_clear_unconfirmed_slots_on_lock`). A clear that fails is recorded
+    with :func:`record_clear_failure` so :func:`retry_failed_slot_clears` takes
+    over, and a lock latchpoint can't resolve any more is forgotten as
+    ``lock_missing``. Returns the slots cleared and the failures.
+    """
+    failing = {(f.lock_entity_id, f.slot_index) for f in unresolved_clear_failures(door_code=door_code)}
+    pin = decrypt_pin_or_none(door_code)
+    cleared: list[dict[str, object]] = []
+    failed: list[ClearFailure] = []
+    assignments = DoorCodeLockAssignment.objects.filter(door_code=door_code).order_by("lock_entity_id")
+    for lock_entity_id, tracked_slot in assignments.values_list("lock_entity_id", "slot_index"):
+        if tracked_slot is not None and (lock_entity_id, int(tracked_slot)) not in failing:
+            slot_index = int(tracked_slot)
+            try:
+                clear_lock_user_code_slot(
+                    lock_entity_id=lock_entity_id,
+                    slot_index=slot_index,
+                    zwavejs=zwavejs,
+                    timeout_seconds=timeout_seconds,
+                )
+            except Exception as exc:
+                failure = record_clear_failure(
+                    door_code=door_code,
+                    lock_entity_id=lock_entity_id,
+                    slot_index=slot_index,
+                    exc=exc,
+                    expected_pin=pin,
+                )
+                failed.append(failure)
+                if failure.permanent:
+                    forget_cleared_slot(
+                        door_code=door_code,
+                        lock_entity_id=lock_entity_id,
+                        slot_index=slot_index,
+                        outcome="lock_missing",
+                    )
+            else:
+                cleared.append({"lock_entity_id": lock_entity_id, "slot_index": slot_index})
+                forget_cleared_slot(
+                    door_code=door_code, lock_entity_id=lock_entity_id, slot_index=slot_index, outcome="cleared"
+                )
+        lock_cleared, lock_failed = _clear_unconfirmed_slots_on_lock(
+            door_code=door_code,
+            pin=pin or "",
+            lock_entity_id=lock_entity_id,
+            zwavejs=zwavejs,
+            timeout_seconds=timeout_seconds,
+            skip_slots={slot for lock, slot in failing if lock == lock_entity_id},
+        )
+        cleared.extend(lock_cleared)
+        failed.extend(lock_failed)
+    return cleared, failed
+
+
 def retained_marker_event_ids(*, older_than: datetime) -> set[int]:
     """Ids of events older than ``older_than`` that event retention must keep (issue #139).
 
@@ -1727,7 +1814,8 @@ def push_door_code_to_lock(
       * :class:`LockPushFailed` — terminal; the row is flipped to ``failed`` and a
         ``code_failed`` event is emitted.
       * :class:`PushSuperseded` — once the lock is held the code turns out to be
-        deleted, inactive or no longer on this lock; nothing is sent or recorded.
+        deleted, inactive, no longer on this lock, not started yet or expired
+        (issue #145); nothing is sent or recorded.
 
     The code's PIN, schedule and assignment are read again once the
     ``lock_sync:`` lock is held, since a caller that loaded them earlier (the
@@ -1754,12 +1842,15 @@ def push_door_code_to_lock(
 
     try:
         try:
-            door_code.refresh_from_db(fields=_PUSHED_FIELDS)
+            door_code.refresh_from_db(fields=[*_PUSHED_FIELDS, *_VALIDITY_FIELDS])
         except DoorCode.DoesNotExist as exc:
             raise PushSuperseded("Door code was deleted before its push started.") from exc
         assignment = DoorCodeLockAssignment.objects.filter(door_code=door_code, lock_entity_id=lock_entity_id).first()
         if not door_code.is_active or assignment is None:
             raise PushSuperseded("Door code is no longer active on this lock; nothing was pushed.")
+        if not belongs_on_lock(door_code):
+            # Its start_at moved into the future or it expired while the push waited (issue #145).
+            raise PushSuperseded("Door code isn't valid right now (not started or expired); nothing was pushed.")
         if assignment.slot_index is not None:
             logger.info(
                 "Door code id=%d already holds slot %d on %s; not pushing it again",
@@ -1976,7 +2067,9 @@ def push_door_code_to_assigned_locks(
     ``pushed``. One lock's success never hides another lock's failure.
 
     An inactive code is never pushed: it returns ``([], [])`` without touching the
-    locks or the row (issue #138).
+    locks or the row (issue #138). Neither is one before its ``start_at`` or from
+    its ``end_at`` on (issue #145). ``enforce_door_code_validity`` pushes it once
+    it starts and retires it once it expires.
     """
     # Sorted in Python so the prefetch is kept and the push order is deterministic.
     assignments = sorted(door_code.lock_assignments.all(), key=lambda assignment: assignment.pk)
@@ -1985,9 +2078,14 @@ def push_door_code_to_assigned_locks(
     terminal_error: str | None = None
     pending_error: str | None = None
 
-    door_code.refresh_from_db(fields=["is_active", "push_state", "last_push_attempt_at", "last_push_error"])
+    door_code.refresh_from_db(
+        fields=["is_active", "push_state", "last_push_attempt_at", "last_push_error", *_VALIDITY_FIELDS]
+    )
     if not door_code.is_active:
         logger.info("Not pushing inactive door code id=%s", door_code.id)
+        return successes, failures
+    if not belongs_on_lock(door_code):
+        logger.info("Not pushing door code id=%s outside its start_at/end_at", door_code.id)
         return successes, failures
     for assignment in assignments:
         if only_unassigned and assignment.slot_index is not None:

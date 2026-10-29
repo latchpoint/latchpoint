@@ -35,6 +35,7 @@ function makeCode(overrides: Partial<DoorCode> = {}): DoorCode {
     lockEntityIds: ['lock.front_door'],
     lockSlotAssignments: [{ lockEntityId: 'lock.front_door', slotIndex: 3, pendingRemoval: false }],
     pendingSlotClears: [],
+    validity: 'valid',
     pushState: 'pushed',
     lastPushError: '',
     lastPushAttemptAt: '2026-10-28T10:00:00Z',
@@ -111,7 +112,6 @@ function renderForm(initial: DoorCode, props: { onUpdate?: OnUpdate; locks?: Ent
 
 const labelInput = () => screen.getByLabelText('Label') as HTMLInputElement
 const newCodeInput = () => screen.getByLabelText('New code (optional)') as HTMLInputElement
-const maxUsesInput = () => screen.getByLabelText('Max uses (optional)') as HTMLInputElement
 const windowStartInput = () => screen.getByLabelText('Time window start (optional)') as HTMLInputElement
 const windowEndInput = () => screen.getByLabelText('Time window end (optional)') as HTMLInputElement
 const dayCheckbox = (day: string) => screen.getByRole('checkbox', { name: day })
@@ -167,11 +167,11 @@ describe('DoorCodeEditContainer', () => {
       expect(newCodeInput().value).toBe('2468')
       expect(dayCheckbox('Sun')).not.toBeChecked()
 
-      // The scheduler pushes it, and another tab sets max uses.
-      served.code = makeCode({ maxUses: 5, lastPushAttemptAt: '2026-10-28T10:05:00Z' })
+      // The scheduler pushes it, and another tab changes the time window.
+      served.code = makeCode({ windowEnd: '18:00', lastPushAttemptAt: '2026-10-28T10:05:00Z' })
       await nextPoll()
       await waitFor(() => expect(served.fetches).toBe(3))
-      await waitFor(() => expect(maxUsesInput().value).toBe('5'))
+      await waitFor(() => expect(windowEndInput().value).toBe('18:00'))
 
       expect(labelInput().value).toBe('Back door')
       expect(newCodeInput().value).toBe('2468')
@@ -189,8 +189,8 @@ describe('DoorCodeEditContainer', () => {
       fireEvent.click(dayCheckbox('Sun'))
 
       // The scheduler retries the push and something else on the code changes.
-      await serverChanges(makeCode({ maxUses: 5, lastPushAttemptAt: '2026-10-28T10:05:00Z' }))
-      await waitFor(() => expect(maxUsesInput().value).toBe('5'))
+      await serverChanges(makeCode({ windowEnd: '18:00', lastPushAttemptAt: '2026-10-28T10:05:00Z' }))
+      await waitFor(() => expect(windowEndInput().value).toBe('18:00'))
 
       expect(labelInput().value).toBe('Back door')
       expect(newCodeInput().value).toBe('2468')
@@ -206,10 +206,10 @@ describe('DoorCodeEditContainer', () => {
       fireEvent.change(labelInput(), { target: { value: 'Back door' } })
 
       // A refused delete in another tab turns the code off.
-      await serverChanges(makeCode({ isActive: false, maxUses: 5, windowEnd: '18:00', pushState: 'pending' }))
+      await serverChanges(makeCode({ isActive: false, windowStart: '07:00', windowEnd: '18:00', pushState: 'pending' }))
 
       await waitFor(() => expect(activeSwitch()).toHaveAttribute('aria-checked', 'false'))
-      expect(maxUsesInput().value).toBe('5')
+      expect(windowStartInput().value).toBe('07:00')
       expect(windowEndInput().value).toBe('18:00')
       expect(labelInput().value).toBe('Back door')
     })
@@ -233,12 +233,12 @@ describe('DoorCodeEditContainer', () => {
       expect(await screen.findByDisplayValue('Front')).toBeTruthy()
 
       fireEvent.change(labelInput(), { target: { value: 'Back door' } })
-      fireEvent.change(maxUsesInput(), { target: { value: '3' } })
-      await serverChanges(makeCode({ label: 'Garage', maxUses: 9 }))
+      fireEvent.change(windowEndInput(), { target: { value: '19:00' } })
+      await serverChanges(makeCode({ label: 'Garage', windowEnd: '18:00' }))
 
-      await waitFor(() => expect(notice()).toHaveTextContent(`Label and Max uses changed on the server. ${KEPT}`))
+      await waitFor(() => expect(notice()).toHaveTextContent(`Label and Time window changed on the server. ${KEPT}`))
       expect(labelInput().value).toBe('Back door')
-      expect(maxUsesInput().value).toBe('3')
+      expect(windowEndInput().value).toBe('19:00')
     })
 
     it('puts the form back to the server values on discard', async () => {
@@ -249,7 +249,7 @@ describe('DoorCodeEditContainer', () => {
       fireEvent.change(newCodeInput(), { target: { value: '2468' } })
       fireEvent.click(dayCheckbox('Sun'))
 
-      await serverChanges(makeCode({ label: 'Garage', maxUses: 5 }))
+      await serverChanges(makeCode({ label: 'Garage', windowEnd: '18:00' }))
       await waitFor(() => expect(notice()).toHaveTextContent(KEPT))
 
       fireEvent.click(screen.getByRole('button', { name: 'Discard changes and reload' }))
@@ -257,11 +257,11 @@ describe('DoorCodeEditContainer', () => {
       expect(labelInput().value).toBe('Garage')
       expect(newCodeInput().value).toBe('')
       expect(dayCheckbox('Sun')).toBeChecked()
-      expect(maxUsesInput().value).toBe('5')
+      expect(windowEndInput().value).toBe('18:00')
       expect(notice()).toBeEmptyDOMElement()
 
       // With nothing edited the form follows the server again.
-      await serverChanges(makeCode({ label: 'Side gate', maxUses: 5 }))
+      await serverChanges(makeCode({ label: 'Side gate', windowEnd: '18:00' }))
       await waitFor(() => expect(labelInput().value).toBe('Side gate'))
       expect(notice()).toBeEmptyDOMElement()
     })
@@ -535,15 +535,15 @@ describe('DoorCodeEditContainer', () => {
     fireEvent.change(labelInput(), { target: { value: 'Back door' } })
     fireEvent.click(lockCheckbox('lock.d'))
 
-    served.code = withLocks(['lock.a'], { maxUses: 5 })
+    served.code = withLocks(['lock.a'], { windowEnd: '18:00' })
     await queryClient.invalidateQueries()
-    await waitFor(() => expect(maxUsesInput().value).toBe('5'))
+    await waitFor(() => expect(windowEndInput().value).toBe('18:00'))
     expect(labelInput().value).toBe('Back door')
     expect(lockCheckbox('lock.b')).not.toBeChecked()
     expect(lockCheckbox('lock.d')).toBeChecked()
     expect(notice()).toBeEmptyDOMElement()
 
-    served.code = withLocks(['lock.a'], { maxUses: 5, label: 'Garage' })
+    served.code = withLocks(['lock.a'], { windowEnd: '18:00', label: 'Garage' })
     await queryClient.invalidateQueries()
     await waitFor(() => expect(notice()).toHaveTextContent(`Label changed on the server. ${KEPT}`))
 
