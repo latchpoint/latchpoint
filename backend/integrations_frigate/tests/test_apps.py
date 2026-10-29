@@ -34,15 +34,15 @@ class FrigateAppReadyTests(SimpleTestCase):
 
     def test_registers_its_tasks_outside_the_server(self):
         # `list_tasks` and `run_task` are management commands too, so they need the tasks either way. The
-        # tasks module is already loaded, so drop it and the registry to see `ready()` load it again.
-        with (
-            patch.dict(registry._tasks, clear=True),
-            patch.dict(sys.modules),
-            patch.object(integrations_frigate, "tasks"),
-        ):
-            del sys.modules["integrations_frigate.tasks"]
-            del integrations_frigate.tasks
+        # tasks module is already loaded, so drop it and the registry to see `ready()` load it again. The module
+        # is put back by hand rather than with `patch.dict(sys.modules)`, which clears the whole dict to restore it.
+        tasks_module = sys.modules.pop("integrations_frigate.tasks")
+        try:
+            with patch.dict(registry._tasks, clear=True), patch.object(integrations_frigate, "tasks"):
+                del integrations_frigate.tasks
 
-            _run_ready(["manage.py", "run_task", "cleanup_frigate_detections"])
+                _run_ready(["manage.py", "run_task", "cleanup_frigate_detections"])
 
-            self.assertIsNotNone(get_task("cleanup_frigate_detections"))
+                self.assertIsNotNone(get_task("cleanup_frigate_detections"))
+        finally:
+            sys.modules["integrations_frigate.tasks"] = tasks_module

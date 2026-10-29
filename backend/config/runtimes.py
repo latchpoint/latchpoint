@@ -18,7 +18,8 @@ from django.conf import settings
 logger = logging.getLogger(__name__)
 
 # Servers that run the app, matched on argv[0]. They take their own flags as argv[1] (`daphne -b ...`), so
-# argv[1] isn't a management command for them.
+# argv[1] isn't a management command for them. The match is on the exact executable name, so a renamed
+# launcher (ie `gunicorn3`) isn't detected and needs START_RUNTIMES=true.
 _SERVER_PROGRAMS = frozenset({"daphne", "uvicorn", "gunicorn"})
 
 _FORCE_ON = frozenset({"1", "true", "yes", "on"})

@@ -32,11 +32,13 @@ class SchedulerConfig(AppConfig):
 
     def ready(self) -> None:
         """Start the scheduler when Django is ready."""
+        # Import tasks to trigger registration
+        # Apps should register their tasks in their own ready() method
+        # or via autodiscovery of tasks.py modules
+        # Before the server check, so `list_tasks` and `run_task` still see them.
+        from . import tasks  # noqa: F401
+
         if _should_start():
-            # Import tasks to trigger registration
-            # Apps should register their tasks in their own ready() method
-            # or via autodiscovery of tasks.py modules
-            from . import tasks  # noqa: F401
             from .runner import start_scheduler
 
             start_scheduler()

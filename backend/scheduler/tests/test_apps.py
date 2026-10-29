@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import sys
 from types import SimpleNamespace
 from unittest.mock import patch
 
 from django.apps import apps
 from django.test import SimpleTestCase, override_settings
 
+import scheduler
 from scheduler import apps as scheduler_apps
+from scheduler import get_task, registry
 from scheduler.apps import _should_start
 
 
@@ -41,3 +44,19 @@ class SchedulerAppReadyTests(SimpleTestCase):
 
     def test_starts_in_the_server(self):
         self.assertTrue(self._run_ready(["daphne", "config.asgi:application"]))
+
+    def test_registers_its_tasks_outside_the_server(self):
+        # `list_tasks` and `run_task` are management commands too, so they need the tasks either way. The
+        # tasks module is already loaded, so drop it and the registry to see `ready()` load it again. The module
+        # is put back by hand rather than with `patch.dict(sys.modules)`, which clears the whole dict to restore it.
+        tasks_module = sys.modules.pop("scheduler.tasks")
+        try:
+            with patch.dict(registry._tasks, clear=True), patch.object(scheduler, "tasks"):
+                del scheduler.tasks
+
+                started = self._run_ready(["manage.py", "run_task", "scheduler_cleanup_task_runs"])
+
+                self.assertFalse(started)
+                self.assertIsNotNone(get_task("scheduler_cleanup_task_runs"))
+        finally:
+            sys.modules["scheduler.tasks"] = tasks_module

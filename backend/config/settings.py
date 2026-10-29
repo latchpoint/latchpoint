@@ -204,7 +204,9 @@ ALLOW_ZWAVEJS_IN_TESTS = env.bool("ALLOW_ZWAVEJS_IN_TESTS", default=False)
 # `AppConfig.ready()` only in the server process: daphne, uvicorn, gunicorn or `manage.py runserver` (#160).
 # "auto" (the default) detects that from argv. "true" starts them in any process, "false" in none. The
 # scheduler still honors SCHEDULER_ENABLED and never starts under tests.
-START_RUNTIMES = env.str("START_RUNTIMES", default="auto")
+# Tests ignore the env var, so a START_RUNTIMES=true in `.env` can't connect the test run to the real MQTT,
+# HA and Z-Wave JS, and START_RUNTIMES=false can't stop the tests that run `ready()` as a server.
+START_RUNTIMES = "auto" if IS_TESTING else env.str("START_RUNTIMES", default="auto")
 
 # Scheduler
 SCHEDULER_ENABLED = env.bool("SCHEDULER_ENABLED", default=True)
