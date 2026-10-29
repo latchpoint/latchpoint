@@ -5,6 +5,7 @@ from __future__ import annotations
 from django.test import TestCase
 
 from alarm.models import AlarmSettingsEntry, AlarmSettingsProfile
+from alarm.signals import alarm_state_change_committed, settings_profile_changed
 from alarm.tests.settings_test_utils import EncryptionTestMixin
 from alarm.use_cases.settings_profile import (
     activate_settings_profile,
@@ -12,7 +13,7 @@ from alarm.use_cases.settings_profile import (
     update_settings_profile,
 )
 from integrations_home_assistant import state_stream
-from integrations_home_assistant.connection import get_cached_connection
+from integrations_home_assistant.connection import clear_cached_connection, get_cached_connection
 from integrations_home_assistant.state_stream import _RuntimeSettings
 from integrations_home_assistant.tests.stream_test_utils import FakeSessionStream, run_app_ready
 
@@ -70,6 +71,22 @@ class HomeAssistantAppHooksTests(EncryptionTestMixin, TestCase):
         self.fake.wait_for_session()
 
         fake_atexit.register.assert_called_once_with(state_stream.shutdown)
+
+    def test_management_commands_start_nothing(self):
+        # #160: `apply_integration_settings` runs before daphne on every boot, and `shell` and the rest load
+        # the app too. None of them open a stream session, warm the connection, hook into alarm state or
+        # profile changes, or register the exit hook.
+        clear_cached_connection()
+        for command in ("apply_integration_settings", "shell", "createsuperuser"):
+            with self.subTest(command=command):
+                fake_atexit = run_app_ready(self, argv=["manage.py", command])
+
+                fake_atexit.register.assert_not_called()
+                self.assertIsNone(self.stream._thread)
+                self.assertEqual(self.fake.sessions, [])
+                self.assertIsNone(get_cached_connection())
+                self.assertFalse(settings_profile_changed.disconnect(dispatch_uid="ha_connection_profile_changed"))
+                self.assertFalse(alarm_state_change_committed.disconnect(dispatch_uid="ha_mqtt_alarm_entity_state"))
 
     def test_activating_a_profile_reconnects_on_its_settings(self):
         other = create_settings_profile(name="Away")

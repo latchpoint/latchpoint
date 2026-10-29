@@ -4,6 +4,8 @@ import sys
 
 from django.apps import AppConfig
 
+from config.runtimes import should_start_runtimes
+
 
 class IntegrationsZigbee2mqttConfig(AppConfig):
     default_auto_field = "django.db.models.BigAutoField"
@@ -11,9 +13,8 @@ class IntegrationsZigbee2mqttConfig(AppConfig):
 
     def ready(self) -> None:
         """Best-effort runtime hooks for Zigbee2MQTT integration."""
-        # Avoid side effects during migrations/collectstatic/tests.
-        argv = " ".join(sys.argv).lower()
-        if any(token in argv for token in ["makemigrations", "migrate", "collectstatic", "pytest", " test"]):
+        # Only the server process starts the runtimes, not management commands or tests (#160).
+        if not should_start_runtimes(sys.argv):
             return
 
         try:
