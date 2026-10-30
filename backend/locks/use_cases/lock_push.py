@@ -7,9 +7,10 @@ sends CC 99 ``set`` (user code), reads the slot back with CC 99 ``get`` to confi
 the lock stored it, then an optional CC 78 ``setDailyRepeatingSchedule`` per
 weekday, and records the slot assignment + push state.
 
-The use case is intended to be called synchronously from the create/update API
-paths. It commits as much progress as it makes; transient failures land the row
-at ``push_state="pending"`` for the scheduler to retry.
+Create, update and Retry queue the push with :func:`request_push` for the
+``push_requested_door_codes`` scheduler task, or make it inline where that task
+doesn't run in the process (ADR 0111). It commits as much progress as it makes;
+transient failures land the row at ``push_state="pending"`` for the scheduler to retry.
 """
 
 from __future__ import annotations
