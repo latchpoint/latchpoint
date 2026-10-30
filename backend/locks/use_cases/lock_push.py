@@ -787,7 +787,11 @@ class ClearFailure:
     it's cleared. ``permanent`` failures (the lock entity is gone or has no Z-Wave
     node) can't be retried and aren't recorded as events. ``expected_pin`` is the
     PIN the slot is expected to hold, which may not be the code's current one; it
-    never goes into ``as_metadata`` or ``repr``.
+    never goes into ``as_metadata`` or ``repr``. ``slot_verified`` is carried over
+    from a ``slot_verified`` unconfirmed attempt (PR #190 review), so the retry
+    still counts a masked readback as this code's after a later push to that lock
+    has closed the attempt's window. Events from before it was stored read as
+    ``False``.
     """
 
     lock_entity_id: str
@@ -796,6 +800,7 @@ class ClearFailure:
     removing: bool = False
     unconfirmed: bool = False
     permanent: bool = False
+    slot_verified: bool = False
     expected_pin: str | None = field(default=None, repr=False, compare=False)
     event_id: int | None = field(default=None, compare=False)
 
@@ -841,6 +846,7 @@ def unresolved_clear_failures(*, door_code: DoorCode) -> list[ClearFailure]:
                 reason=str(metadata.get("reason") or ""),
                 removing=bool(metadata.get("removing")),
                 unconfirmed=bool(metadata.get("unconfirmed")),
+                slot_verified=bool(metadata.get(_SLOT_VERIFIED_KEY)),
                 expected_pin=_decrypt_expected_pin(metadata),
                 event_id=event_id,
             )
@@ -872,6 +878,7 @@ def _create_clear_failed_event(*, door_code: DoorCode, failure: ClearFailure) ->
             "reason": failure.reason,
             **({"removing": True} if failure.removing else {}),
             **({"unconfirmed": True} if failure.unconfirmed else {}),
+            **({_SLOT_VERIFIED_KEY: True} if failure.slot_verified else {}),
             **_encrypt_expected_pin(failure.expected_pin),
         },
     )
@@ -905,6 +912,7 @@ def record_clear_failure(
     expected_pin: str | None,
     removing: bool = False,
     unconfirmed: bool = False,
+    slot_verified: bool = False,
 ) -> ClearFailure:
     """Log a failed clear and, unless it's permanent, record it on the lock so it gets retried.
 
@@ -912,6 +920,8 @@ def record_clear_failure(
     PIN may change before the retry). One event per slot until it's settled; a
     repeat failure only adds an event when it changes the flags (a tracked slot
     that's now being dropped, say) or brings the first known expected PIN.
+    ``slot_verified`` only means something for an ``unconfirmed`` slot, and once
+    recorded for one it's kept.
     """
     described = describe_clear_failure(
         door_code=door_code, lock_entity_id=lock_entity_id, slot_index=slot_index, exc=exc
@@ -924,17 +934,26 @@ def record_clear_failure(
         removing = removing or current.removing
         unconfirmed = unconfirmed and current.unconfirmed
         expected_pin = current.expected_pin or expected_pin
+        slot_verified = slot_verified or current.slot_verified
+    slot_verified = unconfirmed and slot_verified
     failure = ClearFailure(
         lock_entity_id=lock_entity_id,
         slot_index=slot_index,
         reason=described.reason,
         removing=removing,
         unconfirmed=unconfirmed,
+        slot_verified=slot_verified,
         expected_pin=expected_pin,
     )
-    if current is None or (current.removing, current.unconfirmed, bool(current.expected_pin)) != (
+    if current is None or (
+        current.removing,
+        current.unconfirmed,
+        current.slot_verified,
+        bool(current.expected_pin),
+    ) != (
         removing,
         unconfirmed,
+        slot_verified,
         bool(expected_pin),
     ):
         _create_clear_failed_event(door_code=door_code, failure=failure)
@@ -956,6 +975,7 @@ def cancel_pending_removal(*, door_code: DoorCode, lock_entity_id: str) -> None:
                     slot_index=failure.slot_index,
                     reason=failure.reason,
                     unconfirmed=failure.unconfirmed,
+                    slot_verified=failure.slot_verified,
                     expected_pin=failure.expected_pin,
                 ),
             )
@@ -1113,9 +1133,8 @@ def _retry_failed_slot_clear(
                 slot_index=slot_index,
                 pin=failure.expected_pin or decrypt_pin_or_none(door_code),
                 timeout_seconds=timeout_seconds,
-                # A clear of a slot_verified attempt that failed keeps that attempt unsettled.
-                slot_verified=failure.unconfirmed
-                and slot_index in _verified_attempt_slots(door_code=door_code, lock_entity_id=lock_entity_id),
+                # Carried on the failure, since a later push to this lock closes the attempt's window.
+                slot_verified=failure.unconfirmed and failure.slot_verified,
             ):
                 forget_cleared_slot(
                     door_code=door_code,
@@ -1157,6 +1176,7 @@ def _retry_failed_slot_clear(
             reason=_clear_error_reason(exc),
             removing=failure.removing,
             unconfirmed=failure.unconfirmed,
+            slot_verified=failure.slot_verified,
         )
     forget_cleared_slot(door_code=door_code, lock_entity_id=lock_entity_id, slot_index=slot_index, outcome="cleared")
     return None
@@ -1216,6 +1236,7 @@ def retry_failed_slot_clears(
                     reason=_clear_error_reason(exc),
                     removing=f.removing,
                     unconfirmed=f.unconfirmed,
+                    slot_verified=f.slot_verified,
                 )
                 for f in failures
                 if f.lock_entity_id == lock_entity_id
@@ -1328,6 +1349,7 @@ def _clear_unconfirmed_slots_on_lock(
     }
     if not attempts:
         return cleared, failed
+    verified = _verified_attempt_slots(door_code=door_code, lock_entity_id=lock_entity_id)
     try:
         node_id = _resolve_lock_node_id(lock_entity_id=lock_entity_id)
     except Exception as exc:
@@ -1340,6 +1362,7 @@ def _clear_unconfirmed_slots_on_lock(
                 exc=exc,
                 expected_pin=attempted_pin or pin,
                 unconfirmed=True,
+                slot_verified=slot_index in verified,
             )
             failed.append(failure)
             if failure.permanent:
@@ -1347,7 +1370,6 @@ def _clear_unconfirmed_slots_on_lock(
                     door_code=door_code, lock_entity_id=lock_entity_id, slot_index=slot_index, outcome="lock_missing"
                 )
         return cleared, failed
-    verified = _verified_attempt_slots(door_code=door_code, lock_entity_id=lock_entity_id)
     for slot_index, attempted_pin in attempts.items():
         expected_pin = attempted_pin or pin
         try:
@@ -1397,6 +1419,7 @@ def _clear_unconfirmed_slots_on_lock(
                 exc=exc,
                 expected_pin=expected_pin,
                 unconfirmed=True,
+                slot_verified=slot_index in verified,
             )
             failed.append(failure)
             if failure.permanent:

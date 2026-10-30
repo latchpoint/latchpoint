@@ -3410,6 +3410,61 @@ class PushSlotClaimRaceTests(EncryptionTestMixin, TestCase):
                 self.assertFalse(DoorCode.objects.filter(id=code.id).exists())
                 self.assertEqual(gateway._lock_codes, {})
 
+    def test_masked_lock_failed_clear_of_a_rolled_back_slot_is_retried_after_a_pin_change_lands(self):
+        # PR #190 review: the slot_verified tag has to survive on the clear failure,
+        # since the new PIN's push closes the attempt's window on that lock.
+        from integrations_zwavejs.manager import ZwavejsCommandError
+
+        code, gateway = self._die_at_the_pushed_stamp(drops_duplicates=False, masked=True)
+        real_invoke = gateway.invoke_cc_api
+
+        def clear_fails(**kwargs):
+            if kwargs.get("command_class") == 99 and kwargs.get("method_name") == "clear":
+                raise ZwavejsCommandError("driver TimeoutError after 5.0s")
+            return real_invoke(**kwargs)
+
+        with patch.object(gateway, "invoke_cc_api", clear_fails):
+            door_codes_uc.update_door_code(code=code, changes={"code": "5678"}, zwavejs=gateway)
+
+        self.assertEqual(self._slot_of(code), 2)
+        self.assertEqual(gateway._lock_codes, {(7, 1): "1234", (7, 2): "5678"})
+        failures = lock_push_uc.unresolved_clear_failures(door_code=code)
+        self.assertEqual([(f.slot_index, f.unconfirmed, f.slot_verified) for f in failures], [(1, True, True)])
+
+        still_failing = lock_push_uc.retry_failed_slot_clears(door_code=code, zwavejs=gateway)
+
+        self.assertEqual(still_failing, [])
+        self.assertEqual(gateway._lock_codes, {(7, 2): "5678"})
+        self.assertEqual(lock_push_uc.unresolved_clear_failures(door_code=code), [])
+
+    def test_masked_slot_of_a_tagged_attempt_with_an_older_pin_is_not_adopted(self):
+        # A tagged attempt only vouches for the PIN it sent: after a PIN change the
+        # masked slot may still hold the old PIN, so the new one goes in a new slot.
+        code = self._make_code(pin="1234")
+        self._attempt_on_slot_1(code=code, slot_verified=True)
+        DoorCode.objects.filter(id=code.id).update(encrypted_pin=SettingsEncryption.get().encrypt("5678"))
+        gateway = FakeGateway(
+            usersNumber=3, slot_status={1: 1, 2: 0, 3: 0}, get_responses=[self.MASKED] * 20, cache_updates_on_set=True
+        )
+        gateway._lock_codes[(7, 1)] = "1234"
+
+        result = push_door_code_to_lock(door_code=code, lock_entity_id=self.LOCK_ENTITY_ID, zwavejs=gateway)
+
+        self.assertEqual(result.slot_index, 2)
+        self.assertEqual(self._set_slots(gateway), [2])
+        self.assertEqual(gateway._lock_codes[(7, 2)], "5678")
+
+    def test_masked_slot_of_a_tagged_attempt_with_the_same_pin_is_adopted(self):
+        code = self._make_code(pin="1234")
+        self._attempt_on_slot_1(code=code, slot_verified=True)
+        gateway = FakeGateway(usersNumber=3, slot_status={1: 1, 2: 0, 3: 0}, get_responses=[self.MASKED] * 20)
+        gateway._lock_codes[(7, 1)] = "1234"
+
+        result = push_door_code_to_lock(door_code=code, lock_entity_id=self.LOCK_ENTITY_ID, zwavejs=gateway)
+
+        self.assertEqual(result.slot_index, 1)
+        self.assertEqual(self._set_slots(gateway), [])
+
     def _attempt_on_slot_1(self, *, code: DoorCode, slot_verified: bool) -> None:
         lock_push_uc._record_unconfirmed_slot_attempt(
             door_code=code,
