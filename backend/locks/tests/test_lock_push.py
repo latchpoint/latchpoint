@@ -1150,15 +1150,24 @@ class PushReadbackAndAdminCodeTests(EncryptionTestMixin, TestCase):
         )
         code = self._make_code(pin="4321")
 
-        with self.assertRaises(LockUnreachable):
+        # The sanitizer masks digit runs, so it's turned off here to check the
+        # message the push builds, and the logs aren't sanitized at all.
+        with (
+            patch.object(lock_push_uc, "sanitize_push_error_for_storage", lambda message: message or ""),
+            self.assertLogs("locks.use_cases.lock_push", level="DEBUG") as logs,
+            self.assertRaises(LockUnreachable),
+        ):
             self._push(code, gateway)
 
         code.refresh_from_db()
         assignment = DoorCodeLockAssignment.objects.get(door_code=code)
         self.assertEqual((assignment.push_state, assignment.push_attempt_count), (DoorCode.PushState.PENDING, 1))
         self.assertIn("LockCodeUnverified", code.last_push_error)
-        self.assertIn(lock_push_uc._ADMIN_CODE_HINT, code.last_push_error)
-        self.assertNotIn("4321", code.last_push_error)
+        self.assertIn(lock_push_uc._ADMIN_CODE_HINT, assignment.last_push_error)
+        [marker] = DoorCodeEvent.objects.filter(door_code=code, metadata__action=lock_push_uc._UNCONFIRMED_PUSH_ACTION)
+        self.assertIn(lock_push_uc._ADMIN_CODE_HINT, marker.metadata["reason"])
+        for text in (assignment.last_push_error, marker.metadata["reason"], "\n".join(logs.output)):
+            self.assertNotIn("4321", text)
         self.assertEqual(self._unconfirmed_slots(code), [1])
 
     def test_readback_timeouts_alone_get_no_admin_code_hint(self):
@@ -1470,6 +1479,11 @@ class PushReadbackAndAdminCodeTests(EncryptionTestMixin, TestCase):
             {"status": 0},
             {"status": 1, "remainingDuration": {"value": 1, "unit": "seconds"}},
             {"status": "fail"},
+            # A status has to be a real int; a numeric string isn't a Supervision result.
+            {"status": "2"},
+            {"response": {"status": "2"}},
+            {"status": 2.0},
+            {"status": True},
             {"userIdStatus": 2},
             2,
             "2",
@@ -3536,6 +3550,87 @@ class DoorCodePushRetryViewTests(EncryptionTestMixin, APITestCase):
         self.assertEqual(response.status_code, 404)
 
 
+class AdminCodeHintVisibilityTests(EncryptionTestMixin, APITestCase):
+    """PR #198 review: only admins see that a PIN may match the lock's admin code (issue #125)."""
+
+    LOCK_ENTITY_ID = "lock.front_door"
+
+    def setUp(self):
+        self.admin = User.objects.create_superuser(email="admin@example.com", password="pass")
+        self.user = User.objects.create_user(email="user@example.com", password="pass")
+        Entity.objects.create(
+            entity_id=self.LOCK_ENTITY_ID,
+            domain="lock",
+            name="Front Door",
+            attributes={"zwavejs": {"node_id": 7}},
+            source="home_assistant",
+        )
+        patcher = patch.object(lock_push_uc, "_READBACK_RETRY_DELAYS_SECONDS", (0.0, 0.0))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.code = DoorCode.objects.create(
+            user=self.user,
+            encrypted_pin=SettingsEncryption.get().encrypt("4321"),
+            pin_length=4,
+            code_type=DoorCode.CodeType.PERMANENT,
+            is_active=True,
+        )
+        DoorCodeLockAssignment.objects.create(door_code=self.code, lock_entity_id=self.LOCK_ENTITY_ID)
+        gateway = FakeGateway(usersNumber=3, slot_status={1: 0, 2: 0, 3: 0}, admin_code="4321")
+        with self.assertRaises(LockRejectedCode):
+            push_door_code_to_lock(door_code=self.code, lock_entity_id=self.LOCK_ENTITY_ID, zwavejs=gateway)
+        self.code.refresh_from_db()
+        # Stored with the hint, on the code and on the lock.
+        self.assertIn(lock_push_uc._ADMIN_CODE_HINT, self.code.last_push_error)
+        self.assertIn(
+            lock_push_uc._ADMIN_CODE_HINT, DoorCodeLockAssignment.objects.get(door_code=self.code).last_push_error
+        )
+
+    def _errors(self, payload: dict) -> list[str]:
+        return [payload["last_push_error"], *(lock["last_push_error"] for lock in payload["lock_slot_assignments"])]
+
+    def test_the_owner_doesnt_see_the_hint(self):
+        self.client.force_authenticate(self.user)
+
+        detail = self.client.get(reverse("door-code-detail", args=[self.code.id])).json()["data"]
+        [listed] = self.client.get(reverse("door-codes")).json()["data"]
+
+        for payload in (detail, listed):
+            for error in self._errors(payload):
+                self.assertIn("reads back empty", error)
+                self.assertNotIn("admin code", error)
+
+    def test_an_admin_sees_the_hint(self):
+        self.client.force_authenticate(self.admin)
+
+        detail = self.client.get(reverse("door-code-detail", args=[self.code.id])).json()["data"]
+        [listed] = self.client.get(reverse("door-codes"), {"user_id": str(self.user.id)}).json()["data"]
+
+        for payload in (detail, listed):
+            for error in self._errors(payload):
+                self.assertIn(lock_push_uc._ADMIN_CODE_HINT, error)
+
+    def test_without_a_request_the_hint_is_left_out(self):
+        from locks.serializers import DoorCodeSerializer
+
+        code = DoorCode.objects.prefetch_related("lock_assignments").get(id=self.code.id)
+
+        for error in self._errors(DoorCodeSerializer(code).data):
+            self.assertNotIn("admin code", error)
+
+    def test_a_hint_cut_short_at_the_end_of_a_full_length_error_is_stripped(self):
+        hint = lock_push_uc._ADMIN_CODE_HINT
+        full = f"{'x' * (500 - len(hint) + 9)} {hint}"[:500]
+        self.assertEqual(len(full), 500)
+        self.assertNotIn(hint, full)
+
+        self.assertEqual(lock_push_uc.strip_admin_code_hint(full), "x" * (500 - len(hint) + 9))
+        self.assertEqual(
+            lock_push_uc.strip_admin_code_hint(f"lock.a: Lock did not store the code. {hint}; lock.b: timeout"),
+            "lock.a: Lock did not store the code.; lock.b: timeout",
+        )
+
+
 class PushSlotClaimRaceTests(EncryptionTestMixin, TestCase):
     """Issue #106: back-to-back pushes must not land in the same slot.
 
@@ -4864,6 +4959,48 @@ class MaskedUnconfirmedSlotTests(EncryptionTestMixin, TestCase):
 
                 door_codes_uc.delete_door_code(code=code, zwavejs=gateway)
                 self.assertEqual(gateway._lock_codes, {})
+
+    def test_a_resend_answered_with_supervision_fail_keeps_the_slot_tagged_so_a_delete_clears_it(self):
+        # PR #198 review: an untagged Fail marker on top of the slot_available
+        # attempt made the delete leave 1234 in slot 1, and Retry then used slot 2.
+        code, gateway = self._unconfirmed_push()
+        gateway._set_result = {"status": 2}
+
+        with self.assertRaises(LockRejectedCode):
+            push_door_code_to_lock(door_code=code, lock_entity_id=self.LOCK_ENTITY_ID, zwavejs=gateway)
+
+        # Adoption read it back masked and resent, and the lock answered Fail.
+        self.assertEqual(self._calls(gateway, "set"), [1])
+        self.assertEqual(self._calls(gateway, "get"), [1])
+        self.assertIsNone(self._slot_of(code))
+        self.assertEqual(gateway._lock_codes, {(7, 1): "1234"})
+        marker = self._newest_marker(code)
+
+        door_codes_uc.delete_door_code(code=code, zwavejs=gateway)
+
+        self.assertFalse(DoorCode.objects.filter(id=code.id).exists())
+        self.assertEqual(self._calls(gateway, "clear"), [1])
+        self.assertEqual(gateway._lock_codes, {})
+        # The Fail marker kept the resend target's slot_available tag.
+        self.assertEqual((marker.get("slot_available"), marker.get("slot_verified")), (True, None))
+
+    def test_a_resend_answered_with_supervision_fail_is_resent_again_on_retry(self):
+        code, gateway = self._unconfirmed_push()
+        gateway._set_result = {"status": 2}
+        with self.assertRaises(LockRejectedCode):
+            push_door_code_to_lock(door_code=code, lock_entity_id=self.LOCK_ENTITY_ID, zwavejs=gateway)
+        gateway._set_result = None
+        gateway.invoke_calls.clear()
+        admin = User.objects.create_superuser(email="admin@example.com", password="pass")
+
+        door_codes_uc.retry_push_door_code(code=code, actor_user=admin, zwavejs=gateway)
+
+        # Into slot 1 again, not a second slot a lock that drops duplicates rejects.
+        self.assertEqual(self._calls(gateway, "set"), [1])
+        self.assertEqual(gateway._lock_codes, {(7, 1): "1234"})
+        self.assertEqual(self._slot_of(code), 1)
+        code.refresh_from_db()
+        self.assertEqual(code.push_state, DoorCode.PushState.PUSHED)
 
     def test_a_resend_whose_readback_times_out_again_stays_tagged(self):
         code, gateway = self._unconfirmed_push()

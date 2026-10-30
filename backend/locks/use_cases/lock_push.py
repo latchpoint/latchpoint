@@ -323,6 +323,22 @@ _ADMIN_CODE_PROPERTIES = ("adminCode", "masterCode")
 _ADMIN_CODE_HINT = "This PIN may match the lock's admin code."
 
 
+def strip_admin_code_hint(message: str | None) -> str:
+    """``message`` without :data:`_ADMIN_CODE_HINT`, for viewers who aren't admins (PR #198 review).
+
+    The hint tells whoever reads it that their PIN may be the lock's admin code
+    (issue #125). The code-level error is cut at 500 characters, so a hint cut
+    short at the end of a full-length error goes too.
+    """
+    text = (message or "").replace(f" {_ADMIN_CODE_HINT}", "").replace(_ADMIN_CODE_HINT, "")
+    if len(message or "") >= 500:
+        for size in range(len(_ADMIN_CODE_HINT) - 1, 0, -1):
+            cut = f" {_ADMIN_CODE_HINT[:size]}"
+            if text.endswith(cut):
+                return text[: -len(cut)]
+    return text
+
+
 def _pin_may_match_admin_code(
     *,
     zwavejs: ZwavejsGateway,
@@ -371,22 +387,26 @@ def _supervision_status(result: object) -> int | None:
     ``{"status": 255}`` and for an unsupervised one nothing (issue #125). That
     shape isn't confirmed against a real lock, so this also takes the dict
     wrapped in ``response`` or ``result`` and an object with a ``status``
-    attribute (the library's own ``SupervisionResult``), and anything else
-    (a bare number, a string, a bool) counts as no result.
+    attribute (the library's own ``SupervisionResult``). The status itself has
+    to be an int, so ``{"status": "2"}`` doesn't count, and anything else (a
+    bare number, a string, a bool) counts as no result.
     """
     if isinstance(result, dict):
         if "status" in result:
-            return _coerce_int(result.get("status"))
+            return _int_status(result.get("status"))
         for key in ("response", "result"):
             inner = result.get(key)
             if isinstance(inner, dict) and "status" in inner:
-                return _coerce_int(inner.get("status"))
+                return _int_status(inner.get("status"))
         return None
     if result is None or isinstance(result, (str, bytes, int, float)):
         return None
-    status = getattr(result, "status", None)
+    return _int_status(getattr(result, "status", None))
+
+
+def _int_status(status: object) -> int | None:
+    """``status`` when it's a real int (``SupervisionStatus`` is an IntEnum), else ``None``. No strings or bools."""
     if isinstance(status, int) and not isinstance(status, bool):
-        # SupervisionStatus is an IntEnum.
         return int(status)
     return None
 
@@ -2930,6 +2950,13 @@ def push_door_code_to_lock(
             slot_index,
         )
 
+        # Whether the attempt a resend goes to was tagged slot_verified, so a marker
+        # recorded on top of it keeps that (PR #198 review). Read before the set,
+        # while that attempt is still the newest one for the slot.
+        resend_target_verified = resend_to_attempted_slot and slot_index in _verified_attempt_slots(
+            door_code=door_code, lock_entity_id=lock_entity_id
+        )
+
         # Once the PIN may be in the slot (set sent, or slot adopted), a gateway
         # failure, transient or a terminal Z-Wave JS one, records the slot so the
         # retry can adopt it instead of writing the PIN to a second slot.
@@ -3022,17 +3049,24 @@ def push_door_code_to_lock(
             if exc.supervision_failed:
                 event_metadata.update(slot_index=int(slot_index), supervision_status="fail")
                 # In case the lock stored the PIN anyway, so a delete, deactivate or
-                # PIN change reads the slot back and clears it. Untagged on purpose:
-                # nothing has seen the PIN there, so only a readback showing this
-                # exact readable PIN counts the slot as ours (for those cleanups and
-                # for adoption on Retry), and a masked slot, maybe a keypad code
-                # typed in there, is left alone (#193's rules).
+                # PIN change reads the slot back and clears it. A set into a freshly
+                # picked slot leaves it untagged: nothing has seen the PIN there, so
+                # only a readback showing this exact readable PIN counts the slot as
+                # ours (for those cleanups and for adoption on Retry), and a masked
+                # slot, maybe a keypad code typed in there, is left alone (#193's
+                # rules). A resend keeps the trust of the tagged attempt it went to,
+                # since this marker becomes the newest one for the slot and an
+                # untagged one would leave the earlier PIN there on a delete (PR #198
+                # review). The slot_available tag is still dropped if this code read
+                # the slot back empty since its last push.
                 _record_unconfirmed_slot_attempt(
                     door_code=door_code,
                     lock_entity_id=lock_entity_id,
                     slot_index=slot_index,
                     reason="Lock answered the set with Supervision Fail",
                     pin=pin,
+                    slot_verified=resend_target_verified,
+                    slot_available=resend_to_attempted_slot,
                 )
             # The lock turned the PIN down (Supervision Fail, or the slot read back
             # empty). Still terminal with an admin code match, like without one: the
