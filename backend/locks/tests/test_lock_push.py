@@ -3183,6 +3183,111 @@ class PushSlotClaimRaceTests(EncryptionTestMixin, TestCase):
         self.assertEqual(code.push_state, DoorCode.PushState.FAILED)
         self.assertIn("recorded for another door code", code.last_push_error)
 
+    def _push_while_other_records_slot(self, *, other: DoorCode, pin: str = "1234") -> tuple[DoorCode, FakeGateway]:
+        """Push a new code while ``other`` gets the same slot recorded mid-push (issue #129)."""
+        lock_entity_id = self.LOCK_ENTITY_ID
+
+        class ConcurrentWriterGateway(FakeGateway):
+            def invoke_cc_api(self, *, node_id, command_class, method_name, args=None, timeout_seconds=10.0):
+                if command_class == 99 and method_name == "set":
+                    DoorCodeLockAssignment.objects.filter(door_code=other, lock_entity_id=lock_entity_id).update(
+                        slot_index=args[0]
+                    )
+                return super().invoke_cc_api(
+                    node_id=node_id,
+                    command_class=command_class,
+                    method_name=method_name,
+                    args=args,
+                    timeout_seconds=timeout_seconds,
+                )
+
+        gateway = ConcurrentWriterGateway(usersNumber=3, slot_status={1: 0, 2: 0, 3: 0})
+        code = self._make_code(pin=pin)
+        with self.assertRaises(LockPushFailed):
+            push_door_code_to_lock(door_code=code, lock_entity_id=self.LOCK_ENTITY_ID, zwavejs=gateway)
+        return code, gateway
+
+    def test_slot_recorded_for_another_code_names_that_code_and_asks_for_a_lock_sync(self):
+        other = self._make_code(pin="9999", label="Dog walker")
+
+        code, _gateway = self._push_while_other_records_slot(other=other)
+
+        code.refresh_from_db()
+        self.assertIn(f'another door code (id {other.id}, "Dog walker")', code.last_push_error)
+        self.assertIn("may now hold this PIN in slot 1 in place of that code's", code.last_push_error)
+        self.assertIn(f"Run a lock sync on {self.LOCK_ENTITY_ID}", code.last_push_error)
+        event = DoorCodeEvent.objects.get(door_code=code, metadata__action="push")
+        self.assertEqual(event.metadata["conflicting_door_code_id"], other.id)
+        self.assertEqual(event.metadata["conflicting_door_code_label"], "Dog walker")
+        self.assertEqual(event.metadata["slot_index"], 1)
+        self.assertEqual(event.metadata["lock_entity_id"], self.LOCK_ENTITY_ID)
+        self.assertTrue(event.metadata["lock_sync_needed"])
+        self.assertIn("in place of that code's", event.metadata["reason"])
+
+    def test_slot_recorded_for_another_code_is_kept_as_an_unconfirmed_slot(self):
+        other = self._make_code(pin="9999")
+
+        code, _gateway = self._push_while_other_records_slot(other=other)
+
+        marker = DoorCodeEvent.objects.get(door_code=code, metadata__action="push_unconfirmed")
+        self.assertEqual(marker.lock_entity_id, self.LOCK_ENTITY_ID)
+        self.assertEqual(marker.metadata["slot_index"], 1)
+        self.assertEqual(lock_push_uc._decrypt_expected_pin(marker.metadata), "1234")
+
+    def test_delete_leaves_the_slot_alone_while_the_other_code_holds_it(self):
+        other = self._make_code(pin="9999")
+        code, gateway = self._push_while_other_records_slot(other=other)
+        calls_before = len(gateway.invoke_calls)
+
+        door_codes_uc.delete_door_code(code=code, zwavejs=gateway)
+
+        self.assertFalse(DoorCode.objects.filter(id=code.id).exists())
+        self.assertEqual(gateway.invoke_calls[calls_before:], [])
+        self.assertEqual(self._slot_of(other), 1)
+
+    def test_retry_adopts_the_slot_once_the_other_code_lets_go_of_it(self):
+        other = self._make_code(pin="9999")
+        code, gateway = self._push_while_other_records_slot(other=other)
+        # The other code forgets slot 1 without clearing it, ie its readback found this PIN there.
+        DoorCodeLockAssignment.objects.filter(door_code=other).update(slot_index=None)
+
+        result = push_door_code_to_lock(door_code=code, lock_entity_id=self.LOCK_ENTITY_ID, zwavejs=gateway)
+
+        self.assertEqual(result.slot_index, 1)
+        self.assertEqual(self._set_slots(gateway), [1])
+        self.assertEqual(self._slot_of(code), 1)
+
+    def test_delete_clears_the_slot_once_the_other_code_lets_go_of_it(self):
+        other = self._make_code(pin="9999")
+        code, gateway = self._push_while_other_records_slot(other=other)
+        DoorCodeLockAssignment.objects.filter(door_code=other).update(slot_index=None)
+
+        door_codes_uc.delete_door_code(code=code, zwavejs=gateway)
+
+        clears = [c["args"] for c in gateway.invoke_calls if c["command_class"] == 99 and c["method_name"] == "clear"]
+        self.assertEqual(clears, [[1]])
+        self.assertNotIn((7, 1), gateway._lock_codes)
+
+    def test_process_dying_before_the_pushed_stamp_records_no_slot(self):
+        # Issue #130: the slot and the pushed stamp commit together, so a code is
+        # never left pending with a slot, which the scheduler never retries.
+        gateway = FakeGateway(usersNumber=3, slot_status={1: 0, 2: 0, 3: 0})
+        code = self._make_code(pin="1234")
+        real_save = DoorCode.save
+
+        def dying_save(instance, *args, **kwargs):
+            if instance.push_state == DoorCode.PushState.PUSHED and "push_state" in (kwargs.get("update_fields") or []):
+                raise KeyboardInterrupt
+            return real_save(instance, *args, **kwargs)
+
+        with patch.object(DoorCode, "save", dying_save), self.assertRaises(KeyboardInterrupt):
+            push_door_code_to_lock(door_code=code, lock_entity_id=self.LOCK_ENTITY_ID, zwavejs=gateway)
+
+        self.assertIsNone(self._slot_of(code))
+        code.refresh_from_db()
+        self.assertEqual(code.push_state, DoorCode.PushState.PENDING)
+        self.assertFalse(DoorCodeEvent.objects.filter(door_code=code, metadata__action="pushed").exists())
+
     def test_single_cc_99_get_after_set_is_the_readback(self):
         # The #107 readback is also the cache refresh #106 added: one get per push,
         # never a second one after the success stamp (battery locks).
@@ -3228,3 +3333,120 @@ class PushSlotClaimRaceTests(EncryptionTestMixin, TestCase):
         code.refresh_from_db()
         self.assertEqual(code.push_state, DoorCode.PushState.PENDING)
         self.assertIn("LockCodeUnverified", code.last_push_error)
+
+
+class SlotStatusFreeTests(EncryptionTestMixin, TestCase):
+    """Issue #168: only a userIdStatus of Available (0) makes a slot free."""
+
+    LOCK_ENTITY_ID = "lock.front_door"
+    MESSAGING = 3
+    PASSAGE_MODE = 4
+    STATUS_NOT_AVAILABLE = 0xFE
+
+    def setUp(self):
+        self.user = User.objects.create_user(email="user@example.com", password="pass")
+        Entity.objects.create(
+            entity_id=self.LOCK_ENTITY_ID,
+            domain="lock",
+            name="Front Door",
+            attributes={"zwavejs": {"node_id": 7}},
+            source="home_assistant",
+        )
+        self.code = DoorCode.objects.create(
+            user=self.user,
+            encrypted_pin=SettingsEncryption.get().encrypt("1234"),
+            pin_length=4,
+            code_type=DoorCode.CodeType.PERMANENT,
+            is_active=True,
+        )
+        DoorCodeLockAssignment.objects.create(door_code=self.code, lock_entity_id=self.LOCK_ENTITY_ID)
+
+    @staticmethod
+    def _set_slots(gateway: FakeGateway) -> list[int]:
+        return [c["args"][0] for c in gateway.invoke_calls if c["command_class"] == 99 and c["method_name"] == "set"]
+
+    def test_messaging_and_passage_mode_slots_are_skipped(self):
+        gateway = FakeGateway(usersNumber=3, slot_status={1: self.MESSAGING, 2: self.PASSAGE_MODE, 3: 0})
+
+        result = push_door_code_to_lock(door_code=self.code, lock_entity_id=self.LOCK_ENTITY_ID, zwavejs=gateway)
+
+        self.assertEqual(result.slot_index, 3)
+        self.assertEqual(self._set_slots(gateway), [3])
+
+    def test_lock_with_only_messaging_and_passage_mode_slots_is_full(self):
+        gateway = FakeGateway(usersNumber=2, slot_status={1: self.MESSAGING, 2: self.PASSAGE_MODE})
+
+        with self.assertRaises(LockSlotsFull):
+            push_door_code_to_lock(door_code=self.code, lock_entity_id=self.LOCK_ENTITY_ID, zwavejs=gateway)
+
+        self.assertEqual(gateway.invoke_calls, [])
+        self.assertIsNone(DoorCodeLockAssignment.objects.get(door_code=self.code).slot_index)
+
+    def test_status_not_available_or_missing_is_not_free(self):
+        gateway = FakeGateway(usersNumber=3, slot_status={1: self.STATUS_NOT_AVAILABLE, 2: None, 3: 0})
+
+        result = push_door_code_to_lock(door_code=self.code, lock_entity_id=self.LOCK_ENTITY_ID, zwavejs=gateway)
+
+        self.assertEqual(result.slot_index, 3)
+        self.assertEqual(self._set_slots(gateway), [3])
+
+
+class PushInsideTransactionTests(EncryptionTestMixin, TestCase):
+    """Issue #130: a push has to run in autocommit so its slot commits before the lock is let go."""
+
+    LOCK_ENTITY_ID = "lock.front_door"
+
+    def setUp(self):
+        self.user = User.objects.create_user(email="user@example.com", password="pass")
+        Entity.objects.create(
+            entity_id=self.LOCK_ENTITY_ID,
+            domain="lock",
+            name="Front Door",
+            attributes={"zwavejs": {"node_id": 7}},
+            source="home_assistant",
+        )
+        self.code = DoorCode.objects.create(
+            user=self.user,
+            encrypted_pin=SettingsEncryption.get().encrypt("1234"),
+            pin_length=4,
+            code_type=DoorCode.CodeType.PERMANENT,
+            is_active=True,
+        )
+        DoorCodeLockAssignment.objects.create(door_code=self.code, lock_entity_id=self.LOCK_ENTITY_ID)
+
+    def test_testcase_transaction_alone_does_not_count(self):
+        from django.db import connection
+
+        self.assertTrue(connection.in_atomic_block)
+        gateway = FakeGateway(usersNumber=3)
+
+        result = push_door_code_to_lock(door_code=self.code, lock_entity_id=self.LOCK_ENTITY_ID, zwavejs=gateway)
+
+        self.assertEqual(result.slot_index, 1)
+
+    def test_push_inside_a_caller_transaction_raises_in_tests_before_anything_is_sent(self):
+        from django.db import transaction
+
+        gateway = FakeGateway(usersNumber=3)
+
+        with self.assertRaises(lock_push_uc.PushInTransaction), transaction.atomic():
+            push_door_code_to_lock(door_code=self.code, lock_entity_id=self.LOCK_ENTITY_ID, zwavejs=gateway)
+
+        self.assertEqual(gateway.invoke_calls, [])
+        self.assertIsNone(DoorCodeLockAssignment.objects.get(door_code=self.code).slot_index)
+
+    def test_push_inside_a_caller_transaction_warns_in_prod(self):
+        from django.db import transaction
+        from django.test import override_settings
+
+        gateway = FakeGateway(usersNumber=3)
+
+        with (
+            override_settings(DEBUG=False, IS_TESTING=False),
+            self.assertLogs(lock_push_uc.logger, level="WARNING") as logs,
+            transaction.atomic(),
+        ):
+            result = push_door_code_to_lock(door_code=self.code, lock_entity_id=self.LOCK_ENTITY_ID, zwavejs=gateway)
+
+        self.assertEqual(result.slot_index, 1)
+        self.assertTrue(any("inside an open DB transaction" in line for line in logs.output))
