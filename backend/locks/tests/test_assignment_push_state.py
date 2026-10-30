@@ -226,7 +226,8 @@ class PushDualWriteTests(_TwoLockUpdateTestBase):
         with self.assertRaises(LockPushFailed):
             self._push(code, gateway)
 
-        # The attempt counts on the lock now that the code's count is for clear retries (PR #192).
+        # A terminal failure counts an attempt on the lock now, since the code's
+        # count only counts clear retries (issue #126) and PR #192 counts the attempt.
         self.assertEqual(_lock_state(assignment), (None, FAILED, 3, "ws_url not set", False))
         code.refresh_from_db()
         self.assertEqual(assignment.last_push_attempt_at, code.last_push_attempt_at)
@@ -326,6 +327,8 @@ class PushDualWriteTests(_TwoLockUpdateTestBase):
                 with patch.object(target, *replacement), self.assertRaises(KeyboardInterrupt):
                     self._push(code, gateway)
 
+                # It died after the PIN landed, so it's the success block that rolled back.
+                self.assertEqual(gateway._lock_codes, {(12, 1): "8642"})
                 self.assertEqual(_lock_state(assignment), (None, PENDING, 2, "old", False))
                 self.assertIsNone(assignment.last_push_attempt_at)
                 code.refresh_from_db()

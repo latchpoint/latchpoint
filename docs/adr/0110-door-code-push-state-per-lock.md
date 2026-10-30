@@ -49,7 +49,10 @@ a rollup of them that keeps the API compatible.
   is `failed` when any lock is `failed` ("needs a human" wins, even while
   another lock is still retrying), else `pending` while a lock needs its `set`
   or schedule or a clear failure is outstanding, else `pushed`. A lock being
-  dropped whose clear hasn't worked doesn't count. The error leads with the
+  dropped whose clear hasn't worked doesn't count. In both of the last two
+  cases the code's clear-retry count at the cap with a clear outstanding makes
+  it `failed`, and once nothing is left to clear the rollup puts that count
+  back to 0. The error leads with the
   slots that may still hold the PIN, then has `lock.x: <error>` per lock. It
   takes the code row first, and every writer of a code and its assignments
   takes the code row first, `_delete_door_code_locked` included.
@@ -62,13 +65,22 @@ a rollup of them that keeps the API compatible.
 - **Scheduler.** A code is picked up when one of its locks is `pending` with no
   slot or a pending schedule and under the cap, whatever the code's own state,
   or when it has a clear failure and its clear-retry count is under the cap.
-  `failed` locks are skipped.
+  `failed` locks are skipped, and so is a lock the code is being dropped from
+  and a slot whose clear is still outstanding, since nothing is sent to them.
+  The clear retries only run under the clear-retry cap, whichever of those
+  picked the code. A push that finds its lock being dropped once it holds the
+  `lock_sync:` lock raises `PushSuperseded` and sends nothing.
 - **Two-step push.** Once the PIN is confirmed the slot is recorded with
   `schedule_pending` when the code has days, and the schedule goes out after.
   A schedule that lands marks the lock `pushed`. A transient failure leaves it
   `pending` with the slot, and a terminal one `failed` with the slot, so a
   delete or deactivate still clears it. A lock with `schedule_pending` gets
-  only the schedule next time, no CC 99 `set`. PR #190's marker, final
+  only the schedule next time, no CC 99 `set`, unless that slot has a clear
+  outstanding (a PIN change whose clear failed), where it may still hold the
+  old PIN. That slot waits for the clear retry, which frees it for a fresh
+  push. Lock sync skips a slot whose schedule is pending (`schedule_pending`),
+  since taking the schedule from the lock would mark it pushed and drop the
+  resend, and it refreshes the rollup of every code it changes. PR #190's marker, final
   transaction and `IntegrityError` handling stay, and that error now fails only
   the lock it happened on.
 - **Retry.** Still one button per code. It re-arms every `failed` lock and every
@@ -106,6 +118,10 @@ a rollup of them that keeps the API compatible.
   queries each time. It reads the clear failures from events like before.
 - A start moved within the past to after the code's last push attempt makes the
   validity task re-arm that code's failed locks once, like a Retry.
+- The state is worked out against the current cap every time, so raising
+  `door_codes.push_max_attempts` puts a code the clear-retry cap failed back
+  to `pending` and its clears get retried again. Before, `failed` stayed until
+  Retry.
 - `last_push_attempt_at` on assignments is NULL for rows from the backfill and
   from lock sync.
 

@@ -95,7 +95,9 @@ def push_pending_door_codes() -> int:
     transient gateway failures. Returns the number of codes attempted this tick.
     """
     from locks.use_cases.lock_push import (
+        being_removed_q,
         inactive_slots_to_clear,
+        locks_to_push,
         normalize_assignment_push_state,
         push_or_settle_after_clear_retry,
         retry_failed_slot_clears,
@@ -111,10 +113,16 @@ def push_pending_door_codes() -> int:
     normalize_assignment_push_state()
     sweep_push_cap(now=now, max_attempts=max_attempts)
 
-    needs_push_subquery = DoorCodeLockAssignment.objects.filter(
-        door_code=OuterRef("pk"), push_state=DoorCode.PushState.PENDING
-    ).filter(Q(slot_index__isnull=True) | Q(schedule_pending=True))
+    # Not a lock the code is being dropped from: nothing ever pushes it, so it
+    # would pick the code every tick and run its clear retries past the cap (PR #196 review).
+    needs_push_subquery = (
+        DoorCodeLockAssignment.objects.filter(door_code=OuterRef("pk"), push_state=DoorCode.PushState.PENDING)
+        .filter(Q(slot_index__isnull=True) | Q(schedule_pending=True))
+        .exclude(being_removed_q())
+    )
     if max_attempts > 0:
+        # Belt and braces: the sweep above already failed every waiting lock at
+        # the cap, but a push outside the scheduler can count one up since.
         needs_push_subquery = needs_push_subquery.filter(push_attempt_count__lt=max_attempts)
     # Any recorded clear failure, settled or not; retry_failed_slot_clears skips settled ones.
     clear_failed_subquery = DoorCodeEvent.objects.filter(
@@ -157,18 +165,30 @@ def push_pending_door_codes() -> int:
 
     attempted = 0
     for code in candidates:
-        picked_to_push = code._needs_push and code.is_active and belongs_on_lock(code, now=now)
-        if (
-            not picked_to_push
-            and not unresolved_clear_failures(door_code=code)
-            and not inactive_slots_to_clear(door_code=code)
-        ):
+        # The exact rules on top of the SQL rough cut, ie not a slot whose clear is still outstanding.
+        picked_to_push = (
+            code._needs_push
+            and code.is_active
+            and belongs_on_lock(code, now=now)
+            and any(
+                max_attempts <= 0 or assignment.push_attempt_count < max_attempts
+                for assignment in locks_to_push(door_code=code, assignments=list(code.lock_assignments.all()))
+            )
+        )
+        # The clear retries only run under the code's clear-retry cap, whichever
+        # arm picked the code (PR #196 review).
+        clears_due = bool(unresolved_clear_failures(door_code=code)) and (
+            max_attempts <= 0 or (code.push_attempt_count or 0) < max_attempts
+        )
+        if not picked_to_push and not clears_due and not inactive_slots_to_clear(door_code=code):
             # Only picked up by a rough cut (a settled clear failure, a slot of an
             # inactive code with nothing left to clear): nothing to do on its locks.
             continue
         was_failed = code.push_state == DoorCode.PushState.FAILED
         try:
-            clear_failures = retry_failed_slot_clears(door_code=code, zwavejs=default_zwavejs_gateway)
+            clear_failures = (
+                retry_failed_slot_clears(door_code=code, zwavejs=default_zwavejs_gateway) if clears_due else []
+            )
             _successes, failures = push_or_settle_after_clear_retry(
                 door_code=code,
                 zwavejs=default_zwavejs_gateway,

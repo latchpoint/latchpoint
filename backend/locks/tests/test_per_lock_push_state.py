@@ -17,11 +17,14 @@ from django.db import connection
 from django.db.models.query import QuerySet
 from django.utils import timezone
 from integrations_zwavejs.manager import ZwavejsCommandError, ZwavejsCommandValidationError
+from rest_framework.test import APITestCase
 
 from alarm.crypto import SettingsEncryption
+from alarm.tests.settings_test_utils import EncryptionTestMixin
 from locks.models import DoorCode, DoorCodeEvent, DoorCodeLockAssignment
 from locks.serializers import DoorCodePushSerializer, DoorCodeSerializer
-from locks.tests.test_lock_push import ClearFailingGateway, _TwoLockUpdateTestBase
+from locks.tests import test_lock_config_sync_api as sync_tests
+from locks.tests.test_lock_push import ClearFailingGateway, FakeGateway, _TwoLockUpdateTestBase
 from locks.use_cases import door_codes as door_codes_uc
 from locks.use_cases import lock_push as lock_push_uc
 from locks.use_cases.lock_push import ClearFailure, LockPushFailed, LockUnreachable, push_door_code_to_lock
@@ -896,3 +899,221 @@ class SuccessBlockRestoreTests(_PerLockTestBase):
             (code.push_state, code.last_push_attempt_at, code.last_push_error, code.push_attempt_count), before
         )
         self.assertIsNone(self._assignment(code, self.BACK).slot_index)
+
+
+class PendingRemovalTests(_PerLockTestBase):
+    """PR #196 review: a lock the code is being dropped from never picks the code for a push."""
+
+    def _code_dropping_side(self, *, side_state: str = PENDING, clear_count: int = 0) -> DoorCode:
+        """Back is on the lock, Side is being dropped with its schedule still pending and its clear failing."""
+        code = self._code(push_attempt_count=clear_count)
+        self._lock(code, self.BACK, slot_index=1, push_state=PUSHED)
+        self._lock(code, self.SIDE, slot_index=2, push_state=side_state, schedule_pending=True)
+        lock_push_uc._create_clear_failed_event(
+            door_code=code,
+            failure=ClearFailure(lock_entity_id=self.SIDE, slot_index=2, reason="timeout", removing=True),
+        )
+        # What the clear that failed left the code at.
+        lock_push_uc.refresh_push_state(door_code=code)
+        return code
+
+    def test_a_lock_being_removed_with_its_schedule_pending_doesnt_run_the_clears_past_the_cap(self):
+        # The probe: the code's clear-retry count is at the cap and every tick used to clear again (25, 26, 27).
+        code = self._code_dropping_side(clear_count=24)
+        gateway = PerNodeGateway(usersNumber=5, cache_updates_on_set=True)
+        gateway.clear_fails_on = {13}
+
+        for _tick in range(3):
+            self._tick(gateway)
+
+        self.assertEqual(gateway.invoke_calls, [])
+        code.refresh_from_db()
+        self.assertEqual((code.push_state, code.push_attempt_count), (FAILED, 24))
+        self.assertEqual(_lock_state(self._assignment(code, self.SIDE))[:2], (2, PENDING))
+
+    def test_under_the_cap_only_the_clear_is_retried(self):
+        code = self._code_dropping_side()
+        gateway = PerNodeGateway(usersNumber=5, cache_updates_on_set=True)
+        gateway.clear_fails_on = {13}
+
+        self._tick(gateway)
+
+        self.assertEqual(self._calls(gateway, "clear"), [(13, [2])])
+        self.assertEqual(self._nodes_sent(gateway, 78, "setDailyRepeatingSchedule"), [])
+        code.refresh_from_db()
+        self.assertEqual(code.push_attempt_count, 1)
+
+    def test_the_normalizer_leaves_a_failed_lock_being_removed_failed(self):
+        # The rollup ignores it, so its code isn't failed, which isn't the stale case.
+        code = self._code_dropping_side(side_state=FAILED)
+        code.refresh_from_db()
+        self.assertEqual(code.push_state, PENDING)
+
+        lock_push_uc.normalize_assignment_push_state()
+
+        self.assertEqual(_lock_state(self._assignment(code, self.SIDE))[:2], (2, FAILED))
+
+
+class ScheduleAfterAFailedClearTests(_PerLockTestBase):
+    """PR #196 review: a slot whose clear failed may still hold the old PIN, so its schedule isn't resent."""
+
+    def test_a_pin_change_whose_clear_failed_doesnt_give_the_old_pin_the_window(self):
+        gateway = PerNodeGateway(usersNumber=5, cache_updates_on_set=True)
+        gateway.schedule_fails_on = {12: ZwavejsCommandError(TIMEOUT)}
+        code = door_codes_uc.create_door_code(
+            user=self.user,
+            raw_code=self.PIN,
+            code_type=DoorCode.CodeType.TEMPORARY,
+            days_of_week=0b1,
+            window_start=time(9, 0),
+            window_end=time(17, 0),
+            lock_entity_ids=[self.BACK],
+            zwavejs=gateway,
+        )
+        back = self._assignment(code, self.BACK)
+        self.assertEqual(_lock_state(back)[:2], (1, PENDING))
+        self.assertTrue(back.schedule_pending)
+
+        # The schedule would go through now, but the PIN change can't clear slot 1.
+        gateway.schedule_fails_on = {}
+        gateway.clear_fails_on = {12}
+        gateway.invoke_calls.clear()
+        code = self._update(code, gateway, {"code": "5555"})
+
+        self.assertEqual(self._nodes_sent(gateway, 78, "setDailyRepeatingSchedule"), [])
+        self.assertEqual(self._lock_codes(gateway, 12), {1: self.PIN})
+        self.assertEqual(_lock_state(back)[:2], (1, PENDING))
+        self.assertTrue(back.schedule_pending)
+        self.assertEqual(code.push_state, PENDING)
+        # And straight to the lock, nothing goes out and nothing is counted.
+        with self.assertRaises(LockUnreachable):
+            push_door_code_to_lock(door_code=code, lock_entity_id=self.BACK, zwavejs=gateway)
+        self.assertEqual(self._nodes_sent(gateway, 78, "setDailyRepeatingSchedule"), [])
+        self.assertEqual(_lock_state(back)[:3], (1, PENDING, 1))
+
+        # The clear retry frees the slot and the new PIN goes on with its schedule.
+        gateway.clear_fails_on = set()
+        self._tick(gateway)
+
+        self.assertEqual(self._lock_codes(gateway, 12), {1: "5555"})
+        self.assertEqual(_lock_state(back), (1, PUSHED, 0, "", False))
+        self.assertEqual(self._nodes_sent(gateway, 78, "setDailyRepeatingSchedule"), [12])
+
+
+class IncludeFailedTests(_PerLockTestBase):
+    """Only Retry pushes a lock that's ``failed``."""
+
+    def test_a_failed_lock_is_only_pushed_with_include_failed(self):
+        code = self._code(push_state=FAILED)
+        back = self._lock(code, self.BACK, push_state=FAILED, last_push_error="rejected")
+        gateway = PerNodeGateway(usersNumber=5, cache_updates_on_set=True)
+
+        lock_push_uc.push_door_code_to_assigned_locks(door_code=self._fresh(code), zwavejs=gateway)
+        self.assertEqual(gateway.invoke_calls, [])
+        self.assertEqual(_lock_state(back)[:2], (None, FAILED))
+
+        lock_push_uc.push_door_code_to_assigned_locks(door_code=self._fresh(code), zwavejs=gateway, include_failed=True)
+        self.assertEqual(_lock_state(back), (1, PUSHED, 0, "", False))
+
+    def test_retry_pushes_a_lock_that_failed_again_after_it_was_rearmed(self):
+        # Ie another push failed it terminally between Retry's re-arm and its push.
+        code = self._code(push_state=FAILED)
+        back = self._lock(code, self.BACK, push_state=FAILED)
+        gateway = PerNodeGateway(usersNumber=5, cache_updates_on_set=True)
+        real_rearm = lock_push_uc.rearm_failed_locks
+
+        def rearm_then_fail_again(**kwargs):
+            changed = real_rearm(**kwargs)
+            DoorCodeLockAssignment.objects.filter(id=back.id).update(push_state=FAILED)
+            return changed
+
+        with patch.object(lock_push_uc, "rearm_failed_locks", rearm_then_fail_again):
+            door_codes_uc.retry_push_door_code(code=code, actor_user=self.user, zwavejs=gateway)
+
+        self.assertEqual(_lock_state(back), (1, PUSHED, 0, "", False))
+
+    @staticmethod
+    def _fresh(code: DoorCode) -> DoorCode:
+        return DoorCode.objects.prefetch_related("lock_assignments").get(id=code.id)
+
+
+class LockSyncPerLockTests(EncryptionTestMixin, APITestCase):
+    """PR #196 review: lock sync keeps a pending schedule and refreshes the codes it changes."""
+
+    LOCK = sync_tests.LockConfigSyncReconcileTests.LOCK  # node 5
+    setUp = sync_tests.LockConfigSyncReconcileTests.setUp
+    _sync = sync_tests.LockConfigSyncReconcileTests._sync
+    _manual_code = sync_tests.LockConfigSyncReconcileTests._manual_code
+    _slot = staticmethod(sync_tests.LockConfigSyncReconcileTests._slot)
+
+    def test_a_sync_leaves_a_lock_whose_schedule_is_pending_for_the_scheduler(self):
+        # The probe: the PIN is in slot 1 but its CC 78 schedule never landed.
+        code = self._manual_code(pin="4321", slot_index=1)
+        DoorCode.objects.filter(id=code.id).update(
+            code_type=DoorCode.CodeType.TEMPORARY,
+            days_of_week=31,
+            window_start=time(9, 0),
+            window_end=time(17, 0),
+            push_state=PENDING,
+        )
+        assignment = DoorCodeLockAssignment.objects.get(door_code=code)
+        DoorCodeLockAssignment.objects.filter(id=assignment.id).update(push_state=PENDING, schedule_pending=True)
+
+        body = self._sync(sync_tests.SlotGateway({1: (1, "4321")}))
+
+        slot = self._slot(body, 1)
+        self.assertEqual(slot["action"], "skipped")
+        self.assertIn("schedule_pending", slot["warnings"])
+        code.refresh_from_db()
+        self.assertEqual((code.source, code.days_of_week), (DoorCode.Source.MANUAL, 31))
+        self.assertEqual(_lock_state(assignment), (1, PENDING, 0, "", True))
+
+        # So the next tick still sends the schedule, and only the schedule.
+        gateway = FakeGateway(usersNumber=5, cache_updates_on_set=True)
+        with patch("locks.tasks.default_zwavejs_gateway", gateway):
+            from locks.tasks import push_pending_door_codes
+
+            push_pending_door_codes()
+
+        self.assertEqual([c for c in gateway.invoke_calls if c["command_class"] == 99], [])
+        schedules = [c for c in gateway.invoke_calls if c["method_name"] == "setDailyRepeatingSchedule"]
+        self.assertEqual({c["args"][0]["userId"] for c in schedules}, {1})
+        self.assertEqual(len(schedules), 5)
+        self.assertEqual(_lock_state(assignment), (1, PUSHED, 0, "", False))
+
+    def test_a_sync_refreshes_the_rollup_of_a_code_it_converts(self):
+        code = self._manual_code(pin="4321", slot_index=1)
+        DoorCode.objects.filter(id=code.id).update(push_state=PENDING, last_push_error="LockUnreachable: timed out")
+        DoorCodeLockAssignment.objects.filter(door_code=code).update(push_state=PENDING)
+
+        self._sync(sync_tests.SlotGateway({1: (1, "4321")}))
+
+        code.refresh_from_db()
+        self.assertEqual(code.source, DoorCode.Source.SYNCED)
+        self.assertEqual((code.push_state, code.last_push_error), (PUSHED, ""))
+
+    def test_releasing_an_inactive_synced_codes_slot_takes_the_code_row_first(self):
+        self._sync(sync_tests.SlotGateway({1: (1, "1234")}))
+        assignment = DoorCodeLockAssignment.objects.get(lock_entity_id=self.LOCK)
+        DoorCode.objects.filter(id=assignment.door_code_id).update(is_active=False)
+        events: list[tuple[str, object]] = []
+        real_select_for_update = QuerySet.select_for_update
+        real_save = DoorCodeLockAssignment.save
+
+        def select_for_update(queryset, *args, **kwargs):
+            events.append(("lock", queryset.model))
+            return real_select_for_update(queryset, *args, **kwargs)
+
+        def save(instance, *args, **kwargs):
+            events.append(("save", DoorCodeLockAssignment))
+            return real_save(instance, *args, **kwargs)
+
+        with (
+            patch.object(QuerySet, "select_for_update", select_for_update),
+            patch.object(DoorCodeLockAssignment, "save", save),
+        ):
+            self._sync(sync_tests.SlotGateway({1: (0, None)}))
+
+        self.assertEqual(_lock_state(assignment)[:2], (None, PENDING))
+        save_at = events.index(("save", DoorCodeLockAssignment))
+        self.assertIn(("lock", DoorCode), events[:save_at])

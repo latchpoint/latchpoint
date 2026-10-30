@@ -1948,7 +1948,7 @@ class LockListChangeTests(EncryptionTestMixin, TestCase):
         code.refresh_from_db()
         self.assertEqual(code.push_state, DoorCode.PushState.PUSHED)
 
-    def test_dropping_every_lock_keeps_the_state_while_a_clear_is_still_outstanding(self):
+    def test_dropping_every_lock_keeps_the_code_pending_while_a_clear_is_still_outstanding(self):
         from integrations_zwavejs.manager import ZwavejsCommandError
 
         # BACK's push landed but was never confirmed, and its cleanup readback times out too.
@@ -3387,8 +3387,8 @@ class PushSlotClaimRaceTests(EncryptionTestMixin, TestCase):
 
     MASKED = {"userIdStatus": 1, "userCode": "****"}
 
-    def _die_at_the_pushed_stamp(self, *, drops_duplicates: bool, masked: bool = False) -> tuple[DoorCode, FakeGateway]:
-        """Push with the process dying at the ``pushed`` stamp, after the PIN landed in slot 1 (issue #130).
+    def _die_at_the_slot_commit(self, *, drops_duplicates: bool, masked: bool = False) -> tuple[DoorCode, FakeGateway]:
+        """Push with the process dying in the transaction that records slot 1, after the PIN landed there (issue #130).
 
         ``masked`` makes every CC 99 ``get`` answer occupied with a masked code, like a lock that hides PINs.
         """
@@ -3410,21 +3410,21 @@ class PushSlotClaimRaceTests(EncryptionTestMixin, TestCase):
         self.assertEqual(gateway._lock_codes, {(7, 1): "1234"})
         return code, gateway
 
-    def test_process_dying_before_the_pushed_stamp_records_no_slot(self):
-        # The slot and the pushed stamp commit together, so the code isn't left
-        # pending with a slot, which the scheduler never retries.
-        code, _gateway = self._die_at_the_pushed_stamp(drops_duplicates=True)
+    def test_process_dying_in_the_slot_commit_records_no_slot(self):
+        # The slot, the lock's state and the code's rollup commit together, so the
+        # code isn't left pending with a slot nothing retries.
+        code, _gateway = self._die_at_the_slot_commit(drops_duplicates=True)
 
         self.assertIsNone(self._slot_of(code))
         code.refresh_from_db()
         self.assertEqual(code.push_state, DoorCode.PushState.PENDING)
         self.assertFalse(DoorCodeEvent.objects.filter(door_code=code, metadata__action="pushed").exists())
 
-    def test_retry_after_dying_at_the_pushed_stamp_adopts_the_slot_and_delete_clears_it(self):
+    def test_retry_after_dying_at_the_slot_commit_adopts_the_slot_and_delete_clears_it(self):
         # PR #190 review: the rollback must not lose the slot the PIN already landed in.
         for drops_duplicates in (False, True):
             with self.subTest(drops_duplicates=drops_duplicates):
-                code, gateway = self._die_at_the_pushed_stamp(drops_duplicates=drops_duplicates)
+                code, gateway = self._die_at_the_slot_commit(drops_duplicates=drops_duplicates)
 
                 result = push_door_code_to_lock(door_code=code, lock_entity_id=self.LOCK_ENTITY_ID, zwavejs=gateway)
 
@@ -3438,22 +3438,22 @@ class PushSlotClaimRaceTests(EncryptionTestMixin, TestCase):
 
                 self.assertEqual(gateway._lock_codes, {})
 
-    def test_delete_after_dying_at_the_pushed_stamp_clears_the_slot(self):
+    def test_delete_after_dying_at_the_slot_commit_clears_the_slot(self):
         for drops_duplicates in (False, True):
             with self.subTest(drops_duplicates=drops_duplicates):
-                code, gateway = self._die_at_the_pushed_stamp(drops_duplicates=drops_duplicates)
+                code, gateway = self._die_at_the_slot_commit(drops_duplicates=drops_duplicates)
 
                 door_codes_uc.delete_door_code(code=code, zwavejs=gateway)
 
                 self.assertFalse(DoorCode.objects.filter(id=code.id).exists())
                 self.assertEqual(gateway._lock_codes, {})
 
-    def test_masked_lock_retry_after_dying_at_the_pushed_stamp_adopts_the_slot_and_delete_clears_it(self):
+    def test_masked_lock_retry_after_dying_at_the_slot_commit_adopts_the_slot_and_delete_clears_it(self):
         # PR #190 review: a lock that masks PINs can't show the PIN on the retry's
         # readback, so the push's own earlier readback has to count.
         for drops_duplicates in (False, True):
             with self.subTest(drops_duplicates=drops_duplicates):
-                code, gateway = self._die_at_the_pushed_stamp(drops_duplicates=drops_duplicates, masked=True)
+                code, gateway = self._die_at_the_slot_commit(drops_duplicates=drops_duplicates, masked=True)
 
                 result = push_door_code_to_lock(door_code=code, lock_entity_id=self.LOCK_ENTITY_ID, zwavejs=gateway)
 
@@ -3463,10 +3463,10 @@ class PushSlotClaimRaceTests(EncryptionTestMixin, TestCase):
 
                 self.assertEqual(gateway._lock_codes, {})
 
-    def test_masked_lock_delete_after_dying_at_the_pushed_stamp_clears_the_slot(self):
+    def test_masked_lock_delete_after_dying_at_the_slot_commit_clears_the_slot(self):
         for drops_duplicates in (False, True):
             with self.subTest(drops_duplicates=drops_duplicates):
-                code, gateway = self._die_at_the_pushed_stamp(drops_duplicates=drops_duplicates, masked=True)
+                code, gateway = self._die_at_the_slot_commit(drops_duplicates=drops_duplicates, masked=True)
 
                 door_codes_uc.delete_door_code(code=code, zwavejs=gateway)
 
@@ -3478,7 +3478,7 @@ class PushSlotClaimRaceTests(EncryptionTestMixin, TestCase):
         # since the new PIN's push closes the attempt's window on that lock.
         from integrations_zwavejs.manager import ZwavejsCommandError
 
-        code, gateway = self._die_at_the_pushed_stamp(drops_duplicates=False, masked=True)
+        code, gateway = self._die_at_the_slot_commit(drops_duplicates=False, masked=True)
         real_invoke = gateway.invoke_cc_api
 
         def clear_fails(**kwargs):
@@ -4194,7 +4194,7 @@ class TerminalPushErrorRecordingTests(EncryptionTestMixin, TestCase):
 
         self.assertNotIn("slot_verified", self._newest_marker(code))
 
-    def test_adopted_tagged_slot_keeps_its_tag_after_a_schedule_timeout(self):
+    def test_adopted_tagged_slot_is_tracked_with_its_schedule_pending_after_a_schedule_timeout(self):
         code = self._scheduled_code()
         lock_push_uc._record_unconfirmed_slot_attempt(
             door_code=code,

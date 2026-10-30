@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING
 
 from django.conf import settings
 from django.db import IntegrityError, connection, transaction
-from django.db.models import F, OuterRef, Q, Subquery
+from django.db.models import Exists, F, OuterRef, Q, Subquery
 from django.utils import timezone as django_timezone
 from integrations_zwavejs.manager import (
     ZwavejsClientUnavailable,
@@ -1446,6 +1446,60 @@ def _locks_being_removed(*, door_code: DoorCode) -> set[str]:
     return {f.lock_entity_id for f in unresolved_clear_failures(door_code=door_code) if f.removing}
 
 
+def locks_to_push(
+    *,
+    door_code: DoorCode,
+    assignments: list[DoorCodeLockAssignment] | None = None,
+    include_failed: bool = False,
+    only_unassigned: bool = True,
+) -> list[DoorCodeLockAssignment]:
+    """The locks a push of ``door_code`` sends something to, in ``assignments`` order (default by pk).
+
+    With ``only_unassigned`` (the default) only locks that need it: no slot,
+    or a slot whose schedule is pending. Never a lock being dropped (issue
+    #151), never a slot that still has a clear outstanding (it may hold an
+    older PIN, so a schedule-only resend there would give that PIN the new
+    window, PR #196 review), and a ``failed`` lock only with ``include_failed``.
+    """
+    if assignments is None:
+        assignments = list(DoorCodeLockAssignment.objects.filter(door_code=door_code).order_by("pk"))
+    failures = unresolved_clear_failures(door_code=door_code)
+    removing = {f.lock_entity_id for f in failures if f.removing}
+    clearing = {(f.lock_entity_id, f.slot_index) for f in failures}
+    return [
+        a
+        for a in assignments
+        if a.lock_entity_id not in removing
+        and (not only_unassigned or _lock_needs_push(a))
+        and (include_failed or a.push_state != DoorCode.PushState.FAILED)
+        and not (a.slot_index is not None and (a.lock_entity_id, int(a.slot_index)) in clearing)
+    ]
+
+
+def being_removed_q() -> Exists:
+    """:func:`_locks_being_removed` as a filter on ``DoorCodeLockAssignment`` rows (PR #196 review).
+
+    The lock has a ``clear_failed`` with ``removing`` that no later
+    ``clear_failed`` or ``clear_resolved`` for the same lock and slot replaced,
+    the same newest-event-wins rule :func:`unresolved_clear_failures` uses.
+    """
+    replaced = DoorCodeEvent.objects.filter(
+        door_code=OuterRef("door_code"),
+        lock_entity_id=OuterRef("lock_entity_id"),
+        metadata__action__in=[_CLEAR_FAILED_ACTION, _CLEAR_RESOLVED_ACTION],
+        metadata__slot_index=OuterRef("metadata__slot_index"),
+        id__gt=OuterRef("id"),
+    )
+    return Exists(
+        DoorCodeEvent.objects.filter(
+            door_code=OuterRef("door_code_id"),
+            lock_entity_id=OuterRef("lock_entity_id"),
+            metadata__action=_CLEAR_FAILED_ACTION,
+            metadata__removing=True,
+        ).exclude(Exists(replaced))
+    )
+
+
 def normalize_assignment_push_state() -> int:
     """Repair per-lock push state that drifted from its slot. Run at the start of each scheduler tick.
 
@@ -1455,7 +1509,8 @@ def normalize_assignment_push_state() -> int:
     per-lock columns, then a roll forward, breaks them (PR #195 review), so:
 
     - ``failed`` on an active code whose own state isn't ``failed`` is stale
-      (old code pushed or reset it since). It's re-derived from the code: back
+      (old code pushed or reset it since), unless the code is being dropped
+      from that lock, which the rollup ignores. It's re-derived from the code, back
       to ``pending`` with the code's attempt count, then the rules below. On a
       code before its start that's also how a lock the 0010 backfill marked
       ``failed`` goes back to waiting for the start, while the code is
@@ -1471,7 +1526,9 @@ def normalize_assignment_push_state() -> int:
     pending, pushed, failed = DoorCode.PushState.PENDING, DoorCode.PushState.PUSHED, DoorCode.PushState.FAILED
     rules = [
         (
-            Q(push_state=failed, door_code__is_active=True) & ~Q(door_code__push_state=failed),
+            # Not a lock being dropped: the rollup ignores it, so its code can be
+            # non-failed with the lock failed for real (PR #196 review).
+            Q(push_state=failed, door_code__is_active=True) & ~Q(door_code__push_state=failed) & ~being_removed_q(),
             {
                 "push_state": pending,
                 "push_attempt_count": Subquery(
@@ -2715,6 +2772,14 @@ def push_door_code_to_lock(
             raise PushSuperseded("Door code is being removed from this lock; nothing was pushed.")
         if assignment.slot_index is not None:
             if assignment.schedule_pending:
+                if _unresolved_clear_failure(
+                    door_code=door_code, lock_entity_id=lock_entity_id, slot_index=int(assignment.slot_index)
+                ):
+                    # A PIN change's clear of this slot failed, so it may still hold
+                    # the old PIN. Sending the schedule would give that PIN the new
+                    # window. The clear retry frees the slot and the code is pushed
+                    # there fresh (PR #196 review). Nothing sent, nothing counted.
+                    raise LockUnreachable("This slot still has a clear outstanding; the schedule waits for it.")
                 # The PIN is in the slot already, only its schedule is missing (issue #123).
                 return _push_pending_schedule(
                     door_code=door_code,
@@ -3228,14 +3293,9 @@ def push_door_code_to_assigned_locks(
     # push_door_code_to_lock reads the lock's assignment again once it holds the
     # lock, so a lock an update already pushed or dropped isn't written twice (PR #157).
     assignments = sorted(door_code.lock_assignments.all(), key=lambda assignment: assignment.pk)
-    removing = _locks_being_removed(door_code=door_code)
-    for assignment in assignments:
-        if assignment.lock_entity_id in removing:
-            continue
-        if only_unassigned and not _lock_needs_push(assignment):
-            continue
-        if assignment.push_state == DoorCode.PushState.FAILED and not include_failed:
-            continue
+    for assignment in locks_to_push(
+        door_code=door_code, assignments=assignments, include_failed=include_failed, only_unassigned=only_unassigned
+    ):
         try:
             result = push_door_code_to_lock(
                 door_code=door_code,
