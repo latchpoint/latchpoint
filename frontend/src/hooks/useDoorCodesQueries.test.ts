@@ -11,6 +11,7 @@ import {
   DOOR_CODES_FAST_POLL_WINDOW_MS,
   DOOR_CODES_SETTLING_POLL_MS,
   doorCodesRefetchInterval,
+  hasQueuedPush,
   isDoorCodeSettling,
   isLockQueued,
   useCreateDoorCodeMutation,
@@ -386,6 +387,58 @@ describe('useDoorCodesQueries', () => {
       expect(queued(slot(), { validity: 'scheduled' })).toBe(false)
       expect(queued(slot(), { validity: 'expired' })).toBe(false)
     })
+
+    describe("with the server's pushQueued (#205)", () => {
+      it('is queued after the schedule re-queue, 1µs after the attempt', () => {
+        // Both stamps read as the same millisecond in the browser.
+        const sameMs = '2026-10-30T10:05:00.123Z'
+        const requeued = slot({ slotIndex: 2, schedulePending: true, lastPushAttemptAt: sameMs, pushRequestedAt: sameMs })
+        expect(queued(requeued)).toBe(false)
+        expect(queued({ ...requeued, pushQueued: true })).toBe(true)
+      })
+
+      it("isn't queued once the request lapsed or the lock hit the cap, which only the server knows", () => {
+        expect(queued(slot())).toBe(true)
+        expect(queued(slot({ pushQueued: false }))).toBe(false)
+        expect(queued(slot({ pushAttemptCount: 24, pushQueued: false }))).toBe(false)
+      })
+
+      it('falls back to the timestamps without it', () => {
+        expect(queued(slot({ pushQueued: undefined }))).toBe(true)
+        expect(queued(slot({ pushQueued: undefined, lastPushAttemptAt: '2026-10-30T10:05:01Z' }))).toBe(false)
+      })
+    })
+  })
+
+  describe('hasQueuedPush', () => {
+    const lock = (overrides: Partial<DoorCode['lockSlotAssignments'][number]> = {}) => ({
+      lockEntityId: 'lock.front_door',
+      slotIndex: null,
+      pendingRemoval: false,
+      pushState: 'pending' as const,
+      pushRequestedAt: '2026-10-30T10:05:00Z',
+      ...overrides,
+    })
+
+    it('is true when any lock in the response is queued', () => {
+      expect(hasQueuedPush(pendingPush({ lockSlotAssignments: [lock({ pushQueued: true })] }))).toBe(true)
+      expect(
+        hasQueuedPush(
+          pendingPush({
+            lockSlotAssignments: [lock({ lockEntityId: 'lock.back_door', pushQueued: false }), lock({ pushQueued: true })],
+          }),
+        ),
+      ).toBe(true)
+      // An API from before #205, from the timestamps.
+      expect(hasQueuedPush(pendingPush({ lockSlotAssignments: [lock()] }))).toBe(true)
+    })
+
+    it('is false when nothing was queued, or there is no code', () => {
+      expect(hasQueuedPush(pendingPush({ lockSlotAssignments: [lock({ pushQueued: false })] }))).toBe(false)
+      expect(hasQueuedPush(pendingPush())).toBe(false)
+      expect(hasQueuedPush(makeCode())).toBe(false)
+      expect(hasQueuedPush(undefined)).toBe(false)
+    })
   })
 
   describe('doorCodesRefetchInterval', () => {
@@ -509,10 +562,25 @@ describe('useDoorCodesQueries', () => {
         )
       type Page = ReturnType<typeof renderPage>['result']['current']
 
+      // A code whose lock is queued for the scheduler, as a save that queued its push returns it.
+      const queuedPush = () =>
+        pendingPush({
+          lockSlotAssignments: [
+            {
+              lockEntityId: 'lock.front_door',
+              slotIndex: null,
+              pendingRemoval: false,
+              pushState: 'pending',
+              pushRequestedAt: '2026-10-30T10:05:00Z',
+              pushQueued: true,
+            },
+          ],
+        })
+
       // Each one answers right away and leaves the code waiting on the scheduler.
       function serveSaves(served: { codes: DoorCode[] }) {
         const queued = () => {
-          served.codes = [pendingPush()]
+          served.codes = [queuedPush()]
           return HttpResponse.json({ data: served.codes[0] })
         }
         server.use(
@@ -569,6 +637,85 @@ describe('useDoorCodesQueries', () => {
 
         await advance(DOOR_CODES_SETTLING_POLL_MS * 2)
         expect(served.fetches).toBe(2)
+      })
+
+      // The codes poll every 15s, not every 2s, after `save` (#205).
+      async function expectSettlingPollOnly(served: { fetches: number }) {
+        await waitFor(() => expect(served.fetches).toBe(2))
+        await flush()
+        await advance(DOOR_CODES_FAST_POLL_MS * 3)
+        expect(served.fetches).toBe(2)
+        await advance(DOOR_CODES_SETTLING_POLL_MS - DOOR_CODES_FAST_POLL_MS * 3)
+        await waitFor(() => expect(served.fetches).toBe(3))
+      }
+
+      it("doesn't poll fast after an update that only clears, eg turning a code off (#205)", async () => {
+        vi.useFakeTimers({ shouldAdvanceTime: true })
+        const served = serveCodes([makeCode()])
+        // Off, with its slot still to clear: settling, but nothing queued.
+        const clearing = makeCode({
+          isActive: false,
+          pendingSlotClears: [{ lockEntityId: 'lock.front_door', slotIndex: 3, removing: false }],
+          lockSlotAssignments: [
+            {
+              lockEntityId: 'lock.front_door',
+              slotIndex: 3,
+              pendingRemoval: false,
+              pushState: 'pending',
+              pushRequestedAt: '2026-10-30T10:05:00Z',
+              pushQueued: false,
+            },
+          ],
+        })
+        server.use(
+          http.patch('/api/door-codes/7/', () => {
+            served.codes = [clearing]
+            return HttpResponse.json({ data: clearing })
+          }),
+        )
+        const { result } = renderPage()
+        await waitFor(() => expect(result.current.codes.isSuccess).toBe(true))
+
+        await act(() => result.current.update.mutateAsync({ id: 7, req: { isActive: false, reauthPassword: 'pw' } }))
+
+        await expectSettlingPollOnly(served)
+      })
+
+      it.each<[string, DoorCode]>([
+        // A process without the queued push task pushes in the request (#124).
+        ['a save the backend pushed inline', pendingPush({ lastPushError: 'Lock timed out' })],
+        [
+          'a save whose request already lapsed or hit the cap',
+          pendingPush({
+            lockSlotAssignments: [
+              {
+                lockEntityId: 'lock.front_door',
+                slotIndex: null,
+                pendingRemoval: false,
+                pushState: 'pending',
+                pushRequestedAt: '2026-10-30T10:05:00Z',
+                pushQueued: false,
+              },
+            ],
+          }),
+        ],
+      ])("doesn't poll fast after %s", async (_what, saved) => {
+        vi.useFakeTimers({ shouldAdvanceTime: true })
+        const served = serveCodes([makeCode()])
+        server.use(
+          http.post('/api/door-codes/', () => {
+            served.codes = [saved]
+            return HttpResponse.json({ data: saved })
+          }),
+        )
+        const { result } = renderPage()
+        await waitFor(() => expect(result.current.codes.isSuccess).toBe(true))
+
+        await act(() =>
+          result.current.create.mutateAsync({ code: '1234', lockEntityIds: ['lock.front_door'], reauthPassword: 'pw' }),
+        )
+
+        await expectSettlingPollOnly(served)
       })
 
       it("doesn't poll fast after a refused Retry, since that's still answered in the request", async () => {

@@ -36,6 +36,13 @@ export interface DoorCodeLockSlotAssignment {
    * #124 doesn't send it.
    */
   pushRequestedAt?: string | null
+  /**
+   * Whether the scheduler's queued push task would still push this lock, worked
+   * out by the backend with the same rule (#205), so it knows the 10 minute
+   * TTL, the attempt cap and the microseconds `Date.parse` drops. Optional
+   * because an API from before #205 doesn't send it.
+   */
+  pushQueued?: boolean
 }
 
 /** A slot latchpoint still has to clear (or check and clear) for this code. */
