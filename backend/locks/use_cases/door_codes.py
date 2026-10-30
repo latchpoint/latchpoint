@@ -342,9 +342,10 @@ def withdraw_door_code(*, code: DoorCode, zwavejs: ZwavejsGateway, now=None) -> 
     For codes pushed before their start, ie before this was enforced or when the
     start was moved later through the API. Holds the ``lock_sync:`` locks like
     an update and checks again once they're held, so a code that started, was
-    turned off or was deleted meanwhile is left alone. Tracked slots are
-    cleared and forgotten, and unconfirmed slots are read back and cleared when
-    they hold its PIN (:func:`withdraw_slots_before_start`). A clear that fails
+    turned off or was deleted meanwhile is left alone. Tracked slots are read
+    back and cleared unless they hold someone else's code (issue #186), and
+    unconfirmed slots are read back and cleared when they hold its PIN
+    (:func:`withdraw_slots_before_start`). A clear that fails
     is recorded like any other, so the scheduler retries it, and slots that
     already have one are left to that retry. ``enforce_door_code_validity``
     pushes the code again once it starts. Returns whether anything was tried.
