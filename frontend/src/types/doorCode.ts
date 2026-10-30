@@ -29,6 +29,13 @@ export interface DoorCodeLockSlotAssignment {
   pushAttemptCount?: number
   /** The PIN is on the lock but its schedule isn't yet. */
   schedulePending?: boolean
+  /**
+   * When a save or Retry queued a push of this lock for the scheduler (#124).
+   * It's used up by the first push attempt after it, so it's still queued while
+   * `lastPushAttemptAt` is null or older. Optional because an API from before
+   * #124 doesn't send it.
+   */
+  pushRequestedAt?: string | null
 }
 
 /** A slot latchpoint still has to clear (or check and clear) for this code. */

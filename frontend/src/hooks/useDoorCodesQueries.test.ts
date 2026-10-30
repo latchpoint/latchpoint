@@ -7,12 +7,18 @@ import { server } from '@/test/msw/server'
 import { queryKeys } from '@/types'
 import type { DoorCode } from '@/types'
 import {
+  DOOR_CODES_FAST_POLL_MS,
+  DOOR_CODES_FAST_POLL_WINDOW_MS,
   DOOR_CODES_SETTLING_POLL_MS,
+  doorCodesRefetchInterval,
   isDoorCodeSettling,
+  isLockQueued,
+  useCreateDoorCodeMutation,
   useDeleteDoorCodeMutation,
   useDoorCodesQuery,
   useReadCachedDoorCode,
   useRetryDoorCodePushMutation,
+  useUpdateDoorCodeMutation,
 } from './useDoorCodesQueries'
 
 function createClient(queries: { staleTime?: number; refetchOnWindowFocus?: boolean } = {}) {
@@ -304,6 +310,13 @@ describe('useDoorCodesQueries', () => {
         expect(isDoorCodeSettling(code)).toBe(true)
       })
 
+      it('is settling while a save or Retry has a lock queued, even under a failed code (#124)', () => {
+        const queued = { pushState: 'pending' as const, pushRequestedAt: '2026-10-30T10:05:00Z' }
+        expect(isDoorCodeSettling(makeCode({ pushState: 'pending', lockSlotAssignments: [lockOf('lock.front_door', queued)] }))).toBe(true)
+        expect(isDoorCodeSettling(failedWith(queued))).toBe(true)
+        expect(isDoorCodeSettling(failedWith({ ...queued, slotIndex: 4, schedulePending: true }))).toBe(true)
+      })
+
       it('falls back to the code-level state when the API sends no per-lock fields', () => {
         const withoutPerLock = (pushState: DoorCode['pushState']) =>
           makeCode({
@@ -317,6 +330,84 @@ describe('useDoorCodesQueries', () => {
         expect(isDoorCodeSettling(withoutPerLock('failed'))).toBe(false)
         expect(isDoorCodeSettling(withoutPerLock('pending'))).toBe(true)
       })
+    })
+  })
+
+  describe('isLockQueued', () => {
+    type Slot = DoorCode['lockSlotAssignments'][number]
+    const requestedAt = '2026-10-30T10:05:00Z'
+    const slot = (overrides: Partial<Slot> = {}): Slot => ({
+      lockEntityId: 'lock.front_door',
+      slotIndex: null,
+      pendingRemoval: false,
+      pushState: 'pending',
+      lastPushError: '',
+      lastPushAttemptAt: null,
+      pushAttemptCount: 0,
+      schedulePending: false,
+      pushRequestedAt: requestedAt,
+      ...overrides,
+    })
+    const queued = (assignment: Slot, overrides: Partial<DoorCode> = {}) =>
+      isLockQueued(makeCode({ pushState: 'pending', lockSlotAssignments: [assignment], ...overrides }), assignment)
+
+    it('is queued until a push attempt comes after the request', () => {
+      expect(queued(slot())).toBe(true)
+      expect(queued(slot({ lastPushAttemptAt: '2026-10-30T10:00:00Z' }))).toBe(true)
+      expect(queued(slot({ lastPushAttemptAt: requestedAt }))).toBe(false)
+      expect(queued(slot({ lastPushAttemptAt: '2026-10-30T10:05:01Z' }))).toBe(false)
+    })
+
+    it('compares the times, not the strings', () => {
+      // The same instant as the request, written with an offset.
+      expect(queued(slot({ lastPushAttemptAt: '2026-10-30T06:05:00-04:00' }))).toBe(false)
+    })
+
+    it("isn't queued for an API without pushRequestedAt", () => {
+      expect(queued(slot({ pushRequestedAt: undefined }))).toBe(false)
+      expect(queued(slot({ pushRequestedAt: null }))).toBe(false)
+    })
+
+    it("isn't queued once the lock is pushed or failed, or doesn't need a push", () => {
+      expect(queued(slot({ pushState: 'pushed', slotIndex: 2 }))).toBe(false)
+      expect(queued(slot({ pushState: 'failed' }))).toBe(false)
+      expect(queued(slot({ slotIndex: 2 }))).toBe(false)
+      expect(queued(slot({ slotIndex: 2, schedulePending: true }))).toBe(true)
+      expect(queued(slot({ pendingRemoval: true }))).toBe(false)
+      expect(
+        queued(slot({ slotIndex: 2, schedulePending: true }), {
+          pendingSlotClears: [{ lockEntityId: 'lock.front_door', slotIndex: 2, removing: false }],
+        }),
+      ).toBe(false)
+    })
+
+    it("isn't queued on a code that's off, not started or expired", () => {
+      expect(queued(slot(), { isActive: false })).toBe(false)
+      expect(queued(slot(), { validity: 'scheduled' })).toBe(false)
+      expect(queued(slot(), { validity: 'expired' })).toBe(false)
+    })
+  })
+
+  describe('doorCodesRefetchInterval', () => {
+    const now = 1_000_000
+
+    it('polls fast for a minute after a save or Retry while a code is settling', () => {
+      expect(doorCodesRefetchInterval([pendingPush()], now, now)).toBe(DOOR_CODES_FAST_POLL_MS)
+      expect(doorCodesRefetchInterval([pendingPush()], now - DOOR_CODES_FAST_POLL_WINDOW_MS + 1, now)).toBe(
+        DOOR_CODES_FAST_POLL_MS,
+      )
+    })
+
+    it('drops back to the settling poll after the minute, or with no save at all', () => {
+      expect(doorCodesRefetchInterval([pendingPush()], now - DOOR_CODES_FAST_POLL_WINDOW_MS, now)).toBe(
+        DOOR_CODES_SETTLING_POLL_MS,
+      )
+      expect(doorCodesRefetchInterval([pendingPush()], undefined, now)).toBe(DOOR_CODES_SETTLING_POLL_MS)
+    })
+
+    it("doesn't poll when nothing is settling, even right after a save", () => {
+      expect(doorCodesRefetchInterval([makeCode()], now, now)).toBe(false)
+      expect(doorCodesRefetchInterval(undefined, now, now)).toBe(false)
     })
   })
 
@@ -398,6 +489,108 @@ describe('useDoorCodesQueries', () => {
 
       await act(() => vi.advanceTimersByTimeAsync(DOOR_CODES_SETTLING_POLL_MS * 4))
       expect(served.fetches).toBe(1)
+    })
+
+    describe('after a save or Retry (#124)', () => {
+      const advance = (ms: number) => act(() => vi.advanceTimersByTimeAsync(ms))
+      // Lets a fetch that just landed reach the observer, which resets its interval.
+      const flush = () => act(() => vi.advanceTimersByTimeAsync(50))
+
+      // The codes query and the three mutations that queue a push, on one client.
+      const renderPage = (client = createClient()) =>
+        renderHook(
+          () => ({
+            codes: useDoorCodesQuery({ userId: 'user-1', isAdmin: true }),
+            create: useCreateDoorCodeMutation('user-1'),
+            update: useUpdateDoorCodeMutation('user-1'),
+            retry: useRetryDoorCodePushMutation('user-1'),
+          }),
+          { wrapper: wrap(client) },
+        )
+      type Page = ReturnType<typeof renderPage>['result']['current']
+
+      // Each one answers right away and leaves the code waiting on the scheduler.
+      function serveSaves(served: { codes: DoorCode[] }) {
+        const queued = () => {
+          served.codes = [pendingPush()]
+          return HttpResponse.json({ data: served.codes[0] })
+        }
+        server.use(
+          http.post('/api/door-codes/', queued),
+          http.patch('/api/door-codes/7/', queued),
+          http.post('/api/door-codes/7/push/', queued),
+        )
+      }
+
+      it.each<[string, (page: Page) => Promise<unknown>]>([
+        ['a create', (page) => page.create.mutateAsync({ code: '1234', lockEntityIds: ['lock.front_door'], reauthPassword: 'pw' })],
+        ['an update', (page) => page.update.mutateAsync({ id: 7, req: { code: '5678', reauthPassword: 'pw' } })],
+        ['a Retry', (page) => page.retry.mutateAsync(7)],
+      ])('polls every 2s for a minute after %s, then every 15s', async (_what, save) => {
+        vi.useFakeTimers({ shouldAdvanceTime: true })
+        const served = serveCodes([makeCode()])
+        serveSaves(served)
+        const { result } = renderPage()
+        await waitFor(() => expect(result.current.codes.isSuccess).toBe(true))
+
+        await act(() => save(result.current))
+        await waitFor(() => expect(served.fetches).toBe(2))
+        await flush()
+
+        await advance(DOOR_CODES_FAST_POLL_MS)
+        await waitFor(() => expect(served.fetches).toBe(3))
+        await flush()
+        await advance(DOOR_CODES_FAST_POLL_MS)
+        await waitFor(() => expect(served.fetches).toBe(4))
+        await flush()
+
+        // The minute is up. The fast poll already set up still runs once, and
+        // the interval worked out after it is the 15s one.
+        vi.setSystemTime(Date.now() + DOOR_CODES_FAST_POLL_WINDOW_MS)
+        await advance(DOOR_CODES_FAST_POLL_MS)
+        await waitFor(() => expect(served.fetches).toBe(5))
+        await flush()
+
+        await advance(DOOR_CODES_FAST_POLL_MS * 3)
+        expect(served.fetches).toBe(5)
+        await advance(DOOR_CODES_SETTLING_POLL_MS - DOOR_CODES_FAST_POLL_MS * 2)
+        await waitFor(() => expect(served.fetches).toBe(6))
+      })
+
+      it("doesn't poll after a save that leaves nothing settling", async () => {
+        vi.useFakeTimers({ shouldAdvanceTime: true })
+        const served = serveCodes([makeCode()])
+        server.use(http.patch('/api/door-codes/7/', () => HttpResponse.json({ data: makeCode({ label: 'Back' }) })))
+        const { result } = renderPage()
+        await waitFor(() => expect(result.current.codes.isSuccess).toBe(true))
+
+        await act(() => result.current.update.mutateAsync({ id: 7, req: { label: 'Back', reauthPassword: 'pw' } }))
+        await waitFor(() => expect(served.fetches).toBe(2))
+
+        await advance(DOOR_CODES_SETTLING_POLL_MS * 2)
+        expect(served.fetches).toBe(2)
+      })
+
+      it("doesn't poll fast after a refused Retry, since that's still answered in the request", async () => {
+        vi.useFakeTimers({ shouldAdvanceTime: true })
+        const served = serveCodes([pendingPush()])
+        server.use(
+          http.post('/api/door-codes/7/push/', () =>
+            HttpResponse.json({ error: { status: 'conflict', message: 'Door code is inactive.' } }, { status: 409 }),
+          ),
+        )
+        const { result } = renderPage()
+        await waitFor(() => expect(result.current.codes.isSuccess).toBe(true))
+
+        await act(() => expect(result.current.retry.mutateAsync(7)).rejects.toMatchObject({ code: '409' }))
+        await waitFor(() => expect(served.fetches).toBe(2))
+        await flush()
+
+        await advance(DOOR_CODES_FAST_POLL_MS * 3)
+        expect(served.fetches).toBe(2)
+        await advance(DOOR_CODES_SETTLING_POLL_MS)
+        await waitFor(() => expect(served.fetches).toBe(3))
+      })
     })
 
     it('refetches when the tab becomes visible again, even while the codes are fresh', async () => {

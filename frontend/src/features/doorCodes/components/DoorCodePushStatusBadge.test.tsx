@@ -634,5 +634,57 @@ describe('DoorCodePushStatusBadge', () => {
       expect(screen.getByText(`Push failed: ${rollupError}`)).toBeTruthy()
       expect(screen.queryByText(/still retrying/)).toBeNull()
     })
+
+    describe('after a save or Retry queued the push (#124)', () => {
+      const queuedLock = (lockEntityId: string, overrides: Partial<DoorCode['lockSlotAssignments'][number]> = {}) => ({
+        lockEntityId,
+        slotIndex: null,
+        pendingRemoval: false,
+        pushState: 'pending' as const,
+        lastPushError: 'Lock timed out',
+        lastPushAttemptAt: '2026-10-30T10:00:00Z',
+        pushRequestedAt: '2026-10-30T10:05:00Z',
+        ...overrides,
+      })
+
+      it('says Pending sync is being sent to the queued locks instead of the error from before the save', () => {
+        renderBadge(
+          makeCode({
+            lastPushError: 'lock.back_door: Lock timed out',
+            lockEntityIds: ['lock.back_door', 'lock.front_door', 'lock.garage'],
+            lockSlotAssignments: [
+              queuedLock('lock.back_door'),
+              queuedLock('lock.front_door', { lastPushAttemptAt: null }),
+              { lockEntityId: 'lock.garage', slotIndex: 2, pendingRemoval: false, pushState: 'pushed' },
+            ],
+          }),
+        )
+
+        expect(screen.getByText('Pending sync')).toHaveAttribute('title', 'Being sent to Back Door and Front Door.')
+      })
+
+      it('goes back to the error once the queued push was tried', () => {
+        renderBadge(
+          makeCode({
+            lastPushError: 'lock.back_door: Lock timed out',
+            lockEntityIds: ['lock.back_door'],
+            lockSlotAssignments: [queuedLock('lock.back_door', { lastPushAttemptAt: '2026-10-30T10:05:03Z' })],
+          }),
+        )
+
+        expect(screen.getByText('Pending sync')).toHaveAttribute('title', 'lock.back_door: Lock timed out')
+      })
+
+      it('keeps the old wording for an API without pushRequestedAt', () => {
+        renderBadge(
+          makeCode({
+            lockEntityIds: ['lock.back_door'],
+            lockSlotAssignments: [queuedLock('lock.back_door', { pushRequestedAt: undefined, lastPushError: '' })],
+          }),
+        )
+
+        expect(screen.getByText('Pending sync')).toHaveAttribute('title', 'Waiting for the lock to accept the code.')
+      })
+    })
   })
 })
