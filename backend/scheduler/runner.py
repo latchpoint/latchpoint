@@ -12,6 +12,8 @@ from django.conf import settings
 from django.db import close_old_connections, connection
 from django.utils import timezone
 
+from config import runtime_lock
+
 from .registry import ScheduledTask, evaluate_task_enabled, get_tasks
 from .schedules import DailyAt, Every, Schedule
 
@@ -551,6 +553,8 @@ def get_scheduler_status() -> dict:
                 "acquired": _leader_lock_acquired,
                 "error": _leader_lock_error,
             },
+            # Whether this process holds the runtime lock, ie runs the scheduler at all (ADR-0112).
+            "runtime_lock": runtime_lock.get_status(),
             "tasks": {
                 name: {
                     "thread_alive": _threads.get(name) is not None and _threads[name].is_alive(),

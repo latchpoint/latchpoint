@@ -15,6 +15,8 @@ from collections.abc import Sequence
 
 from django.conf import settings
 
+from config import runtime_lock
+
 logger = logging.getLogger(__name__)
 
 # Servers that run the app, matched on argv[0]. They take their own flags as argv[1] (`daphne -b ...`), so
@@ -35,13 +37,18 @@ def should_start_runtimes(argv: Sequence[str]) -> bool:
     server process starts them: daphne, uvicorn or gunicorn, or `manage.py runserver`. Management commands
     and test runners don't.
 
+    A process that wants them also needs the runtime lock (ADR-0112), so a second process against the same
+    database starts none. That's checked once per process, the first time this says yes, and every call after
+    gets the same answer.
+
     `argv` is passed in rather than read here, so each app's `ready()` passes its own module's `sys.argv`
     and a test can stand in a server's argv for just that app.
     """
     override = _override()
-    if override is not None:
-        return override
-    return is_server_argv(argv)
+    wanted = override if override is not None else is_server_argv(argv)
+    if not wanted:
+        return False
+    return runtime_lock.acquire_for_process()
 
 
 def is_server_argv(argv: Sequence[str]) -> bool:

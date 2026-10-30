@@ -208,6 +208,12 @@ ALLOW_ZWAVEJS_IN_TESTS = env.bool("ALLOW_ZWAVEJS_IN_TESTS", default=False)
 # HA and Z-Wave JS, and START_RUNTIMES=false can't stop the tests that run `ready()` as a server.
 START_RUNTIMES = "auto" if IS_TESTING else env.str("START_RUNTIMES", default="auto")
 
+# One runtime process per database (ADR-0112). "auto" (the default) takes a Postgres advisory lock before a process
+# starts the runtimes, so a second process against the same database starts as a standby that serves HTTP but runs
+# none of them. Skipped on SQLite. "off" skips it everywhere.
+# Tests ignore the env var and run with it off, so only a test that turns it on ever takes the lock.
+RUNTIME_LOCK = "off" if IS_TESTING else env.str("RUNTIME_LOCK", default="auto")
+
 # Scheduler
 SCHEDULER_ENABLED = env.bool("SCHEDULER_ENABLED", default=True)
 SCHEDULER_LEADER_LOCK_ENABLED = env.bool("SCHEDULER_LEADER_LOCK_ENABLED", default=False)
