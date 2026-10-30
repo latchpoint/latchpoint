@@ -95,20 +95,31 @@ class LockPushFailed(GatewayError):
 
 
 class LockRejectedCode(LockPushFailed):
-    """The lock will not or did not store the PIN (admin-code clash, or the slot reads back without it).
+    """The lock did not store the PIN (a supervised ``set`` came back Fail, or the slot reads back without it).
 
     ``clear_slot`` is set when the slot we just wrote might still hold the PIN
     (read back holding it disabled, or read back empty but possibly committed
     late), so the push path clears it rather than leave a PIN on the lock nothing
     tracks. ``holds_pin`` is set only when the readback showed the PIN itself,
     and ``holds_other`` only when it showed a different code.
+    ``supervision_failed`` is set when the lock answered the ``set`` with a
+    Supervision Fail, so nothing was read back (issue #125).
     """
 
-    def __init__(self, message: str, *, clear_slot: bool = False, holds_pin: bool = False, holds_other: bool = False):
+    def __init__(
+        self,
+        message: str,
+        *,
+        clear_slot: bool = False,
+        holds_pin: bool = False,
+        holds_other: bool = False,
+        supervision_failed: bool = False,
+    ):
         super().__init__(message)
         self.clear_slot = clear_slot
         self.holds_pin = holds_pin
         self.holds_other = holds_other
+        self.supervision_failed = supervision_failed
 
 
 class LockCodeUnverified(GatewayError):
@@ -301,42 +312,83 @@ def _refresh_user_code_slot(
     )
 
 
-def _raise_if_pin_matches_admin_code(
+# CC 99 value properties Z-Wave JS caches the lock's admin code under. ``masterCode``
+# is the name from before Z-Wave JS renamed it, which nodes interviewed back then
+# may still carry (issue #125).
+_ADMIN_CODE_PROPERTIES = ("adminCode", "masterCode")
+
+# Appended to a push error when the lock didn't keep the PIN and the PIN matches
+# the admin code Z-Wave JS has cached. That cache is only as fresh as the last
+# interview or refresh, so it's a hint, never a reason to hold a push back.
+_ADMIN_CODE_HINT = "This PIN may match the lock's admin code."
+
+
+def _pin_may_match_admin_code(
     *,
     zwavejs: ZwavejsGateway,
     node_id: int,
     pin: str,
     timeout_seconds: float,
-) -> None:
-    """Raise :class:`LockRejectedCode` when ``pin`` equals the lock's CC 99 ``adminCode``.
+) -> bool:
+    """Whether ``pin`` equals the CC 99 ``adminCode`` (or older ``masterCode``) Z-Wave JS has cached for the lock.
 
     Yale locks silently drop a user code that matches the admin code while the
-    ``set`` call still returns normally (issue #107). Only checked when the lock
-    exposes a readable ``adminCode`` value; any read problem skips the check and
-    leaves it to the post-set readback.
+    ``set`` still returns normally (issue #107). The cached value can be stale
+    (the admin code changed at the keypad since the last interview), so this
+    only explains a push the lock already turned down and never stops one
+    (issue #125). Any read problem counts as no match. The admin code itself is
+    never logged or returned.
     """
     try:
         value_ids = zwavejs.node_get_defined_value_ids(node_id=node_id, timeout_seconds=timeout_seconds)
-        admin_vid = next(
-            (
-                vid
-                for vid in (value_ids if isinstance(value_ids, list) else [])
-                if isinstance(vid, dict)
-                and vid.get("commandClass") == CC_USER_CODE
-                and vid.get("property") == "adminCode"
-            ),
-            None,
-        )
-        if admin_vid is None:
-            return
-        raw = zwavejs.node_get_value(node_id=node_id, value_id=admin_vid, timeout_seconds=timeout_seconds)
+        admin_vids = [
+            vid
+            for vid in (value_ids if isinstance(value_ids, list) else [])
+            if isinstance(vid, dict)
+            and vid.get("commandClass") == CC_USER_CODE
+            and vid.get("property") in _ADMIN_CODE_PROPERTIES
+        ]
+        for admin_vid in admin_vids:
+            raw = zwavejs.node_get_value(node_id=node_id, value_id=admin_vid, timeout_seconds=timeout_seconds)
+            known, admin_code = _normalize_pin(raw)
+            if known and admin_code == pin:
+                return True
     except Exception:
-        logger.debug("Could not read adminCode for node %d; skipping admin-code check", node_id, exc_info=True)
-        return
+        logger.debug("Could not read the cached admin code for node %d", node_id, exc_info=True)
+    return False
 
-    known, admin_code = _normalize_pin(raw)
-    if known and admin_code == pin:
-        raise LockRejectedCode("PIN matches this lock's admin code. Choose a different PIN.")
+
+# Z-Wave JS SupervisionStatus (zwave_js_server.const.SupervisionStatus): NoSupport=0,
+# Working=1, Fail=2, Success=255. Only Fail changes what a push does.
+_SUPERVISION_STATUS_FAIL = 2
+
+
+def _supervision_status(result: object) -> int | None:
+    """The Supervision status a CC 99 ``set`` came back with, or ``None`` when there isn't a usable one.
+
+    zwave-js-server-python's ``invoke_cc_api`` returns the server's ``response``,
+    which for a supervised ``set`` should be a SupervisionResult dict like
+    ``{"status": 255}`` and for an unsupervised one nothing (issue #125). That
+    shape isn't confirmed against a real lock, so this also takes the dict
+    wrapped in ``response`` or ``result`` and an object with a ``status``
+    attribute (the library's own ``SupervisionResult``), and anything else
+    (a bare number, a string, a bool) counts as no result.
+    """
+    if isinstance(result, dict):
+        if "status" in result:
+            return _coerce_int(result.get("status"))
+        for key in ("response", "result"):
+            inner = result.get(key)
+            if isinstance(inner, dict) and "status" in inner:
+                return _coerce_int(inner.get("status"))
+        return None
+    if result is None or isinstance(result, (str, bytes, int, float)):
+        return None
+    status = getattr(result, "status", None)
+    if isinstance(status, int) and not isinstance(status, bool):
+        # SupervisionStatus is an IntEnum.
+        return int(status)
+    return None
 
 
 # Delays between CC 99 ``get`` readback attempts after a ``set``. Battery locks
@@ -2716,9 +2768,11 @@ def push_door_code_to_lock(
         lock, since only an edit fixes it (issue #123). :class:`LockSlotsFull`
         is recorded as a transient failure, so the row stays ``pending`` and
         the scheduler's attempt cap applies.
-      * :class:`LockRejectedCode` — terminal; the PIN matches the lock's admin
-        code (checked before the ``set``) or the post-set readback shows the
-        lock didn't store it. The row is flipped to ``failed``.
+      * :class:`LockRejectedCode` — terminal; the lock answered the ``set``
+        with a Supervision Fail (no readback then), or the post-set readback
+        shows it didn't store the PIN. The lock is flipped to ``failed``. When
+        the PIN didn't land and it matches the admin code Z-Wave JS has cached,
+        the error says it may match the lock's admin code (issue #125).
       * :class:`LockUnreachable` — transient; the row stays ``pending`` and the
         scheduler will retry.
       * :class:`LockPushFailed` — terminal; the row is flipped to ``failed`` and a
@@ -2813,12 +2867,9 @@ def push_door_code_to_lock(
 
         claimed_slots = _claimed_slots(lock_entity_id=lock_entity_id, door_code=door_code)
         try:
-            _raise_if_pin_matches_admin_code(
-                zwavejs=zwavejs,
-                node_id=node_id,
-                pin=pin,
-                timeout_seconds=timeout_seconds,
-            )
+            # No admin code check here: Z-Wave JS's cached adminCode can be stale,
+            # and a stale one would fail the code for good with nothing sent. The
+            # readback decides, and the cache only explains a rejection (issue #125).
             adoptable = _find_adoptable_attempted_slot(
                 zwavejs=zwavejs,
                 node_id=node_id,
@@ -2897,7 +2948,7 @@ def push_door_code_to_lock(
                 # userIdStatus = 1 means "Occupied" (the code is active on the lock).
                 # The server validator rejects 2-arg calls; passing only [slot, pin]
                 # makes the PIN land where userIdStatus is expected.
-                zwavejs.invoke_cc_api(
+                set_result = zwavejs.invoke_cc_api(
                     node_id=node_id,
                     command_class=CC_USER_CODE,
                     method_name="set",
@@ -2905,6 +2956,15 @@ def push_door_code_to_lock(
                     timeout_seconds=timeout_seconds,
                 )
                 set_returned = True
+                if _supervision_status(set_result) == _SUPERVISION_STATUS_FAIL:
+                    # The lock says it didn't carry out the set, so the PIN isn't in
+                    # the slot and there's nothing to read back or clear (issue #125).
+                    # A supervised Success or no result still goes to the readback
+                    # below, since a lock can say Success and drop the code.
+                    raise LockRejectedCode(
+                        f"Lock rejected the code for slot {slot_index} (Supervision reported Fail).",
+                        supervision_failed=True,
+                    )
                 # The set returning is not proof the lock kept the code (issue #107);
                 # read the slot back before claiming it or pushing schedules to it.
                 # That get also makes Z-Wave JS re-read the slot, so it doubles as
@@ -2957,12 +3017,38 @@ def push_door_code_to_lock(
                     slot_index=slot_index,
                     timeout_seconds=timeout_seconds,
                 )
+            event_metadata: dict[str, object] = {}
+            if exc.supervision_failed:
+                event_metadata.update(slot_index=int(slot_index), supervision_status="fail")
+            # The lock turned the PIN down (Supervision Fail, or the slot read back
+            # empty). Still terminal with an admin code match, like without one: the
+            # lock's answer decides, the cache only explains it, so a stale cache
+            # can't keep a PIN off a lock that takes it (issue #125).
+            if (exc.supervision_failed or (exc.clear_slot and not exc.holds_pin)) and _pin_may_match_admin_code(
+                zwavejs=zwavejs, node_id=node_id, pin=pin, timeout_seconds=timeout_seconds
+            ):
+                exc.args = (f"{exc} {_ADMIN_CODE_HINT}",)
+                event_metadata["may_match_admin_code"] = True
             _record_lock_push_failure(
-                door_code=door_code, error_message=str(exc), terminal=True, lock_entity_id=lock_entity_id
+                door_code=door_code,
+                error_message=str(exc),
+                terminal=True,
+                lock_entity_id=lock_entity_id,
+                event_metadata=event_metadata or None,
             )
             raise
         except GatewayError as exc:
             error_message = f"{exc.__class__.__name__}: {exc}"
+            if (
+                isinstance(exc, LockCodeUnverified)
+                and exc.read_back_empty
+                and _pin_may_match_admin_code(
+                    zwavejs=zwavejs, node_id=node_id, pin=pin, timeout_seconds=timeout_seconds
+                )
+            ):
+                # One empty answer and then silence is no verdict, so this stays
+                # transient, but the hint goes with it (issue #125).
+                error_message = f"{error_message} {_ADMIN_CODE_HINT}"
             if pin_sent_to_slot and isinstance(exc, LockCodeUnverified) and exc.read_back_empty:
                 # Drops the masked-slot trust of anything else on record for this slot (PR #193 review).
                 _record_slot_read_back_empty(door_code=door_code, lock_entity_id=lock_entity_id, slot_index=slot_index)

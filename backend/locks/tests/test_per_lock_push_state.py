@@ -931,6 +931,28 @@ class PendingRemovalTests(_PerLockTestBase):
         self.assertEqual((code.push_state, code.push_attempt_count), (FAILED, 24))
         self.assertEqual(_lock_state(self._assignment(code, self.SIDE))[:2], (2, PENDING))
 
+    def test_the_push_arm_picking_the_code_for_another_lock_doesnt_run_the_capped_clears(self):
+        # PR #196 review: Back still needs its push and is under its own cap, so the
+        # push arm picks the code, but the clear-retry count is at the cap, so Side's clear stays put.
+        code = self._code(push_attempt_count=24)
+        self._lock(code, self.BACK, push_state=PENDING)
+        self._lock(code, self.SIDE, slot_index=2, push_state=PUSHED)
+        lock_push_uc._create_clear_failed_event(
+            door_code=code,
+            failure=ClearFailure(lock_entity_id=self.SIDE, slot_index=2, reason="timeout", removing=True),
+        )
+        lock_push_uc.refresh_push_state(door_code=code)
+        gateway = PerNodeGateway(usersNumber=5, cache_updates_on_set=True)
+
+        self.assertEqual(self._tick(gateway), 1)
+
+        self.assertEqual(self._calls(gateway, "clear"), [])
+        self.assertEqual(self._nodes_sent(gateway), [12])
+        self.assertEqual(_lock_state(self._assignment(code, self.BACK))[:2], (1, PUSHED))
+        self.assertEqual(_lock_state(self._assignment(code, self.SIDE))[:2], (2, PUSHED))
+        code.refresh_from_db()
+        self.assertEqual(code.push_attempt_count, 24)
+
     def test_under_the_cap_only_the_clear_is_retried(self):
         code = self._code_dropping_side()
         gateway = PerNodeGateway(usersNumber=5, cache_updates_on_set=True)
