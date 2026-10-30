@@ -598,7 +598,18 @@ def _update_door_code_locked(
                 code.push_state = DoorCode.PushState.PENDING
                 code.last_push_error = ""
                 code.push_attempt_count = 0
-                code.save(update_fields=["push_state", "last_push_error", "push_attempt_count", "updated_at"])
+                with transaction.atomic():
+                    code.save(update_fields=["push_state", "last_push_error", "push_attempt_count", "updated_at"])
+                    # Every kept lock without a slot now needs a fresh push (issue
+                    # #126). One whose clear failed keeps its slot and its state.
+                    DoorCodeLockAssignment.objects.filter(door_code=code, slot_index__isnull=True).exclude(
+                        lock_entity_id__in=dropped_lock_entity_ids
+                    ).update(
+                        push_state=DoorCode.PushState.PENDING,
+                        push_attempt_count=0,
+                        last_push_error="",
+                        schedule_pending=False,
+                    )
 
             if not code.is_active:
                 # An inactive code is never pushed (issue #138).
@@ -935,11 +946,16 @@ def retry_push_door_code(
     # is the operator saying "yes, try again," so re-arm pending state and zero
     # the cap counter. A clear that's still failing puts its error back afterwards.
     code.refresh_from_db(fields=["push_state"])
-    if code.push_state == DoorCode.PushState.FAILED:
-        code.push_state = DoorCode.PushState.PENDING
-        code.last_push_error = ""
-        code.push_attempt_count = 0
-        code.save(update_fields=["push_state", "last_push_error", "push_attempt_count", "updated_at"])
+    with transaction.atomic():
+        if code.push_state == DoorCode.PushState.FAILED:
+            code.push_state = DoorCode.PushState.PENDING
+            code.last_push_error = ""
+            code.push_attempt_count = 0
+            code.save(update_fields=["push_state", "last_push_error", "push_attempt_count", "updated_at"])
+        # Re-arm each failed lock the same way (issue #126).
+        DoorCodeLockAssignment.objects.filter(door_code=code, push_state=DoorCode.PushState.FAILED).update(
+            push_state=DoorCode.PushState.PENDING, push_attempt_count=0, last_push_error=""
+        )
 
     if not_started:
         # Never pushed before its start. Take off anything it may still hold that
