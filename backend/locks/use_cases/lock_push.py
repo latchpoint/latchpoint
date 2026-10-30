@@ -1837,6 +1837,19 @@ def _compute_schedule_duration(window_start: time, window_end: time) -> tuple[in
     return total_minutes // 60, total_minutes % 60
 
 
+def _validate_schedule_or_raise(door_code: DoorCode) -> None:
+    """Raise :class:`InvalidPin` when :func:`_push_daily_repeating_schedule` would reject the code's window.
+
+    Checked before the ``set`` (issue #123), so a window that got past the
+    serializer fails before the PIN is on the lock instead of after it. Same
+    conditions as the schedule push: no ``days_of_week`` means no schedule, and
+    a missing start or end falls back to the full day.
+    """
+    if door_code.days_of_week is None or not (door_code.window_start and door_code.window_end):
+        return
+    _compute_schedule_duration(door_code.window_start, door_code.window_end)
+
+
 def _push_daily_repeating_schedule(
     *,
     zwavejs: ZwavejsGateway,
@@ -2033,8 +2046,11 @@ def push_door_code_to_lock(
 
     Errors:
       * :class:`InvalidPin` / :class:`LockSlotsFull` raise before any ``set``.
-        :class:`LockSlotsFull` is recorded as a transient failure, so the row
-        stays ``pending`` and the scheduler's attempt cap applies.
+        :class:`InvalidPin` (a PIN that can't be read, or a schedule window
+        that ends before it starts) is recorded as a terminal failure on this
+        lock, since only an edit fixes it (issue #123). :class:`LockSlotsFull`
+        is recorded as a transient failure, so the row stays ``pending`` and
+        the scheduler's attempt cap applies.
       * :class:`LockRejectedCode` — terminal; the PIN matches the lock's admin
         code (checked before the ``set``) or the post-set readback shows the
         lock didn't store it. The row is flipped to ``failed``.
@@ -2057,7 +2073,6 @@ def push_door_code_to_lock(
     :class:`PushInTransaction` in dev and tests and logs a warning in prod.
     """
     _check_no_outer_transaction(door_code=door_code, lock_entity_id=lock_entity_id)
-    pin = _decrypt_pin_or_raise(door_code)
     try:
         node_id = _resolve_lock_node_id(lock_entity_id=lock_entity_id)
     except (LockSyncNotFound, LockSyncInvalidRequest) as exc:
@@ -2093,7 +2108,19 @@ def push_door_code_to_lock(
                 lock_entity_id,
             )
             return PushResult(lock_entity_id=lock_entity_id, node_id=node_id, slot_index=int(assignment.slot_index))
-        pin = _decrypt_pin_or_raise(door_code)
+        try:
+            pin = _decrypt_pin_or_raise(door_code)
+            _validate_schedule_or_raise(door_code)
+        except InvalidPin as exc:
+            # Only an edit fixes the stored PIN or window, so this is terminal for
+            # the lock: recorded and counted instead of pushed again every tick,
+            # and nothing goes out, so a bad window never leaves an unscheduled PIN
+            # on the lock (issue #123). Checked here, with the lock held and the
+            # code read again, so a stale copy can't mark a fixed code failed.
+            _record_push_failure(
+                door_code=door_code, error_message=str(exc), terminal=True, lock_entity_id=lock_entity_id
+            )
+            raise
 
         claimed_slots = _claimed_slots(lock_entity_id=lock_entity_id, door_code=door_code)
         try:
@@ -2154,10 +2181,17 @@ def push_door_code_to_lock(
             slot_index,
         )
 
-        # Once the PIN may be in the slot (set sent, or slot adopted), a transient
-        # failure records the slot so the retry can adopt it instead of writing
-        # the PIN to a second slot.
+        # Once the PIN may be in the slot (set sent, or slot adopted), a gateway
+        # failure, transient or a terminal Z-Wave JS one, records the slot so the
+        # retry can adopt it instead of writing the PIN to a second slot.
         pin_sent_to_slot = adopted_existing_slot
+        # The set returned (or the slot was adopted). The terminal Z-Wave JS errors
+        # below are raised before anything is sent, so one from the set itself
+        # means the PIN never went out, and one after it means it did.
+        set_returned = adopted_existing_slot
+        # Whether a readback in this push accepted the slot: the post-set one, or
+        # the adoption readback for an adopted slot.
+        slot_accepted = adopted_existing_slot
         try:
             if not adopted_existing_slot:
                 pin_sent_to_slot = True
@@ -2172,6 +2206,7 @@ def push_door_code_to_lock(
                     args=[slot_index, 1, pin],
                     timeout_seconds=timeout_seconds,
                 )
+                set_returned = True
                 # The set returning is not proof the lock kept the code (issue #107);
                 # read the slot back before claiming it or pushing schedules to it.
                 # That get also makes Z-Wave JS re-read the slot, so it doubles as
@@ -2183,6 +2218,7 @@ def push_door_code_to_lock(
                     pin=pin,
                     timeout_seconds=timeout_seconds,
                 )
+                slot_accepted = True
             weekdays_pushed = _push_daily_repeating_schedule(
                 zwavejs=zwavejs,
                 node_id=node_id,
@@ -2191,6 +2227,19 @@ def push_door_code_to_lock(
                 timeout_seconds=timeout_seconds,
             )
         except (ZwavejsNotConfigured, ZwavejsClientUnavailable, ZwavejsCommandValidationError) as exc:
+            if set_returned:
+                # The PIN may be in the slot, so keep it on record like a transient
+                # failure does, or nothing would clear it on a delete (issue #123).
+                # Tagged slot_verified only once a readback accepted the slot, so a
+                # masked readback later counts as ours only then.
+                _record_unconfirmed_slot_attempt(
+                    door_code=door_code,
+                    lock_entity_id=lock_entity_id,
+                    slot_index=slot_index,
+                    reason=f"{exc.__class__.__name__}: {exc}",
+                    pin=pin,
+                    slot_verified=slot_accepted,
+                )
             _record_push_failure(
                 door_code=door_code, error_message=str(exc), terminal=True, lock_entity_id=lock_entity_id
             )
@@ -2210,12 +2259,15 @@ def push_door_code_to_lock(
         except GatewayError as exc:
             error_message = f"{exc.__class__.__name__}: {exc}"
             if pin_sent_to_slot:
+                # Tagged like the terminal branch above: only once a readback in
+                # this push accepted the slot (a schedule timeout, or an adopted slot).
                 _record_unconfirmed_slot_attempt(
                     door_code=door_code,
                     lock_entity_id=lock_entity_id,
                     slot_index=slot_index,
                     reason=error_message,
                     pin=pin,
+                    slot_verified=slot_accepted,
                 )
             _record_push_failure(door_code=door_code, error_message=error_message, terminal=False)
             raise LockUnreachable("Lock did not accept the code in time; will retry.") from exc
@@ -2373,7 +2425,7 @@ def push_door_code_to_assigned_locks(
             failures.append((assignment.lock_entity_id, str(exc)))
             door_code.refresh_from_db(fields=["push_state", "last_push_attempt_at", "last_push_error"])
             # Capture what this lock's failure recorded before a later lock overwrites it.
-            # Some failures (an invalid PIN) don't record anything.
+            # Some failures (a lock another sync holds) don't record anything.
             recorded = door_code.last_push_attempt_at != attempt_marker
             if recorded and door_code.push_state == DoorCode.PushState.FAILED:
                 terminal_error = terminal_error or door_code.last_push_error or str(exc)
