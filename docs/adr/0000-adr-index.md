@@ -126,6 +126,7 @@ This document tracks all Architecture Decision Records (ADRs) and their implemen
 | [0109](0109-door-code-validity-on-the-lock.md) | Door Code Start and End Dates Are Enforced by Adding and Removing the PIN | **Accepted** |
 | [0110](0110-door-code-push-state-per-lock.md) | Door Code Push State Is Tracked Per Lock | **Accepted** |
 | [0111](0111-door-code-push-off-the-request-path.md) | Door Code Pushes Are Queued for the Scheduler Instead of Made in the Request | **Accepted** |
+| [0112](0112-one-runtime-process-per-database.md) | One Runtime Process per Database | **Accepted** |
 
 ---
 
@@ -135,13 +136,13 @@ This document tracks all Architecture Decision Records (ADRs) and their implemen
 |--------|-------|
 | **Implemented** | 69 |
 | **Partially Implemented** | 0 |
-| **Accepted** | 6 |
+| **Accepted** | 7 |
 | **Proposed** | 16 |
 | **Superseded** | 17 |
-| **Total** | 108 |
+| **Total** | 109 |
 
 Note: **Superseded** includes entries marked as "Superseded by …" in the table above.
 
 ---
 
-*Last updated: 2026-10-30* (added ADR 0111)
+*Last updated: 2026-10-30* (added ADR 0112)
