@@ -705,6 +705,149 @@ class SchedulerDeleteRaceTests(_LockingTestBase):
         self.assertEqual(survivor.push_state, DoorCode.PushState.PUSHED)
 
 
+@contextlib.contextmanager
+def _push_task_running():
+    """The queued push task runs in this process (issue #124), so saves queue their push."""
+    with (
+        patch("scheduler.runner.is_task_running", return_value=True),
+        patch("scheduler.runner.wake_task", return_value=True),
+    ):
+        yield
+
+
+class QueuedPushRaceTests(_LockingTestBase):
+    """Issue #124: what lands on the lock when other operations run between a save and its queued push."""
+
+    def _run_task(self):
+        from locks.tasks import push_requested_door_codes
+
+        with patch("locks.tasks.default_zwavejs_gateway", self.gateway):
+            return push_requested_door_codes()
+
+    def _queued_code(self, lock_entity_ids: list[str]) -> DoorCode:
+        with _push_task_running():
+            code = door_codes_uc.create_door_code(
+                user=self.user,
+                raw_code=PIN,
+                lock_entity_ids=lock_entity_ids,
+                actor_user=self.user,
+                zwavejs=self.gateway,
+            )
+        self.assertEqual(self.gateway.invoke_calls, [])
+        return code
+
+    def test_a_delete_while_the_push_is_queued_supersedes_it_and_nothing_is_sent(self):
+        code = self._queued_code([BACK])
+        holder = self._hold_elsewhere(BACK)
+        real_push = lock_push_uc.push_door_code_to_lock
+        raised: list[Exception] = []
+
+        def spy(**kwargs):
+            try:
+                return real_push(**kwargs)
+            except Exception as exc:
+                raised.append(exc)
+                raise
+
+        def deleted_meanwhile():
+            holder.release()
+            door_codes_uc.delete_door_code(code=self._fresh(code), actor_user=self.user, zwavejs=self.gateway)
+
+        # The task has picked the lock and waits for it while the delete runs.
+        with patch.object(lock_push_uc, "push_door_code_to_lock", spy), _when_waiting_on(BACK, deleted_meanwhile):
+            self._run_task()
+
+        self.assertEqual([type(exc) for exc in raised], [PushSuperseded])
+        self.assertEqual(self.gateway.invoke_calls, [])
+        self.assertFalse(DoorCode.objects.filter(id=code.id).exists())
+        self.assertTrue(_free_elsewhere(BACK))
+
+    def test_a_pin_change_while_the_push_is_queued_sends_only_the_new_pin_to_one_slot(self):
+        code = self._queued_code([BACK])
+        holder = self._hold_elsewhere(BACK)
+
+        def pin_changed_meanwhile():
+            holder.release()
+            with _push_task_running():
+                door_codes_uc.update_door_code(
+                    code=self._fresh(code), changes={"code": "5555"}, actor_user=self.user, zwavejs=self.gateway
+                )
+
+        # The task loaded the code with the old PIN, then waited for the lock behind the update.
+        with _when_waiting_on(BACK, pin_changed_meanwhile) as waited:
+            self._run_task()
+        self._run_task()
+
+        self.assertTrue(waited)
+        self.assertEqual(self._cc99("set"), [(12, [1, 1, "5555"])])
+        self.assertEqual(self._lock_codes(12), {1: "5555"})
+        self.assertEqual(self._slots(code), {BACK: 1})
+        code.refresh_from_db()
+        self.assertEqual(code.push_state, DoorCode.PushState.PUSHED)
+
+    def test_a_lock_sync_between_the_updates_clear_and_the_queued_push(self):
+        code = self._pushed_code([BACK])
+        with _push_task_running():
+            door_codes_uc.update_door_code(
+                code=self._fresh(code), changes={"code": "5555"}, actor_user=self.user, zwavejs=self.gateway
+            )
+        self.assertEqual(self._cc99("clear"), [(12, [1])])
+        self.assertEqual(self._cc99("set"), [])
+        # Someone types a code into the slot the update just cleared, and a lock sync imports it.
+        self.gateway._lock_codes[(12, 1)] = "7777"
+        self.gateway._cache_codes[(12, 1)] = "7777"
+        result = lock_config_sync_uc.sync_lock_config(
+            lock_entity_id=BACK, target_user=self.user, actor_user=self.user, zwavejs=self.gateway
+        )
+        self.assertEqual(result.created, 1)
+
+        self._run_task()
+
+        # The queued push sees the sync's slot as taken and uses the next one.
+        self.assertEqual(self._cc99("set"), [(12, [2, 1, "5555"])])
+        self.assertEqual(self._lock_codes(12), {1: "7777", 2: "5555"})
+        self.assertEqual(self._slots(code), {BACK: 2})
+        synced = DoorCode.objects.get(source=DoorCode.Source.SYNCED)
+        self.assertEqual(self._slots(synced), {BACK: 1})
+        code.refresh_from_db()
+        self.assertEqual(code.push_state, DoorCode.PushState.PUSHED)
+
+    def test_retry_while_the_scheduler_tick_holds_the_lock(self):
+        code = self._pending_code([BACK])
+        DoorCodeLockAssignment.objects.filter(door_code=code).update(
+            push_state=DoorCode.PushState.FAILED, push_attempt_count=24, last_push_error="Push gave up"
+        )
+        lock_push_uc.refresh_push_state(door_code=code)
+        tick = self._hold_elsewhere(BACK)
+
+        # Retry has no clears to retry, so it doesn't need the lock the tick holds.
+        with _push_task_running():
+            retried = door_codes_uc.retry_push_door_code(
+                code=self._fresh(code), actor_user=self.user, zwavejs=self.gateway
+            )
+        self.assertEqual(retried.push_state, DoorCode.PushState.PENDING)
+        self.assertEqual(self.gateway.invoke_calls, [])
+        self.assertFalse(_free_elsewhere(BACK))
+
+        # The tick, which loaded the code before Retry re-armed it, pushes once it gets
+        # the lock; the queued push waits behind it and finds nothing left to send.
+        stale = DoorCode.objects.get(id=code.id)
+
+        def tick_pushes_then_lets_go():
+            tick.release()
+            push_door_code_to_lock(door_code=stale, lock_entity_id=BACK, zwavejs=self.gateway)
+
+        with _when_waiting_on(BACK, tick_pushes_then_lets_go) as waited:
+            self._run_task()
+
+        self.assertTrue(waited)
+        self.assertEqual(self._cc99("set"), [(12, [1, 1, PIN])])
+        self.assertEqual(self._slots(code), {BACK: 1})
+        code.refresh_from_db()
+        self.assertEqual(code.push_state, DoorCode.PushState.PUSHED)
+        self.assertTrue(_free_elsewhere(BACK))
+
+
 class LockBusyApiTests(_LockingTestBase, APITestCase):
     def setUp(self):
         super().setUp()

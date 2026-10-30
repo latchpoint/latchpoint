@@ -452,7 +452,7 @@ class PendingSlotClearsSerializerTests(_SlotClearTestBase, APITestCase):
 
         # The per-lock push fields (issue #126) too, without the timestamp whose digits can happen to match.
         lock_slots = [
-            {k: v for k, v in entry.items() if k != "last_push_attempt_at"}
+            {k: v for k, v in entry.items() if k not in ("last_push_attempt_at", "push_requested_at")}
             for entry in data["lock_slot_assignments"] + push_data["lock_slot_assignments"]
         ]
         for payload in (data["pending_slot_clears"], lock_slots):
@@ -474,6 +474,7 @@ class PendingSlotClearsSerializerTests(_SlotClearTestBase, APITestCase):
                 "last_push_attempt_at",
                 "push_attempt_count",
                 "schedule_pending",
+                "push_requested_at",
             },
         )
         # The old PIN only lives in the encrypted event metadata, and the push

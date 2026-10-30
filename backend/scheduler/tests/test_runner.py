@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from datetime import timedelta
 from unittest.mock import patch
 
@@ -165,6 +166,170 @@ class RunnerThrottledFinishTests(TransactionTestCase):
         self.assertIsNone(health.last_finished_at)
         self.assertIsNone(health.last_started_at)
         self.assertIsNone(health.next_run_at)
+
+
+class WakeTaskTests(TestCase):
+    """Issue #124: ``wake_task`` runs a task before its next scheduled time.
+
+    The loop runs in a real thread with the telemetry writes turned off, so it
+    never touches the DB. Every wait has a timeout so a regression fails
+    instead of hanging.
+    """
+
+    TIMEOUT = 5.0
+
+    def setUp(self) -> None:
+        self._name = "test_wake_task"
+        self.runs = 0
+        self.ran = threading.Event()
+        self.release = threading.Event()
+        self.release.set()
+        patcher = patch.object(runner, "_safe_telemetry", lambda *args, **kwargs: None)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.addCleanup(self._cleanup)
+
+    def _cleanup(self) -> None:
+        with runner._lock:
+            stop = runner._stop_events.get(self._name)
+            wake = runner._wake_events.get(self._name)
+        for event in (stop, wake, self.release):
+            if event is not None:
+                event.set()
+        thread = runner._threads.get(self._name)
+        if thread is not None:
+            thread.join(timeout=self.TIMEOUT)
+        with runner._lock:
+            for registry in (runner._threads, runner._stop_events, runner._wake_events, runner._task_status):
+                registry.pop(self._name, None)
+            runner._running.discard(self._name)
+
+    def _func(self) -> None:
+        self.runs += 1
+        self.ran.set()
+        self.release.wait(timeout=self.TIMEOUT)
+
+    def _start(self, **task_kwargs) -> threading.Thread:
+        task = ScheduledTask(name=self._name, func=self._func, schedule=Every(seconds=3600), **task_kwargs)
+        stop_event, wake_event = threading.Event(), threading.Event()
+        thread = threading.Thread(
+            target=runner._run_task_loop,
+            kwargs={"task": task, "stop_event": stop_event, "wake_event": wake_event},
+            daemon=True,
+        )
+        with runner._lock:
+            runner._threads[self._name] = thread
+            runner._stop_events[self._name] = stop_event
+            runner._wake_events[self._name] = wake_event
+        thread.start()
+        return thread
+
+    def _wait_until_sleeping(self) -> None:
+        """Until the loop has scheduled its next run, ie it's waiting."""
+        deadline = time.monotonic() + self.TIMEOUT
+        while time.monotonic() < deadline:
+            with runner._lock:
+                if runner._task_status.get(self._name, {}).get("next_run_at"):
+                    return
+            time.sleep(0.01)
+        self.fail("the task loop never started waiting")
+
+    def test_a_wake_runs_the_task_long_before_its_next_scheduled_time(self):
+        self._start()
+        self._wait_until_sleeping()
+
+        self.assertTrue(runner.wake_task(self._name))
+
+        self.assertTrue(self.ran.wait(timeout=self.TIMEOUT))
+        self.assertEqual(self.runs, 1)
+
+    def test_a_wake_during_a_run_gets_exactly_one_more_run(self):
+        self.release.clear()
+        self._start()
+        self._wait_until_sleeping()
+        runner.wake_task(self._name)
+        self.assertTrue(self.ran.wait(timeout=self.TIMEOUT))
+        self.ran.clear()
+
+        # Mid-run: the event was cleared right before the run, so this one sticks.
+        self.assertTrue(runner.wake_task(self._name))
+        self.assertTrue(runner.wake_task(self._name))
+        self.release.set()
+
+        self.assertTrue(self.ran.wait(timeout=self.TIMEOUT))
+        self.ran.clear()
+        # Two wakes during one run are one more run, not two.
+        self.assertFalse(self.ran.wait(timeout=0.3))
+        self.assertEqual(self.runs, 2)
+
+    def test_a_wake_doesnt_cut_a_failure_backoff_short(self):
+        with runner._lock:
+            runner._task_status[self._name] = {"consecutive_failures": 1}
+        thread = self._start(failure_backoff_base_seconds=3600)
+        self._wait_until_sleeping()
+
+        self.assertTrue(runner.wake_task(self._name))
+
+        self.assertFalse(self.ran.wait(timeout=0.3))
+        # Only a stop ends a backoff early.
+        with runner._lock:
+            runner._stop_task_locked(self._name)
+        thread.join(timeout=self.TIMEOUT)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(self.runs, 0)
+
+    def test_stopping_a_task_ends_its_wait_on_the_wake_event(self):
+        thread = self._start()
+        self._wait_until_sleeping()
+
+        with runner._lock:
+            runner._stop_task_locked(self._name)
+            self.assertTrue(runner._wake_events[self._name].is_set())
+
+        thread.join(timeout=self.TIMEOUT)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(self.runs, 0)
+        self.assertFalse(runner.is_task_running(self._name))
+        self.assertFalse(runner.wake_task(self._name))
+
+    def test_is_task_running_only_for_a_live_loop_that_isnt_stopping(self):
+        self.assertFalse(runner.is_task_running(self._name))
+        self._start()
+        self.assertTrue(runner.is_task_running(self._name))
+
+    def test_wake_is_a_noop_in_a_process_without_the_task(self):
+        self.assertFalse(runner.wake_task("not_a_registered_task"))
+        self.assertFalse(runner.is_task_running("not_a_registered_task"))
+        self.assertNotIn("not_a_registered_task", runner._wake_events)
+
+    def test_the_scheduler_gives_each_task_a_wake_event(self):
+        task = ScheduledTask(name=self._name, func=self._func, schedule=Every(seconds=3600))
+        started: list[dict] = []
+
+        class _Thread:
+            def __init__(self, *, target, name, daemon, kwargs=None):
+                started.append(kwargs or {})
+
+            def start(self):
+                pass
+
+            def is_alive(self):
+                return True
+
+            def join(self, timeout=None):
+                pass
+
+        with (
+            patch.object(runner, "_watchdog_started", False),
+            patch.object(runner, "_maybe_acquire_leader_lock", return_value=True),
+            patch.object(runner, "get_tasks", return_value={self._name: task}),
+            patch.object(runner.threading, "Thread", _Thread),
+        ):
+            runner.start_scheduler()
+
+        task_kwargs = next(k for k in started if k.get("task") is task)
+        self.assertIs(runner._wake_events[self._name], task_kwargs["wake_event"])
+        self.assertTrue(runner.is_task_running(self._name))
 
 
 class RunnerLogLevelTests(TestCase):
