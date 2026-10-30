@@ -6,6 +6,7 @@ import { renderWithProviders } from '@/test/render'
 import type { ComponentProps } from 'react'
 import {
   type CachedDoorCode,
+  DOOR_CODES_FAST_POLL_MS,
   DOOR_CODES_SETTLING_POLL_MS,
   useDeleteDoorCodeMutation,
   useDoorCodesQuery,
@@ -690,6 +691,150 @@ describe('DoorCodeCard', () => {
       expect(screen.getByText('Back Door')).toBeTruthy()
       expect(screen.getByText('Front Door')).toBeTruthy()
       expect(screen.getByText('Push failed: Gateway timeout after 5.0s')).toBeTruthy()
+    })
+
+    describe('a push a save or Retry queued (#124)', () => {
+      const requestedAt = '2026-10-30T10:05:00Z'
+
+      it('shows a lock not tried since the save as queued', () => {
+        renderCard(
+          twoLocks(
+            [
+              back({ pushState: 'pending', pushRequestedAt: requestedAt }),
+              front({ pushState: 'pending', lastPushError: 'Lock timed out', lastPushAttemptAt: '2026-10-30T10:00:00Z', pushRequestedAt: requestedAt }),
+            ],
+            { pushState: 'pending' },
+          ),
+        )
+
+        expect(screen.getByText('Back Door (queued)')).toHaveAttribute('title', 'Waiting to be sent to the lock.')
+        // Its error is from the push before the save.
+        expect(screen.getByText('Front Door (queued)')).toHaveAttribute('title', 'Waiting to be sent to the lock.')
+      })
+
+      it('shows queued ahead of schedule pending', () => {
+        renderCard(
+          twoLocks(
+            [back({ slotIndex: 2 }), front({ pushState: 'pending', slotIndex: 4, schedulePending: true, pushRequestedAt: requestedAt })],
+            { pushState: 'pending' },
+          ),
+        )
+
+        expect(screen.getByText('Front Door (queued)')).toBeTruthy()
+      })
+
+      it('gives way to pending once the scheduler tried it, and push failed once it failed', () => {
+        const tried = '2026-10-30T10:05:02Z'
+        const { unmount } = renderCard(
+          twoLocks(
+            [
+              back({ pushState: 'failed', lastPushError: 'Lock rejected the PIN', lastPushAttemptAt: tried, pushRequestedAt: requestedAt }),
+              front({ pushState: 'pending', lastPushError: 'Lock timed out', lastPushAttemptAt: tried, pushRequestedAt: requestedAt }),
+            ],
+            { pushState: 'failed', lastPushError: 'lock.back_door: Lock rejected the PIN' },
+          ),
+        )
+
+        expect(screen.getByText('Back Door (push failed)')).toHaveAttribute('title', 'Lock rejected the PIN')
+        expect(screen.getByText('Front Door (pending)')).toHaveAttribute('title', 'Lock timed out')
+        unmount()
+
+        // An attempt at the same instant as the request used it up too.
+        renderCard(twoLocks([back({ slotIndex: 2 }), front({ pushState: 'pending', lastPushAttemptAt: requestedAt, pushRequestedAt: requestedAt })]))
+        expect(screen.getByText('Front Door (pending)')).toBeTruthy()
+      })
+
+      it('shows pending, not queued, for an API without pushRequestedAt', () => {
+        renderCard(twoLocks([back({ slotIndex: 2 }), front({ pushState: 'pending' })], { pushState: 'pending' }))
+
+        expect(screen.getByText('Front Door (pending)')).toBeTruthy()
+        expect(screen.queryByText(/\(queued\)/)).toBeNull()
+      })
+
+      it("keeps clearing and removing ahead of queued, and doesn't show it on a code that's off its locks", () => {
+        const { unmount } = renderCard(
+          twoLocks(
+            [
+              back({ pushState: 'pending', pendingRemoval: true, slotIndex: 2, pushRequestedAt: requestedAt }),
+              front({ pushState: 'pending', slotIndex: 3, schedulePending: true, pushRequestedAt: requestedAt }),
+            ],
+            { pushState: 'pending', pendingSlotClears: [{ lockEntityId: 'lock.front_door', slotIndex: 3, removing: false }] },
+          ),
+        )
+        expect(screen.getByText('Back Door (removing)')).toBeTruthy()
+        expect(screen.getByText('Front Door (clearing)')).toBeTruthy()
+        unmount()
+
+        renderCard(twoLocks([back({ slotIndex: 2 }), front({ pushState: 'pending', pushRequestedAt: requestedAt })], { isActive: false }))
+        expect(screen.queryByText(/\(queued\)/)).toBeNull()
+      })
+
+      it('moves from queued to on lock through the fast poll after a Retry', async () => {
+        vi.useFakeTimers({ shouldAdvanceTime: true })
+        try {
+          let serverCode = makeCode({ pushState: 'pending', lastPushError: '' })
+          let fetches = 0
+          server.use(
+            http.get('/api/door-codes/', () => {
+              fetches += 1
+              return HttpResponse.json({ data: [serverCode] })
+            }),
+            http.post('/api/door-codes/7/push/', () => {
+              serverCode = makeCode({
+                pushState: 'pending',
+                lastPushError: '',
+                lockSlotAssignments: [front({ pushState: 'pending', pushRequestedAt: requestedAt })],
+              })
+              return HttpResponse.json({ data: serverCode })
+            }),
+          )
+
+          renderWithProviders(<CardsFromQuery />)
+          fireEvent.click(await screen.findByRole('button', { name: 'Retry now' }))
+          expect(await screen.findByText('Front Door (queued)')).toBeTruthy()
+          const fetchesAfterRetry = fetches
+
+          serverCode = pushedCode('2026-10-30T10:05:02Z')
+          await act(() => vi.advanceTimersByTimeAsync(DOOR_CODES_FAST_POLL_MS))
+          await waitFor(() => expect(fetches).toBe(fetchesAfterRetry + 1))
+          expect(await screen.findByText(/On lock:.*slot 3/)).toBeTruthy()
+          expect(screen.queryByText(/\(queued\)/)).toBeNull()
+        } finally {
+          vi.useRealTimers()
+        }
+      })
+
+      it.each<[string, Partial<Slot>]>([
+        ['another save queues the lock again', { pushRequestedAt: '2026-10-30T10:06:00Z' }],
+        ['the scheduler tries the queued push', { lastPushAttemptAt: '2026-10-30T10:05:02Z' }],
+      ])('drops a Retry error once %s', async (_change, frontChange) => {
+        const failedCode = (frontOverrides: Partial<Slot> = {}) =>
+          twoLocks(
+            [
+              back({ pushState: 'failed', lastPushError: 'Lock rejected the PIN' }),
+              front({ pushState: 'pending', pushRequestedAt: requestedAt, ...frontOverrides }),
+            ],
+            { pushState: 'failed', lastPushError: 'lock.back_door: Lock rejected the PIN' },
+          )
+        const readCachedCode = () => ({ code: failedCode(), dataUpdatedAt: 10 })
+        server.use(http.post('/api/door-codes/7/push/', () => timeout()))
+
+        const { rerender } = renderWithProviders(
+          <CardWithRetry code={failedCode()} codesUpdatedAt={10} readCachedCode={readCachedCode} lockNameByEntityId={lockNames} />,
+        )
+        fireEvent.click(screen.getByRole('button', { name: /^Retry$/ }))
+        expect(await screen.findByRole('alert')).toHaveTextContent('Lock timed out')
+
+        rerender(
+          <CardWithRetry
+            code={failedCode(frontChange)}
+            codesUpdatedAt={20}
+            readCachedCode={readCachedCode}
+            lockNameByEntityId={lockNames}
+          />,
+        )
+        expect(screen.queryByRole('alert')).toBeNull()
+      })
     })
 
     it("drops a Retry error once a lock's own state changes, even when the code's doesn't", async () => {
