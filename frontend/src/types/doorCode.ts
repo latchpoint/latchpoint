@@ -19,6 +19,16 @@ export interface DoorCodeLockSlotAssignment {
   slotIndex: number | null
   /** The lock is being dropped from the code but its slot clear hasn't worked yet. */
   pendingRemoval: boolean
+  // This lock's own push state (#126, #123). The code's pushState and
+  // lastPushError are the rollup of these. Optional because an API from before
+  // #196 (ie after a rollback) doesn't send them.
+  pushState?: DoorCodePushState
+  /** Empty when the attempt cap failed the lock with no error of its own (a busy lock). */
+  lastPushError?: string
+  lastPushAttemptAt?: string | null
+  pushAttemptCount?: number
+  /** The PIN is on the lock but its schedule isn't yet. */
+  schedulePending?: boolean
 }
 
 /** A slot latchpoint still has to clear (or check and clear) for this code. */
