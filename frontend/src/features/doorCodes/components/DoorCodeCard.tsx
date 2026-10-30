@@ -33,30 +33,117 @@ type Props = {
   readCachedCode: (id: number) => CachedDoorCode | null
 }
 
-// What a Retry error is about. When this changes the error is out of date.
+// What a Retry error is about. When this changes the error is out of date. A
+// lock can land or fail while the code stays failed (#126), so each lock's
+// state counts too, along with everything else its chip shows.
 function pushStateKeyOf(code: DoorCode): string {
-  return `${code.isActive}|${code.pushState}|${code.lastPushAttemptAt ?? ''}`
+  const clears = code.pendingSlotClears ?? []
+  const locks = (code.lockSlotAssignments ?? [])
+    .map((a) => {
+      const lockClears = clears
+        .filter((c) => c.lockEntityId === a.lockEntityId)
+        .map((c) => c.slotIndex)
+        .sort((x, y) => x - y)
+        .join('+')
+      return JSON.stringify([
+        a.lockEntityId,
+        a.pushState ?? '',
+        !!a.schedulePending,
+        a.pendingRemoval,
+        a.lastPushError ?? '',
+        lockClears,
+      ])
+    })
+    .sort()
+    .join(',')
+  return `${code.isActive}|${code.pushState}|${code.lastPushAttemptAt ?? ''}|${locks}`
 }
 
-function LockBadges({
-  lockEntityIds,
-  removingLockEntityIds,
-  lockNameByEntityId,
-}: {
-  lockEntityIds: string[]
-  removingLockEntityIds: Set<string>
-  lockNameByEntityId: Map<string, string>
-}) {
+// The tooltip of a failed lock with no error of its own, which the attempt cap
+// can leave (a busy lock).
+function failedLockFallback(count: number, schedulePending: boolean): string {
+  if (schedulePending) return "Its schedule couldn't be sent, Retry sends it again."
+  if (count <= 0) return 'Push failed, Retry sends it again.'
+  return `Push gave up after ${count} ${count === 1 ? 'attempt' : 'attempts'}, Retry sends it again.`
+}
+
+type LockChip = { suffix: string; title?: string; failed?: boolean }
+
+function slotsText(slots: number[]): string {
+  return slots.length === 1 ? `Slot ${slots[0]}` : `Slots ${slots.join(', ')}`
+}
+
+// What one lock's chip says (#126, #123). Its own push state only means
+// something while the code is on its locks, ie active and between its start
+// and end; the code-level badge covers the rest. A slot still to clear shows
+// whatever the code's state, so a lock never looks settled while it may still
+// hold a PIN (PR #196 review).
+function lockChipOf(code: DoorCode, lockEntityId: string): LockChip {
+  const assignments = code.lockSlotAssignments ?? []
+  const assignment = assignments.find((a) => a.lockEntityId === lockEntityId)
+  // Still listed until its slot clear works (#151).
+  if (assignment?.pendingRemoval) return { suffix: ' (removing)' }
+
+  const onItsLocks = code.isActive && code.validity !== 'scheduled' && code.validity !== 'expired'
+  const pushState = onItsLocks ? assignment?.pushState : undefined
+  if (assignment && pushState === 'failed') {
+    return {
+      suffix: assignment.schedulePending ? ' (schedule not applied)' : ' (push failed)',
+      title:
+        assignment.lastPushError ||
+        failedLockFallback(assignment.pushAttemptCount ?? 0, !!assignment.schedulePending),
+      failed: true,
+    }
+  }
+
+  // Synced codes don't count once off, like the code-level badge: lock sync
+  // turns them off and their slots are the lock's own (#149).
+  const clearSlots =
+    code.isActive || code.source !== 'synced'
+      ? (code.pendingSlotClears ?? []).filter((c) => c.lockEntityId === lockEntityId).map((c) => c.slotIndex)
+      : []
+  if (clearSlots.length) {
+    // A failed code with no failed lock is failed by the clear-retry cap. An
+    // API without per-lock state can't say which, so it stays "clearing".
+    const hasPerLockState = assignments.some((a) => a.pushState != null)
+    const lockFailed = onItsLocks && assignments.some((a) => !a.pendingRemoval && a.pushState === 'failed')
+    if (hasPerLockState && code.pushState === 'failed' && !lockFailed) {
+      return {
+        suffix: ' (clear failed)',
+        title: `${slotsText(clearSlots)} may still hold the PIN, Retry tries the clear again.`,
+        failed: true,
+      }
+    }
+    return { suffix: ' (clearing)', title: `${slotsText(clearSlots)} may still hold the PIN, retried automatically.` }
+  }
+
+  if (assignment && pushState === 'pending') {
+    if (assignment.schedulePending) {
+      // Still being retried. Only a failed one is "not applied".
+      return {
+        suffix: ' (schedule pending)',
+        title: assignment.lastPushError || 'The PIN is on the lock, its schedule is still being sent.',
+      }
+    }
+    return { suffix: ' (pending)', title: assignment.lastPushError || 'Waiting for the lock to accept the code.' }
+  }
+  return { suffix: '' }
+}
+
+function LockBadges({ code, lockNameByEntityId }: { code: DoorCode; lockNameByEntityId: Map<string, string> }) {
+  const lockEntityIds = code.lockEntityIds || []
   if (!lockEntityIds.length) return <span className="text-sm text-muted-foreground">No locks</span>
   return (
     <div className="mt-2 flex flex-wrap gap-2">
-      {lockEntityIds.map((entityId) => (
-        <Badge key={entityId} variant="outline">
-          {lockNameByEntityId.get(entityId) || entityId}
-          {/* Still listed until its slot clear works (#151). */}
-          {removingLockEntityIds.has(entityId) ? ' (removing)' : ''}
-        </Badge>
-      ))}
+      {lockEntityIds.map((entityId) => {
+        const chip = lockChipOf(code, entityId)
+        return (
+          <Badge key={entityId} variant={chip.failed ? 'destructive' : 'outline'} title={chip.title}>
+            {lockNameByEntityId.get(entityId) || entityId}
+            {chip.suffix}
+          </Badge>
+        )
+      })}
     </div>
   )
 }
@@ -179,13 +266,7 @@ export function DoorCodeCard({
             {code.lastUsedAt ? ` • Last used: ${new Date(code.lastUsedAt).toLocaleString()}` : ''}
             {code.lastUsedLock ? ` • Lock: ${lockNameByEntityId.get(code.lastUsedLock) || code.lastUsedLock}` : ''}
           </div>
-          <LockBadges
-            lockEntityIds={code.lockEntityIds || []}
-            removingLockEntityIds={
-              new Set((code.lockSlotAssignments || []).filter((a) => a.pendingRemoval).map((a) => a.lockEntityId))
-            }
-            lockNameByEntityId={lockNameByEntityId}
-          />
+          <LockBadges code={code} lockNameByEntityId={lockNameByEntityId} />
           <div className="mt-2">
             <DoorCodePushStatusBadge
               code={code}

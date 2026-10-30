@@ -27,6 +27,23 @@ function getLastSyncedAt(entity: Entity): string | null {
   return typeof lastSyncedAt === 'string' ? lastSyncedAt : null
 }
 
+// SlotSyncResult.warnings from lock_config_sync.py: why a slot was skipped, or
+// something to know about one that wasn't. Anything new shows as it comes.
+const SLOT_WARNING_LABELS: Record<string, string> = {
+  schedule_pending: 'Schedule still being applied',
+  clear_outstanding: 'Old PIN still being cleared',
+  inactive_code_on_lock: 'Code is off, slot not cleared yet',
+  pin_mismatch: "PIN on the lock doesn't match",
+  duplicate_pin: 'Same PIN as another door code',
+  owner_changed: 'Moved to this user',
+  integrity_race: 'Slot claimed during the sync',
+  schedule_unsupported: 'Schedule not supported',
+}
+
+function slotWarningLabel(warning: string): string {
+  return Object.hasOwn(SLOT_WARNING_LABELS, warning) ? SLOT_WARNING_LABELS[warning] : warning
+}
+
 function formatTimeAgo(isoString: string): string {
   const date = new Date(isoString)
   if (isNaN(date.getTime())) return isoString
@@ -213,8 +230,12 @@ export function LockConfigSyncCard({ userId, locks, locksIsLoading, locksError }
                     {slot.warnings && slot.warnings.length > 0 ? (
                       <div className="mt-1 text-warning-foreground">
                         {slot.warnings.map((w) => (
-                          <span key={w} className="mr-2 inline-block rounded bg-warning/20 px-1.5 py-0.5 text-xs">
-                            {w}
+                          <span
+                            key={w}
+                            title={w}
+                            className="mr-2 inline-block rounded bg-warning/20 px-1.5 py-0.5 text-xs"
+                          >
+                            {slotWarningLabel(w)}
                           </span>
                         ))}
                       </div>

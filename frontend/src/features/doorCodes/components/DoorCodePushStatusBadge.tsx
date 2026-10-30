@@ -1,6 +1,7 @@
 import type { DoorCode } from '@/types'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { isLockAwaitingPush } from '@/hooks/useDoorCodesQueries'
 
 type Props = {
   code: DoorCode
@@ -16,6 +17,23 @@ function describeSlots(code: DoorCode, lockNameByEntityId: Map<string, string>):
   return pushed
     .map((a) => `${lockNameByEntityId.get(a.lockEntityId) || a.lockEntityId} (slot ${a.slotIndex})`)
     .join(', ')
+}
+
+function joinNames(names: string[]): string {
+  if (names.length <= 1) return names.join('')
+  return `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`
+}
+
+// A code is failed when any of its locks is, even while the scheduler still
+// retries another (#126). Names both, or '' when that isn't the case (the
+// clear-retry cap, or an API without per-lock state).
+function describeFailedWhileRetrying(code: DoorCode, lockNameByEntityId: Map<string, string>): string {
+  const assignments = code.lockSlotAssignments.filter((a) => !a.pendingRemoval)
+  const failed = assignments.filter((a) => a.pushState === 'failed')
+  const retrying = assignments.filter((a) => a.pushState != null && isLockAwaitingPush(code, a))
+  if (!failed.length || !retrying.length) return ''
+  const nameOf = (a: { lockEntityId: string }) => lockNameByEntityId.get(a.lockEntityId) || a.lockEntityId
+  return `Push failed on ${joinNames(failed.map(nameOf))}, still retrying ${joinNames(retrying.map(nameOf))}`
 }
 
 // The backend never pushes an inactive code. pendingSlotClears lists the slots
@@ -108,11 +126,17 @@ export function DoorCodePushStatusBadge({ code, lockNameByEntityId, canRetry, is
   const showRetry = canRetry && (code.isActive || clearing)
 
   if (code.pushState === 'failed') {
+    // Each lock's chip has its own error, so this one doesn't repeat them.
+    const failedWhileRetrying = code.isActive && !clearing ? describeFailedWhileRetrying(code, lockNameByEntityId) : ''
     return (
       <div className="flex items-center gap-2">
         <Badge variant="destructive" title={code.lastPushError || undefined}>
-          {clearing ? 'Clear failed' : 'Push failed'}
-          {code.lastPushError ? `: ${code.lastPushError.slice(0, 80)}` : ''}
+          {failedWhileRetrying || (
+            <>
+              {clearing ? 'Clear failed' : 'Push failed'}
+              {code.lastPushError ? `: ${code.lastPushError.slice(0, 80)}` : ''}
+            </>
+          )}
         </Badge>
         {showRetry ? (
           <Button size="sm" variant="secondary" disabled={isRetrying} onClick={onRetry}>
