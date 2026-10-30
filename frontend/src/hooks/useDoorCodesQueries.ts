@@ -1,5 +1,5 @@
 import { useCallback } from 'react'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { type QueryClient, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { doorCodesService, locksService } from '@/services'
 import { queryKeys } from '@/types'
 import type {
@@ -13,6 +13,45 @@ import type {
 
 /** How often the door codes refetch while one is waiting on its locks. */
 export const DOOR_CODES_SETTLING_POLL_MS = 15_000
+/**
+ * How often they refetch while one is settling right after a create, update or
+ * Retry. Those only queue the push now and the scheduler sends it within a few
+ * seconds (#124), so the card should pick that up sooner than the 15s poll.
+ */
+export const DOOR_CODES_FAST_POLL_MS = 2_000
+/** How long after a create, update or Retry the fast poll lasts. */
+export const DOOR_CODES_FAST_POLL_WINDOW_MS = 60_000
+
+// When a create, update or Retry last worked, per query client and the user
+// whose codes it changed. Kept off the query data so a refetch can't drop it,
+// and per client so each test's client starts with none.
+const lastPushRequestAtByClient = new WeakMap<QueryClient, Map<string, number>>()
+
+function markPushRequested(queryClient: QueryClient, userId: string) {
+  let byUser = lastPushRequestAtByClient.get(queryClient)
+  if (!byUser) {
+    byUser = new Map()
+    lastPushRequestAtByClient.set(queryClient, byUser)
+  }
+  byUser.set(userId, Date.now())
+}
+
+/**
+ * The door codes' refetch interval: the fast poll for a minute after a create,
+ * update or Retry worked (`lastPushRequestAt`), the settling poll after that,
+ * and none when nothing is settling.
+ */
+export function doorCodesRefetchInterval(
+  codes: DoorCode[] | undefined,
+  lastPushRequestAt: number | undefined,
+  now: number = Date.now(),
+): number | false {
+  if (!codes?.some(isDoorCodeSettling)) return false
+  if (lastPushRequestAt != null && now - lastPushRequestAt < DOOR_CODES_FAST_POLL_WINDOW_MS) {
+    return DOOR_CODES_FAST_POLL_MS
+  }
+  return DOOR_CODES_SETTLING_POLL_MS
+}
 
 /**
  * Whether the scheduler still pushes to this lock of an active, started code:
@@ -39,11 +78,29 @@ export function isLockAwaitingPush(code: DoorCode, assignment: DoorCodeLockSlotA
 }
 
 /**
+ * Whether a create, update or Retry queued a push of this lock that the
+ * scheduler hasn't tried yet (#124). The request is used up by the first push
+ * attempt on the lock after it, so it's queued while `lastPushAttemptAt` is
+ * null or older than `pushRequestedAt`, the lock is `pending` and it still
+ * needs a push. Only while the code is on its locks, ie active and between its
+ * start and end, since the backend only queues those. Without
+ * `pushRequestedAt` (an API from before #124) nothing is queued.
+ */
+export function isLockQueued(code: DoorCode, assignment: DoorCodeLockSlotAssignment): boolean {
+  if (!assignment.pushRequestedAt || assignment.pushState !== 'pending') return false
+  if (!code.isActive || code.validity === 'scheduled' || code.validity === 'expired') return false
+  if (!isLockAwaitingPush(code, assignment)) return false
+  if (!assignment.lastPushAttemptAt) return true
+  return Date.parse(assignment.lastPushAttemptAt) < Date.parse(assignment.pushRequestedAt)
+}
+
+/**
  * Whether the scheduler is still working on `code`, matching what
  * push_pending_door_codes retries: a slot it still has to clear (#151), or an
  * active code with a lock still waiting on its `set` or schedule, even when the
- * code is failed because another of its locks is (#126). A failed code with no
- * lock left waiting isn't, since only a Retry moves it. Nor is a
+ * code is failed because another of its locks is (#126). A lock queued by a
+ * save or Retry (#124) is one of those, since it's pending and needs a push. A
+ * failed code with no lock left waiting isn't, since only a Retry moves it. Nor is a
  * pending code the scheduler never picks up, like one lock sync created or an
  * active one with no locks. An active code that's expired is, since the
  * scheduler turns it off and clears it within a minute. A scheduled one is
@@ -72,6 +129,7 @@ export function isDoorCodeSettling(code: DoorCode): boolean {
 
 export function useDoorCodesQuery(params: { userId: string; isAdmin: boolean }) {
   const { userId, isAdmin } = params
+  const queryClient = useQueryClient()
   return useQuery<DoorCode[]>({
     queryKey: queryKeys.doorCodes.byUser(userId),
     queryFn: () => doorCodesService.getDoorCodes(isAdmin ? { userId } : undefined),
@@ -79,9 +137,13 @@ export function useDoorCodesQuery(params: { userId: string; isAdmin: boolean }) 
     // Nothing pushes door code changes to the page (#156), so pick up changes
     // made in another tab or by the scheduler when the tab becomes visible
     // again (TanStack listens for visibilitychange), even inside the default
-    // staleTime, and keep checking while a code is still settling.
+    // staleTime, and keep checking while a code is still settling. Faster for
+    // a minute after a save or Retry, since that only queued the push (#124).
+    // TanStack works this out again after every fetch, so the poll drops back
+    // to 15s on the first fetch after the minute is up.
     refetchOnWindowFocus: 'always',
-    refetchInterval: (query) => (query.state.data?.some(isDoorCodeSettling) ? DOOR_CODES_SETTLING_POLL_MS : false),
+    refetchInterval: (query) =>
+      doorCodesRefetchInterval(query.state.data, lastPushRequestAtByClient.get(queryClient)?.get(userId)),
   })
 }
 
@@ -109,6 +171,8 @@ export function useCreateDoorCodeMutation(targetUserId: string) {
   return useMutation({
     mutationFn: (req: CreateDoorCodeRequest) => doorCodesService.createDoorCode(req),
     onSuccess: async () => {
+      // Before the refetch, so the interval worked out after it is the fast one.
+      markPushRequested(queryClient, targetUserId)
       await queryClient.invalidateQueries({ queryKey: queryKeys.doorCodes.byUser(targetUserId) })
     },
   })
@@ -120,6 +184,7 @@ export function useUpdateDoorCodeMutation(targetUserId: string) {
     mutationFn: ({ id, req }: { id: number; req: UpdateDoorCodeRequest }) =>
       doorCodesService.updateDoorCode(id, req),
     onSuccess: async () => {
+      markPushRequested(queryClient, targetUserId)
       await queryClient.invalidateQueries({ queryKey: queryKeys.doorCodes.byUser(targetUserId) })
     },
   })
@@ -142,6 +207,11 @@ export function useRetryDoorCodePushMutation(targetUserId: string) {
   const queryClient = useQueryClient()
   return useMutation({
     mutationFn: (id: number) => doorCodesService.retryPush(id),
+    // Only a Retry that worked queued a push. A refused one (the 409s) is
+    // still answered in the request, so it doesn't start the fast poll.
+    onSuccess: () => {
+      markPushRequested(queryClient, targetUserId)
+    },
     // Refetch on failure too: a refused Retry (e.g. the code was turned off
     // elsewhere) means the card is showing stale state.
     onSettled: async () => {

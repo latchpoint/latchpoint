@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Eye, EyeOff } from 'lucide-react'
 import type { DoorCode, Entity, UpdateDoorCodeRequest } from '@/types'
-import type { CachedDoorCode } from '@/hooks/useDoorCodesQueries'
+import { type CachedDoorCode, isLockQueued } from '@/hooks/useDoorCodesQueries'
 import { getErrorMessage } from '@/types/errors'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
@@ -52,6 +52,9 @@ function pushStateKeyOf(code: DoorCode): string {
         a.pendingRemoval,
         a.lastPushError ?? '',
         lockClears,
+        // A new queued push, and the push it queued being tried (#124).
+        a.pushRequestedAt ?? '',
+        isLockQueued(code, a),
       ])
     })
     .sort()
@@ -118,6 +121,11 @@ function lockChipOf(code: DoorCode, lockEntityId: string): LockChip {
   }
 
   if (assignment && pushState === 'pending') {
+    // A save or Retry queued it and the scheduler hasn't tried it since (#124).
+    // Ahead of the pending states below because nothing has been sent since
+    // that save, so their tooltips (its last error, waiting on the lock) would
+    // be about the push before it. Once it's tried those take over.
+    if (isLockQueued(code, assignment)) return { suffix: ' (queued)', title: 'Waiting to be sent to the lock.' }
     if (assignment.schedulePending) {
       // Still being retried. Only a failed one is "not applied".
       return {

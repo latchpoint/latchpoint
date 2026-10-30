@@ -1,7 +1,7 @@
 import type { DoorCode } from '@/types'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { isLockAwaitingPush } from '@/hooks/useDoorCodesQueries'
+import { isLockAwaitingPush, isLockQueued } from '@/hooks/useDoorCodesQueries'
 
 type Props = {
   code: DoorCode
@@ -152,11 +152,19 @@ export function DoorCodePushStatusBadge({ code, lockNameByEntityId, canRetry, is
     )
   }
 
-  // pending, or pushed with a clear the scheduler hasn't got to yet
-  const waiting = clearing ? 'Waiting for the lock to clear the slot.' : 'Waiting for the lock to accept the code.'
+  // pending, or pushed with a clear the scheduler hasn't got to yet. A save or
+  // Retry only queues the push now (#124), so while one is queued it says it's
+  // being sent rather than repeating an error from before the save.
+  const queued = clearing ? [] : code.lockSlotAssignments.filter((a) => isLockQueued(code, a))
+  const nameOf = (a: { lockEntityId: string }) => lockNameByEntityId.get(a.lockEntityId) || a.lockEntityId
+  const waiting = clearing
+    ? 'Waiting for the lock to clear the slot.'
+    : queued.length
+      ? `Being sent to ${joinNames(queued.map(nameOf))}.`
+      : 'Waiting for the lock to accept the code.'
   return (
     <div className="flex items-center gap-2">
-      <Badge variant="outline" title={code.lastPushError || waiting}>
+      <Badge variant="outline" title={queued.length ? waiting : code.lastPushError || waiting}>
         {clearing ? 'Pending clear' : 'Pending sync'}
       </Badge>
       {showRetry ? (
