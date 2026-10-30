@@ -3320,10 +3320,19 @@ class PushSlotClaimRaceTests(EncryptionTestMixin, TestCase):
         self.assertEqual(clears, [[1]])
         self.assertNotIn((7, 1), gateway._lock_codes)
 
-    def _die_at_the_pushed_stamp(self, *, drops_duplicates: bool) -> tuple[DoorCode, FakeGateway]:
-        """Push with the process dying at the ``pushed`` stamp, after the PIN landed in slot 1 (issue #130)."""
+    MASKED = {"userIdStatus": 1, "userCode": "****"}
+
+    def _die_at_the_pushed_stamp(self, *, drops_duplicates: bool, masked: bool = False) -> tuple[DoorCode, FakeGateway]:
+        """Push with the process dying at the ``pushed`` stamp, after the PIN landed in slot 1 (issue #130).
+
+        ``masked`` makes every CC 99 ``get`` answer occupied with a masked code, like a lock that hides PINs.
+        """
         gateway = FakeGateway(
-            usersNumber=3, slot_status={1: 0, 2: 0, 3: 0}, cache_updates_on_set=True, drops_duplicates=drops_duplicates
+            usersNumber=3,
+            slot_status={1: 0, 2: 0, 3: 0},
+            cache_updates_on_set=True,
+            drops_duplicates=drops_duplicates,
+            get_responses=[self.MASKED] * 20 if masked else None,
         )
         code = self._make_code(pin="1234")
         real_save = DoorCode.save
@@ -3375,6 +3384,82 @@ class PushSlotClaimRaceTests(EncryptionTestMixin, TestCase):
 
                 self.assertFalse(DoorCode.objects.filter(id=code.id).exists())
                 self.assertEqual(gateway._lock_codes, {})
+
+    def test_masked_lock_retry_after_dying_at_the_pushed_stamp_adopts_the_slot_and_delete_clears_it(self):
+        # PR #190 review: a lock that masks PINs can't show the PIN on the retry's
+        # readback, so the push's own earlier readback has to count.
+        for drops_duplicates in (False, True):
+            with self.subTest(drops_duplicates=drops_duplicates):
+                code, gateway = self._die_at_the_pushed_stamp(drops_duplicates=drops_duplicates, masked=True)
+
+                result = push_door_code_to_lock(door_code=code, lock_entity_id=self.LOCK_ENTITY_ID, zwavejs=gateway)
+
+                self.assertEqual(result.slot_index, 1)
+                self.assertEqual(self._set_slots(gateway), [1])
+                door_codes_uc.delete_door_code(code=code, zwavejs=gateway)
+
+                self.assertEqual(gateway._lock_codes, {})
+
+    def test_masked_lock_delete_after_dying_at_the_pushed_stamp_clears_the_slot(self):
+        for drops_duplicates in (False, True):
+            with self.subTest(drops_duplicates=drops_duplicates):
+                code, gateway = self._die_at_the_pushed_stamp(drops_duplicates=drops_duplicates, masked=True)
+
+                door_codes_uc.delete_door_code(code=code, zwavejs=gateway)
+
+                self.assertFalse(DoorCode.objects.filter(id=code.id).exists())
+                self.assertEqual(gateway._lock_codes, {})
+
+    def _attempt_on_slot_1(self, *, code: DoorCode, slot_verified: bool) -> None:
+        lock_push_uc._record_unconfirmed_slot_attempt(
+            door_code=code,
+            lock_entity_id=self.LOCK_ENTITY_ID,
+            slot_index=1,
+            reason="timeout",
+            pin="1234",
+            slot_verified=slot_verified,
+        )
+
+    def test_masked_slot_of_an_untagged_attempt_is_left_alone(self):
+        # Only the attempt the push recorded after its own readback counts a masked slot as its own.
+        code = self._make_code(pin="1234")
+        self._attempt_on_slot_1(code=code, slot_verified=False)
+        gateway = FakeGateway(usersNumber=3, get_responses=[self.MASKED] * 20)
+        gateway._lock_codes[(7, 1)] = "1234"
+
+        door_codes_uc.delete_door_code(code=code, zwavejs=gateway)
+
+        self.assertFalse(any(c["method_name"] == "clear" for c in gateway.invoke_calls))
+        self.assertEqual(gateway._lock_codes, {(7, 1): "1234"})
+
+    def test_tagged_attempt_never_clears_a_readable_different_code_or_a_config_slot(self):
+        for response in (
+            {"userIdStatus": 1, "userCode": "5555"},
+            {"userIdStatus": 3},
+            {"userIdStatus": 4},
+            {"userIdStatus": 0, "userCode": ""},
+        ):
+            with self.subTest(response=response):
+                code = self._make_code(pin="1234")
+                self._attempt_on_slot_1(code=code, slot_verified=True)
+                gateway = FakeGateway(usersNumber=3, get_responses=[response] * 20)
+
+                with patch.object(lock_push_uc, "_READBACK_RETRY_DELAYS_SECONDS", (0.0, 0.0)):
+                    door_codes_uc.delete_door_code(code=code, zwavejs=gateway)
+
+                self.assertFalse(DoorCode.objects.filter(id=code.id).exists())
+                self.assertFalse(any(c["method_name"] == "clear" for c in gateway.invoke_calls))
+
+    def test_tagged_masked_slot_another_code_holds_is_left_alone(self):
+        other = self._make_code(pin="9999", slot_index=1)
+        code = self._make_code(pin="1234")
+        self._attempt_on_slot_1(code=code, slot_verified=True)
+        gateway = FakeGateway(usersNumber=3, get_responses=[self.MASKED] * 20)
+
+        door_codes_uc.delete_door_code(code=code, zwavejs=gateway)
+
+        self.assertEqual(gateway.invoke_calls, [])
+        self.assertEqual(self._slot_of(other), 1)
 
     def test_successful_push_leaves_no_unconfirmed_marker(self):
         gateway = FakeGateway(usersNumber=3)

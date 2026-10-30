@@ -463,6 +463,9 @@ _SLOT_EMPTIED_OUTCOMES = frozenset({"cleared", "lock_missing"})
 # readback has to compare against this one. Never logged or returned decrypted.
 _EXPECTED_PIN_KEY = "encrypted_pin"
 
+# Metadata flag on a ``push_unconfirmed`` attempt the push's own readback accepted (PR #190 review).
+_SLOT_VERIFIED_KEY = "slot_verified"
+
 
 def _encrypt_expected_pin(pin: str | None) -> dict[str, str]:
     return {_EXPECTED_PIN_KEY: SettingsEncryption.get().encrypt(pin)} if pin else {}
@@ -487,8 +490,16 @@ def _record_unconfirmed_slot_attempt(
     slot_index: int,
     reason: str,
     pin: str,
+    slot_verified: bool = False,
 ) -> DoorCodeEvent:
-    """Remember that ``slot_index`` on this lock may hold ``pin`` for this code (no schema change)."""
+    """Remember that ``slot_index`` on this lock may hold ``pin`` for this code (no schema change).
+
+    ``slot_verified`` marks an attempt whose slot the push's own readback already
+    accepted, recorded right before its final write (PR #190 review). On a lock
+    that masks PINs a later readback of that slot can't show the PIN, so
+    adoption and the cleanups count a masked occupied slot as this code's for
+    those attempts only (:func:`_attempt_slot_counts_as_ours`).
+    """
     return DoorCodeEvent.objects.create(
         door_code=door_code,
         user=door_code.user,
@@ -499,8 +510,49 @@ def _record_unconfirmed_slot_attempt(
             "slot_index": int(slot_index),
             "reason": sanitize_push_error_for_storage(reason)[:200],
             **_encrypt_expected_pin(pin),
+            **({_SLOT_VERIFIED_KEY: True} if slot_verified else {}),
         },
     )
+
+
+def _verified_attempt_slots(*, door_code: DoorCode, lock_entity_id: str) -> set[int]:
+    """Unsettled attempt slots on this lock whose newest attempt was recorded with ``slot_verified``."""
+    return {
+        slot_index
+        for slot_index, (_event_id, metadata) in _unsettled_unconfirmed_attempts(
+            door_code=door_code, lock_entity_id=lock_entity_id
+        ).items()
+        if metadata.get(_SLOT_VERIFIED_KEY)
+    }
+
+
+def _attempt_slot_counts_as_ours(
+    *,
+    zwavejs: ZwavejsGateway,
+    node_id: int,
+    slot_index: int,
+    pin: str,
+    timeout_seconds: float,
+    slot_verified: bool,
+) -> bool:
+    """Read an unconfirmed attempt slot back; ``True`` when it holds ``pin``, enabled or disabled.
+
+    For a ``slot_verified`` attempt a slot that reads back occupied with a code
+    the lock won't show counts too, the rule :func:`_tracked_slot_may_hold_pin`
+    uses for a tracked slot, since this push's own readback already accepted it
+    (PR #190 review). A readable different code, an empty slot and a messaging or
+    passage mode slot never count. :class:`LockCodeUnverified` and gateway
+    errors propagate.
+    """
+    try:
+        confirmed = _verify_user_code_slot(
+            zwavejs=zwavejs, node_id=node_id, slot_index=slot_index, pin=pin, timeout_seconds=timeout_seconds
+        )
+    except LockRejectedCode as exc:
+        if exc.holds_pin:
+            return True
+        return slot_verified and not (exc.holds_other or exc.clear_slot)
+    return confirmed or slot_verified
 
 
 def _claimed_slots(*, lock_entity_id: str, door_code: DoorCode) -> set[int]:
@@ -636,15 +688,19 @@ def _find_adoptable_attempted_slot(
     its last successful push there are considered, never an arbitrary slot that
     happens to hold the same PIN (e.g. one entered on the keypad). ``claimed_slots``
     (the DB-held set ``_enumerate_free_slot`` skips) are never adopted, and the
-    readback must report the PIN itself; a masked readback doesn't count.
+    readback must report the PIN itself; a masked readback doesn't count, except
+    for a ``slot_verified`` attempt that sent this same PIN, whose slot the push
+    already accepted before its final write rolled back (PR #190 review). Its
+    slot is adopted when it reads back occupied and enabled with a masked code.
     :class:`LockCodeUnverified` propagates.
     """
-    candidates = _unconfirmed_attempt_slots(
+    attempts = _unconfirmed_attempts(
         door_code=door_code,
         lock_entity_id=lock_entity_id,
         claimed_slots=claimed_slots,
     )
-    for slot_index in candidates:
+    verified = _verified_attempt_slots(door_code=door_code, lock_entity_id=lock_entity_id)
+    for slot_index, attempted_pin in attempts.items():
         try:
             confirmed = _verify_user_code_slot(
                 zwavejs=zwavejs,
@@ -655,7 +711,7 @@ def _find_adoptable_attempted_slot(
             )
         except LockRejectedCode:
             continue
-        if confirmed:
+        if confirmed or (slot_index in verified and attempted_pin == pin):
             return slot_index
     return None
 
@@ -997,21 +1053,29 @@ def mark_pushed_if_settled(*, door_code: DoorCode) -> bool:
 
 
 def _slot_holds_pin(
-    *, zwavejs: ZwavejsGateway, lock_entity_id: str, slot_index: int, pin: str | None, timeout_seconds: float
+    *,
+    zwavejs: ZwavejsGateway,
+    lock_entity_id: str,
+    slot_index: int,
+    pin: str | None,
+    timeout_seconds: float,
+    slot_verified: bool = False,
 ) -> bool:
-    """Read the slot back; ``True`` only when it reports ``pin`` (enabled or disabled)."""
+    """Read the slot back; ``True`` only when it reports ``pin`` (enabled or disabled).
+
+    A ``slot_verified`` attempt slot also counts when it reads back occupied with
+    a masked code (:func:`_attempt_slot_counts_as_ours`).
+    """
     if not pin:
         return False
-    try:
-        return _verify_user_code_slot(
-            zwavejs=zwavejs,
-            node_id=_resolve_lock_node_id(lock_entity_id=lock_entity_id),
-            slot_index=slot_index,
-            pin=pin,
-            timeout_seconds=timeout_seconds,
-        )
-    except LockRejectedCode as exc:
-        return exc.holds_pin
+    return _attempt_slot_counts_as_ours(
+        zwavejs=zwavejs,
+        node_id=_resolve_lock_node_id(lock_entity_id=lock_entity_id),
+        slot_index=slot_index,
+        pin=pin,
+        timeout_seconds=timeout_seconds,
+        slot_verified=slot_verified,
+    )
 
 
 def _held_by_another_code(*, door_code: DoorCode, lock_entity_id: str, slot_index: int) -> bool:
@@ -1049,6 +1113,9 @@ def _retry_failed_slot_clear(
                 slot_index=slot_index,
                 pin=failure.expected_pin or decrypt_pin_or_none(door_code),
                 timeout_seconds=timeout_seconds,
+                # A clear of a slot_verified attempt that failed keeps that attempt unsettled.
+                slot_verified=failure.unconfirmed
+                and slot_index in _verified_attempt_slots(door_code=door_code, lock_entity_id=lock_entity_id),
             ):
                 forget_cleared_slot(
                     door_code=door_code,
@@ -1244,7 +1311,9 @@ def _clear_unconfirmed_slots_on_lock(
     as is one on a lock latchpoint can't resolve any more (``lock_missing``), so
     later updates and deletes don't keep coming back to it (issue #161). A slot
     whose check or clear fails transiently stays unsettled. ``skip_slots`` are
-    left alone, and so is a slot with no PIN to compare against.
+    left alone, and so is a slot with no PIN to compare against. A
+    ``slot_verified`` attempt's slot is cleared when it reads back occupied with
+    a masked code too (:func:`_attempt_slot_counts_as_ours`).
     """
     cleared: list[dict[str, object]] = []
     failed: list[ClearFailure] = []
@@ -1278,19 +1347,18 @@ def _clear_unconfirmed_slots_on_lock(
                     door_code=door_code, lock_entity_id=lock_entity_id, slot_index=slot_index, outcome="lock_missing"
                 )
         return cleared, failed
+    verified = _verified_attempt_slots(door_code=door_code, lock_entity_id=lock_entity_id)
     for slot_index, attempted_pin in attempts.items():
         expected_pin = attempted_pin or pin
         try:
-            try:
-                holds_pin = _verify_user_code_slot(
-                    zwavejs=zwavejs,
-                    node_id=node_id,
-                    slot_index=slot_index,
-                    pin=expected_pin,
-                    timeout_seconds=timeout_seconds,
-                )
-            except LockRejectedCode as exc:
-                holds_pin = exc.holds_pin
+            holds_pin = _attempt_slot_counts_as_ours(
+                zwavejs=zwavejs,
+                node_id=node_id,
+                slot_index=slot_index,
+                pin=expected_pin,
+                timeout_seconds=timeout_seconds,
+                slot_verified=slot_index in verified,
+            )
             if not holds_pin:
                 _settle_unconfirmed_slot(
                     door_code=door_code,
@@ -1975,7 +2043,7 @@ def push_door_code_to_lock(
         # first; retries will just rediscover the same problem. Record + flip the
         # row to FAILED so the UI surfaces last_push_error instead of stalling on
         # "pending sync" forever.
-        _record_push_failure(door_code=door_code, error_message=str(exc), terminal=True)
+        _record_push_failure(door_code=door_code, error_message=str(exc), terminal=True, lock_entity_id=lock_entity_id)
         raise LockPushFailed(str(exc)) from exc
 
     lock_key = f"lock_sync:{lock_entity_id}"
@@ -2030,7 +2098,9 @@ def push_door_code_to_lock(
                     claimed_slots=claimed_slots,
                 )
         except (ZwavejsNotConfigured, ZwavejsClientUnavailable, ZwavejsCommandValidationError) as exc:
-            _record_push_failure(door_code=door_code, error_message=str(exc), terminal=True)
+            _record_push_failure(
+                door_code=door_code, error_message=str(exc), terminal=True, lock_entity_id=lock_entity_id
+            )
             raise LockPushFailed(str(exc)) from exc
         except LockSlotsFull as exc:
             # Counted like any transient failure, so a lock with nothing Available
@@ -2038,7 +2108,9 @@ def push_door_code_to_lock(
             _record_push_failure(door_code=door_code, error_message=str(exc), terminal=False)
             raise
         except LockRejectedCode as exc:
-            _record_push_failure(door_code=door_code, error_message=str(exc), terminal=True)
+            _record_push_failure(
+                door_code=door_code, error_message=str(exc), terminal=True, lock_entity_id=lock_entity_id
+            )
             raise
         except LockPushFailed:
             raise
@@ -2096,7 +2168,9 @@ def push_door_code_to_lock(
                 timeout_seconds=timeout_seconds,
             )
         except (ZwavejsNotConfigured, ZwavejsClientUnavailable, ZwavejsCommandValidationError) as exc:
-            _record_push_failure(door_code=door_code, error_message=str(exc), terminal=True)
+            _record_push_failure(
+                door_code=door_code, error_message=str(exc), terminal=True, lock_entity_id=lock_entity_id
+            )
             raise LockPushFailed(str(exc)) from exc
         except LockRejectedCode as exc:
             if exc.clear_slot:
@@ -2106,7 +2180,9 @@ def push_door_code_to_lock(
                     slot_index=slot_index,
                     timeout_seconds=timeout_seconds,
                 )
-            _record_push_failure(door_code=door_code, error_message=str(exc), terminal=True)
+            _record_push_failure(
+                door_code=door_code, error_message=str(exc), terminal=True, lock_entity_id=lock_entity_id
+            )
             raise
         except GatewayError as exc:
             error_message = f"{exc.__class__.__name__}: {exc}"
@@ -2125,17 +2201,21 @@ def push_door_code_to_lock(
         # counter is important: the cap is on *consecutive* failures, so a single
         # successful push must zero the meter.
         schedule_applied = bool(weekdays_pushed)
-        # The PIN is in the slot now, so record it as an unconfirmed attempt first,
-        # committed on its own. If the block below rolls back (the process dies, a DB
-        # error, or the unique constraint) the slot isn't lost: a retry adopts it and
-        # a delete or deactivate reads it back and clears it. A clean commit deletes
-        # it again, so a successful push leaves no failure in the audit log.
+        # The PIN is in the slot now, so record it as an unconfirmed attempt first.
+        # In autocommit (the only way a push runs, see _check_no_outer_transaction)
+        # it commits on its own, so if the block below rolls back (the process dies,
+        # a DB error, or the unique constraint) the slot isn't lost: a retry adopts
+        # it and a delete or deactivate reads it back and clears it. It's tagged
+        # slot_verified, since the readback above accepted the slot, so that holds
+        # on a lock that masks PINs too. A clean commit deletes it again, so a
+        # successful push leaves no failure in the audit log.
         pending_marker = _record_unconfirmed_slot_attempt(
             door_code=door_code,
             lock_entity_id=lock_entity_id,
             slot_index=slot_index,
             reason="PIN set on the lock, slot not saved yet",
             pin=pin,
+            slot_verified=True,
         )
         try:
             # One transaction for the slot, the pushed stamp and its event (issue
