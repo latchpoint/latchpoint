@@ -508,7 +508,7 @@ describe('DoorCodeCard', () => {
       expect(screen.getByText('Back Door')).not.toHaveAttribute('title')
     })
 
-    it('shows a lock with the PIN but not its schedule as schedule not applied', () => {
+    it('shows a lock with the PIN whose schedule is still being retried as schedule pending', () => {
       renderCard(
         twoLocks(
           [
@@ -519,10 +519,25 @@ describe('DoorCodeCard', () => {
         ),
       )
 
-      expect(screen.getByText('Front Door (schedule not applied)')).toHaveAttribute(
+      expect(screen.getByText('Front Door (schedule pending)')).toHaveAttribute(
         'title',
-        "The PIN is on the lock but its schedule isn't yet, so it works at any time until it is. Retried automatically.",
+        'The PIN is on the lock, its schedule is still being sent.',
       )
+      expect(screen.queryByText(/schedule not applied/)).toBeNull()
+    })
+
+    it("shows a schedule retry's last error on the schedule pending chip", () => {
+      renderCard(
+        twoLocks(
+          [
+            back({ slotIndex: 2 }),
+            front({ slotIndex: 4, pushState: 'pending', schedulePending: true, lastPushError: 'Lock timed out' }),
+          ],
+          { pushState: 'pending' },
+        ),
+      )
+
+      expect(screen.getByText('Front Door (schedule pending)')).toHaveAttribute('title', 'Lock timed out')
     })
 
     it('shows a schedule that failed for good as schedule not applied, with its error', () => {

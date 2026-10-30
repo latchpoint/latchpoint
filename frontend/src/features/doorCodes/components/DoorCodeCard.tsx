@@ -95,11 +95,10 @@ function lockChipOf(code: DoorCode, lockEntityId: string): LockChip {
 
   if (assignment && pushState === 'pending') {
     if (assignment.schedulePending) {
+      // Still being retried. Only a failed one is "not applied".
       return {
-        suffix: ' (schedule not applied)',
-        title:
-          assignment.lastPushError ||
-          "The PIN is on the lock but its schedule isn't yet, so it works at any time until it is. Retried automatically.",
+        suffix: ' (schedule pending)',
+        title: assignment.lastPushError || 'The PIN is on the lock, its schedule is still being sent.',
       }
     }
     return { suffix: ' (pending)', title: assignment.lastPushError || 'Waiting for the lock to accept the code.' }
