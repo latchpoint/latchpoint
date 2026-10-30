@@ -321,7 +321,6 @@ class WakeTaskTests(TestCase):
 
         with (
             patch.object(runner, "_watchdog_started", False),
-            patch.object(runner, "_maybe_acquire_leader_lock", return_value=True),
             patch.object(runner, "get_tasks", return_value={self._name: task}),
             patch.object(runner.threading, "Thread", _Thread),
         ):

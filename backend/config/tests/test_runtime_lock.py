@@ -159,6 +159,10 @@ class _FakeServerTestCase(SimpleTestCase):
         self._patch(patch.object(runtime_lock, "STALE_SESSION_RETRY_SECONDS", 0))
         self._patch(patch.object(runtime_lock, "STALE_SESSION_WAIT_SECONDS", 1))
         self._patch(patch.object(runtime_lock, "RECONNECT_RETRY_SECONDS", 0))
+        # So a stray one in the env can't add a deprecation warning to every test.
+        self._patch(patch.dict(os.environ))
+        for name in ("SCHEDULER_LEADER_LOCK_ENABLED", "SCHEDULER_LEADER_LOCK_ID"):
+            os.environ.pop(name, None)
 
     def _patch(self, patcher):
         started = patcher.start()
@@ -483,6 +487,40 @@ class EventLoopTests(SimpleTestCase):
             asyncio.run(_main())
 
 
+class DeprecatedSettingsTests(_FakeServerTestCase):
+    """The scheduler's old leader lock settings are gone, and setting them says so (#162)."""
+
+    def test_old_env_vars_log_a_deprecation_warning(self):
+        for name in ("SCHEDULER_LEADER_LOCK_ENABLED", "SCHEDULER_LEADER_LOCK_ID"):
+            with (
+                self.subTest(name=name),
+                patch.dict(os.environ, {name: "1"}),
+                self.assertLogs("config.runtime_lock", "WARNING") as logs,
+            ):
+                self.make().acquire_for_process()
+            self.assertIn(name, logs.output[0])
+            self.assertIn("doesn't do anything anymore", logs.output[0])
+
+    def test_old_setting_logs_a_deprecation_warning(self):
+        with (
+            override_settings(SCHEDULER_LEADER_LOCK_ENABLED=True),
+            self.assertLogs("config.runtime_lock", "WARNING") as logs,
+        ):
+            self.make().acquire_for_process()
+
+        self.assertIn("SCHEDULER_LEADER_LOCK_ENABLED", logs.output[0])
+
+    def test_nothing_logged_without_them(self):
+        with self.assertNoLogs("config.runtime_lock", "WARNING"):
+            self.make().acquire_for_process()
+
+    def test_settings_are_gone(self):
+        from django.conf import settings
+
+        self.assertFalse(hasattr(settings, "SCHEDULER_LEADER_LOCK_ENABLED"))
+        self.assertFalse(hasattr(settings, "SCHEDULER_LEADER_LOCK_ID"))
+
+
 class RuntimeLockSettingUnderTestsTests(SimpleTestCase):
     """`RUNTIME_LOCK` from the env doesn't reach a test run, so only a test that asks for the lock takes it."""
 
@@ -566,6 +604,26 @@ class ShouldStartRuntimesUsesTheLockTests(_ProcessLockTestCase):
         self.assertEqual(self.server.params, [])
 
 
+class PushTaskRunningTests(_ProcessLockTestCase):
+    """A standby only queues door code pushes, and the active process's tick sends them (ADR-0111, ADR-0112)."""
+
+    def test_true_in_a_standby(self):
+        from locks.use_cases.lock_push import push_task_running
+
+        self.use_process_lock(self.lock_held_elsewhere())
+
+        self.assertTrue(push_task_running())
+
+    def test_unchanged_otherwise(self):
+        from locks.use_cases.lock_push import push_task_running
+
+        self.use_process_lock(self.make())
+
+        self.assertFalse(push_task_running())
+        with patch("scheduler.runner.is_task_running", return_value=True):
+            self.assertTrue(push_task_running())
+
+
 class SchedulerStatusTests(_ProcessLockTestCase):
     def test_has_the_runtime_lock(self):
         from scheduler.runner import get_scheduler_status
@@ -575,6 +633,7 @@ class SchedulerStatusTests(_ProcessLockTestCase):
         status = get_scheduler_status()
 
         self.assertEqual(status["runtime_lock"], {"state": "held_elsewhere", "holder": OTHER_HOLDER})
+        self.assertNotIn("leader_lock", status)
 
 
 class SystemStatusTests(TestCase):

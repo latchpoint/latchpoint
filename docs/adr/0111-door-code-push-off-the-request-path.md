@@ -79,8 +79,9 @@ The request saves and returns, and a fast scheduler task makes the push.
   again, so that's one more try at most.
 - **Callers.** Create, update and Retry call `request_push` when
   `push_task_running()` says the task's loop is alive in this process, ie the
-  thing `wake_task` reaches. Otherwise (`SCHEDULER_ENABLED=False`, no leader
-  lock, tests) they push inline like before, with the same 30s per lock, and
+  thing `wake_task` reaches, or this process is a standby under the runtime
+  lock (ADR-0112). Otherwise (`SCHEDULER_ENABLED=False`, tests) they push
+  inline like before, with the same 30s per lock, and
   don't stamp anything. A DB error while queueing is logged and doesn't fail a
   save that already happened. Update still clears under its `lock_sync:` hold, but
   queues the push there and makes an inline one only after letting go. Retry
@@ -114,7 +115,8 @@ The request saves and returns, and a fast scheduler task makes the push.
 - A queued push waits for its wake or the next 5s tick, which is a few seconds
   slower than the old inline push on a lock that answers.
 - A process without the task still pushes in the request, now at most 30s per
-  lock. With the leader lock on, a non-leader process does that too (#162).
+  lock. A standby under the runtime lock (ADR-0112) doesn't, it only queues and
+  the process with the lock sends the push on its next tick.
 - A lock that runs out of its budget isn't counted for that attempt, and the
   request is spent after it, so the lock is the 300s retry's. That retry has no
   budget, so its attempts count and the cap still applies. A lock that times

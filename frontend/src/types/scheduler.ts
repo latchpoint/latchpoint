@@ -1,7 +1,9 @@
-export type SchedulerLeaderLockStatus = {
-  enabled: boolean
-  acquired: boolean
-  error: string | null
+// One runtime process per database (ADR-0112). `holder` is only set for `held_elsewhere`, `reason` for `disabled`.
+export type RuntimeLockStatus = {
+  state: 'active' | 'held_elsewhere' | 'disabled'
+  applicationName?: string
+  holder?: { pid: number; applicationName: string | null; clientAddr: string | null } | null
+  reason?: string
 }
 
 export type SchedulerRuntimeTaskStatus = {
@@ -12,7 +14,7 @@ export type SchedulerRuntimeTaskStatus = {
 
 export type SchedulerRuntimeStatus = {
   running: boolean
-  leaderLock: SchedulerLeaderLockStatus
+  runtimeLock: RuntimeLockStatus
   tasks: Record<string, SchedulerRuntimeTaskStatus>
 }
 

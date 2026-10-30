@@ -8,8 +8,7 @@ import threading
 import time
 from datetime import datetime, timedelta
 
-from django.conf import settings
-from django.db import close_old_connections, connection
+from django.db import close_old_connections
 from django.utils import timezone
 
 from config import runtime_lock
@@ -38,8 +37,6 @@ _wake_events: dict[str, threading.Event] = {}
 _running: set[str] = set()  # Track currently executing tasks
 _watchdog_started = False
 _task_status: dict[str, dict[str, object]] = {}
-_leader_lock_acquired = False
-_leader_lock_error: str | None = None
 
 
 def _compute_next_run(schedule: Schedule, now: datetime) -> datetime:
@@ -98,46 +95,6 @@ def _task_enabled_now(task: ScheduledTask) -> tuple[bool, str | None]:
     """
     enabled, reason = evaluate_task_enabled(task)
     return bool(enabled), reason
-
-
-def _maybe_acquire_leader_lock() -> bool:
-    """
-    Best-effort leader lock for multi-process deployments (Postgres only).
-
-    In local single-process setups this is typically disabled.
-    """
-    global _leader_lock_acquired
-    global _leader_lock_error
-
-    if not bool(getattr(settings, "SCHEDULER_LEADER_LOCK_ENABLED", False)):
-        _leader_lock_acquired = True
-        _leader_lock_error = None
-        return True
-
-    try:
-        if connection.vendor != "postgresql":
-            _leader_lock_acquired = True
-            _leader_lock_error = None
-            logger.info(
-                "Scheduler leader lock enabled but DB is %s; skipping lock",
-                connection.vendor,
-            )
-            return True
-
-        lock_id = int(getattr(settings, "SCHEDULER_LEADER_LOCK_ID", 4242001))
-        with connection.cursor() as cursor:
-            cursor.execute("SELECT pg_try_advisory_lock(%s)", [lock_id])
-            acquired = bool(cursor.fetchone()[0])
-        _leader_lock_acquired = acquired
-        _leader_lock_error = None
-        if not acquired:
-            logger.warning("Scheduler leader lock not acquired; scheduler will not start")
-        return acquired
-    except Exception as exc:
-        _leader_lock_acquired = False
-        _leader_lock_error = str(exc)
-        logger.exception("Scheduler leader lock acquisition failed; scheduler will not start")
-        return False
 
 
 def _run_task_loop(
@@ -470,8 +427,8 @@ def start_scheduler() -> None:
     with _lock:
         if _watchdog_started:
             return
-        if not _maybe_acquire_leader_lock():
-            return
+        # Only called where should_start_runtimes() said yes, so with the runtime lock on that's one process per
+        # database (ADR-0112). The old SCHEDULER_LEADER_LOCK_* lock is gone.
         _watchdog_started = True  # Set early to prevent race conditions
 
         # Start task threads
@@ -515,7 +472,7 @@ def is_task_running(name: str) -> bool:
     """Whether this process has a live loop for task ``name`` that isn't stopping, ie one :func:`wake_task` reaches.
 
     False in a process whose scheduler never started (``SCHEDULER_ENABLED=False``,
-    tests, management commands, a process that didn't get the leader lock) and
+    tests, management commands, a standby without the runtime lock) and
     for a task that's disabled or gated off.
     """
     with _lock:
@@ -548,11 +505,6 @@ def get_scheduler_status() -> dict:
     with _lock:
         return {
             "running": _watchdog_started,
-            "leader_lock": {
-                "enabled": bool(getattr(settings, "SCHEDULER_LEADER_LOCK_ENABLED", False)),
-                "acquired": _leader_lock_acquired,
-                "error": _leader_lock_error,
-            },
             # Whether this process holds the runtime lock, ie runs the scheduler at all (ADR-0112).
             "runtime_lock": runtime_lock.get_status(),
             "tasks": {

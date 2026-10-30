@@ -57,6 +57,9 @@ DISABLED = "disabled"
 
 _NOT_CHECKED = "runtimes aren't started in this process"
 
+# The scheduler's old leader lock (#162). The runtime lock covers the scheduler now.
+_DEPRECATED_SETTINGS = ("SCHEDULER_LEADER_LOCK_ENABLED", "SCHEDULER_LEADER_LOCK_ID")
+
 _APP_NAME_PREFIX = "latchpoint-runtime"
 # application_name is cut to 63 bytes by Postgres. The hostname gets cut instead, so the pid always fits.
 _MAX_HOST_CHARS = 63 - len(_APP_NAME_PREFIX) - len("::") - 7
@@ -147,6 +150,7 @@ class RuntimeLock:
         with self._mutex:
             if self._decided:
                 return self._result
+            _warn_deprecated_settings()
             self._result = _call_outside_event_loop(self._decide)
             self._decided = True
             return self._result
@@ -464,6 +468,16 @@ def _mode() -> str:
         return "off"
     logger.warning("RUNTIME_LOCK=%r isn't auto or off, so it's treated as auto", raw)
     return "auto"
+
+
+def _warn_deprecated_settings() -> None:
+    for name in _DEPRECATED_SETTINGS:
+        if name in os.environ or hasattr(settings, name):
+            logger.warning(
+                "%s is set but doesn't do anything anymore. The scheduler runs only in the process that holds the "
+                "runtime lock now (ADR-0112), so it can be removed",
+                name,
+            )
 
 
 def _libpq_supports_tcp_user_timeout() -> bool:

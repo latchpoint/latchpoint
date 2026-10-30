@@ -3694,13 +3694,17 @@ def push_task_running() -> bool:
     It's the scheduler's own record of the task's loop
     (:func:`scheduler.runner.is_task_running`): a live thread that isn't
     stopping, which is also the only thing :func:`scheduler.runner.wake_task`
-    reaches. So it's false with ``SCHEDULER_ENABLED=False``, in tests and
-    management commands, and in a process that didn't get the leader lock, and
-    the save pushes inline there like before (issue #124).
+    reaches. So it's false with ``SCHEDULER_ENABLED=False`` and in tests and
+    management commands, and the save pushes inline there like before (issue #124).
+
+    It's true in a standby that another process holds the runtime lock for
+    (ADR-0112). The task never runs there, but it does in the process with the
+    lock, so the save only queues and that process's 5s tick sends it.
     """
+    from config.runtime_lock import is_held_elsewhere
     from scheduler.runner import is_task_running
 
-    return is_task_running(PUSH_REQUESTED_TASK)
+    return is_task_running(PUSH_REQUESTED_TASK) or is_held_elsewhere()
 
 
 def _wake_push_task() -> None:

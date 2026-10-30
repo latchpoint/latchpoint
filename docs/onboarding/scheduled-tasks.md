@@ -178,8 +178,7 @@ python manage.py run_task cleanup_old_events
     - `failure_backoff_max_seconds` (int, cap for backoff)
     - `failure_suspend_after` (int, consecutive failures threshold)
     - `failure_suspend_seconds` (int, suspend duration once threshold reached)
-- `SCHEDULER_LEADER_LOCK_ENABLED`: Best-effort Postgres advisory lock to ensure only one process runs tasks (default: `false`)
-- `SCHEDULER_LEADER_LOCK_ID`: Advisory lock ID when leader lock is enabled (default: `4242001`)
+- `RUNTIME_LOCK`: `auto` (default) or `off`. On Postgres only the process holding the runtime lock starts the scheduler and the other runtimes, see [ADR 0112](../adr/0112-one-runtime-process-per-database.md). It replaces `SCHEDULER_LEADER_LOCK_ENABLED` and `SCHEDULER_LEADER_LOCK_ID`, which only log a deprecation warning now.
 
 ### SystemConfig Settings
 These can be changed at runtime via the API:
