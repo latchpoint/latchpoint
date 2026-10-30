@@ -650,6 +650,25 @@ class LockConfigSyncReconcileTests(EncryptionTestMixin, APITestCase):
             self.assertTrue(assignment.door_code.is_active)
             self.assertEqual(assignment.slot_index, 1)
 
+    def test_messaging_and_passage_mode_slots_are_not_imported_or_treated_as_empty(self):
+        # Issue #168: Messaging (3) and PassageMode (4) are lock config, not codes and not empty.
+        body = self._sync(SlotGateway({1: (3, "1234"), 2: (4, "5678")}))
+
+        self.assertEqual(body["created"], 0)
+        self.assertFalse(DoorCodeLockAssignment.objects.filter(lock_entity_id=self.LOCK).exists())
+
+        self._sync(SlotGateway({1: (1, "1234")}))
+        assignment = DoorCodeLockAssignment.objects.select_related("door_code").get(
+            lock_entity_id=self.LOCK, slot_index=1
+        )
+        for status in (3, 4):
+            body = self._sync(SlotGateway({1: (status, None)}))
+            self.assertEqual(body["deactivated"], 0)
+            assignment.refresh_from_db()
+            assignment.door_code.refresh_from_db()
+            self.assertTrue(assignment.door_code.is_active)
+            self.assertEqual(assignment.slot_index, 1)
+
     def test_confirmed_empty_slot_turns_code_off_and_releases_slot(self):
         self._sync(SlotGateway({1: (1, "1234")}))
         assignment = DoorCodeLockAssignment.objects.select_related("door_code").get(
