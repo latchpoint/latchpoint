@@ -30,7 +30,9 @@ class DoorCodesView(APIView):
         user_id = request.query_params.get("user_id")
         target_user = door_codes_uc.resolve_list_target_user(actor_user=request.user, requested_user_id=user_id)
         codes = door_codes_uc.list_door_codes_for_user(user=target_user)
-        return Response(DoorCodeSerializer(codes, many=True).data, status=status.HTTP_200_OK)
+        return Response(
+            DoorCodeSerializer(codes, many=True, context={"request": request}).data, status=status.HTTP_200_OK
+        )
 
     def post(self, request):
         """Create a door code for a target user (admin-only, requires re-auth)."""
@@ -66,7 +68,7 @@ class DoorCodesView(APIView):
             zwavejs=default_zwavejs_gateway,
         )
         code = DoorCode.objects.select_related("user").prefetch_related("lock_assignments").get(id=code.id)
-        return Response(DoorCodeSerializer(code).data, status=status.HTTP_201_CREATED)
+        return Response(DoorCodeSerializer(code, context={"request": request}).data, status=status.HTTP_201_CREATED)
 
 
 class DoorCodeDetailView(ObjectPermissionMixin, APIView):
@@ -86,7 +88,7 @@ class DoorCodeDetailView(ObjectPermissionMixin, APIView):
             queryset=DoorCode.objects.select_related("user").prefetch_related("lock_assignments"),
             id=code_id,
         )
-        return Response(DoorCodeSerializer(code).data, status=status.HTTP_200_OK)
+        return Response(DoorCodeSerializer(code, context={"request": request}).data, status=status.HTTP_200_OK)
 
     def patch(self, request, code_id: int):
         """Update a door code (admin-only, requires re-auth)."""
@@ -106,7 +108,7 @@ class DoorCodeDetailView(ObjectPermissionMixin, APIView):
             zwavejs=default_zwavejs_gateway,
         )
         code = DoorCode.objects.select_related("user").prefetch_related("lock_assignments").get(id=code.id)
-        return Response(DoorCodeSerializer(code).data, status=status.HTTP_200_OK)
+        return Response(DoorCodeSerializer(code, context={"request": request}).data, status=status.HTTP_200_OK)
 
     def delete(self, request, code_id: int):
         """Delete a door code (admin-only, requires re-auth)."""
@@ -131,4 +133,4 @@ class DoorCodePushRetryView(APIView):
         )
         # Narrow serializer that omits the plaintext PIN — the retry response only
         # needs push_state / last_push_error / slot assignments.
-        return Response(DoorCodePushSerializer(code).data, status=status.HTTP_200_OK)
+        return Response(DoorCodePushSerializer(code, context={"request": request}).data, status=status.HTTP_200_OK)

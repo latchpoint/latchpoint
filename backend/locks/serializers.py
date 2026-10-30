@@ -83,6 +83,26 @@ class DoorCodeSerializer(serializers.ModelSerializer):
             "updated_at",
         )
 
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        data["last_push_error"] = self._push_error_for_viewer(data.get("last_push_error"))
+        return data
+
+    def _push_error_for_viewer(self, message: str | None) -> str:
+        """The push error, without the admin code hint unless the viewer is an admin (PR #198 review).
+
+        A code's owner can view it, and the hint tells them their PIN may be the
+        lock's admin code (issue #125). Without a ``request`` in the context the
+        viewer is unknown, so the hint goes.
+        """
+        from accounts.policies import is_admin
+        from locks.use_cases.lock_push import strip_admin_code_hint
+
+        if "_viewer_is_admin" not in self.__dict__:
+            request = self.context.get("request")
+            self._viewer_is_admin = is_admin(getattr(request, "user", None))
+        return (message or "") if self._viewer_is_admin else strip_admin_code_hint(message)
+
     def get_user_display_name(self, obj: DoorCode) -> str:
         """Return a display name for the code's user with fallbacks."""
         user = obj.user
@@ -146,7 +166,7 @@ class DoorCodeSerializer(serializers.ModelSerializer):
                 "slot_index": assignment.slot_index,
                 "pending_removal": assignment.lock_entity_id in removing,
                 "push_state": assignment.push_state,
-                "last_push_error": assignment.last_push_error,
+                "last_push_error": self._push_error_for_viewer(assignment.last_push_error),
                 "last_push_attempt_at": (
                     serializers.DateTimeField().to_representation(assignment.last_push_attempt_at)
                     if assignment.last_push_attempt_at
