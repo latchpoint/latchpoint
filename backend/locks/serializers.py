@@ -155,14 +155,27 @@ class DoorCodeSerializer(serializers.ModelSerializer):
         ``schedule_pending`` (the PIN is on the lock but its schedule isn't)
         (issues #126, #123). The code-level fields stay the rollup of these.
         ``push_requested_at`` is when a save or Retry queued a push of the lock
-        (issue #124). It's still queued while that's after
-        ``last_push_attempt_at`` (or that's null) and the lock is ``pending``.
-        Never a PIN.
+        (issue #124). ``push_queued`` says whether the queued push task would
+        still push the lock now (``lock_push.push_queued``, issue #205), which the
+        frontend can't work out on its own: it needs the TTL, the cap and the
+        microseconds the JSON timestamps can lose in the browser. Never a PIN.
         """
         prefetched = getattr(obj, "_prefetched_objects_cache", {}) or {}
         if "lock_assignments" not in prefetched:
             raise RuntimeError("DoorCode.lock_assignments must be prefetched for serialization.")
-        removing = {f.lock_entity_id for f in self._clear_failures(obj) if f.removing}
+        from locks.use_cases.lock_push import push_queued
+
+        failures = self._clear_failures(obj)
+        removing = {f.lock_entity_id for f in failures if f.removing}
+        now = _validation_now(self)
+
+        def queued(assignment: DoorCodeLockAssignment) -> bool:
+            # The cap is only read for a lock with a request, so a page with
+            # nothing queued costs no query for it.
+            return assignment.push_requested_at is not None and push_queued(
+                assignment, code=obj, now=now, max_attempts=self._push_max_attempts(), failures=failures
+            )
+
         return [
             {
                 "lock_entity_id": assignment.lock_entity_id,
@@ -182,6 +195,7 @@ class DoorCodeSerializer(serializers.ModelSerializer):
                     if assignment.push_requested_at
                     else None
                 ),
+                "push_queued": queued(assignment),
             }
             for assignment in obj.lock_assignments.all()
         ]
@@ -204,6 +218,14 @@ class DoorCodeSerializer(serializers.ModelSerializer):
         if obj.pk not in cache:
             cache[obj.pk] = unresolved_clear_failures(door_code=obj)
         return cache[obj.pk]
+
+    def _push_max_attempts(self) -> int:
+        """``door_codes.push_max_attempts``, read once per serializer, so once for a whole list."""
+        if "_push_max_attempts_value" not in self.__dict__:
+            from locks.tasks import _get_push_max_attempts
+
+            self._push_max_attempts_value = _get_push_max_attempts()
+        return self._push_max_attempts_value
 
 
 class DoorCodePushSerializer(DoorCodeSerializer):

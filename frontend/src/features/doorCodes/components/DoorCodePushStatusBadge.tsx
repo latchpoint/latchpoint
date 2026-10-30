@@ -36,6 +36,27 @@ function describeFailedWhileRetrying(code: DoorCode, lockNameByEntityId: Map<str
   return `Push failed on ${joinNames(failed.map(nameOf))}, still retrying ${joinNames(retrying.map(nameOf))}`
 }
 
+// The errors of the locks that aren't queued, as "Back Door: Lock timed out",
+// picked like the backend picks the ones in the code's lastPushError: not
+// being dropped, and not pushed or still needing its set or schedule. A queued
+// lock's own error is from the push before the save, so it's left out.
+function otherLockErrors(
+  code: DoorCode,
+  queued: DoorCode['lockSlotAssignments'],
+  nameOf: (a: { lockEntityId: string }) => string,
+): string {
+  return code.lockSlotAssignments
+    .filter(
+      (a) =>
+        !queued.includes(a) &&
+        !a.pendingRemoval &&
+        !!a.lastPushError &&
+        (a.pushState !== 'pushed' || a.slotIndex == null || !!a.schedulePending),
+    )
+    .map((a) => `${nameOf(a)}: ${a.lastPushError}`)
+    .join('; ')
+}
+
 // The backend never pushes an inactive code. pendingSlotClears lists the slots
 // it still has to clear for one (#151): a clear that failed, a slot the code
 // still holds, or an unconfirmed slot left to check. The scheduler and Retry
@@ -154,7 +175,8 @@ export function DoorCodePushStatusBadge({ code, lockNameByEntityId, canRetry, is
 
   // pending, or pushed with a clear the scheduler hasn't got to yet. A save or
   // Retry only queues the push now (#124), so while one is queued it says it's
-  // being sent rather than repeating an error from before the save.
+  // being sent rather than repeating an error from before the save. The other
+  // locks' errors still count (#205), so it goes on with those.
   const queued = clearing ? [] : code.lockSlotAssignments.filter((a) => isLockQueued(code, a))
   const nameOf = (a: { lockEntityId: string }) => lockNameByEntityId.get(a.lockEntityId) || a.lockEntityId
   const waiting = clearing
@@ -162,9 +184,12 @@ export function DoorCodePushStatusBadge({ code, lockNameByEntityId, canRetry, is
     : queued.length
       ? `Being sent to ${joinNames(queued.map(nameOf))}.`
       : 'Waiting for the lock to accept the code.'
+  const title = queued.length
+    ? [waiting, otherLockErrors(code, queued, nameOf)].filter(Boolean).join(' ')
+    : code.lastPushError || waiting
   return (
     <div className="flex items-center gap-2">
-      <Badge variant="outline" title={queued.length ? waiting : code.lastPushError || waiting}>
+      <Badge variant="outline" title={title}>
         {clearing ? 'Pending clear' : 'Pending sync'}
       </Badge>
       {showRetry ? (
