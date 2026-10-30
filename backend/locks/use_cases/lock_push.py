@@ -111,9 +111,19 @@ class LockRejectedCode(LockPushFailed):
 
 
 class LockCodeUnverified(GatewayError):
-    """The slot could not be read back after the ``set``; transient, the scheduler retries."""
+    """The slot could not be read back after the ``set``; transient, the scheduler retries.
+
+    ``read_back_empty`` is set when one of the answers was Available. That's no
+    verdict (a lock still committing the write can answer it), but it's enough
+    that a masked readback of the slot later isn't counted as this code's
+    (issues #128, #152).
+    """
 
     gateway_name = "zwavejs"
+
+    def __init__(self, message: str, *, read_back_empty: bool = False):
+        super().__init__(message)
+        self.read_back_empty = read_back_empty
 
 
 class PushSuperseded(LockUnreachable):
@@ -439,7 +449,10 @@ def _verify_user_code_slot(
             )
         return True
 
-    raise LockCodeUnverified(f"Could not read back slot {slot_index} after {attempts} attempts ({last_reason}).")
+    raise LockCodeUnverified(
+        f"Could not read back slot {slot_index} after {attempts} attempts ({last_reason}).",
+        read_back_empty=empty_answers > 0,
+    )
 
 
 # DoorCodeEvent metadata ``action`` for a push that sent the PIN to a slot but
@@ -466,6 +479,17 @@ _EXPECTED_PIN_KEY = "encrypted_pin"
 # Metadata flag on a ``push_unconfirmed`` attempt the push's own readback accepted (PR #190 review).
 _SLOT_VERIFIED_KEY = "slot_verified"
 
+# Metadata flag on a ``push_unconfirmed`` attempt whose ``set`` went into a slot
+# the lock reported Available, with no readback of that slot by this code coming
+# back empty since its last confirmed push to the lock (issues #128, #152).
+_SLOT_AVAILABLE_KEY = "slot_available"
+
+# Metadata flag on an ``unconfirmed_resolved`` or ``clear_resolved`` marker whose
+# slot read back empty. An empty slot holds nothing of the code's whatever PIN
+# was sent there, so it settles every attempt before it, and no later attempt on
+# that slot gets ``slot_available`` until the code's next confirmed push there.
+_SLOT_EMPTY_KEY = "slot_empty"
+
 
 def _encrypt_expected_pin(pin: str | None) -> dict[str, str]:
     return {_EXPECTED_PIN_KEY: SettingsEncryption.get().encrypt(pin)} if pin else {}
@@ -491,6 +515,7 @@ def _record_unconfirmed_slot_attempt(
     reason: str,
     pin: str,
     slot_verified: bool = False,
+    slot_available: bool = False,
 ) -> DoorCodeEvent:
     """Remember that ``slot_index`` on this lock may hold ``pin`` for this code (no schema change).
 
@@ -498,8 +523,20 @@ def _record_unconfirmed_slot_attempt(
     accepted, recorded right before its final write (PR #190 review). On a lock
     that masks PINs a later readback of that slot can't show the PIN, so
     adoption and the cleanups count a masked occupied slot as this code's for
-    those attempts only (:func:`_attempt_slot_counts_as_ours`).
+    those attempts (:func:`_read_back_attempt_slot`).
+
+    ``slot_available`` marks an attempt whose ``set`` went into a slot the lock
+    reported Available, which no readback confirmed (issues #128, #152). The
+    cleanups count a masked occupied slot as this code's for those too, and a
+    retry sends the ``set`` into that slot again. It's dropped when a readback
+    of the slot by this code came back empty since its last confirmed push to
+    the lock (:func:`_slot_read_back_empty_since_last_push`), since then the
+    slot isn't one this code's PIN can be counted on to stay in.
     """
+    if slot_available and _slot_read_back_empty_since_last_push(
+        door_code=door_code, lock_entity_id=lock_entity_id, slot_index=slot_index
+    ):
+        slot_available = False
     return DoorCodeEvent.objects.create(
         door_code=door_code,
         user=door_code.user,
@@ -511,38 +548,83 @@ def _record_unconfirmed_slot_attempt(
             "reason": sanitize_push_error_for_storage(reason)[:200],
             **_encrypt_expected_pin(pin),
             **({_SLOT_VERIFIED_KEY: True} if slot_verified else {}),
+            **({_SLOT_AVAILABLE_KEY: True} if slot_available else {}),
         },
     )
 
 
 def _verified_attempt_slots(*, door_code: DoorCode, lock_entity_id: str) -> set[int]:
     """Unsettled attempt slots on this lock whose newest attempt was recorded with ``slot_verified``."""
+    return _tagged_attempt_slots(door_code=door_code, lock_entity_id=lock_entity_id, key=_SLOT_VERIFIED_KEY)
+
+
+def _available_attempt_slots(*, door_code: DoorCode, lock_entity_id: str) -> set[int]:
+    """Unsettled attempt slots on this lock whose newest attempt was recorded with ``slot_available``."""
+    return _tagged_attempt_slots(door_code=door_code, lock_entity_id=lock_entity_id, key=_SLOT_AVAILABLE_KEY)
+
+
+def _tagged_attempt_slots(*, door_code: DoorCode, lock_entity_id: str, key: str) -> set[int]:
     return {
         slot_index
         for slot_index, (_event_id, metadata) in _unsettled_unconfirmed_attempts(
             door_code=door_code, lock_entity_id=lock_entity_id
         ).items()
-        if metadata.get(_SLOT_VERIFIED_KEY)
+        if metadata.get(key)
     }
 
 
-def _attempt_slot_counts_as_ours(
+def _slot_read_back_empty_since_last_push(*, door_code: DoorCode, lock_entity_id: str, slot_index: int) -> bool:
+    """Whether a readback of this slot by ``door_code`` came back empty since its last successful push to the lock.
+
+    Those readbacks leave a ``slot_empty`` marker (adoption, the unconfirmed
+    cleanups, the clear retries, the post-set readback). Once there is one, the
+    slot lost this code's PIN or never kept it, and a later unconfirmed ``set``
+    there doesn't count a masked readback as ours (PR #192 review, issue #128).
+    """
+    events = DoorCodeEvent.objects.filter(door_code=door_code, lock_entity_id=lock_entity_id)
+    last_pushed_id = (
+        events.filter(event_type=DoorCodeEvent.EventType.CODE_SYNCED)
+        .order_by("-id")
+        .values_list("id", flat=True)
+        .first()
+    )
+    markers = events.filter(metadata__action__in=[_UNCONFIRMED_RESOLVED_ACTION, _CLEAR_RESOLVED_ACTION])
+    if last_pushed_id is not None:
+        markers = markers.filter(id__gt=last_pushed_id)
+    return any(
+        isinstance(metadata, dict)
+        and metadata.get(_SLOT_EMPTY_KEY)
+        and _coerce_int(metadata.get("slot_index")) == slot_index
+        for metadata in markers.values_list("metadata", flat=True)
+    )
+
+
+# What :func:`_read_back_attempt_slot` found in a slot.
+_HOLDS_OURS = "ours"
+_HOLDS_OTHER = "other"
+_READ_BACK_EMPTY = "empty"
+
+
+def _read_back_attempt_slot(
     *,
     zwavejs: ZwavejsGateway,
     node_id: int,
     slot_index: int,
     pin: str,
     timeout_seconds: float,
-    slot_verified: bool,
-) -> bool:
-    """Read an unconfirmed attempt slot back; ``True`` when it holds ``pin``, enabled or disabled.
+    masked_counts: bool,
+) -> str:
+    """Read an unconfirmed attempt slot back. :data:`_HOLDS_OURS` when it holds ``pin``, enabled or disabled.
 
-    For a ``slot_verified`` attempt a slot that reads back occupied with a code
-    the lock won't show counts too, the rule :func:`_tracked_slot_may_hold_pin`
-    uses for a tracked slot, since this push's own readback already accepted it
-    (PR #190 review). A readable different code, an empty slot and a messaging or
-    passage mode slot never count. :class:`LockCodeUnverified` and gateway
-    errors propagate.
+    With ``masked_counts`` a slot that reads back occupied with a code the lock
+    won't show is ours too, the rule :func:`_tracked_slot_may_hold_pin` uses for
+    a tracked slot. That's for a ``slot_verified`` attempt, since this push's own
+    readback already accepted it (PR #190 review), and a ``slot_available`` one,
+    since the slot was Available when the push picked it (issues #128, #152).
+    :data:`_READ_BACK_EMPTY` when it answers empty twice, and :data:`_HOLDS_OTHER`
+    for anything else that isn't ours: a readable different code, a messaging or
+    passage mode slot, or a masked one without ``masked_counts``.
+    :class:`LockCodeUnverified` and gateway errors propagate.
     """
     try:
         confirmed = _verify_user_code_slot(
@@ -550,9 +632,14 @@ def _attempt_slot_counts_as_ours(
         )
     except LockRejectedCode as exc:
         if exc.holds_pin:
-            return True
-        return slot_verified and not (exc.holds_other or exc.clear_slot)
-    return confirmed or slot_verified
+            return _HOLDS_OURS
+        if exc.clear_slot:
+            # The only rejection that asks for a clear without holding the PIN.
+            return _READ_BACK_EMPTY
+        if exc.holds_other or not masked_counts:
+            return _HOLDS_OTHER
+        return _HOLDS_OURS
+    return _HOLDS_OURS if confirmed or masked_counts else _HOLDS_OTHER
 
 
 def _claimed_slots(*, lock_entity_id: str, door_code: DoorCode) -> set[int]:
@@ -600,7 +687,7 @@ def _unsettled_unconfirmed_attempts(*, door_code: DoorCode, lock_entity_id: str)
     Maps each slot to that event's ``(id, metadata)``, newest first. An
     ``unconfirmed_resolved`` marker for the same lock and slot settles every
     attempt recorded before it (issue #161), and so does a ``clear_resolved``
-    whose slot was actually cleared or whose lock is gone. Any other
+    whose slot was actually cleared, read back empty or whose lock is gone. Any other
     ``clear_resolved`` (the slot didn't hold the failure's expected PIN, or
     another code tracks it) only says something about the PIN that failure
     expected, so it only settles attempts recorded before that failure. An
@@ -629,7 +716,7 @@ def _unsettled_unconfirmed_attempts(*, door_code: DoorCode, lock_entity_id: str)
         settles = event_id
         if action == _CLEAR_RESOLVED_ACTION:
             failed_at = open_failure_since.pop(slot_index, None)
-            if metadata.get("outcome") not in _SLOT_EMPTIED_OUTCOMES:
+            if metadata.get("outcome") not in _SLOT_EMPTIED_OUTCOMES and not metadata.get(_SLOT_EMPTY_KEY):
                 if failed_at is None:
                     continue
                 settles = failed_at
@@ -677,8 +764,8 @@ def _find_adoptable_attempted_slot(
     pin: str,
     timeout_seconds: float,
     claimed_slots: set[int] | frozenset[int] = frozenset(),
-) -> int | None:
-    """Return a slot an earlier unconfirmed push of this code wrote on this lock, if it holds the PIN.
+) -> tuple[int, bool] | None:
+    """Return ``(slot, resend)`` for a slot an earlier unconfirmed push of this code wrote on this lock, if it's ours.
 
     Covers a code that landed while every readback timed out: the slot wasn't
     claimed, so a retry would otherwise write the PIN to a new slot, the lock
@@ -692,6 +779,22 @@ def _find_adoptable_attempted_slot(
     for a ``slot_verified`` attempt that sent this same PIN, whose slot the push
     already accepted before its final write rolled back (PR #190 review). Its
     slot is adopted when it reads back occupied and enabled with a masked code.
+    ``resend`` is ``False`` for all of these.
+
+    The newest ``slot_available`` attempt that sent this same PIN and reads back
+    occupied and enabled with a masked code is returned with ``resend=True``
+    (issue #128): nothing has seen the PIN there, but the slot was Available
+    when that push picked it, so the caller sends the ``set`` into it again
+    instead of putting the PIN in a second slot a lock that drops duplicates
+    would reject. The same PIN into the same slot changes nothing if it's
+    already there. Claims are checked again right before it's returned, since
+    the slot may have been recorded for another code during the readback.
+
+    A slot that reads back empty is settled as ``not_holding_pin`` with
+    ``slot_empty``, so the attempt stops counting and no later attempt on it
+    counts a masked readback as ours (:func:`_slot_read_back_empty_since_last_push`).
+    A slot holding anything else is left for the cleanups, since an attempt that
+    sent an older PIN may still be what's in it.
     :class:`LockCodeUnverified` propagates.
     """
     attempts = _unconfirmed_attempts(
@@ -700,6 +803,7 @@ def _find_adoptable_attempted_slot(
         claimed_slots=claimed_slots,
     )
     verified = _verified_attempt_slots(door_code=door_code, lock_entity_id=lock_entity_id)
+    available = _available_attempt_slots(door_code=door_code, lock_entity_id=lock_entity_id)
     for slot_index, attempted_pin in attempts.items():
         try:
             confirmed = _verify_user_code_slot(
@@ -709,10 +813,22 @@ def _find_adoptable_attempted_slot(
                 pin=pin,
                 timeout_seconds=timeout_seconds,
             )
-        except LockRejectedCode:
+        except LockRejectedCode as exc:
+            if exc.clear_slot and not exc.holds_pin:
+                _settle_unconfirmed_slot(
+                    door_code=door_code,
+                    lock_entity_id=lock_entity_id,
+                    slot_index=slot_index,
+                    outcome="not_holding_pin",
+                    slot_empty=True,
+                )
             continue
         if confirmed or (slot_index in verified and attempted_pin == pin):
-            return slot_index
+            return slot_index, False
+        if slot_index in available and attempted_pin == pin:
+            if slot_index in _claimed_slots(lock_entity_id=lock_entity_id, door_code=door_code):
+                continue
+            return slot_index, True
     return None
 
 
@@ -791,7 +907,8 @@ class ClearFailure:
     from a ``slot_verified`` unconfirmed attempt (PR #190 review), so the retry
     still counts a masked readback as this code's after a later push to that lock
     has closed the attempt's window. Events from before it was stored read as
-    ``False``.
+    ``False``. ``slot_available`` is carried over from a ``slot_available``
+    attempt the same way (issues #128, #152).
     """
 
     lock_entity_id: str
@@ -801,6 +918,7 @@ class ClearFailure:
     unconfirmed: bool = False
     permanent: bool = False
     slot_verified: bool = False
+    slot_available: bool = False
     expected_pin: str | None = field(default=None, repr=False, compare=False)
     event_id: int | None = field(default=None, compare=False)
 
@@ -847,6 +965,7 @@ def unresolved_clear_failures(*, door_code: DoorCode) -> list[ClearFailure]:
                 removing=bool(metadata.get("removing")),
                 unconfirmed=bool(metadata.get("unconfirmed")),
                 slot_verified=bool(metadata.get(_SLOT_VERIFIED_KEY)),
+                slot_available=bool(metadata.get(_SLOT_AVAILABLE_KEY)),
                 expected_pin=_decrypt_expected_pin(metadata),
                 event_id=event_id,
             )
@@ -879,6 +998,7 @@ def _create_clear_failed_event(*, door_code: DoorCode, failure: ClearFailure) ->
             **({"removing": True} if failure.removing else {}),
             **({"unconfirmed": True} if failure.unconfirmed else {}),
             **({_SLOT_VERIFIED_KEY: True} if failure.slot_verified else {}),
+            **({_SLOT_AVAILABLE_KEY: True} if failure.slot_available else {}),
             **_encrypt_expected_pin(failure.expected_pin),
         },
     )
@@ -913,6 +1033,7 @@ def record_clear_failure(
     removing: bool = False,
     unconfirmed: bool = False,
     slot_verified: bool = False,
+    slot_available: bool = False,
 ) -> ClearFailure:
     """Log a failed clear and, unless it's permanent, record it on the lock so it gets retried.
 
@@ -920,8 +1041,8 @@ def record_clear_failure(
     PIN may change before the retry). One event per slot until it's settled; a
     repeat failure only adds an event when it changes the flags (a tracked slot
     that's now being dropped, say) or brings the first known expected PIN.
-    ``slot_verified`` only means something for an ``unconfirmed`` slot, and once
-    recorded for one it's kept.
+    ``slot_verified`` and ``slot_available`` only mean something for an
+    ``unconfirmed`` slot, and once recorded for one they're kept.
     """
     described = describe_clear_failure(
         door_code=door_code, lock_entity_id=lock_entity_id, slot_index=slot_index, exc=exc
@@ -935,7 +1056,9 @@ def record_clear_failure(
         unconfirmed = unconfirmed and current.unconfirmed
         expected_pin = current.expected_pin or expected_pin
         slot_verified = slot_verified or current.slot_verified
+        slot_available = slot_available or current.slot_available
     slot_verified = unconfirmed and slot_verified
+    slot_available = unconfirmed and slot_available
     failure = ClearFailure(
         lock_entity_id=lock_entity_id,
         slot_index=slot_index,
@@ -943,17 +1066,20 @@ def record_clear_failure(
         removing=removing,
         unconfirmed=unconfirmed,
         slot_verified=slot_verified,
+        slot_available=slot_available,
         expected_pin=expected_pin,
     )
     if current is None or (
         current.removing,
         current.unconfirmed,
         current.slot_verified,
+        current.slot_available,
         bool(current.expected_pin),
     ) != (
         removing,
         unconfirmed,
         slot_verified,
+        slot_available,
         bool(expected_pin),
     ):
         _create_clear_failed_event(door_code=door_code, failure=failure)
@@ -976,15 +1102,20 @@ def cancel_pending_removal(*, door_code: DoorCode, lock_entity_id: str) -> None:
                     reason=failure.reason,
                     unconfirmed=failure.unconfirmed,
                     slot_verified=failure.slot_verified,
+                    slot_available=failure.slot_available,
                     expected_pin=failure.expected_pin,
                 ),
             )
 
 
 def resolve_clear_failure(
-    *, door_code: DoorCode, lock_entity_id: str, slot_index: int, outcome: str
+    *, door_code: DoorCode, lock_entity_id: str, slot_index: int, outcome: str, slot_empty: bool = False
 ) -> ClearFailure | None:
-    """Settle a recorded clear failure for this slot (if any) and return it."""
+    """Settle a recorded clear failure for this slot (if any) and return it.
+
+    ``slot_empty`` says the slot read back empty, which settles every
+    unconfirmed attempt on it so far (:data:`_SLOT_EMPTY_KEY`).
+    """
     current = _unresolved_clear_failure(door_code=door_code, lock_entity_id=lock_entity_id, slot_index=slot_index)
     if current is not None:
         DoorCodeEvent.objects.create(
@@ -992,21 +1123,32 @@ def resolve_clear_failure(
             user=door_code.user,
             lock_entity_id=lock_entity_id,
             event_type=DoorCodeEvent.EventType.CODE_REMOVED,
-            metadata={"action": _CLEAR_RESOLVED_ACTION, "slot_index": int(slot_index), "outcome": outcome},
+            metadata={
+                "action": _CLEAR_RESOLVED_ACTION,
+                "slot_index": int(slot_index),
+                "outcome": outcome,
+                **({_SLOT_EMPTY_KEY: True} if slot_empty else {}),
+            },
         )
     return current
 
 
-def forget_cleared_slot(*, door_code: DoorCode, lock_entity_id: str, slot_index: int, outcome: str) -> bool:
+def forget_cleared_slot(
+    *, door_code: DoorCode, lock_entity_id: str, slot_index: int, outcome: str, slot_empty: bool = False
+) -> bool:
     """Call once ``slot_index`` on the lock no longer holds the PIN (or can't be reached at all).
 
     Settles any recorded failure for it and stops tracking the slot. An
     assignment whose lock was being dropped is deleted; any other just loses its
     ``slot_index`` so the code gets pushed there again. Returns ``True`` when the
-    assignment was deleted.
+    assignment was deleted. ``slot_empty`` goes to :func:`resolve_clear_failure`.
     """
     failure = resolve_clear_failure(
-        door_code=door_code, lock_entity_id=lock_entity_id, slot_index=slot_index, outcome=outcome
+        door_code=door_code,
+        lock_entity_id=lock_entity_id,
+        slot_index=slot_index,
+        outcome=outcome,
+        slot_empty=slot_empty,
     )
     assignment = DoorCodeLockAssignment.objects.filter(
         door_code=door_code, lock_entity_id=lock_entity_id, slot_index=slot_index
@@ -1072,29 +1214,30 @@ def mark_pushed_if_settled(*, door_code: DoorCode) -> bool:
     return True
 
 
-def _slot_holds_pin(
+def _read_back_failed_slot(
     *,
     zwavejs: ZwavejsGateway,
     lock_entity_id: str,
     slot_index: int,
     pin: str | None,
     timeout_seconds: float,
-    slot_verified: bool = False,
-) -> bool:
-    """Read the slot back; ``True`` only when it reports ``pin`` (enabled or disabled).
+    masked_counts: bool = False,
+) -> str:
+    """Read the slot back with :func:`_read_back_attempt_slot`; :data:`_HOLDS_OURS` only when it reports ``pin``.
 
-    A ``slot_verified`` attempt slot also counts when it reads back occupied with
-    a masked code (:func:`_attempt_slot_counts_as_ours`).
+    With ``masked_counts`` (a ``slot_verified`` or ``slot_available`` attempt
+    slot) it's ours too when it reads back occupied with a masked code. With no
+    ``pin`` to compare against nothing is read and it's :data:`_HOLDS_OTHER`.
     """
     if not pin:
-        return False
-    return _attempt_slot_counts_as_ours(
+        return _HOLDS_OTHER
+    return _read_back_attempt_slot(
         zwavejs=zwavejs,
         node_id=_resolve_lock_node_id(lock_entity_id=lock_entity_id),
         slot_index=slot_index,
         pin=pin,
         timeout_seconds=timeout_seconds,
-        slot_verified=slot_verified,
+        masked_counts=masked_counts,
     )
 
 
@@ -1127,20 +1270,23 @@ def _retry_failed_slot_clear(
         return None
     try:
         if not tracked_here:
-            if not _slot_holds_pin(
+            verdict = _read_back_failed_slot(
                 zwavejs=zwavejs,
                 lock_entity_id=lock_entity_id,
                 slot_index=slot_index,
                 pin=failure.expected_pin or decrypt_pin_or_none(door_code),
                 timeout_seconds=timeout_seconds,
-                # Carried on the failure, since a later push to this lock closes the attempt's window.
-                slot_verified=failure.unconfirmed and failure.slot_verified,
-            ):
+                # Carried on the failure, since a later push to this lock closes the
+                # attempt's window. Only an unconfirmed slot's tags count (issues #128, #152).
+                masked_counts=failure.unconfirmed and (failure.slot_verified or failure.slot_available),
+            )
+            if verdict != _HOLDS_OURS:
                 forget_cleared_slot(
                     door_code=door_code,
                     lock_entity_id=lock_entity_id,
                     slot_index=slot_index,
                     outcome="not_holding_pin",
+                    slot_empty=verdict == _READ_BACK_EMPTY,
                 )
                 return None
             # Checked again after the readback, right before the clear: a slot
@@ -1177,6 +1323,7 @@ def _retry_failed_slot_clear(
             removing=failure.removing,
             unconfirmed=failure.unconfirmed,
             slot_verified=failure.slot_verified,
+            slot_available=failure.slot_available,
         )
     forget_cleared_slot(door_code=door_code, lock_entity_id=lock_entity_id, slot_index=slot_index, outcome="cleared")
     return None
@@ -1195,8 +1342,10 @@ def retry_failed_slot_clears(
     (it was adopted or overwritten with the current PIN). A slot this code still
     tracks is cleared as is. Any other slot is read back first and only cleared
     when it holds the PIN it was expected to hold (the code's current PIN for
-    failures recorded before that was stored), else it's settled as
-    ``not_holding_pin``. A cleared slot is forgotten (:func:`forget_cleared_slot`),
+    failures recorded before that was stored), or for an unconfirmed slot tagged
+    ``slot_verified`` or ``slot_available`` when it reads back occupied with a
+    masked code (issue #152). Otherwise it's settled as ``not_holding_pin``, with
+    ``slot_empty`` when it read back empty. A cleared slot is forgotten (:func:`forget_cleared_slot`),
     so a kept lock gets pushed again and a dropped lock's assignment goes. A lock
     that can't be resolved any more is settled as ``lock_missing``. A failure
     still failing bumps ``push_attempt_count`` so the scheduler's attempt cap
@@ -1237,6 +1386,7 @@ def retry_failed_slot_clears(
                     removing=f.removing,
                     unconfirmed=f.unconfirmed,
                     slot_verified=f.slot_verified,
+                    slot_available=f.slot_available,
                 )
                 for f in failures
                 if f.lock_entity_id == lock_entity_id
@@ -1295,25 +1445,38 @@ def clear_unconfirmed_slots_holding_pin(
     return cleared, failed
 
 
-def _settle_unconfirmed_slot(*, door_code: DoorCode, lock_entity_id: str, slot_index: int, outcome: str) -> None:
+def _settle_unconfirmed_slot(
+    *, door_code: DoorCode, lock_entity_id: str, slot_index: int, outcome: str, slot_empty: bool = False
+) -> None:
     """Record that an unconfirmed slot was checked or cleared, so its attempts stop counting (issue #161).
 
     Settles a recorded clear failure for the slot if there is one, and adds an
     ``unconfirmed_resolved`` marker unless that failure's ``clear_resolved``
     already settles the attempts (the slot was emptied). The caller checked the
     slot against its newest attempt, so the marker covers every attempt so far.
+    ``slot_empty`` says the slot read back empty, which goes on whichever marker
+    is recorded (:func:`_slot_read_back_empty_since_last_push`).
     """
     resolved = resolve_clear_failure(
-        door_code=door_code, lock_entity_id=lock_entity_id, slot_index=slot_index, outcome=outcome
+        door_code=door_code,
+        lock_entity_id=lock_entity_id,
+        slot_index=slot_index,
+        outcome=outcome,
+        slot_empty=slot_empty,
     )
-    if resolved is not None and outcome in _SLOT_EMPTIED_OUTCOMES:
+    if resolved is not None and (outcome in _SLOT_EMPTIED_OUTCOMES or slot_empty):
         return
     DoorCodeEvent.objects.create(
         door_code=door_code,
         user=door_code.user,
         lock_entity_id=lock_entity_id,
         event_type=DoorCodeEvent.EventType.CODE_REMOVED,
-        metadata={"action": _UNCONFIRMED_RESOLVED_ACTION, "slot_index": int(slot_index), "outcome": outcome},
+        metadata={
+            "action": _UNCONFIRMED_RESOLVED_ACTION,
+            "slot_index": int(slot_index),
+            "outcome": outcome,
+            **({_SLOT_EMPTY_KEY: True} if slot_empty else {}),
+        },
     )
 
 
@@ -1333,8 +1496,9 @@ def _clear_unconfirmed_slots_on_lock(
     later updates and deletes don't keep coming back to it (issue #161). A slot
     whose check or clear fails transiently stays unsettled. ``skip_slots`` are
     left alone, and so is a slot with no PIN to compare against. A
-    ``slot_verified`` attempt's slot is cleared when it reads back occupied with
-    a masked code too (:func:`_attempt_slot_counts_as_ours`).
+    ``slot_verified`` or ``slot_available`` attempt's slot is cleared when it
+    reads back occupied with a masked code too (:func:`_read_back_attempt_slot`,
+    issue #152). A slot that reads back empty is settled with ``slot_empty``.
     """
     cleared: list[dict[str, object]] = []
     failed: list[ClearFailure] = []
@@ -1350,6 +1514,7 @@ def _clear_unconfirmed_slots_on_lock(
     if not attempts:
         return cleared, failed
     verified = _verified_attempt_slots(door_code=door_code, lock_entity_id=lock_entity_id)
+    available = _available_attempt_slots(door_code=door_code, lock_entity_id=lock_entity_id)
     try:
         node_id = _resolve_lock_node_id(lock_entity_id=lock_entity_id)
     except Exception as exc:
@@ -1363,6 +1528,7 @@ def _clear_unconfirmed_slots_on_lock(
                 expected_pin=attempted_pin or pin,
                 unconfirmed=True,
                 slot_verified=slot_index in verified,
+                slot_available=slot_index in available,
             )
             failed.append(failure)
             if failure.permanent:
@@ -1373,20 +1539,21 @@ def _clear_unconfirmed_slots_on_lock(
     for slot_index, attempted_pin in attempts.items():
         expected_pin = attempted_pin or pin
         try:
-            holds_pin = _attempt_slot_counts_as_ours(
+            verdict = _read_back_attempt_slot(
                 zwavejs=zwavejs,
                 node_id=node_id,
                 slot_index=slot_index,
                 pin=expected_pin,
                 timeout_seconds=timeout_seconds,
-                slot_verified=slot_index in verified,
+                masked_counts=slot_index in verified or slot_index in available,
             )
-            if not holds_pin:
+            if verdict != _HOLDS_OURS:
                 _settle_unconfirmed_slot(
                     door_code=door_code,
                     lock_entity_id=lock_entity_id,
                     slot_index=slot_index,
                     outcome="not_holding_pin",
+                    slot_empty=verdict == _READ_BACK_EMPTY,
                 )
                 continue
             if slot_index in _claimed_slots(lock_entity_id=lock_entity_id, door_code=door_code):
@@ -1420,6 +1587,7 @@ def _clear_unconfirmed_slots_on_lock(
                 expected_pin=expected_pin,
                 unconfirmed=True,
                 slot_verified=slot_index in verified,
+                slot_available=slot_index in available,
             )
             failed.append(failure)
             if failure.permanent:
@@ -2130,7 +2298,7 @@ def push_door_code_to_lock(
                 pin=pin,
                 timeout_seconds=timeout_seconds,
             )
-            slot_index = _find_adoptable_attempted_slot(
+            adoptable = _find_adoptable_attempted_slot(
                 zwavejs=zwavejs,
                 node_id=node_id,
                 door_code=door_code,
@@ -2139,7 +2307,9 @@ def push_door_code_to_lock(
                 timeout_seconds=timeout_seconds,
                 claimed_slots=claimed_slots,
             )
-            adopted_existing_slot = slot_index is not None
+            slot_index, resend_to_attempted_slot = adoptable if adoptable is not None else (None, False)
+            # A resend goes through the set and readback like a new slot (issue #128).
+            adopted_existing_slot = slot_index is not None and not resend_to_attempted_slot
             if slot_index is None:
                 slot_index = _enumerate_free_slot(
                     zwavejs=zwavejs,
@@ -2174,7 +2344,11 @@ def push_door_code_to_lock(
 
         logger.info(
             "%s door code id=%d to %s (node=%d slot=%d)",
-            "Adopting existing slot for" if adopted_existing_slot else "Pushing",
+            "Adopting existing slot for"
+            if adopted_existing_slot
+            else "Re-sending to the attempted slot"
+            if resend_to_attempted_slot
+            else "Pushing",
             door_code.id,
             lock_entity_id,
             node_id,
@@ -2231,7 +2405,9 @@ def push_door_code_to_lock(
                 # The PIN may be in the slot, so keep it on record like a transient
                 # failure does, or nothing would clear it on a delete (issue #123).
                 # Tagged slot_verified only once a readback accepted the slot, so a
-                # masked readback later counts as ours only then.
+                # masked readback later counts as ours only then. Never
+                # slot_available here, since what the readback saw before the
+                # error isn't known (issue #128).
                 _record_unconfirmed_slot_attempt(
                     door_code=door_code,
                     lock_entity_id=lock_entity_id,
@@ -2245,6 +2421,17 @@ def push_door_code_to_lock(
             )
             raise LockPushFailed(str(exc)) from exc
         except LockRejectedCode as exc:
+            if exc.clear_slot and not exc.holds_pin:
+                # Read back empty after the set, so whatever earlier attempts of
+                # this code left in the slot is gone, and a later unconfirmed set
+                # there doesn't count a masked readback as ours (issue #128).
+                _settle_unconfirmed_slot(
+                    door_code=door_code,
+                    lock_entity_id=lock_entity_id,
+                    slot_index=slot_index,
+                    outcome="not_holding_pin",
+                    slot_empty=True,
+                )
             if exc.clear_slot:
                 _clear_slot_best_effort(
                     zwavejs=zwavejs,
@@ -2261,6 +2448,9 @@ def push_door_code_to_lock(
             if pin_sent_to_slot:
                 # Tagged like the terminal branch above: only once a readback in
                 # this push accepted the slot (a schedule timeout, or an adopted slot).
+                # Otherwise the set went into a slot that was Available when it was
+                # picked (enumerated, or a resend to a slot_available attempt), so
+                # it's slot_available unless a readback answered empty (issue #128).
                 _record_unconfirmed_slot_attempt(
                     door_code=door_code,
                     lock_entity_id=lock_entity_id,
@@ -2268,6 +2458,9 @@ def push_door_code_to_lock(
                     reason=error_message,
                     pin=pin,
                     slot_verified=slot_accepted,
+                    slot_available=not slot_accepted
+                    and not adopted_existing_slot
+                    and not (isinstance(exc, LockCodeUnverified) and exc.read_back_empty),
                 )
             _record_push_failure(door_code=door_code, error_message=error_message, terminal=False)
             raise LockUnreachable("Lock did not accept the code in time; will retry.") from exc
@@ -2324,6 +2517,7 @@ def push_door_code_to_lock(
                         "slot_index": slot_index,
                         "schedule_applied": schedule_applied,
                         **({"adopted_existing_slot": True} if adopted_existing_slot else {}),
+                        **({"resent_to_attempted_slot": True} if resend_to_attempted_slot else {}),
                     },
                 )
                 pending_marker.delete()
