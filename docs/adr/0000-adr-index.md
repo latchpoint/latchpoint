@@ -125,6 +125,7 @@ This document tracks all Architecture Decision Records (ADRs) and their implemen
 | [0108](0108-entity-state-changed-since-alarm-transition.md) | Per-Condition "Changed Since Alarm Transition" Flag for `entity_state` Rule Conditions | **Proposed** |
 | [0109](0109-door-code-validity-on-the-lock.md) | Door Code Start and End Dates Are Enforced by Adding and Removing the PIN | **Accepted** |
 | [0110](0110-door-code-push-state-per-lock.md) | Door Code Push State Is Tracked Per Lock | **Accepted** |
+| [0111](0111-door-code-push-off-the-request-path.md) | Door Code Pushes Are Queued for the Scheduler Instead of Made in the Request | **Accepted** |
 
 ---
 
@@ -134,13 +135,13 @@ This document tracks all Architecture Decision Records (ADRs) and their implemen
 |--------|-------|
 | **Implemented** | 69 |
 | **Partially Implemented** | 0 |
-| **Accepted** | 5 |
+| **Accepted** | 6 |
 | **Proposed** | 16 |
 | **Superseded** | 17 |
-| **Total** | 107 |
+| **Total** | 108 |
 
 Note: **Superseded** includes entries marked as "Superseded by …" in the table above.
 
 ---
 
-*Last updated: 2026-10-30* (added ADR 0110)
+*Last updated: 2026-10-30* (added ADR 0111)
