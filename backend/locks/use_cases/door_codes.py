@@ -178,11 +178,11 @@ def create_door_code(
     )
 
     if zwavejs is not None and lock_entity_ids:
-        from locks.use_cases.lock_push import push_task_running, request_push
+        from locks.use_cases.lock_push import push_task_running
 
         if push_task_running():
             # Saved and returned pending; the scheduler pushes it in seconds (issue #124).
-            request_push(code, actor_user=actor_user)
+            _request_push_best_effort(code=code, actor_user=actor_user)
         else:
             # Refresh so the freshly-created assignments are visible to push.
             code = DoorCode.objects.prefetch_related("lock_assignments").get(id=code.id)
@@ -657,12 +657,12 @@ def _update_door_code_locked(
                         last_push_attempt_at=code.last_push_attempt_at, updated_at=code.last_push_attempt_at
                     )
             else:
-                from locks.use_cases.lock_push import push_task_running, request_push
+                from locks.use_cases.lock_push import push_task_running
 
                 # Not under the locks this holds, so a slow lock doesn't keep the
                 # others busy for the whole push (issue #124).
                 if push_task_running():
-                    request_push(code, actor_user=actor_user)
+                    _request_push_best_effort(code=code, actor_user=actor_user)
                 else:
                     push_inline = True
 
@@ -872,6 +872,21 @@ def _refuse_delete_after_failed_clears(
     raise SlotClearFailed(f"{message}. The door code wasn't deleted and is now off, try again when the lock responds.")
 
 
+def _request_push_best_effort(*, code: DoorCode, actor_user: User | None) -> None:
+    """Queue the code's push (:func:`locks.use_cases.lock_push.request_push`) without raising into the API path.
+
+    The save already happened, so a DB error queueing it doesn't fail the
+    request, the same as :func:`_push_to_assigned_locks_best_effort`. The locks
+    stay pending for the scheduler's 300s retry (PR #201 review).
+    """
+    try:
+        from locks.use_cases.lock_push import request_push
+
+        request_push(code, actor_user=actor_user)
+    except Exception:
+        logger.exception("Couldn't queue the push of door code id=%s; leaving it to the scheduler's retry", code.id)
+
+
 def _push_to_assigned_locks_best_effort(
     *,
     code: DoorCode,
@@ -952,7 +967,6 @@ def retry_push_door_code(
         push_task_running,
         rearm_failed_locks,
         refresh_push_state,
-        request_push,
         retry_failed_slot_clears,
         slots_to_withdraw,
         unresolved_clear_failures,
@@ -1006,7 +1020,7 @@ def retry_push_door_code(
 
     if code.is_active and push_task_running():
         # Every failed lock was re-armed above, so the queued push gets them too.
-        request_push(code, actor_user=actor_user)
+        _request_push_best_effort(code=code, actor_user=actor_user)
         refresh_push_state(door_code=code)
         return fresh()
 

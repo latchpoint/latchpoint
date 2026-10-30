@@ -241,11 +241,32 @@ def push_pending_door_codes() -> int:
 _QUEUED_PUSH_LOCK_WAIT_SECONDS = 10.0
 
 
+def _pushable_q(now) -> Q:
+    """A code something would push at ``now``: active, started and not expired."""
+    return Q(is_active=True) & started_q(now) & ~expired_q(now)
+
+
+def _requester(assignment: DoorCodeLockAssignment | None):
+    """Who queued the push, or ``None`` when no one did or that user is gone.
+
+    ``push_requested_by`` has no DB constraint (migration 0011), so a user
+    deleted by code from before it leaves the id dangling. It's read by id
+    rather than through the relation, which would raise for that.
+    """
+    from accounts.models import User
+
+    if assignment is None or assignment.push_requested_by_id is None:
+        return None
+    return User.objects.filter(id=assignment.push_requested_by_id).first()
+
+
 @register(
     "push_requested_door_codes",
     schedule=Every(seconds=5, jitter=1),
     description="Pushes door codes onto their locks right after they're saved or retried.",
     connections=("zwavejs",),
+    # Many slow locks can add up, but a run this long is stuck (PR #201 review).
+    max_runtime_seconds=600,
 )
 def push_requested_door_codes() -> int:
     """Push the locks a create, update or Retry queued with ``request_push``, lock by lock (issue #124).
@@ -262,9 +283,13 @@ def push_requested_door_codes() -> int:
     counting toward the cap. An attempt that ran counts like any other push. A
     lock still busy at the wait stays queued for the next tick, until the
     request lapses after ``PUSH_REQUEST_TTL`` and ``push_pending_door_codes``
-    has it. The ``code_synced`` event's actor is whoever queued it, and each
-    code ends with ``refresh_push_state``. Errors are caught per lock and per
-    code. Returns the number of locks it tried.
+    has it. A push that ran out of budget during the schedule right after its
+    ``set`` is queued once more, so the schedule follows on the next tick. A
+    lock dropped while the task waited sends nothing and the code's other
+    locks carry on, unless the code itself is gone, off or out of its dates. The
+    ``code_synced`` event's actor is whoever queued it (no one, when that user
+    is gone), and each code ends with ``refresh_push_state``. Errors are caught
+    per lock and per code. Returns the number of locks it tried.
     """
     from locks.use_cases.lock_config_sync import LockBusy, hold_lock_sync, sync_lock_deadline
     from locks.use_cases.lock_push import (
@@ -302,13 +327,11 @@ def push_requested_door_codes() -> int:
             for lock_entity_id in lock_entity_ids:
                 try:
                     with hold_lock_sync([lock_entity_id], deadline=sync_lock_deadline(_QUEUED_PUSH_LOCK_WAIT_SECONDS)):
-                        current = (
-                            DoorCodeLockAssignment.objects.select_related("push_requested_by")
-                            .filter(door_code_id=code_id, lock_entity_id=lock_entity_id)
-                            .first()
-                        )
+                        current = DoorCodeLockAssignment.objects.filter(
+                            door_code_id=code_id, lock_entity_id=lock_entity_id
+                        ).first()
                         if current is not None and not queued.filter(id=current.id).exists():
-                            # Pushed, tried or changed while this waited for the lock.
+                            # Pushed, tried or changed (failed, say) while this waited for the lock.
                             continue
                         # A code deleted or a lock dropped meanwhile goes through the push
                         # too, which finds that out and raises PushSuperseded with nothing sent.
@@ -317,15 +340,18 @@ def push_requested_door_codes() -> int:
                             door_code=code,
                             lock_entity_id=lock_entity_id,
                             zwavejs=BudgetedGateway(default_zwavejs_gateway, seconds=PUSH_LOCK_BUDGET_SECONDS),
-                            actor_user=current.push_requested_by if current is not None else None,
+                            actor_user=_requester(current),
                         )
                 except LockBusy:
                     logger.info(
                         "Queued push of door code id=%d to %s is still waiting for the lock", code_id, lock_entity_id
                     )
                 except PushSuperseded:
-                    logger.info("Door code id=%d changed while its queued push waited; stopping", code_id)
-                    break
+                    if not DoorCode.objects.filter(id=code_id).filter(_pushable_q(timezone.now())).exists():
+                        logger.info("Door code id=%d changed while its queued push waited; stopping", code_id)
+                        break
+                    # Only this lock was dropped meanwhile; the code's other locks still get theirs.
+                    logger.info("Queued push of door code id=%d to %s was superseded", code_id, lock_entity_id)
                 except (LockUnreachable, LockSlotsFull, LockPushFailed, InvalidPin):
                     # Recorded on the lock by the push itself.
                     pass

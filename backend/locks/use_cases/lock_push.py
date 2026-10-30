@@ -582,8 +582,18 @@ def _verify_user_code_slot(
                 slot_index=slot_index,
                 timeout_seconds=timeout_seconds,
             )
-        except (ZwavejsNotConfigured, ZwavejsClientUnavailable, TimeBudgetExceeded):
-            # Out of time is no answer either, but asking again would only sleep (issue #124).
+        except (ZwavejsNotConfigured, ZwavejsClientUnavailable):
+            raise
+        except TimeBudgetExceeded as exc:
+            # Out of time is no answer either, and asking again would only sleep
+            # (issue #124). An empty answer before it still has to reach the
+            # caller, or a masked readback of the slot later counts as ours
+            # (issues #128, #152, PR #201 review).
+            if empty_answers:
+                raise LockCodeUnverified(
+                    f"Could not read back slot {slot_index} before running out of time (slot read back empty once).",
+                    read_back_empty=True,
+                ) from exc
             raise
         except GatewayError as exc:
             last_reason = f"{exc.__class__.__name__}: {exc}"
@@ -3356,6 +3366,7 @@ def push_door_code_to_lock(
                 zwavejs=zwavejs,
                 actor_user=actor_user,
                 timeout_seconds=timeout_seconds,
+                requeue_on_budget=True,
             )
         return _pushed_result(
             lock_entity_id=lock_entity_id, node_id=node_id, slot_index=slot_index, weekdays_pushed=weekdays_pushed
@@ -3409,6 +3420,7 @@ def _push_schedule_to_slot(
     zwavejs: ZwavejsGateway,
     actor_user,
     timeout_seconds: float,
+    requeue_on_budget: bool = False,
 ) -> list[int]:
     """Step 2 of a push: send the CC 78 schedule into the slot step 1 recorded, then mark the lock pushed (issue #123).
 
@@ -3420,6 +3432,13 @@ def _push_schedule_to_slot(
     ``schedule_pending`` still set, so Retry sends only the schedule too.
     Success clears ``schedule_pending`` with a ``code_synced`` event
     (``action=schedule_pushed``). Returns the CC 78 weekdays pushed.
+
+    With ``requeue_on_budget`` (the schedule right after the ``set``), a push
+    that ran out of its time budget here queues the lock again when it has a
+    live request (:data:`PUSH_REQUEST_TTL`), so the queued push task sends the
+    schedule on its next tick instead of leaving the PIN working around the
+    clock until the 300s retry (PR #201 review). A schedule-only push doesn't,
+    so that's one more try at most.
     """
     try:
         weekdays_pushed = _push_daily_repeating_schedule(
@@ -3451,6 +3470,17 @@ def _push_schedule_to_slot(
             terminal=False,
             counted=not _out_of_budget(zwavejs),
         )
+        if requeue_on_budget and _out_of_budget(zwavejs):
+            # Just after the attempt time the failure stamped, so the request isn't used up.
+            DoorCodeLockAssignment.objects.filter(
+                door_code=door_code,
+                lock_entity_id=lock_entity_id,
+                slot_index=slot_index,
+                schedule_pending=True,
+                push_state=DoorCode.PushState.PENDING,
+                last_push_attempt_at__isnull=False,
+                push_requested_at__gt=django_timezone.now() - PUSH_REQUEST_TTL,
+            ).update(push_requested_at=F("last_push_attempt_at") + timedelta(microseconds=1))
         raise LockUnreachable("Lock did not accept the schedule in time; will retry.") from exc
 
     before_stamp = _snapshot_push_fields(door_code)

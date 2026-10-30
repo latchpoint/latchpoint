@@ -32,7 +32,12 @@ The request saves and returns, and a fast scheduler task makes the push.
 
 - **Queue marker.** Migration `0011_assignment_push_requested` adds nullable
   `push_requested_at` and `push_requested_by` (SET_NULL) to
-  `DoorCodeLockAssignment`. Additive, no backfill. `request_push(code,
+  `DoorCodeLockAssignment`. Additive, no backfill. `push_requested_by` has no
+  DB foreign key constraint (`db_constraint=False`): code from before 0011
+  doesn't know the column, so its user delete can't null it, and with a
+  constraint deleting someone who queued a push on another user's code would
+  fail. The id can dangle, and the task reads a user that's gone as no one, so
+  the event falls back to the code's owner. `request_push(code,
   lock_entity_ids=None, *, actor_user=None)` stamps them on the locks
   `locks_to_push` picks (nothing for a code that's inactive, not started or
   expired), taking the code row first like every writer of a code's
@@ -53,20 +58,31 @@ The request saves and returns, and a fast scheduler task makes the push.
   came after, plus `locks_to_push`'s rule. Each lock waits up to 10s for its
   `lock_sync:` lock instead of try-lock-and-fail, is checked again once held,
   and is pushed with `push_requested_by` as the `code_synced` actor. A lock
-  still busy after the wait stays queued for the next tick. Each code ends
-  with `refresh_push_state`.
+  still busy after the wait stays queued for the next tick. A lock dropped
+  while the task waited sends nothing (`PushSuperseded`) and the code's other
+  locks carry on, unless the code itself is gone, off or out of its dates. Each
+  code ends with `refresh_push_state`. A run that passes 600s is reported as
+  stuck.
 - **Budget.** A `BudgetedGateway` gives each lock's push 30s. Every call's
   timeout is cut to what's left, and once it's gone a call raises
   `TimeBudgetExceeded` without being sent. That takes the existing transient
   path: an unconfirmed attempt marker when the `set` went out, the lock left
-  `pending`. A push that ran out of its budget isn't counted toward
+  `pending`. A readback that answered empty before the budget ran out still
+  says so (`LockCodeUnverified` with `read_back_empty`), so #193's empty-slot
+  evidence is kept and the attempt isn't tagged `slot_available`. A queued or
+  inline push that ran out of its budget isn't counted toward
   `door_codes.push_max_attempts`. Any other attempt from the queue counts like
-  an inline one.
+  an inline one. When the budget runs out on the schedule right after the
+  `set`, the lock is `schedule_pending` and its live request is stamped again,
+  so the next tick sends only the schedule instead of leaving the PIN working
+  around the clock until the 300s retry. A schedule-only push doesn't stamp it
+  again, so that's one more try at most.
 - **Callers.** Create, update and Retry call `request_push` when
   `push_task_running()` says the task's loop is alive in this process, ie the
   thing `wake_task` reaches. Otherwise (`SCHEDULER_ENABLED=False`, no leader
   lock, tests) they push inline like before, with the same 30s per lock, and
-  don't stamp anything. Update still clears under its `lock_sync:` hold, but
+  don't stamp anything. A DB error while queueing is logged and doesn't fail a
+  save that already happened. Update still clears under its `lock_sync:` hold, but
   queues the push there and makes an inline one only after letting go. Retry
   keeps its checks, 409s, reset, re-arm and clear retries in the request,
   then queues the push. Its clear retries share a 15s budget, lock waits
@@ -99,9 +115,10 @@ The request saves and returns, and a fast scheduler task makes the push.
   slower than the old inline push on a lock that answers.
 - A process without the task still pushes in the request, now at most 30s per
   lock. With the leader lock on, a non-leader process does that too (#162).
-- A lock that runs out of its budget is left to the 300s retry without the
-  attempt counting, so a lock that's always slow but answers is never capped.
-  One that times out on its first calls still counts.
+- A lock that runs out of its budget isn't counted for that attempt, and the
+  request is spent after it, so the lock is the 300s retry's. That retry has no
+  budget, so its attempts count and the cap still applies. A lock that times
+  out on its first calls counts from the queue too.
 - The idle tick adds one cheap query every 5s.
 - An inactive code's Retry still clears in the request without a budget, and
   so do update and delete.

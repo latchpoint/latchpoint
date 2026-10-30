@@ -115,8 +115,13 @@ class DoorCodeLockAssignment(models.Model):
     # A push of this lock queued for the push_requested_door_codes task (issue #124).
     # It's done once last_push_attempt_at passes it, and lapses after a while.
     push_requested_at = models.DateTimeField(null=True, blank=True)
-    # Who queued it, for the code_synced event the deferred push records.
-    push_requested_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
+    # Who queued it, for the code_synced event the deferred push records. No DB
+    # constraint: code from before 0011 doesn't know this column, so its user
+    # delete can't null it, and a constraint would make that delete fail. So the
+    # id can dangle, and readers treat a user that's gone as no one.
+    push_requested_by = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, blank=True, related_name="+", db_constraint=False
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

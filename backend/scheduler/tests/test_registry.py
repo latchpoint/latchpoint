@@ -85,6 +85,20 @@ class RegistryTests(TestCase):
         self.assertEqual(task.failure_suspend_after, 3)
         self.assertEqual(task.failure_suspend_seconds, 600)
 
+    def test_register_takes_a_default_max_runtime_that_an_override_still_beats(self):
+        @register("with_runtime", schedule=Every(seconds=5), max_runtime_seconds=600)
+        def with_runtime():
+            pass
+
+        with self.settings(SCHEDULER_TASK_OVERRIDES={"overridden_runtime": {"max_runtime_seconds": 30}}):
+
+            @register("overridden_runtime", schedule=Every(seconds=5), max_runtime_seconds=600)
+            def overridden_runtime():
+                pass
+
+        self.assertEqual(get_task("with_runtime").max_runtime_seconds, 600)
+        self.assertEqual(get_task("overridden_runtime").max_runtime_seconds, 30)
+
     def test_get_tasks_returns_copy(self):
         """get_tasks returns a copy, not the original dict."""
 

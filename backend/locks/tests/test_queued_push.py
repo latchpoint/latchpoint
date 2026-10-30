@@ -12,7 +12,7 @@ import contextlib
 from datetime import timedelta
 from unittest.mock import patch
 
-from django.db import connection, transaction
+from django.db import DatabaseError, connection, transaction
 from django.db.migrations.executor import MigrationExecutor
 from django.test import TestCase, TransactionTestCase
 from django.urls import reverse
@@ -608,6 +608,278 @@ class PushRequestedTaskTests(_QueuedPushTestBase):
 
         self.assertEqual(self._assignment(inline, BACK).push_attempt_count, 1)
         self.assertEqual(self._assignment(queued, BACK).push_attempt_count, 1)
+
+
+class _Recorder:
+    """Records the timeout each ``node_get_value`` call got."""
+
+    def __init__(self):
+        self.timeouts: list[float] = []
+
+    def node_get_value(self, *, node_id: int, value_id: dict, timeout_seconds: float = 5.0):
+        self.timeouts.append(timeout_seconds)
+        return 1
+
+
+class BudgetedGatewayTests(TestCase):
+    def test_cuts_each_timeout_to_whats_left_then_refuses_without_calling(self):
+        clock = _FakeClock()
+        recorder = _Recorder()
+        with patch.object(lock_push_uc, "_time", clock):
+            gateway = lock_push_uc.BudgetedGateway(recorder, seconds=2.0)
+            gateway.node_get_value(node_id=1, value_id={}, timeout_seconds=1.0)
+            gateway.node_get_value(node_id=1, value_id={}, timeout_seconds=5.0)
+            clock.now += 1.5
+            gateway.node_get_value(node_id=1, value_id={}, timeout_seconds=5.0)
+            self.assertFalse(gateway.exhausted)
+            clock.now += 1.0
+            with self.assertRaises(lock_push_uc.TimeBudgetExceeded):
+                gateway.node_get_value(node_id=1, value_id={}, timeout_seconds=5.0)
+
+        self.assertEqual(recorder.timeouts, [1.0, 2.0, 0.5])
+        self.assertTrue(gateway.exhausted)
+
+
+class PushBudgetEdgeTests(_QueuedPushTestBase):
+    """PR #201 review: what a push that runs out of its budget leaves on record."""
+
+    def _slow(self, step: float, **kwargs) -> tuple[_FakeClock, SlowGateway]:
+        clock = _FakeClock()
+        return clock, SlowGateway(clock=clock, slow_nodes={12}, step=step, usersNumber=5, **kwargs)
+
+    def _events(self, code: DoorCode, action: str):
+        return DoorCodeEvent.objects.filter(door_code=code, lock_entity_id=BACK, metadata__action=action)
+
+    def test_a_set_the_budget_refused_records_no_marker(self):
+        clock, gateway = self._slow(1.0, cache_updates_on_set=True)
+        code = self._code([BACK])
+        self._queue(code)
+
+        # Value ids, slot count and slot 1's status use the 3s up.
+        with patch.object(lock_push_uc, "_time", clock), patch.object(lock_push_uc, "PUSH_LOCK_BUDGET_SECONDS", 3.0):
+            self._run_task(gateway)
+
+        self.assertEqual(self._calls(gateway, "set"), [])
+        self.assertFalse(self._events(code, "push_unconfirmed").exists())
+        back = self._assignment(code, BACK)
+        self.assertEqual((back.slot_index, back.push_state, back.push_attempt_count), (None, PENDING, 0))
+
+    def test_an_empty_answer_before_the_budget_ran_out_keeps_the_masked_slot_from_counting_as_ours(self):
+        # The lock drops the PIN, so the one readback that fits answers Available.
+        clock, gateway = self._slow(1.0, cache_updates_on_set=True, reject_pins={12: {PIN}})
+        code = self._code([BACK])
+        self._queue(code)
+
+        with patch.object(lock_push_uc, "_time", clock), patch.object(lock_push_uc, "PUSH_LOCK_BUDGET_SECONDS", 4.5):
+            self._run_task(gateway)
+
+        self.assertEqual(self._calls(gateway, "get"), [(12, [1])])
+        self.assertTrue(self._events(code, "slot_read_back_empty").filter(metadata__slot_index=1).exists())
+        marker = self._events(code, "push_unconfirmed").get()
+        # Not slot_available, so a delete leaves a masked keypad code typed into slot 1 alone (#193).
+        self.assertFalse(marker.metadata.get("slot_available"))
+        back = self._assignment(code, BACK)
+        self.assertEqual((back.slot_index, back.push_state, back.push_attempt_count), (None, PENDING, 0))
+
+    def test_a_schedule_the_budget_cut_off_after_the_set_is_finished_on_the_next_tick(self):
+        clock, gateway = self._slow(1.0, cache_updates_on_set=True)
+        code = self._code([BACK], days_of_week=0b0000011)
+        self._queue(code)
+
+        # Value ids, slot count, status, set and readback take 5s; one of the 2 schedule calls fits.
+        with patch.object(lock_push_uc, "_time", clock), patch.object(lock_push_uc, "PUSH_LOCK_BUDGET_SECONDS", 5.5):
+            self._run_task(gateway)
+
+        back = self._assignment(code, BACK)
+        self.assertEqual(
+            (back.slot_index, back.push_state, back.schedule_pending, back.push_attempt_count), (1, PENDING, True, 0)
+        )
+        self.assertGreater(back.push_requested_at, back.last_push_attempt_at)
+
+        gateway.slow_nodes = set()
+        gateway.invoke_calls.clear()
+        with patch.object(lock_push_uc, "_time", clock):
+            self.assertEqual(self._run_task(gateway), 1)
+
+        self.assertEqual(self._calls(gateway, "set"), [])
+        self.assertEqual(len([c for c in gateway.invoke_calls if c["command_class"] == 78]), 2)
+        back = self._assignment(code, BACK)
+        self.assertEqual((back.slot_index, back.push_state, back.schedule_pending), (1, PUSHED, False))
+
+        # A schedule-only push that runs out isn't queued again: once more at most.
+        DoorCodeLockAssignment.objects.filter(id=back.id).update(push_state=PENDING, schedule_pending=True)
+        self._queue(code)
+        gateway.slow_nodes = {12}
+        with patch.object(lock_push_uc, "_time", clock), patch.object(lock_push_uc, "PUSH_LOCK_BUDGET_SECONDS", 0.5):
+            self._run_task(gateway)
+        back = self._assignment(code, BACK)
+        self.assertTrue(back.schedule_pending)
+        self.assertLess(back.push_requested_at, back.last_push_attempt_at)
+
+
+class RetryClearBudgetTests(_QueuedPushTestBase):
+    """Retry's clear retries share ``_RETRY_CLEAR_BUDGET_SECONDS``, lock waits included (PR #201 review)."""
+
+    def _retry(self, code: DoorCode, gateway: FakeGateway, clock: _FakeClock, budget: float) -> DoorCode:
+        with (
+            push_task_running(),
+            patch.object(lock_push_uc, "_time", clock),
+            patch.object(lock_config_sync_uc, "_time", clock),
+            patch.object(door_codes_uc, "_RETRY_CLEAR_BUDGET_SECONDS", budget),
+        ):
+            return door_codes_uc.retry_push_door_code(code=self._fresh(code), actor_user=self.admin, zwavejs=gateway)
+
+    def test_clears_that_dont_fit_stay_on_record_for_the_scheduler(self):
+        code = door_codes_uc.create_door_code(
+            user=self.owner, raw_code=PIN, lock_entity_ids=[BACK, SIDE], actor_user=self.admin, zwavejs=self.gateway
+        )
+        for lock_entity_id in (BACK, SIDE):
+            lock_push_uc.record_clear_failure(
+                door_code=code,
+                lock_entity_id=lock_entity_id,
+                slot_index=1,
+                exc=ZwavejsCommandError("driver TimeoutError after 5.0s"),
+                expected_pin=PIN,
+            )
+        clock = _FakeClock()
+        gateway = SlowGateway(clock=clock, slow_nodes={12, 13}, step=2.0, usersNumber=5, cache_updates_on_set=True)
+
+        retried = self._retry(code, gateway, clock, budget=1.0)
+
+        # BACK's clear used the budget up, so SIDE's was never sent.
+        self.assertEqual(self._calls(gateway, "clear"), [(12, [1])])
+        self.assertEqual(
+            [(f.lock_entity_id, f.slot_index) for f in lock_push_uc.unresolved_clear_failures(door_code=code)],
+            [(SIDE, 1)],
+        )
+        self.assertEqual(retried.push_state, PENDING)
+
+    def test_a_readback_that_answers_empty_once_then_runs_out_keeps_the_empty_slot_evidence(self):
+        code = self._code([BACK])
+        lock_push_uc.record_clear_failure(
+            door_code=code,
+            lock_entity_id=BACK,
+            slot_index=2,
+            exc=ZwavejsCommandError("driver TimeoutError after 5.0s"),
+            expected_pin=PIN,
+            unconfirmed=True,
+            slot_available=True,
+        )
+        clock = _FakeClock()
+        gateway = SlowGateway(clock=clock, slow_nodes={12}, step=2.0, usersNumber=5, cache_updates_on_set=True)
+
+        self._retry(code, gateway, clock, budget=1.0)
+
+        self.assertEqual(self._calls(gateway, "get"), [(12, [2])])
+        self.assertEqual(self._calls(gateway, "clear"), [])
+        self.assertTrue(
+            DoorCodeEvent.objects.filter(
+                door_code=code, metadata__action="slot_read_back_empty", metadata__slot_index=2
+            ).exists()
+        )
+        [failure] = lock_push_uc.unresolved_clear_failures(door_code=code)
+        self.assertEqual((failure.lock_entity_id, failure.slot_index), (BACK, 2))
+        # A masked readback of slot 2 no longer counts as this code's PIN (#193).
+        self.assertFalse(failure.slot_available)
+
+
+class QueuedPushRecheckTests(_QueuedPushTestBase):
+    def test_a_lock_that_turned_failed_while_the_task_waited_gets_nothing(self):
+        code = self._code([BACK])
+        self._queue(code)
+        holder = _OtherHolder(BACK).acquire()
+        self.addCleanup(holder.release)
+
+        def failed_meanwhile():
+            holder.release()
+            DoorCodeLockAssignment.objects.filter(door_code=code).update(push_state=FAILED)
+
+        with _when_waiting_on(BACK, failed_meanwhile) as waited:
+            self.assertEqual(self._run_task(), 0)
+
+        self.assertTrue(waited)
+        self._assert_no_lock_traffic()
+        self.assertEqual(self._assignment(code, BACK).push_state, FAILED)
+
+    def test_a_lock_dropped_while_the_task_waited_doesnt_stop_the_codes_other_locks(self):
+        code = self._code([BACK, SIDE])
+        self._queue(code)
+        holder = _OtherHolder(BACK).acquire()
+        self.addCleanup(holder.release)
+
+        def back_dropped_meanwhile():
+            holder.release()
+            DoorCodeLockAssignment.objects.filter(door_code=code, lock_entity_id=BACK).delete()
+
+        with _when_waiting_on(BACK, back_dropped_meanwhile):
+            self._run_task()
+
+        self.assertEqual(self._calls(self.gateway, "set"), [(13, [1, 1, PIN])])
+        self.assertEqual(self._slots(code), {SIDE: 1})
+
+    def test_a_requester_deleted_by_old_code_leaves_a_push_with_no_actor(self):
+        # Code from before 0011 deletes users without knowing the column, which a
+        # raw DELETE stands in for. Without a DB constraint that delete works.
+        requester = User.objects.create_user(email="gone@example.com", password="pass")
+        code = self._code([BACK])
+        self._queue(code, by=requester)
+        with connection.cursor() as cursor:
+            cursor.execute(
+                f"DELETE FROM {connection.ops.quote_name(User._meta.db_table)} WHERE id = %s",
+                [User._meta.pk.get_db_prep_value(requester.pk, connection)],
+            )
+        self.assertFalse(User.objects.filter(id=requester.id).exists())
+        self.assertEqual(self._assignment(code, BACK).push_requested_by_id, requester.id)
+
+        self._run_task()
+
+        self.assertEqual(self._calls(self.gateway, "set"), [(12, [1, 1, PIN])])
+        event = DoorCodeEvent.objects.get(door_code=code, event_type=DoorCodeEvent.EventType.CODE_SYNCED)
+        self.assertEqual(event.user, self.owner)
+        self.assertEqual(self._fresh(code).push_state, PUSHED)
+
+
+class QueueFailureTests(_QueuedPushTestBase):
+    """A DB error queueing the push doesn't fail a save that already happened (PR #201 review)."""
+
+    def test_create_still_returns_the_saved_code(self):
+        with push_task_running(), patch.object(lock_push_uc, "request_push", side_effect=DatabaseError("boom")):
+            code = door_codes_uc.create_door_code(
+                user=self.owner, raw_code=PIN, lock_entity_ids=[BACK], actor_user=self.admin, zwavejs=self.gateway
+            )
+
+        self.assertTrue(DoorCode.objects.filter(id=code.id).exists())
+        self.assertEqual(self._slots(code), {BACK: None})
+        self._assert_no_lock_traffic()
+
+    def test_update_still_records_its_failed_clears_and_rollup(self):
+        from locks.tests.test_lock_push import ClearFailingGateway
+
+        gateway = ClearFailingGateway(usersNumber=5, cache_updates_on_set=True)
+        code = door_codes_uc.create_door_code(
+            user=self.owner, raw_code=PIN, lock_entity_ids=[BACK, SIDE], actor_user=self.admin, zwavejs=gateway
+        )
+        gateway.clear_fails_on = {13}
+
+        with push_task_running(), patch.object(lock_push_uc, "request_push", side_effect=DatabaseError("boom")):
+            door_codes_uc.update_door_code(
+                code=self._fresh(code), changes={"code": "5555"}, actor_user=self.admin, zwavejs=gateway
+            )
+
+        updated = DoorCodeEvent.objects.filter(door_code=code, event_type=DoorCodeEvent.EventType.CODE_UPDATED).get()
+        self.assertEqual(
+            [(f["lock_entity_id"], f["slot_index"]) for f in updated.metadata["failed_slot_clears"]], [(SIDE, 1)]
+        )
+        code.refresh_from_db()
+        self.assertEqual(code.push_state, PENDING)
+        self.assertIn(SIDE, code.last_push_error)
+
+
+class PushRequestedTaskRegistrationTests(TestCase):
+    def test_a_stuck_run_is_reported_after_10_minutes(self):
+        from scheduler.registry import get_task
+
+        self.assertEqual(get_task(TASK).max_runtime_seconds, 600)
 
 
 class Migration0011Tests(TransactionTestCase):

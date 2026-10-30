@@ -48,6 +48,7 @@ def register(
     failure_suspend_after: int = 0,
     failure_suspend_seconds: int = 0,
     connections: tuple[str, ...] = (),
+    max_runtime_seconds: int | None = None,
 ) -> Callable[[Callable[[], None]], Callable[[], None]]:
     """Decorator to register a scheduled task.
 
@@ -62,6 +63,8 @@ def register(
 
     `connections` lists the live connections the task needs, out of `TASK_CONNECTIONS`. The server already
     holds them, so the scheduler ignores this. `manage.py run_task` opens just these for the run.
+
+    `max_runtime_seconds` is the default for the watchdog's stuck detection. An override still wins.
     """
     unknown = sorted(set(connections) - set(TASK_CONNECTIONS))
     if unknown:
@@ -87,9 +90,9 @@ def register(
         if "enabled" in override:
             resolved_enabled = bool(override.get("enabled"))
 
-        max_runtime_seconds = override.get("max_runtime_seconds")
-        if max_runtime_seconds is not None:
-            max_runtime_seconds = int(max_runtime_seconds)
+        resolved_max_runtime_seconds = override.get("max_runtime_seconds", max_runtime_seconds)
+        if resolved_max_runtime_seconds is not None:
+            resolved_max_runtime_seconds = int(resolved_max_runtime_seconds)
 
         def _resolve_failure(key: str, default: int) -> int:
             value = override.get(key)
@@ -111,7 +114,7 @@ def register(
             enabled=resolved_enabled,
             description=resolved_description,
             enabled_when=enabled_when,
-            max_runtime_seconds=max_runtime_seconds,
+            max_runtime_seconds=resolved_max_runtime_seconds,
             failure_backoff_base_seconds=resolved_failure_backoff_base_seconds,
             failure_backoff_max_seconds=resolved_failure_backoff_max_seconds,
             failure_suspend_after=resolved_failure_suspend_after,
