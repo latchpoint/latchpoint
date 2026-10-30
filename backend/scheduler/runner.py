@@ -31,6 +31,8 @@ _WATCHDOG_INTERVAL = 60  # Check threads every 60 seconds
 _lock = threading.Lock()  # Protect shared state
 _threads: dict[str, threading.Thread] = {}
 _stop_events: dict[str, threading.Event] = {}
+# Set by wake_task() to run a task before its next scheduled time (issue #124). Stopping a task sets it too.
+_wake_events: dict[str, threading.Event] = {}
 _running: set[str] = set()  # Track currently executing tasks
 _watchdog_started = False
 _task_status: dict[str, dict[str, object]] = {}
@@ -136,8 +138,17 @@ def _maybe_acquire_leader_lock() -> bool:
         return False
 
 
-def _run_task_loop(*, task: ScheduledTask, stop_event: threading.Event) -> None:
-    """Run a task on its schedule forever."""
+def _run_task_loop(
+    *, task: ScheduledTask, stop_event: threading.Event, wake_event: threading.Event | None = None
+) -> None:
+    """Run a task on its schedule forever.
+
+    With ``wake_event`` the wait between runs also ends when it's set
+    (:func:`wake_task`), except during a failure backoff, which only a stop cuts
+    short. It's cleared right before each run, so a wake that comes in while the
+    task is running gets one more run straight after. Whoever sets ``stop_event``
+    sets ``wake_event`` too.
+    """
     try:
         from . import telemetry
     except Exception:
@@ -205,7 +216,9 @@ def _run_task_loop(*, task: ScheduledTask, stop_event: threading.Event) -> None:
             next_run.isoformat(),
             sleep_seconds,
         )
-        stop_event.wait(timeout=max(0, sleep_seconds))
+        # A wake doesn't cut a failure backoff short, or every request would hammer a failing task.
+        waiter = wake_event if wake_event is not None and delay_seconds <= 0 else stop_event
+        waiter.wait(timeout=max(0, sleep_seconds))
         if stop_event.is_set():
             logger.info("Task %s stopping before execution (disabled/gated)", task.name)
             with _lock:
@@ -220,6 +233,9 @@ def _run_task_loop(*, task: ScheduledTask, stop_event: threading.Event) -> None:
                     "Task %s still running, skipping this execution",
                     task.name,
                 )
+                if wake_event is not None:
+                    # Or a wake would spin this loop until the other run ends.
+                    wake_event.clear()
                 continue
             _running.add(task.name)
             started_at = timezone.now()
@@ -248,6 +264,9 @@ def _run_task_loop(*, task: ScheduledTask, stop_event: threading.Event) -> None:
         try:
             close_old_connections()
             logger.debug("Task %s starting", task.name)
+            if wake_event is not None:
+                # Right before the run, so a wake that lands during it gets one more run.
+                wake_event.clear()
             task.func()
             duration = time.monotonic() - start_time
             logger.debug("Task %s completed in %.2fs", task.name, duration)
@@ -331,6 +350,20 @@ def _run_task_loop(*, task: ScheduledTask, stop_event: threading.Event) -> None:
                 _running.discard(task.name)
 
 
+def _stop_task_locked(name: str) -> None:
+    """Ask task ``name``'s loop to stop (disabled or gated). The caller holds ``_lock``."""
+    thread = _threads.get(name)
+    stop = _stop_events.get(name)
+    if thread is not None and thread.is_alive() and stop is not None and not stop.is_set():
+        _task_status.setdefault(name, {})
+        _task_status[name]["stopping"] = True
+        stop.set()
+        wake = _wake_events.get(name)
+        if wake is not None:
+            # The loop may be waiting on its wake event rather than on stop.
+            wake.set()
+
+
 def _run_watchdog() -> None:
     """Monitor task threads and restart any that died."""
     try:
@@ -360,12 +393,7 @@ def _run_watchdog() -> None:
 
             if not enabled_now:
                 with _lock:
-                    thread = _threads.get(name)
-                    stop = _stop_events.get(name)
-                    if thread is not None and thread.is_alive() and stop is not None and not stop.is_set():
-                        _task_status.setdefault(name, {})
-                        _task_status[name]["stopping"] = True
-                        stop.set()
+                    _stop_task_locked(name)
                 continue
 
             now = timezone.now()
@@ -419,15 +447,17 @@ def _run_watchdog() -> None:
                         logger.warning("Task %s thread died, restarting...", name)
 
                     stop_event = threading.Event()
+                    wake_event = threading.Event()
                     new_thread = threading.Thread(
                         target=_run_task_loop,
-                        kwargs={"task": task, "stop_event": stop_event},
+                        kwargs={"task": task, "stop_event": stop_event, "wake_event": wake_event},
                         name=f"task-{name}",
                         daemon=True,
                     )
                     new_thread.start()
                     _threads[name] = new_thread
                     _stop_events[name] = stop_event
+                    _wake_events[name] = wake_event
                     logger.info("Started task thread: %s", name)
 
 
@@ -456,15 +486,17 @@ def start_scheduler() -> None:
             if not enabled_now:
                 continue
             stop_event = threading.Event()
+            wake_event = threading.Event()
             thread = threading.Thread(
                 target=_run_task_loop,
-                kwargs={"task": task, "stop_event": stop_event},
+                kwargs={"task": task, "stop_event": stop_event, "wake_event": wake_event},
                 name=f"task-{name}",
                 daemon=True,
             )
             thread.start()
             _threads[name] = thread
             _stop_events[name] = stop_event
+            _wake_events[name] = wake_event
             logger.info("Started task thread: %s", name)
 
     # Start watchdog (outside lock - it will acquire lock when needed)
@@ -475,6 +507,38 @@ def start_scheduler() -> None:
     )
     watchdog.start()
     logger.info("Started task watchdog")
+
+
+def is_task_running(name: str) -> bool:
+    """Whether this process has a live loop for task ``name`` that isn't stopping, ie one :func:`wake_task` reaches.
+
+    False in a process whose scheduler never started (``SCHEDULER_ENABLED=False``,
+    tests, management commands, a process that didn't get the leader lock) and
+    for a task that's disabled or gated off.
+    """
+    with _lock:
+        return _is_task_running_locked(name)
+
+
+def wake_task(name: str) -> bool:
+    """Run task ``name`` now instead of at its next scheduled time (issue #124). Returns whether it was woken.
+
+    A no-op returning False when the task isn't running in this process (see
+    :func:`is_task_running`). A wake while the task is running gets it one more
+    run right after, and a wake during a failure backoff waits for the backoff.
+    """
+    with _lock:
+        if not _is_task_running_locked(name):
+            return False
+        _wake_events[name].set()
+        return True
+
+
+def _is_task_running_locked(name: str) -> bool:
+    thread = _threads.get(name)
+    stop = _stop_events.get(name)
+    wake = _wake_events.get(name)
+    return thread is not None and thread.is_alive() and wake is not None and (stop is None or not stop.is_set())
 
 
 def get_scheduler_status() -> dict:
