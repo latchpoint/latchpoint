@@ -22,7 +22,7 @@ export const DOOR_CODES_FAST_POLL_MS = 2_000
 /** How long after a create, update or Retry the fast poll lasts. */
 export const DOOR_CODES_FAST_POLL_WINDOW_MS = 60_000
 
-// When a create, update or Retry last worked, per query client and the user
+// When a create, update or Retry last queued a push, per query client and the user
 // whose codes it changed. Kept off the query data so a refetch can't drop it,
 // and per client so each test's client starts with none.
 const lastPushRequestAtByClient = new WeakMap<QueryClient, Map<string, number>>()
@@ -38,7 +38,7 @@ function markPushRequested(queryClient: QueryClient, userId: string) {
 
 /**
  * The door codes' refetch interval: the fast poll for a minute after a create,
- * update or Retry worked (`lastPushRequestAt`), the settling poll after that,
+ * update or Retry queued a push (`lastPushRequestAt`), the settling poll after that,
  * and none when nothing is settling.
  */
 export function doorCodesRefetchInterval(
@@ -85,13 +85,31 @@ export function isLockAwaitingPush(code: DoorCode, assignment: DoorCodeLockSlotA
  * needs a push. Only while the code is on its locks, ie active and between its
  * start and end, since the backend only queues those. Without
  * `pushRequestedAt` (an API from before #124) nothing is queued.
+ *
+ * The backend sends that answer as `pushQueued` (#205), which also knows the
+ * request's 10 minute TTL, the attempt cap and the 1µs the schedule re-queue
+ * puts between the attempt and the request, so it's used whenever it's there.
+ * The rest is the fallback for an API from before that.
  */
 export function isLockQueued(code: DoorCode, assignment: DoorCodeLockSlotAssignment): boolean {
+  if (assignment.pushQueued != null) return assignment.pushQueued
   if (!assignment.pushRequestedAt || assignment.pushState !== 'pending') return false
   if (!code.isActive || code.validity === 'scheduled' || code.validity === 'expired') return false
   if (!isLockAwaitingPush(code, assignment)) return false
   if (!assignment.lastPushAttemptAt) return true
   return Date.parse(assignment.lastPushAttemptAt) < Date.parse(assignment.pushRequestedAt)
+}
+
+/**
+ * Whether a create, update or Retry response has a lock the queued push task
+ * still has to send (#205), which is what starts the fast poll. The response is
+ * the code as saved, read after the push was queued, so a save that queued
+ * nothing doesn't poll fast: an update that only clears (turning a code off,
+ * say), or one a process without the task pushed inline.
+ */
+export function hasQueuedPush(code: DoorCode | undefined): boolean {
+  if (!code) return false
+  return (code.lockSlotAssignments ?? []).some((a) => isLockQueued(code, a))
 }
 
 /**
@@ -170,9 +188,10 @@ export function useCreateDoorCodeMutation(targetUserId: string) {
   const queryClient = useQueryClient()
   return useMutation({
     mutationFn: (req: CreateDoorCodeRequest) => doorCodesService.createDoorCode(req),
-    onSuccess: async () => {
-      // Before the refetch, so the interval worked out after it is the fast one.
-      markPushRequested(queryClient, targetUserId)
+    onSuccess: async (code) => {
+      // Before the refetch, so the interval worked out after it is the fast
+      // one. Only when the save queued a push, see hasQueuedPush.
+      if (hasQueuedPush(code)) markPushRequested(queryClient, targetUserId)
       await queryClient.invalidateQueries({ queryKey: queryKeys.doorCodes.byUser(targetUserId) })
     },
   })
@@ -183,8 +202,9 @@ export function useUpdateDoorCodeMutation(targetUserId: string) {
   return useMutation({
     mutationFn: ({ id, req }: { id: number; req: UpdateDoorCodeRequest }) =>
       doorCodesService.updateDoorCode(id, req),
-    onSuccess: async () => {
-      markPushRequested(queryClient, targetUserId)
+    onSuccess: async (code) => {
+      // An update that only clears (turning the code off, say) queued nothing.
+      if (hasQueuedPush(code)) markPushRequested(queryClient, targetUserId)
       await queryClient.invalidateQueries({ queryKey: queryKeys.doorCodes.byUser(targetUserId) })
     },
   })
@@ -207,10 +227,11 @@ export function useRetryDoorCodePushMutation(targetUserId: string) {
   const queryClient = useQueryClient()
   return useMutation({
     mutationFn: (id: number) => doorCodesService.retryPush(id),
-    // Only a Retry that worked queued a push. A refused one (the 409s) is
-    // still answered in the request, so it doesn't start the fast poll.
-    onSuccess: () => {
-      markPushRequested(queryClient, targetUserId)
+    // Only a Retry that worked can have queued a push. A refused one (the 409s)
+    // is still answered in the request, so it doesn't start the fast poll, and
+    // nor does one that only cleared (an inactive code's Retry).
+    onSuccess: (code) => {
+      if (hasQueuedPush(code)) markPushRequested(queryClient, targetUserId)
     },
     // Refetch on failure too: a refused Retry (e.g. the code was turned off
     // elsewhere) means the card is showing stale state.
