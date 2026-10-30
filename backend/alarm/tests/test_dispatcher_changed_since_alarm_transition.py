@@ -90,6 +90,9 @@ class ChangedSinceAlarmTransitionDispatcherTests(TransactionTestCase):
         self.assertEqual(set(state_map), set(last_changed_map))
 
         stats = self._dispatch({SYSTEM_ALARM_STATE_ENTITY_ID}, self.entered_at)
+        # Guard against a false pass: a dispatch that errors out also reports zero fired.
+        self.assertEqual(stats.rules_evaluated, 1, "the rule must actually be evaluated on the arm edge")
+        self.assertEqual(stats.rules_errors, 0, "the arm-edge dispatch must not error")
         self.assertEqual(stats.rules_fired, 0, "already-open door must not fire on the arm edge")
 
         fresh = self.entered_at + timedelta(minutes=1)

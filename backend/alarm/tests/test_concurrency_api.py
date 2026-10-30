@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import sys
 import threading
 import time
 from typing import Any
 from unittest.mock import patch
 
 from django.contrib.auth.hashers import make_password
+from django.core.signals import got_request_exception
 from django.db import OperationalError, close_old_connections
 from django.test import TransactionTestCase
 from django.urls import reverse
@@ -53,38 +55,65 @@ class ConcurrencyApiTests(TransactionTestCase):
         )
 
     def _run_parallel(self, callables: list) -> tuple[list[Any], list[BaseException]]:
+        """Run each callable on its own thread, all released at once.
+
+        Each callable makes one request with an ``APIClient(raise_request_exception=False)``
+        and returns the status code. Django's test client must not raise view errors here:
+        ``got_request_exception`` is a global signal, so a client stores and re-raises an
+        exception from *any* thread's request that fails while its own is in flight (#187).
+        One lock error then failed both threads at once and kept them retrying in step until
+        both ran out of retries. View errors are recorded against the thread that raised them.
+        """
         barrier = threading.Barrier(len(callables))
         results: list[Any] = [None] * len(callables)
         errors: list[BaseException] = []
         lock = threading.Lock()
         max_lock_retries = 12
+        view_errors: dict[int, BaseException | None] = {}
+
+        def record_view_error(sender, **kwargs):
+            # Sent from inside the handler's `except`, on the thread whose request failed.
+            view_errors[threading.get_ident()] = sys.exc_info()[1]
+
+        def is_lock_error(exc: BaseException) -> bool:
+            return isinstance(exc, OperationalError) and "database table is locked" in str(exc).lower()
 
         def worker(index: int, fn):
+            ident = threading.get_ident()
             try:
                 close_old_connections()
                 barrier.wait(timeout=5)
                 for attempt in range(max_lock_retries):
-                    try:
-                        results[index] = fn()
+                    view_errors.pop(ident, None)
+                    result = fn()
+                    exc = view_errors.pop(ident, None)
+                    if exc is None:
+                        results[index] = result
                         return
-                    except OperationalError as exc:
-                        # SQLite can throw transient lock errors under intentional
-                        # concurrent writes in CI; retry briefly to assert behavior.
-                        if "database table is locked" not in str(exc).lower() or attempt == max_lock_retries - 1:
-                            raise
-                        close_old_connections()
-                        time.sleep(0.1 * (attempt + 1))
+                    # SQLite ignores select_for_update() and its shared in-memory test db fails a
+                    # write at once with "database table is locked" while another transaction
+                    # holds the table, so the loser of a race retries. Back off by thread index
+                    # so the threads don't retry in step.
+                    if not is_lock_error(exc) or attempt == max_lock_retries - 1:
+                        raise exc
+                    close_old_connections()
+                    time.sleep(0.05 * (attempt + 1) * (index + 1))
             except BaseException as exc:  # noqa: BLE001
                 with lock:
                     errors.append(exc)
             finally:
                 close_old_connections()
 
-        threads = [threading.Thread(target=worker, args=(idx, fn)) for idx, fn in enumerate(callables)]
-        for thread in threads:
-            thread.start()
-        for thread in threads:
-            thread.join(timeout=20)
+        uid = f"concurrency-api-tests-{id(view_errors)}"
+        got_request_exception.connect(record_view_error, dispatch_uid=uid, weak=False)
+        try:
+            threads = [threading.Thread(target=worker, args=(idx, fn)) for idx, fn in enumerate(callables)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=20)
+        finally:
+            got_request_exception.disconnect(dispatch_uid=uid)
         return results, errors
 
     def test_parallel_arm_requests_have_one_success_and_one_conflict(self):
@@ -99,7 +128,7 @@ class ConcurrencyApiTests(TransactionTestCase):
         ).count()
 
         def call_arm():
-            client = APIClient()
+            client = APIClient(raise_request_exception=False)
             client.force_authenticate(self.user)
             response = client.post(arm_url, data={"target_state": AlarmState.ARMED_AWAY}, format="json")
             return response.status_code
@@ -133,7 +162,7 @@ class ConcurrencyApiTests(TransactionTestCase):
         ).count()
 
         def call_disarm():
-            client = APIClient()
+            client = APIClient(raise_request_exception=False)
             client.force_authenticate(self.user)
             response = client.post(disarm_url, data={"code": self.code_value}, format="json")
             return response.status_code
@@ -167,7 +196,7 @@ class ConcurrencyApiTests(TransactionTestCase):
         ).count()
 
         def call_cancel():
-            client = APIClient()
+            client = APIClient(raise_request_exception=False)
             client.force_authenticate(self.user)
             response = client.post(cancel_url, data={}, format="json")
             return response.status_code
@@ -198,7 +227,7 @@ class ConcurrencyApiTests(TransactionTestCase):
         activate_two = reverse("alarm-settings-profile-activate", kwargs={"profile_id": profile_two.id})
 
         def call_activate(url: str):
-            client = APIClient()
+            client = APIClient(raise_request_exception=False)
             client.force_authenticate(self.admin)
             response = client.post(url, data={}, format="json")
             return response.status_code
@@ -239,7 +268,7 @@ class ConcurrencyApiTests(TransactionTestCase):
         with patch("alarm.views.entities.ha_gateway", _Gateway()):
 
             def call_sync():
-                client = APIClient()
+                client = APIClient(raise_request_exception=False)
                 client.force_authenticate(self.user)
                 response = client.post(sync_url, data={}, format="json")
                 return response.status_code

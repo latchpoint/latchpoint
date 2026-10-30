@@ -332,9 +332,12 @@ class WakeTaskTests(TestCase):
         self.assertTrue(runner.is_task_running(self._name))
 
 
-class RunnerLogLevelTests(TestCase):
+class RunnerLogLevelTests(TransactionTestCase):
     """ADR-0103: the three per-run runner log lines (scheduled / starting / completed)
-    drop to DEBUG so healthy no-op runs are silent at INFO."""
+    drop to DEBUG so healthy no-op runs are silent at INFO.
+
+    TransactionTestCase: `_run_task_loop` calls `close_old_connections()`, which closes the
+    connection inside TestCase's transaction on Postgres (a no-op on in-memory SQLite)."""
 
     def setUp(self) -> None:
         telemetry_module._last_health_persist_at.clear()
