@@ -130,9 +130,10 @@ def _in_outer_transaction() -> bool:
     ``TestCase`` wraps every test in atomic blocks marked ``_from_testcase``, the
     same ones Django's ``atomic(durable=True)`` check lets through, so a push
     called straight from a test doesn't count. Autocommit turned off by hand
-    (``in_atomic_block`` with no blocks) does.
+    with ``set_autocommit(False)`` does: that leaves ``in_atomic_block`` false
+    and no atomic blocks, so it's caught by checking autocommit itself.
     """
-    if not connection.in_atomic_block:
+    if connection.get_autocommit():
         return False
     blocks = connection.atomic_blocks
     return not blocks or not all(getattr(block, "_from_testcase", False) for block in blocks)
@@ -242,10 +243,17 @@ def _enumerate_free_slot(
     if not isinstance(max_slots, int) or max_slots <= 0:
         raise LockPushFailed("Unable to determine lock user-code slot count.")
 
+    # The lock's own value IDs, so the read uses its real CC 99 endpoint, like lock config sync.
+    status_vid_by_slot: dict[int, dict] = {}
+    for vid in cc99:
+        key = _coerce_int(vid.get("propertyKey"))
+        if vid.get("property") == "userIdStatus" and key is not None:
+            status_vid_by_slot[key] = vid
+
     for slot_index in range(1, int(max_slots) + 1):
         if slot_index in claimed_slots:
             continue
-        status_vid = {
+        status_vid = status_vid_by_slot.get(slot_index) or {
             "commandClass": CC_USER_CODE,
             "property": "userIdStatus",
             "propertyKey": slot_index,
@@ -326,6 +334,8 @@ _READBACK_RETRY_DELAYS_SECONDS: tuple[float, ...] = (1.0, 2.0)
 
 # CC 99 userIdStatus "Available": the slot is definitively empty.
 _USER_ID_STATUS_AVAILABLE = 0
+# CC 99 userIdStatus values for a slot the lock uses for its own config (issue #168).
+_USER_ID_STATUS_CONFIG_USES = {3: "messaging", 4: "passage mode"}
 
 
 def _verify_user_code_slot(
@@ -345,7 +355,10 @@ def _verify_user_code_slot(
     Raises :class:`LockRejectedCode` (terminal) when the lock answers and the slot
     holds a different code or holds the code disabled, or answers empty twice
     (one empty answer is asked again, since a lock still committing the write can
-    report Available right after the set). Raises :class:`LockCodeUnverified`
+    report Available right after the set). A Messaging (3) or PassageMode (4)
+    slot is lock config, so it's rejected as holding something else
+    (``holds_other``), which every caller leaves alone; 0xfe is still no answer.
+    Raises :class:`LockCodeUnverified`
     (transient) when no attempt gets a usable answer, including a single empty
     answer followed only by silence. Terminal config errors propagate unchanged.
     """
@@ -384,6 +397,12 @@ def _verify_user_code_slot(
                 )
             last_reason = "slot read back empty once"
             continue
+        config_use = _USER_ID_STATUS_CONFIG_USES.get(_coerce_int(status))
+        if config_use is not None:
+            # Lock config, not a user code and not empty (issue #168). Never ours to clear.
+            raise LockRejectedCode(
+                f"Lock reports slot {slot_index} as a {config_use} slot, not a user code.", holds_other=True
+            )
         occupied, is_active = _parse_user_code_status(status)
         if not occupied:
             # e.g. 254 "status not available" — not a verdict, ask again.
@@ -468,9 +487,9 @@ def _record_unconfirmed_slot_attempt(
     slot_index: int,
     reason: str,
     pin: str,
-) -> None:
+) -> DoorCodeEvent:
     """Remember that ``slot_index`` on this lock may hold ``pin`` for this code (no schema change)."""
-    DoorCodeEvent.objects.create(
+    return DoorCodeEvent.objects.create(
         door_code=door_code,
         user=door_code.user,
         lock_entity_id=lock_entity_id,
@@ -1804,10 +1823,12 @@ def _record_push_failure(
     error_message: str,
     terminal: bool,
     event_metadata: dict[str, object] | None = None,
+    lock_entity_id: str = "",
 ) -> None:
     """Stamp last_push_* + bump push_attempt_count; flip to failed when terminal.
 
-    ``event_metadata`` is added to the ``code_failed`` event a terminal failure records.
+    ``event_metadata`` is added to the ``code_failed`` event a terminal failure
+    records, and ``lock_entity_id`` is set on it.
     """
     safe_message = sanitize_push_error_for_storage(error_message)
     door_code.last_push_attempt_at = django_timezone.now()
@@ -1831,24 +1852,33 @@ def _record_push_failure(
         DoorCodeEvent.objects.create(
             door_code=door_code,
             user=door_code.user,
+            lock_entity_id=lock_entity_id,
             event_type=DoorCodeEvent.EventType.CODE_FAILED,
             metadata={"action": "push", "reason": safe_message[:200], **(event_metadata or {})},
         )
 
 
 def _fail_slot_recorded_for_another_code(
-    *, door_code: DoorCode, lock_entity_id: str, slot_index: int, pin: str
+    *, door_code: DoorCode, lock_entity_id: str, slot_index: int
 ) -> LockPushFailed:
     """Record the push whose slot write hit ``door_code_lock_assignments_unique_lock_slot`` (issues #109, #129).
 
     The lock may now hold this PIN in ``slot_index`` in place of the code the DB
-    has there, so the error and the ``code_failed`` event name that code and ask
-    for a lock sync. The slot is also recorded as an unconfirmed attempt with
-    this PIN. Every cleanup and adoption skips a slot another code holds, so it
-    does nothing while that code has it, but if that code lets go of the slot
-    without clearing it (ie a readback found this PIN there instead of its own),
-    a delete or deactivate of this code reads it back and clears it, and a
-    retry adopts it instead of writing the PIN to a second slot.
+    has there, so the error and the ``code_failed`` event name that code and say
+    what to do next (also kept whole in the event's ``next_step``, since its
+    ``reason`` is cut at 200 characters). A code lock sync imported gets its PIN
+    from whatever the slot holds on the next sync, so for one of those the next
+    step is dropping this lock from this code once the sync reports the slot
+    holding this PIN (its duplicate PIN flag), rather than a retry that would
+    put it in a second slot.
+
+    The ``push_unconfirmed`` attempt the push recorded for the slot right before
+    its write stays, with this PIN, since the delete of it rolled back with the
+    write. Every cleanup and
+    adoption skips a slot another code holds, so it does nothing while that code
+    has it, but if that code lets go of the slot without clearing it (ie a
+    readback found this PIN there instead of its own), a delete or deactivate of
+    this code reads it back and clears it, and a retry adopts it.
     """
     owner = (
         DoorCodeLockAssignment.objects.select_related("door_code")
@@ -1856,31 +1886,39 @@ def _fail_slot_recorded_for_another_code(
         .exclude(door_code=door_code)
         .first()
     )
-    if owner is not None:
-        owner_label = owner.door_code.label or "no label"
-        holder = f'another door code (id {owner.door_code_id}, "{owner_label}")'
-        in_place_of = "that code's"
-    else:
+    owner_code = owner.door_code if owner is not None else None
+    if owner_code is None:
         holder = "another door code"
         in_place_of = "the code recorded there"
+    else:
+        label = f', "{owner_code.label}"' if owner_code.label else ""
+        holder = f"another door code (id {owner_code.id}{label})"
+        in_place_of = "that code's"
+    if owner_code is not None and owner_code.source == DoorCode.Source.SYNCED:
+        next_step = (
+            f"That code was imported by a lock sync, so the next lock sync on {lock_entity_id} gives it "
+            f"whatever PIN slot {slot_index} holds. Run one, and if it reports slot {slot_index} holding this "
+            f"code's PIN, remove {lock_entity_id} from this code instead of retrying, since a retry puts the PIN "
+            "in a second slot."
+        )
+    else:
+        next_step = f"Run a lock sync on {lock_entity_id} to check what the slot holds before retrying."
     message = (
         f"Slot {slot_index} on {lock_entity_id} was recorded for {holder} during the push. "
-        f"The lock may now hold this PIN in slot {slot_index} in place of {in_place_of}. "
-        f"Run a lock sync on {lock_entity_id} to check what the slot holds before retrying."
-    )
-    _record_unconfirmed_slot_attempt(
-        door_code=door_code, lock_entity_id=lock_entity_id, slot_index=slot_index, reason=message, pin=pin
+        f"The lock may now hold this PIN in slot {slot_index} in place of {in_place_of}. {next_step}"
     )
     _record_push_failure(
         door_code=door_code,
         error_message=message,
         terminal=True,
+        lock_entity_id=lock_entity_id,
         event_metadata={
-            "lock_entity_id": lock_entity_id,
             "slot_index": int(slot_index),
-            "conflicting_door_code_id": owner.door_code_id if owner is not None else None,
-            "conflicting_door_code_label": owner.door_code.label if owner is not None else None,
+            "conflicting_door_code_id": owner_code.id if owner_code is not None else None,
+            "conflicting_door_code_label": owner_code.label if owner_code is not None else None,
+            "conflicting_door_code_source": owner_code.source if owner_code is not None else None,
             "lock_sync_needed": True,
+            "next_step": sanitize_push_error_for_storage(next_step),
         },
     )
     return LockPushFailed(sanitize_push_error_for_storage(message))
@@ -1903,7 +1941,9 @@ def push_door_code_to_lock(
     adopted instead of writing a new one.
 
     Errors:
-      * :class:`InvalidPin` / :class:`LockSlotsFull` raise before any network call.
+      * :class:`InvalidPin` / :class:`LockSlotsFull` raise before any ``set``.
+        :class:`LockSlotsFull` is recorded as a transient failure, so the row
+        stays ``pending`` and the scheduler's attempt cap applies.
       * :class:`LockRejectedCode` — terminal; the PIN matches the lock's admin
         code (checked before the ``set``) or the post-set readback shows the
         lock didn't store it. The row is flipped to ``failed``.
@@ -1992,7 +2032,10 @@ def push_door_code_to_lock(
         except (ZwavejsNotConfigured, ZwavejsClientUnavailable, ZwavejsCommandValidationError) as exc:
             _record_push_failure(door_code=door_code, error_message=str(exc), terminal=True)
             raise LockPushFailed(str(exc)) from exc
-        except LockSlotsFull:
+        except LockSlotsFull as exc:
+            # Counted like any transient failure, so a lock with nothing Available
+            # ends up failed at the attempt cap instead of retried forever.
+            _record_push_failure(door_code=door_code, error_message=str(exc), terminal=False)
             raise
         except LockRejectedCode as exc:
             _record_push_failure(door_code=door_code, error_message=str(exc), terminal=True)
@@ -2082,6 +2125,18 @@ def push_door_code_to_lock(
         # counter is important: the cap is on *consecutive* failures, so a single
         # successful push must zero the meter.
         schedule_applied = bool(weekdays_pushed)
+        # The PIN is in the slot now, so record it as an unconfirmed attempt first,
+        # committed on its own. If the block below rolls back (the process dies, a DB
+        # error, or the unique constraint) the slot isn't lost: a retry adopts it and
+        # a delete or deactivate reads it back and clears it. A clean commit deletes
+        # it again, so a successful push leaves no failure in the audit log.
+        pending_marker = _record_unconfirmed_slot_attempt(
+            door_code=door_code,
+            lock_entity_id=lock_entity_id,
+            slot_index=slot_index,
+            reason="PIN set on the lock, slot not saved yet",
+            pin=pin,
+        )
         try:
             # One transaction for the slot, the pushed stamp and its event (issue
             # #130), so a process that dies between them can't leave the code
@@ -2116,12 +2171,13 @@ def push_door_code_to_lock(
                         **({"adopted_existing_slot": True} if adopted_existing_slot else {}),
                     },
                 )
+                pending_marker.delete()
         except IntegrityError as exc:
             # Another writer recorded this slot after we enumerated, so the lock
             # may now hold this PIN over that code's. Retrying would only park the
             # PIN in a second slot, so fail terminally for the operator to check.
             raise _fail_slot_recorded_for_another_code(
-                door_code=door_code, lock_entity_id=lock_entity_id, slot_index=slot_index, pin=pin
+                door_code=door_code, lock_entity_id=lock_entity_id, slot_index=slot_index
             ) from exc
 
         timestamp = django_timezone.now()
@@ -2214,7 +2270,7 @@ def push_door_code_to_assigned_locks(
             failures.append((assignment.lock_entity_id, str(exc)))
             door_code.refresh_from_db(fields=["push_state", "last_push_attempt_at", "last_push_error"])
             # Capture what this lock's failure recorded before a later lock overwrites it.
-            # Some failures (slots full, invalid PIN) don't record anything.
+            # Some failures (an invalid PIN) don't record anything.
             recorded = door_code.last_push_attempt_at != attempt_marker
             if recorded and door_code.push_state == DoorCode.PushState.FAILED:
                 terminal_error = terminal_error or door_code.last_push_error or str(exc)
