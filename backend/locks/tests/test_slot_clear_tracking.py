@@ -24,6 +24,11 @@ from locks.use_cases.lock_config_sync import LockBusy
 from locks.use_cases.lock_config_sync import NotFound as LockSyncNotFound
 
 
+def _slot_fields(entry: dict) -> dict:
+    """A ``lock_slot_assignments`` entry without the per-lock push fields (issue #126)."""
+    return {key: entry[key] for key in ("lock_entity_id", "slot_index", "pending_removal")}
+
+
 def _timeouts(count: int = 3) -> list[Exception]:
     return [ZwavejsCommandError("driver TimeoutError after 5.0s") for _ in range(count)]
 
@@ -385,8 +390,9 @@ class PendingSlotClearsSerializerTests(_SlotClearTestBase, APITestCase):
             data["pending_slot_clears"], [{"lock_entity_id": self.SIDE, "slot_index": 1, "removing": True}]
         )
         self.assertEqual(data["lock_entity_ids"], [self.BACK, self.SIDE])
+        # The per-lock push fields (issue #126) are covered in test_assignment_push_state.
         self.assertCountEqual(
-            data["lock_slot_assignments"],
+            [_slot_fields(entry) for entry in data["lock_slot_assignments"]],
             [
                 {"lock_entity_id": self.BACK, "slot_index": 1, "pending_removal": False},
                 {"lock_entity_id": self.SIDE, "slot_index": 1, "pending_removal": True},
@@ -404,7 +410,8 @@ class PendingSlotClearsSerializerTests(_SlotClearTestBase, APITestCase):
             data["pending_slot_clears"], [{"lock_entity_id": self.BACK, "slot_index": 1, "removing": False}]
         )
         self.assertEqual(
-            data["lock_slot_assignments"], [{"lock_entity_id": self.BACK, "slot_index": 1, "pending_removal": False}]
+            [_slot_fields(entry) for entry in data["lock_slot_assignments"]],
+            [{"lock_entity_id": self.BACK, "slot_index": 1, "pending_removal": False}],
         )
 
     def test_an_inactive_code_holding_a_slot_lists_it_as_a_pending_clear(self):
@@ -443,13 +450,31 @@ class PendingSlotClearsSerializerTests(_SlotClearTestBase, APITestCase):
         data = self._serialize(code)
         push_data = self._serialize(code, DoorCodePushSerializer)
 
-        for payload in (data["pending_slot_clears"], data["lock_slot_assignments"]):
+        # The per-lock push fields (issue #126) too, without the timestamp whose digits can happen to match.
+        lock_slots = [
+            {k: v for k, v in entry.items() if k != "last_push_attempt_at"}
+            for entry in data["lock_slot_assignments"] + push_data["lock_slot_assignments"]
+        ]
+        for payload in (data["pending_slot_clears"], lock_slots):
             self.assertNotIn(self.PIN, json.dumps(payload))
             self.assertNotIn("5555", json.dumps(payload))
             self.assertNotIn("encrypted_pin", json.dumps(payload))
         self.assertEqual(
             {key for entry in data["pending_slot_clears"] for key in entry},
             {"lock_entity_id", "slot_index", "removing"},
+        )
+        self.assertEqual(
+            {key for entry in data["lock_slot_assignments"] for key in entry},
+            {
+                "lock_entity_id",
+                "slot_index",
+                "pending_removal",
+                "push_state",
+                "last_push_error",
+                "last_push_attempt_at",
+                "push_attempt_count",
+                "schedule_pending",
+            },
         )
         # The old PIN only lives in the encrypted event metadata, and the push
         # response has no PIN at all. Ids and timestamps are left out of the
@@ -615,13 +640,14 @@ class ReactivatedWhileClearingTests(_SlotClearTestBase):
     def test_turned_on_right_after_the_clear(self):
         code, gateway = self._turned_off_without_clearing([self.BACK])
         DoorCode.objects.filter(id=code.id).update(push_state=DoorCode.PushState.PENDING)
-        real_settle = lock_push_uc.settle_clear_failure_state
+        # The rollup is the one write after the clear now (issue #126).
+        real_refresh = lock_push_uc.refresh_push_state
 
-        def settle_after_a_reactivate(*, door_code):
+        def refresh_after_a_reactivate(**kwargs):
             self._reactivate_with_a_timed_out_push(code, gateway)
-            return real_settle(door_code=door_code)
+            return real_refresh(**kwargs)
 
-        with patch.object(lock_push_uc, "settle_clear_failure_state", settle_after_a_reactivate):
+        with patch.object(lock_push_uc, "refresh_push_state", refresh_after_a_reactivate):
             lock_push_uc.push_or_settle_after_clear_retry(door_code=code, zwavejs=gateway)
 
         self.assertEqual(self._calls(gateway, "clear"), [(12, [1])])

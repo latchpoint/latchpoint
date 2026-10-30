@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 from datetime import timedelta
 
-from django.db import transaction
 from django.db.models import Exists, F, OuterRef, Q
 from django.utils import timezone
 
@@ -14,7 +13,7 @@ from alarm.system_config_utils import get_int_system_config_value
 from scheduler import DailyAt, Every, register
 
 from .models import DoorCode, DoorCodeEvent, DoorCodeLockAssignment
-from .use_cases.code_lifecycle import expired_q, started_q
+from .use_cases.code_lifecycle import belongs_on_lock, expired_q, started_q
 
 logger = logging.getLogger(__name__)
 
@@ -73,32 +72,50 @@ def cleanup_door_code_events() -> int:
     connections=("zwavejs",),
 )
 def push_pending_door_codes() -> int:
-    """Iterate over pending door codes with unassigned slots or failed clears and retry them.
+    """Retry the door code pushes and clears that haven't landed, lock by lock (issue #126).
 
-    A code is considered "pending" if (a) ``push_state=pending`` AND (b) it's
-    active, started and not expired (issue #145) with at least one assignment
-    still at ``slot_index IS NULL``, or it has a slot clear on record that failed (issue #139; active or not, since an
-    inactive code's PIN may still be on the lock). An inactive manual code that
-    still holds a slot or has an unconfirmed attempt slot left to check is
-    picked up too, ``pending`` or ``pushed`` (issue #158), and those slots get
-    cleared. Failed clears are retried before the push. The use case mutates
-    per-row state; this task is the safety net for transient gateway failures.
+    Each tick first repairs per-lock state that drifted from its slot
+    (``normalize_assignment_push_state``) and fails every lock still waiting on
+    a push whose own attempt count reached ``door_codes.push_max_attempts``
+    (``sweep_push_cap``, again after the attempts). Then a code is picked up when
 
-    Returns the number of codes attempted this tick.
+    - it's active, started and not expired (issue #145) and one of its locks
+      is ``pending`` with no slot or a pending schedule (issue #123) and under
+      the cap. The code's own ``push_state`` doesn't matter, so a terminal
+      failure on one lock doesn't stop the retries of another
+    - it has a slot clear on record that failed (issue #139; active or not,
+      since an inactive code's PIN may still be on the lock), while its
+      clear-retry count is under the cap
+    - it's an inactive manual code that still holds a slot or has an
+      unconfirmed attempt slot left to check, ``pending`` or ``pushed`` (issue
+      #158), and those slots get cleared
+
+    Failed clears are retried before the push. The use cases record each
+    lock's outcome and the code's rollup; this task is the safety net for
+    transient gateway failures. Returns the number of codes attempted this tick.
     """
     from locks.use_cases.lock_push import (
         inactive_slots_to_clear,
+        normalize_assignment_push_state,
         push_or_settle_after_clear_retry,
         retry_failed_slot_clears,
-        settle_clear_failure_state,
+        sanitize_push_error_for_storage,
+        sweep_push_cap,
+        unresolved_clear_failures,
     )
 
     max_attempts = _get_push_max_attempts()
+    # One now for the whole tick: the arms below and both cap sweeps (PR #195 review).
+    now = timezone.now()
 
-    unassigned_subquery = DoorCodeLockAssignment.objects.filter(
-        door_code=OuterRef("pk"),
-        slot_index__isnull=True,
-    )
+    normalize_assignment_push_state()
+    sweep_push_cap(now=now, max_attempts=max_attempts)
+
+    needs_push_subquery = DoorCodeLockAssignment.objects.filter(
+        door_code=OuterRef("pk"), push_state=DoorCode.PushState.PENDING
+    ).filter(Q(slot_index__isnull=True) | Q(schedule_pending=True))
+    if max_attempts > 0:
+        needs_push_subquery = needs_push_subquery.filter(push_attempt_count__lt=max_attempts)
     # Any recorded clear failure, settled or not; retry_failed_slot_clears skips settled ones.
     clear_failed_subquery = DoorCodeEvent.objects.filter(
         door_code=OuterRef("pk"),
@@ -121,29 +138,38 @@ def push_pending_door_codes() -> int:
         push_state__in=[DoorCode.PushState.PENDING, DoorCode.PushState.PUSHED],
     ) & (Q(_holds_slot=True) | Q(_has_unconfirmed=True))
     # Only codes between their start_at and end_at get pushed (issue #145).
-    now = timezone.now()
-    to_push = Q(_has_unassigned=True, is_active=True) & started_q(now) & ~expired_q(now)
-    pending = (
+    to_push = Q(_needs_push=True, is_active=True) & started_q(now) & ~expired_q(now)
+    clears_to_retry = Q(_has_clear_failures=True)
+    if max_attempts > 0:
+        # The clear-retry cap stays at code level (issue #126).
+        clears_to_retry &= Q(push_attempt_count__lt=max_attempts)
+    candidates = (
         DoorCode.objects.annotate(
-            _has_unassigned=Exists(unassigned_subquery),
+            _needs_push=Exists(needs_push_subquery),
             _has_clear_failures=Exists(clear_failed_subquery),
             _holds_slot=Exists(holds_slot_subquery),
             _has_unconfirmed=Exists(unconfirmed_subquery),
         )
-        .filter(
-            Q(push_state=DoorCode.PushState.PENDING) & (to_push | Q(_has_clear_failures=True)) | inactive_with_slots
-        )
+        .filter(to_push | clears_to_retry | inactive_with_slots)
         .prefetch_related("lock_assignments")
+        .order_by("id")
     )
 
     attempted = 0
-    for code in pending:
-        if code.push_state == DoorCode.PushState.PUSHED and not inactive_slots_to_clear(door_code=code):
-            # Only picked up by the rough cut: nothing left on its locks to clear.
+    for code in candidates:
+        picked_to_push = code._needs_push and code.is_active and belongs_on_lock(code, now=now)
+        if (
+            not picked_to_push
+            and not unresolved_clear_failures(door_code=code)
+            and not inactive_slots_to_clear(door_code=code)
+        ):
+            # Only picked up by a rough cut (a settled clear failure, a slot of an
+            # inactive code with nothing left to clear): nothing to do on its locks.
             continue
+        was_failed = code.push_state == DoorCode.PushState.FAILED
         try:
             clear_failures = retry_failed_slot_clears(door_code=code, zwavejs=default_zwavejs_gateway)
-            successes, failures = push_or_settle_after_clear_retry(
+            _successes, failures = push_or_settle_after_clear_retry(
                 door_code=code,
                 zwavejs=default_zwavejs_gateway,
                 actor_user=None,
@@ -151,11 +177,12 @@ def push_pending_door_codes() -> int:
         except Exception:
             logger.exception("Unexpected error retrying push for door code id=%d", code.id)
             continue
-        failures = failures + [(f.lock_entity_id, f.reason) for f in clear_failures]
+        # What the code-level count counts: the clear retries, and an inactive code's clears.
+        clear_failures_this_tick = [(f.lock_entity_id, f.reason) for f in clear_failures]
+        if not code.is_active:
+            clear_failures_this_tick += failures
 
         attempted += 1
-        # ``push_door_code_to_assigned_locks`` already increments ``push_attempt_count``
-        # via _record_push_failure for each transient failure and resets it on success.
         try:
             code.refresh_from_db(fields=["push_state", "push_attempt_count", "last_push_error"])
         except DoorCode.DoesNotExist:
@@ -163,33 +190,15 @@ def push_pending_door_codes() -> int:
             logger.info("Door code id=%d was deleted during the push retry; skipping", code.id)
             continue
 
-        if not successes and failures and max_attempts > 0 and code.push_attempt_count >= max_attempts:
-            # Consecutive-failure cap reached — give up and surface to operators.
-            # Sanitize the upstream failure reason in case it ever carries PIN-shaped
-            # digits (today none of the raised exception classes do, but defense
-            # in depth — see sanitize_push_error_for_storage docstring).
-            from locks.use_cases.lock_push import sanitize_push_error_for_storage
-
-            safe_reason = sanitize_push_error_for_storage(failures[0][1])
-            code.push_state = DoorCode.PushState.FAILED
-            code.last_push_error = (f"Push gave up after {code.push_attempt_count} attempts: {safe_reason}")[:500]
-            with transaction.atomic():
-                code.save(update_fields=["push_state", "last_push_error", "updated_at"])
-                # Every lock still waiting on a push gave up with the code, keeping
-                # its own error and count, so nothing starts retrying on its own
-                # once the scheduler reads per-lock state (issue #126). Only for a
-                # code that's pushed now, ie active, started and not expired. One
-                # before its start only hit the cap on clear retries, and
-                # enforce_door_code_validity still pushes its locks once it starts.
-                cap_now = timezone.now()
-                pushable = DoorCode.objects.filter(id=code.id, is_active=True).filter(
-                    started_q(cap_now) & ~expired_q(cap_now)
-                )
-                DoorCodeLockAssignment.objects.filter(
-                    door_code__in=pushable,
-                    push_state=DoorCode.PushState.PENDING,
-                    slot_index__isnull=True,
-                ).update(push_state=DoorCode.PushState.FAILED)
+        if (
+            not was_failed
+            and code.push_state == DoorCode.PushState.FAILED
+            and clear_failures_this_tick
+            and max_attempts > 0
+            and code.push_attempt_count >= max_attempts
+        ):
+            # The rollup gave up on the clears at the cap; surface it to operators.
+            # Sanitized in case a reason ever carries PIN-shaped digits.
             DoorCodeEvent.objects.create(
                 door_code=code,
                 user=code.user,
@@ -198,12 +207,12 @@ def push_pending_door_codes() -> int:
                     "action": "push",
                     "reason": "max_attempts_exceeded",
                     "attempts": code.push_attempt_count,
-                    "last_error": safe_reason[:200],
+                    "last_error": sanitize_push_error_for_storage(clear_failures_this_tick[0][1])[:200],
                 },
             )
-            # Lead with any slot that may still hold the PIN.
-            settle_clear_failure_state(door_code=code)
 
+    # Locks this tick's failures took to the cap.
+    sweep_push_cap(now=now, max_attempts=max_attempts)
     return attempted
 
 
@@ -225,15 +234,17 @@ def enforce_door_code_validity() -> int:
       (pushed before this was enforced, or its start moved later) has those
       slots cleared and stays active
     - an active code whose ``start_at`` has passed, that isn't expired, has a
-      lock without a slot and hasn't had a push attempt since its start is
-      pushed. The attempt is stamped either way, so a push that doesn't land
-      is left to ``push_pending_door_codes`` instead of being tried every minute
+      lock still waiting for its ``set`` or schedule and hasn't had a push
+      attempt since its start is pushed. Its ``failed`` locks are re-armed
+      first, since only the 0010 backfill fails a lock before its code starts.
+      The attempt is stamped either way, so a push that doesn't land is left
+      to ``push_pending_door_codes`` instead of being tried every minute
 
     Errors are caught per code (a busy lock included) and the task never
     raises. Returns the number of codes it acted on.
     """
     from locks.use_cases.door_codes import retire_door_code, withdraw_door_code
-    from locks.use_cases.lock_push import push_door_code_to_assigned_locks
+    from locks.use_cases.lock_push import push_door_code_to_assigned_locks, rearm_failed_locks
 
     now = timezone.now()
     acted = 0
@@ -294,17 +305,26 @@ def enforce_door_code_validity() -> int:
         except Exception:
             logger.warning("Couldn't take door code id=%d off its locks before its start", code.id, exc_info=True)
 
-    unassigned = DoorCodeLockAssignment.objects.filter(door_code=OuterRef("pk"), slot_index__isnull=True)
+    # A lock still waiting for its set or its schedule (issue #123). Failed ones
+    # count too: before its start nothing pushes a code, so a lock is only failed
+    # then because the 0010 backfill copied the code's failure onto it, and it
+    # gets re-armed below so the code still goes on its locks (PR #195 review).
+    waiting = DoorCodeLockAssignment.objects.filter(door_code=OuterRef("pk")).filter(
+        Q(push_state=DoorCode.PushState.PENDING) | Q(push_state=DoorCode.PushState.FAILED),
+        Q(slot_index__isnull=True) | Q(schedule_pending=True),
+    )
     just_started = (
         DoorCode.objects.filter(is_active=True, start_at__isnull=False, start_at__lte=now)
         .exclude(expired_q(now))
-        .filter(Exists(unassigned))
+        .filter(Exists(waiting))
         .filter(Q(last_push_attempt_at__isnull=True) | Q(last_push_attempt_at__lt=F("start_at")))
         .prefetch_related("lock_assignments")
         .order_by("id")
     )
     for code in just_started:
         try:
+            if rearm_failed_locks(door_code=code):
+                code = DoorCode.objects.prefetch_related("lock_assignments").get(id=code.id)
             push_door_code_to_assigned_locks(door_code=code, zwavejs=default_zwavejs_gateway, only_unassigned=True)
             acted += 1
         except Exception:
