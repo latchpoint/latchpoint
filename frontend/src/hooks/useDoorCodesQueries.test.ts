@@ -288,6 +288,22 @@ describe('useDoorCodesQueries', () => {
         expect(isDoorCodeSettling(code)).toBe(false)
       })
 
+      it('still counts a lock waiting on its schedule when the clear is for that slot number on another lock', () => {
+        const code = failedWith(
+          { pushState: 'pending', slotIndex: 3, schedulePending: true },
+          { pendingSlotClears: [{ lockEntityId: 'lock.back_door', slotIndex: 3, removing: false }] },
+        )
+        expect(isDoorCodeSettling(code)).toBe(true)
+      })
+
+      it('still counts a lock waiting on its schedule when the clear is for another slot on that lock', () => {
+        const code = failedWith(
+          { pushState: 'pending', slotIndex: 3, schedulePending: true },
+          { pendingSlotClears: [{ lockEntityId: 'lock.front_door', slotIndex: 5, removing: false }] },
+        )
+        expect(isDoorCodeSettling(code)).toBe(true)
+      })
+
       it('falls back to the code-level state when the API sends no per-lock fields', () => {
         const withoutPerLock = (pushState: DoorCode['pushState']) =>
           makeCode({
