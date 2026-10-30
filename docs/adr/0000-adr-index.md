@@ -124,6 +124,7 @@ This document tracks all Architecture Decision Records (ADRs) and their implemen
 | [0107](0107-react-router-v8-adoption.md) | Adopting React Router v8 and Retiring `react-router-dom` | **Proposed** |
 | [0108](0108-entity-state-changed-since-alarm-transition.md) | Per-Condition "Changed Since Alarm Transition" Flag for `entity_state` Rule Conditions | **Proposed** |
 | [0109](0109-door-code-validity-on-the-lock.md) | Door Code Start and End Dates Are Enforced by Adding and Removing the PIN | **Accepted** |
+| [0110](0110-door-code-push-state-per-lock.md) | Door Code Push State Is Tracked Per Lock | **Accepted** |
 
 ---
 
@@ -133,13 +134,13 @@ This document tracks all Architecture Decision Records (ADRs) and their implemen
 |--------|-------|
 | **Implemented** | 69 |
 | **Partially Implemented** | 0 |
-| **Accepted** | 4 |
+| **Accepted** | 5 |
 | **Proposed** | 16 |
 | **Superseded** | 17 |
-| **Total** | 106 |
+| **Total** | 107 |
 
 Note: **Superseded** includes entries marked as "Superseded by …" in the table above.
 
 ---
 
-*Last updated: 2026-10-29* (added ADR 0109)
+*Last updated: 2026-10-30* (added ADR 0110)
