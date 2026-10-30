@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING
 
 from django.conf import settings
 from django.db import IntegrityError, connection, transaction
+from django.db.models import F
 from django.utils import timezone as django_timezone
 from integrations_zwavejs.manager import (
     ZwavejsClientUnavailable,
@@ -1265,8 +1266,9 @@ def forget_cleared_slot(
 
     Settles any recorded failure for it and stops tracking the slot. An
     assignment whose lock was being dropped is deleted; any other just loses its
-    ``slot_index`` so the code gets pushed there again. Returns ``True`` when the
-    assignment was deleted. ``slot_empty`` goes to :func:`resolve_clear_failure`.
+    ``slot_index`` and goes back to ``pending`` so the code gets pushed there
+    again. Returns ``True`` when the assignment was deleted. ``slot_empty`` goes
+    to :func:`resolve_clear_failure`.
     """
     failure = resolve_clear_failure(
         door_code=door_code,
@@ -1281,7 +1283,8 @@ def forget_cleared_slot(
     if failure is not None and failure.removing:
         assignment.delete()
         return True
-    assignment.update(slot_index=None)
+    # Needs a push there again, so per lock it's pending, attempts kept (issue #126).
+    assignment.update(slot_index=None, push_state=DoorCode.PushState.PENDING, schedule_pending=False)
     return False
 
 
@@ -2280,7 +2283,10 @@ def _record_push_failure(
     """Stamp last_push_* + bump push_attempt_count; flip to failed when terminal.
 
     ``event_metadata`` is added to the ``code_failed`` event a terminal failure
-    records, and ``lock_entity_id`` is set on it.
+    records, and ``lock_entity_id`` is set on it. With ``lock_entity_id`` the
+    failure is also written to that lock's assignment in the same transaction:
+    a transient one leaves it ``pending`` with one more attempt, a terminal one
+    makes it ``failed`` (issue #126). Nothing reads those yet.
     """
     safe_message = sanitize_push_error_for_storage(error_message)
     door_code.last_push_attempt_at = django_timezone.now()
@@ -2290,15 +2296,27 @@ def _record_push_failure(
         door_code.push_state = DoorCode.PushState.FAILED
     else:
         door_code.push_state = DoorCode.PushState.PENDING
-    door_code.save(
-        update_fields=[
-            "last_push_attempt_at",
-            "last_push_error",
-            "push_attempt_count",
-            "push_state",
-            "updated_at",
-        ]
-    )
+    with transaction.atomic():
+        door_code.save(
+            update_fields=[
+                "last_push_attempt_at",
+                "last_push_error",
+                "push_attempt_count",
+                "push_state",
+                "updated_at",
+            ]
+        )
+        if lock_entity_id:
+            lock_fields: dict[str, object] = (
+                {"push_state": DoorCode.PushState.FAILED}
+                if terminal
+                else {"push_state": DoorCode.PushState.PENDING, "push_attempt_count": F("push_attempt_count") + 1}
+            )
+            DoorCodeLockAssignment.objects.filter(door_code=door_code, lock_entity_id=lock_entity_id).update(
+                **lock_fields,
+                last_push_error=door_code.last_push_error,
+                last_push_attempt_at=door_code.last_push_attempt_at,
+            )
 
     if terminal:
         DoorCodeEvent.objects.create(
@@ -2505,7 +2523,9 @@ def push_door_code_to_lock(
         except LockSlotsFull as exc:
             # Counted like any transient failure, so a lock with nothing Available
             # ends up failed at the attempt cap instead of retried forever.
-            _record_push_failure(door_code=door_code, error_message=str(exc), terminal=False)
+            _record_push_failure(
+                door_code=door_code, error_message=str(exc), terminal=False, lock_entity_id=lock_entity_id
+            )
             raise
         except LockRejectedCode as exc:
             _record_push_failure(
@@ -2519,6 +2539,7 @@ def push_door_code_to_lock(
                 door_code=door_code,
                 error_message=f"{exc.__class__.__name__}: {exc}",
                 terminal=False,
+                lock_entity_id=lock_entity_id,
             )
             raise LockUnreachable("Lock is not reachable right now; will retry.") from exc
 
@@ -2645,7 +2666,9 @@ def push_door_code_to_lock(
                     and not adopted_existing_slot
                     and not (isinstance(exc, LockCodeUnverified) and exc.read_back_empty),
                 )
-            _record_push_failure(door_code=door_code, error_message=error_message, terminal=False)
+            _record_push_failure(
+                door_code=door_code, error_message=error_message, terminal=False, lock_entity_id=lock_entity_id
+            )
             raise LockUnreachable("Lock did not accept the code in time; will retry.") from exc
 
         # Success — claim the slot and stamp pushed state. Resetting the attempt
@@ -2674,11 +2697,19 @@ def push_door_code_to_lock(
             # pending with a slot, which the scheduler never retries. A savepoint
             # inside an outer transaction, so a unique-constraint hit doesn't poison it.
             with transaction.atomic():
+                pushed_at = django_timezone.now()
+                # The per-lock state goes with the slot (issue #126). The schedule
+                # is in the same step for now, so the lock is pushed outright.
                 DoorCodeLockAssignment.objects.filter(door_code=door_code, lock_entity_id=lock_entity_id).update(
-                    slot_index=slot_index
+                    slot_index=slot_index,
+                    push_state=DoorCode.PushState.PUSHED,
+                    push_attempt_count=0,
+                    last_push_attempt_at=pushed_at,
+                    last_push_error="",
+                    schedule_pending=False,
                 )
                 door_code.push_state = DoorCode.PushState.PUSHED
-                door_code.last_push_attempt_at = django_timezone.now()
+                door_code.last_push_attempt_at = pushed_at
                 door_code.last_push_error = ""
                 door_code.push_attempt_count = 0
                 door_code.save(

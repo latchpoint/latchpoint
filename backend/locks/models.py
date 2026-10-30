@@ -99,6 +99,19 @@ class DoorCodeLockAssignment(models.Model):
     door_code = models.ForeignKey(DoorCode, on_delete=models.CASCADE, related_name="lock_assignments")
     lock_entity_id = models.CharField(max_length=255)
     slot_index = models.PositiveSmallIntegerField(null=True, blank=True)
+    # Per-lock push state (issues #126, #123). Written alongside the code-level
+    # fields for now; nothing reads them yet. ``db_default`` as well as
+    # ``default`` so code from before these columns can still insert rows.
+    push_state = models.CharField(
+        max_length=16,
+        choices=DoorCode.PushState.choices,
+        default=DoorCode.PushState.PENDING,
+        db_default=DoorCode.PushState.PENDING,
+    )
+    push_attempt_count = models.PositiveIntegerField(default=0, db_default=0)
+    last_push_attempt_at = models.DateTimeField(null=True, blank=True)
+    last_push_error = models.CharField(max_length=500, blank=True, default="", db_default="")
+    schedule_pending = models.BooleanField(default=False, db_default=False)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

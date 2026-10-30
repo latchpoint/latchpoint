@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from datetime import timedelta
 
+from django.db import transaction
 from django.db.models import Exists, F, OuterRef, Q
 from django.utils import timezone
 
@@ -172,7 +173,19 @@ def push_pending_door_codes() -> int:
             safe_reason = sanitize_push_error_for_storage(failures[0][1])
             code.push_state = DoorCode.PushState.FAILED
             code.last_push_error = (f"Push gave up after {code.push_attempt_count} attempts: {safe_reason}")[:500]
-            code.save(update_fields=["push_state", "last_push_error", "updated_at"])
+            with transaction.atomic():
+                code.save(update_fields=["push_state", "last_push_error", "updated_at"])
+                # Every lock of an active code still waiting on a push gave up with
+                # the code, keeping its own error and count, so nothing starts
+                # retrying on its own once the scheduler reads per-lock state
+                # (issue #126). An inactive code is never pushed, so its locks
+                # aren't waiting on one.
+                DoorCodeLockAssignment.objects.filter(
+                    door_code=code,
+                    door_code__is_active=True,
+                    push_state=DoorCode.PushState.PENDING,
+                    slot_index__isnull=True,
+                ).update(push_state=DoorCode.PushState.FAILED)
             DoorCodeEvent.objects.create(
                 door_code=code,
                 user=code.user,

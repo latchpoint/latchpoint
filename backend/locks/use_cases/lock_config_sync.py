@@ -1243,6 +1243,13 @@ def _sync_lock_config_atomically(
                 if code.source != DoorCode.Source.SYNCED:
                     code.source = DoorCode.Source.SYNCED
                     updated_fields.append("source")
+                    # The lock holds it in this tracked slot now, so per lock it's pushed (issue #126).
+                    DoorCodeLockAssignment.objects.filter(id=existing.id).update(
+                        push_state=DoorCode.PushState.PUSHED,
+                        push_attempt_count=0,
+                        last_push_error="",
+                        schedule_pending=False,
+                    )
 
                 # A manual code only gets this far when the slot holds its PIN or
                 # a masked one, so its own PIN stays either way.
@@ -1371,6 +1378,8 @@ def _sync_lock_config_atomically(
                         door_code=code,
                         lock_entity_id=lock_entity_id,
                         slot_index=slot_index,
+                        # Read off the lock like the code's own push_state (issue #126).
+                        push_state=DoorCode.PushState.PUSHED,
                     )
             except IntegrityError:
                 # Race: another sync created the assignment first. Update the winner's code
@@ -1496,7 +1505,10 @@ def _sync_lock_config_atomically(
                 "deactivating and releasing the slot" if was_active else "releasing the slot",
             )
             assignment.slot_index = None
-            assignment.save(update_fields=["slot_index", "updated_at"])
+            # Nothing left on this lock, so per lock it's pending, attempts kept (issue #126).
+            assignment.push_state = DoorCode.PushState.PENDING
+            assignment.schedule_pending = False
+            assignment.save(update_fields=["slot_index", "push_state", "schedule_pending", "updated_at"])
             if was_active:
                 code.is_active = False
                 code.save(update_fields=["is_active", "updated_at"])
