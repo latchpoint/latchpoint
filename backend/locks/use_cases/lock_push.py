@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING
 
 from django.conf import settings
 from django.db import IntegrityError, connection, transaction
-from django.db.models import F
+from django.db.models import Exists, F, OuterRef, Q, Subquery
 from django.utils import timezone as django_timezone
 from integrations_zwavejs.manager import (
     ZwavejsClientUnavailable,
@@ -34,7 +34,7 @@ from integrations_zwavejs.manager import (
 from alarm.crypto import InvalidToken, SettingsEncryption
 from config.domain_exceptions import ConflictError, GatewayError, ValidationError
 from locks.models import DoorCode, DoorCodeEvent, DoorCodeLockAssignment
-from locks.use_cases.code_lifecycle import belongs_on_lock
+from locks.use_cases.code_lifecycle import belongs_on_lock, expired_q, is_started, started_q
 from locks.use_cases.lock_config_sync import (
     CC_SCHEDULE_ENTRY_LOCK,
     CC_USER_CODE,
@@ -1295,51 +1295,348 @@ def clear_failures_message(failures: list[ClearFailure]) -> str:
     )
 
 
-def settle_clear_failure_state(*, door_code: DoorCode) -> bool:
-    """Keep a code with unresolved clear failures from showing ``pushed``. Returns whether it has any.
+def _push_max_attempts() -> int:
+    """``door_codes.push_max_attempts``, read through the scheduler's helper so a patch of it applies here too."""
+    from locks.tasks import _get_push_max_attempts
 
-    The code goes ``pending`` so the scheduler retries the clears (a terminal
-    ``failed`` stays), and ``last_push_error`` leads with the slots that may
-    still hold the PIN, keeping any other error after them.
+    return _get_push_max_attempts()
+
+
+def _lock_needs_push(assignment: DoorCodeLockAssignment) -> bool:
+    """Whether a lock still needs a ``set`` (no slot) or its schedule (``schedule_pending``), whatever its state."""
+    return assignment.slot_index is None or assignment.schedule_pending
+
+
+def _lock_error_part(assignment: DoorCodeLockAssignment, *, max_attempts: int) -> str:
+    """``"lock.x: <error>"`` for the code-level error, or ``""`` for a lock with nothing to say."""
+    error = assignment.last_push_error or ""
+    gave_up = (
+        assignment.push_state == DoorCode.PushState.FAILED
+        and max_attempts > 0
+        and (assignment.push_attempt_count or 0) >= max_attempts
+    )
+    if gave_up:
+        # The cap can fail a lock with no error of its own (a busy lock, PushSuperseded).
+        prefix = f"Push gave up after {assignment.push_attempt_count} attempts"
+        error = f"{prefix}: {error}" if error else prefix
+    if not error:
+        return ""
+    return f"{assignment.lock_entity_id}: {error}"
+
+
+def _derive_push_state(*, code: DoorCode, unrecorded_failures: list[ClearFailure]) -> tuple[str, str, bool]:
+    """The rollup :func:`refresh_push_state` writes, as ``(push_state, last_push_error, reset_clear_count)``."""
+    pending, pushed, failed = DoorCode.PushState.PENDING, DoorCode.PushState.PUSHED, DoorCode.PushState.FAILED
+    failures = unresolved_clear_failures(door_code=code)
+    recorded = {(f.lock_entity_id, f.slot_index) for f in failures}
+    extra = [f for f in unrecorded_failures if (f.lock_entity_id, f.slot_index) not in recorded]
+    assignments = list(DoorCodeLockAssignment.objects.filter(door_code=code).order_by("lock_entity_id"))
+    max_attempts = _push_max_attempts()
+    clear_parts = [clear_failures_message([*failures, *extra])] if failures or extra else []
+
+    # 1. Nothing on any lock and nothing left to clear (issue #142, PR #157).
+    if not assignments and not failures:
+        return (pending if code.is_active else pushed), "", True
+
+    # The clear-retry cap stays at code level and counts clear retries only (issue #126).
+    def clears_capped(outstanding: bool) -> bool:
+        return outstanding and max_attempts > 0 and (code.push_attempt_count or 0) >= max_attempts
+
+    lock_parts: list[str] = []
+    if not code.is_active or not is_started(code):
+        # 2. Off its locks: inactive, or active before its start (issues #138, #145).
+        if code.is_active:
+            to_clear = _slots_that_may_hold_pin(door_code=code, failures=failures)
+        else:
+            to_clear = inactive_slots_to_clear(door_code=code, failures=failures)
+        outstanding = bool(failures or extra or to_clear)
+        state = pending if outstanding or code.is_active else pushed
+        capped = clears_capped(outstanding)
+    else:
+        # 3. Active and started: the locks decide, pending-removal ones aside (issue #126).
+        removing = {f.lock_entity_id for f in failures if f.removing}
+        considered = [a for a in assignments if a.lock_entity_id not in removing]
+        outstanding = bool(failures or extra)
+        capped = clears_capped(outstanding)
+        if any(a.push_state == failed for a in considered):
+            # Needs a human, even while another lock is still being retried.
+            state = failed
+        elif outstanding or any(a.push_state != pushed or _lock_needs_push(a) for a in considered):
+            # A clear failure never lets the code show pushed (issue #139).
+            state = pending
+        else:
+            state = pushed
+        lock_parts = [
+            part
+            for a in considered
+            if a.push_state != pushed or _lock_needs_push(a)
+            if (part := _lock_error_part(a, max_attempts=max_attempts))
+        ]
+    if capped:
+        state = failed
+        clear_parts.append(f"Push gave up after {code.push_attempt_count} attempts")
+    error = sanitize_push_error_for_storage("; ".join([*clear_parts, *lock_parts]))[:500]
+    return state, error, not outstanding
+
+
+def refresh_push_state(
+    *,
+    door_code: DoorCode,
+    unrecorded_failures: list[ClearFailure] | tuple[()] = (),
+    only_if_active: bool | None = None,
+) -> str | None:
+    """Work out the code-level ``push_state`` and ``last_push_error`` from its locks and clears, and save them.
+
+    The one writer of both (issues #126, #123). In order:
+
+    1. No assignments and no unresolved clear failures: an active code is
+       ``pending`` (like a new code without locks), an inactive one ``pushed``
+       (PR #157).
+    2. Inactive, or active before its start: ``pending`` while a clear failure,
+       a slot :func:`inactive_slots_to_clear` finds or one
+       :func:`slots_to_withdraw` finds is outstanding, else ``pushed`` when
+       inactive and ``pending`` (scheduled) when active.
+    3. Active and started: ignoring locks being dropped, ``failed`` when any lock
+       is ``failed``, else ``pending`` when any lock still needs its ``set`` or
+       schedule or a clear failure is outstanding, else ``pushed``.
+
+    In 2 and 3 the code-level clear-retry count at or over
+    ``door_codes.push_max_attempts`` with a clear outstanding makes it
+    ``failed`` (PRs #144, #167, #183). That count goes back to 0 once nothing is
+    left to clear. ``last_push_error`` leads with the slots that may still hold
+    the PIN, then has ``"lock.x: <error>"`` for each lock in 3 that isn't
+    pushed. ``unrecorded_failures`` are clears still outstanding that left no
+    event (a lock still busy, a readback with no answer) and only go in the error.
+
+    Takes the code row first (``select_for_update``), so it's never
+    interleaved with another rollup or with a writer of the code and its
+    assignments. ``only_if_active`` leaves the row alone unless ``is_active``
+    still matches it (PR #167 review). Sets the fields on ``door_code`` too, and
+    returns the state, or ``None`` when nothing was looked at (gone, or
+    ``only_if_active`` didn't match).
     """
+    with transaction.atomic():
+        code = DoorCode.objects.select_for_update().filter(id=door_code.id).first()
+        if code is None or (only_if_active is not None and code.is_active != only_if_active):
+            return None
+        state, error, reset_count = _derive_push_state(code=code, unrecorded_failures=list(unrecorded_failures))
+        changes: dict[str, object] = {}
+        if code.push_state != state:
+            changes["push_state"] = state
+        if code.last_push_error != error:
+            changes["last_push_error"] = error
+        if reset_count and code.push_attempt_count:
+            changes["push_attempt_count"] = 0
+        if changes:
+            changes["updated_at"] = django_timezone.now()
+            DoorCode.objects.filter(id=code.id).update(**changes)
+    door_code.push_state = state
+    door_code.last_push_error = error
+    door_code.push_attempt_count = changes.get("push_attempt_count", code.push_attempt_count)
+    return state
+
+
+def _lock_code_row(door_code_id: int) -> DoorCode | None:
+    """Take the code row inside the caller's transaction, before any of its assignment rows (PR #195 review)."""
+    return DoorCode.objects.select_for_update().filter(id=door_code_id).first()
+
+
+def _locks_being_removed(*, door_code: DoorCode) -> set[str]:
+    """Locks the code is being dropped from whose clear hasn't worked yet (issue #151)."""
+    return {f.lock_entity_id for f in unresolved_clear_failures(door_code=door_code) if f.removing}
+
+
+def locks_to_push(
+    *,
+    door_code: DoorCode,
+    assignments: list[DoorCodeLockAssignment] | None = None,
+    include_failed: bool = False,
+    only_unassigned: bool = True,
+) -> list[DoorCodeLockAssignment]:
+    """The locks a push of ``door_code`` sends something to, in ``assignments`` order (default by pk).
+
+    With ``only_unassigned`` (the default) only locks that need it: no slot,
+    or a slot whose schedule is pending. Never a lock being dropped (issue
+    #151), never a slot that still has a clear outstanding (it may hold an
+    older PIN, so a schedule-only resend there would give that PIN the new
+    window, PR #196 review), and a ``failed`` lock only with ``include_failed``.
+    """
+    if assignments is None:
+        assignments = list(DoorCodeLockAssignment.objects.filter(door_code=door_code).order_by("pk"))
     failures = unresolved_clear_failures(door_code=door_code)
-    if not failures:
-        return False
-    door_code.refresh_from_db(fields=["push_state", "last_push_error"])
-    other_errors = [
-        part
-        for part in (door_code.last_push_error or "").split("; ")
-        if part and not part.startswith("Couldn't clear slot")
+    removing = {f.lock_entity_id for f in failures if f.removing}
+    clearing = {(f.lock_entity_id, f.slot_index) for f in failures}
+    return [
+        a
+        for a in assignments
+        if a.lock_entity_id not in removing
+        and (not only_unassigned or _lock_needs_push(a))
+        and (include_failed or a.push_state != DoorCode.PushState.FAILED)
+        and not (a.slot_index is not None and (a.lock_entity_id, int(a.slot_index)) in clearing)
     ]
-    state = door_code.push_state if door_code.push_state == DoorCode.PushState.FAILED else DoorCode.PushState.PENDING
-    error = sanitize_push_error_for_storage("; ".join([clear_failures_message(failures), *other_errors]))[:500]
-    if (door_code.push_state, door_code.last_push_error) != (state, error):
-        door_code.push_state = state
-        door_code.last_push_error = error
-        door_code.save(update_fields=["push_state", "last_push_error", "updated_at"])
-    return True
 
 
-def mark_pushed_if_settled(*, door_code: DoorCode) -> bool:
-    """Mark an active code ``pushed`` when every lock holds a slot and no clear is outstanding.
+def being_removed_q() -> Exists:
+    """:func:`_locks_being_removed` as a filter on ``DoorCodeLockAssignment`` rows (PR #196 review).
 
-    Nothing else recomputes ``push_state`` when no lock needed pushing, so a
-    failure left by a dropped lock or a since-fixed clear would otherwise stick.
+    The lock has a ``clear_failed`` with ``removing`` that no later
+    ``clear_failed`` or ``clear_resolved`` for the same lock and slot replaced,
+    the same newest-event-wins rule :func:`unresolved_clear_failures` uses.
     """
-    assignments = DoorCodeLockAssignment.objects.filter(door_code=door_code)
-    if (
-        not assignments.exists()
-        or assignments.filter(slot_index__isnull=True).exists()
-        or unresolved_clear_failures(door_code=door_code)
-    ):
-        return False
-    door_code.refresh_from_db(fields=["push_state", "last_push_error", "push_attempt_count"])
-    if door_code.push_state != DoorCode.PushState.PUSHED or door_code.last_push_error:
-        door_code.push_state = DoorCode.PushState.PUSHED
-        door_code.last_push_error = ""
-        door_code.push_attempt_count = 0
-        door_code.save(update_fields=["push_state", "last_push_error", "push_attempt_count", "updated_at"])
-    return True
+    replaced = DoorCodeEvent.objects.filter(
+        door_code=OuterRef("door_code"),
+        lock_entity_id=OuterRef("lock_entity_id"),
+        metadata__action__in=[_CLEAR_FAILED_ACTION, _CLEAR_RESOLVED_ACTION],
+        metadata__slot_index=OuterRef("metadata__slot_index"),
+        id__gt=OuterRef("id"),
+    )
+    return Exists(
+        DoorCodeEvent.objects.filter(
+            door_code=OuterRef("door_code_id"),
+            lock_entity_id=OuterRef("lock_entity_id"),
+            metadata__action=_CLEAR_FAILED_ACTION,
+            metadata__removing=True,
+        ).exclude(Exists(replaced))
+    )
+
+
+def normalize_assignment_push_state() -> int:
+    """Repair per-lock push state that drifted from its slot. Run at the start of each scheduler tick.
+
+    The invariants are that ``pushed`` means a slot and no ``schedule_pending``,
+    a slot that isn't ``pushed`` has ``schedule_pending``, and ``pending``
+    without a slot needs a ``set``. A rollback to code that doesn't write the
+    per-lock columns, then a roll forward, breaks them (PR #195 review), so:
+
+    - ``failed`` on an active code whose own state isn't ``failed`` is stale
+      (old code pushed or reset it since), unless the code is being dropped
+      from that lock, which the rollup ignores. It's re-derived from the code, back
+      to ``pending`` with the code's attempt count, then the rules below. On a
+      code before its start that's also how a lock the 0010 backfill marked
+      ``failed`` goes back to waiting for the start, while the code is
+      ``pending`` (scheduled)
+    - a slot that isn't ``pushed`` without ``schedule_pending`` is ``pushed``
+    - no slot with ``pushed`` or ``schedule_pending`` is ``pending`` without it
+
+    Each code with a drifted lock is repaired in its own transaction, taking
+    the code row before its assignments like every other writer of both, then
+    refreshed. Returns how many locks it changed.
+    """
+    assignments = DoorCodeLockAssignment.objects
+    pending, pushed, failed = DoorCode.PushState.PENDING, DoorCode.PushState.PUSHED, DoorCode.PushState.FAILED
+    rules = [
+        (
+            # Not a lock being dropped: the rollup ignores it, so its code can be
+            # non-failed with the lock failed for real (PR #196 review).
+            Q(push_state=failed, door_code__is_active=True) & ~Q(door_code__push_state=failed) & ~being_removed_q(),
+            {
+                "push_state": pending,
+                "push_attempt_count": Subquery(
+                    DoorCode.objects.filter(id=OuterRef("door_code_id")).values("push_attempt_count")[:1]
+                ),
+            },
+        ),
+        (
+            Q(slot_index__isnull=False, schedule_pending=False) & ~Q(push_state=pushed),
+            {"push_state": pushed, "push_attempt_count": 0, "last_push_error": ""},
+        ),
+        (
+            Q(slot_index__isnull=True) & (Q(push_state=pushed) | Q(schedule_pending=True)),
+            {"push_state": pending, "schedule_pending": False},
+        ),
+    ]
+    drifted = Q()
+    for condition, _fields in rules:
+        drifted |= condition
+    changed = 0
+    for code_id in sorted(set(assignments.filter(drifted).values_list("door_code_id", flat=True))):
+        with transaction.atomic():
+            code = _lock_code_row(code_id)
+            if code is None:
+                continue
+            # In order, each against what the one before left, and the condition
+            # again so a row that changed since it was read is left alone.
+            for condition, fields in rules:
+                changed += assignments.filter(condition, door_code_id=code_id).update(**fields)
+            refresh_push_state(door_code=code)
+    if changed:
+        logger.info("Repaired the push state of %d door code lock(s) that drifted from their slots", changed)
+    return changed
+
+
+def sweep_push_cap(*, now: datetime, max_attempts: int) -> int:
+    """Fail every lock still waiting on a push whose own attempt count reached the cap (issue #126).
+
+    Runs every tick, whatever was tried, since a lock can be ``pending`` with
+    its count already at or over the cap without being tried: counts aren't
+    reset by another lock's success, ``door_codes.push_max_attempts`` can be
+    lowered, and the push arm only picks locks under it (PR #195 review). Only
+    for codes the scheduler pushes, ie active, started and not expired at the
+    tick's ``now``, so it errs toward ``pending``. A lock keeps its own error
+    and count and gets a ``max_attempts_exceeded`` event, locks being dropped
+    are left alone, and the code is refreshed. One transaction per code, taking
+    the code row first like :func:`_delete_door_code_locked` does, so the two
+    can't deadlock. Returns how many locks it failed.
+    """
+    if max_attempts <= 0:
+        return 0
+    pushable = DoorCode.objects.filter(is_active=True).filter(started_q(now) & ~expired_q(now))
+    over_cap = DoorCodeLockAssignment.objects.filter(
+        door_code__in=pushable, push_state=DoorCode.PushState.PENDING, push_attempt_count__gte=max_attempts
+    ).filter(Q(slot_index__isnull=True) | Q(schedule_pending=True))
+    swept = 0
+    for code_id in sorted(set(over_cap.values_list("door_code_id", flat=True))):
+        with transaction.atomic():
+            code = _lock_code_row(code_id)
+            if code is None:
+                continue
+            rows = list(
+                over_cap.filter(door_code_id=code_id)
+                .exclude(lock_entity_id__in=_locks_being_removed(door_code=code))
+                .values_list("id", "lock_entity_id", "push_attempt_count", "last_push_error")
+            )
+            if not rows:
+                continue
+            swept += over_cap.filter(id__in=[row[0] for row in rows]).update(push_state=DoorCode.PushState.FAILED)
+            for _row_id, lock_entity_id, attempts, error in rows:
+                DoorCodeEvent.objects.create(
+                    door_code=code,
+                    user=code.user,
+                    lock_entity_id=lock_entity_id,
+                    event_type=DoorCodeEvent.EventType.CODE_FAILED,
+                    metadata={
+                        "action": "push",
+                        "reason": "max_attempts_exceeded",
+                        "attempts": attempts,
+                        "last_error": sanitize_push_error_for_storage(error)[:200],
+                    },
+                )
+            refresh_push_state(door_code=code)
+    return swept
+
+
+def rearm_failed_locks(*, door_code: DoorCode, max_attempts: int | None = None) -> int:
+    """Put the code's ``failed`` locks back to ``pending`` with no attempts or error, then refresh it.
+
+    With ``max_attempts``, ``pending`` locks at or over it go back to 0 too, so
+    Retry doesn't leave one the cap is about to fail (PR #195 review). A lock
+    whose slot was kept for a terminal schedule failure keeps its slot and
+    ``schedule_pending``, so only the schedule goes out again. Code row first.
+    Returns how many locks it changed.
+    """
+    condition = Q(push_state=DoorCode.PushState.FAILED)
+    if max_attempts is not None and max_attempts > 0:
+        condition |= Q(push_state=DoorCode.PushState.PENDING, push_attempt_count__gte=max_attempts)
+    with transaction.atomic():
+        if _lock_code_row(door_code.id) is None:
+            return 0
+        changed = (
+            DoorCodeLockAssignment.objects.filter(door_code=door_code)
+            .filter(condition)
+            .update(push_state=DoorCode.PushState.PENDING, push_attempt_count=0, last_push_error="")
+        )
+        refresh_push_state(door_code=door_code)
+    return changed
 
 
 def _read_back_failed_slot(
@@ -2272,56 +2569,53 @@ def sanitize_push_error_for_storage(message: str | None) -> str:
     return _PIN_LIKE_DIGIT_RUN.sub("****", str(message))
 
 
-def _record_push_failure(
+def _stamp_push_attempt(*, door_code: DoorCode, at: datetime) -> None:
+    """Take the code row and stamp its ``last_push_attempt_at``; the caller holds a transaction.
+
+    Kept on every push attempt, since ``enforce_door_code_validity``'s
+    ``just_started`` pass reads it (PR #183).
+    """
+    _lock_code_row(door_code.id)
+    DoorCode.objects.filter(id=door_code.id).update(last_push_attempt_at=at, updated_at=at)
+    door_code.last_push_attempt_at = at
+
+
+def _record_lock_push_failure(
     *,
     door_code: DoorCode,
+    lock_entity_id: str,
     error_message: str,
     terminal: bool,
     event_metadata: dict[str, object] | None = None,
-    lock_entity_id: str = "",
 ) -> None:
-    """Stamp last_push_* + bump push_attempt_count; flip to failed when terminal.
+    """Record a push failure on this lock, then refresh the code (issue #126).
 
-    ``event_metadata`` is added to the ``code_failed`` event a terminal failure
-    records, and ``lock_entity_id`` is set on it. With ``lock_entity_id`` the
-    failure is also written to that lock's assignment in the same transaction
-    when it has no slot: a transient one leaves it ``pending`` with one more
-    attempt, a terminal one makes it ``failed`` (issue #126). Nothing reads
-    those yet.
+    A transient failure leaves the lock ``pending`` and a terminal one makes it
+    ``failed``. Either way the attempt is counted on the lock (the code-level
+    count only counts clear retries now, and PR #192 counts a terminal
+    ``InvalidPin``), and it gets the error and the attempt time. Only a lock that still needs a
+    push is written: no slot, or a slot whose schedule is pending (issue #123),
+    which it keeps. A pushed lock is left alone (the node lookup records its
+    failure before the push checks for a slot). The code-level
+    ``last_push_attempt_at`` is stamped, the code row first and the code
+    refreshed in the same transaction, so a reader never sees the lock
+    ``failed`` without the code's rollup. A terminal failure adds a
+    ``code_failed`` event with the lock in ``lock_entity_id`` and
+    ``event_metadata``.
     """
     safe_message = sanitize_push_error_for_storage(error_message)
-    door_code.last_push_attempt_at = django_timezone.now()
-    door_code.last_push_error = safe_message[:500]
-    door_code.push_attempt_count = (door_code.push_attempt_count or 0) + 1
-    if terminal:
-        door_code.push_state = DoorCode.PushState.FAILED
-    else:
-        door_code.push_state = DoorCode.PushState.PENDING
+    attempted_at = django_timezone.now()
     with transaction.atomic():
-        door_code.save(
-            update_fields=[
-                "last_push_attempt_at",
-                "last_push_error",
-                "push_attempt_count",
-                "push_state",
-                "updated_at",
-            ]
+        _stamp_push_attempt(door_code=door_code, at=attempted_at)
+        DoorCodeLockAssignment.objects.filter(door_code=door_code, lock_entity_id=lock_entity_id).filter(
+            Q(slot_index__isnull=True) | Q(schedule_pending=True)
+        ).update(
+            push_state=DoorCode.PushState.FAILED if terminal else DoorCode.PushState.PENDING,
+            push_attempt_count=F("push_attempt_count") + 1,
+            last_push_error=safe_message[:500],
+            last_push_attempt_at=attempted_at,
         )
-        if lock_entity_id:
-            lock_fields: dict[str, object] = (
-                {"push_state": DoorCode.PushState.FAILED}
-                if terminal
-                else {"push_state": DoorCode.PushState.PENDING, "push_attempt_count": F("push_attempt_count") + 1}
-            )
-            # A lock that holds a slot stays pushed. The node lookup records its
-            # failure before the push checks for one, and nothing else is sent then.
-            DoorCodeLockAssignment.objects.filter(
-                door_code=door_code, lock_entity_id=lock_entity_id, slot_index__isnull=True
-            ).update(
-                **lock_fields,
-                last_push_error=door_code.last_push_error,
-                last_push_attempt_at=door_code.last_push_attempt_at,
-            )
+        refresh_push_state(door_code=door_code)
 
     if terminal:
         DoorCodeEvent.objects.create(
@@ -2382,7 +2676,7 @@ def _fail_slot_recorded_for_another_code(
         f"Slot {slot_index} on {lock_entity_id} was recorded for {holder} during the push. "
         f"The lock may now hold this PIN in slot {slot_index} in place of {in_place_of}. {next_step}"
     )
-    _record_push_failure(
+    _record_lock_push_failure(
         door_code=door_code,
         error_message=message,
         terminal=True,
@@ -2452,7 +2746,9 @@ def push_door_code_to_lock(
         # first; retries will just rediscover the same problem. Record + flip the
         # row to FAILED so the UI surfaces last_push_error instead of stalling on
         # "pending sync" forever.
-        _record_push_failure(door_code=door_code, error_message=str(exc), terminal=True, lock_entity_id=lock_entity_id)
+        _record_lock_push_failure(
+            door_code=door_code, error_message=str(exc), terminal=True, lock_entity_id=lock_entity_id
+        )
         raise LockPushFailed(str(exc)) from exc
 
     lock_key = f"lock_sync:{lock_entity_id}"
@@ -2471,7 +2767,29 @@ def push_door_code_to_lock(
         if not belongs_on_lock(door_code):
             # Its start_at moved into the future or it expired while the push waited (issue #145).
             raise PushSuperseded("Door code isn't valid right now (not started or expired); nothing was pushed.")
+        if lock_entity_id in _locks_being_removed(door_code=door_code):
+            # Being dropped from this lock while its clear keeps failing (issue #151).
+            raise PushSuperseded("Door code is being removed from this lock; nothing was pushed.")
         if assignment.slot_index is not None:
+            if assignment.schedule_pending:
+                if _unresolved_clear_failure(
+                    door_code=door_code, lock_entity_id=lock_entity_id, slot_index=int(assignment.slot_index)
+                ):
+                    # A PIN change's clear of this slot failed, so it may still hold
+                    # the old PIN. Sending the schedule would give that PIN the new
+                    # window. The clear retry frees the slot and the code is pushed
+                    # there fresh (PR #196 review). Nothing sent, nothing counted.
+                    raise LockUnreachable("This slot still has a clear outstanding; the schedule waits for it.")
+                # The PIN is in the slot already, only its schedule is missing (issue #123).
+                return _push_pending_schedule(
+                    door_code=door_code,
+                    lock_entity_id=lock_entity_id,
+                    node_id=node_id,
+                    slot_index=int(assignment.slot_index),
+                    zwavejs=zwavejs,
+                    actor_user=actor_user,
+                    timeout_seconds=timeout_seconds,
+                )
             logger.info(
                 "Door code id=%d already holds slot %d on %s; not pushing it again",
                 door_code.id,
@@ -2488,7 +2806,7 @@ def push_door_code_to_lock(
             # and nothing goes out, so a bad window never leaves an unscheduled PIN
             # on the lock (issue #123). Checked here, with the lock held and the
             # code read again, so a stale copy can't mark a fixed code failed.
-            _record_push_failure(
+            _record_lock_push_failure(
                 door_code=door_code, error_message=str(exc), terminal=True, lock_entity_id=lock_entity_id
             )
             raise
@@ -2521,26 +2839,26 @@ def push_door_code_to_lock(
                     claimed_slots=claimed_slots,
                 )
         except (ZwavejsNotConfigured, ZwavejsClientUnavailable, ZwavejsCommandValidationError) as exc:
-            _record_push_failure(
+            _record_lock_push_failure(
                 door_code=door_code, error_message=str(exc), terminal=True, lock_entity_id=lock_entity_id
             )
             raise LockPushFailed(str(exc)) from exc
         except LockSlotsFull as exc:
             # Counted like any transient failure, so a lock with nothing Available
             # ends up failed at the attempt cap instead of retried forever.
-            _record_push_failure(
+            _record_lock_push_failure(
                 door_code=door_code, error_message=str(exc), terminal=False, lock_entity_id=lock_entity_id
             )
             raise
         except LockRejectedCode as exc:
-            _record_push_failure(
+            _record_lock_push_failure(
                 door_code=door_code, error_message=str(exc), terminal=True, lock_entity_id=lock_entity_id
             )
             raise
         except LockPushFailed:
             raise
         except GatewayError as exc:
-            _record_push_failure(
+            _record_lock_push_failure(
                 door_code=door_code,
                 error_message=f"{exc.__class__.__name__}: {exc}",
                 terminal=False,
@@ -2599,17 +2917,11 @@ def push_door_code_to_lock(
                     timeout_seconds=timeout_seconds,
                 )
                 slot_accepted = True
-            weekdays_pushed = _push_daily_repeating_schedule(
-                zwavejs=zwavejs,
-                node_id=node_id,
-                slot_index=slot_index,
-                door_code=door_code,
-                timeout_seconds=timeout_seconds,
-            )
+            # The schedule goes out once the slot is on record (issue #123), below.
         except (ZwavejsNotConfigured, ZwavejsClientUnavailable, ZwavejsCommandValidationError) as exc:
             if set_returned:
                 # The PIN may be in the slot, so keep it on record like a transient
-                # failure does, or nothing would clear it on a delete (issue #123).
+                # failure does, or nothing would clear it on a delete (PR #192).
                 # Tagged slot_verified only once a readback accepted the slot, so a
                 # masked readback later counts as ours only then. Never
                 # slot_available here, since what the readback saw before the
@@ -2622,7 +2934,7 @@ def push_door_code_to_lock(
                     pin=pin,
                     slot_verified=slot_accepted,
                 )
-            _record_push_failure(
+            _record_lock_push_failure(
                 door_code=door_code, error_message=str(exc), terminal=True, lock_entity_id=lock_entity_id
             )
             raise LockPushFailed(str(exc)) from exc
@@ -2645,7 +2957,7 @@ def push_door_code_to_lock(
                     slot_index=slot_index,
                     timeout_seconds=timeout_seconds,
                 )
-            _record_push_failure(
+            _record_lock_push_failure(
                 door_code=door_code, error_message=str(exc), terminal=True, lock_entity_id=lock_entity_id
             )
             raise
@@ -2656,8 +2968,9 @@ def push_door_code_to_lock(
                 _record_slot_read_back_empty(door_code=door_code, lock_entity_id=lock_entity_id, slot_index=slot_index)
             if pin_sent_to_slot:
                 # Tagged like the terminal branch above: only once a readback in
-                # this push accepted the slot (a schedule timeout, or an adopted slot).
-                # Otherwise the set went into a slot that was Available when it was
+                # this push accepted the slot (an adopted slot). Since the schedule
+                # moved after the slot write that can't happen here any more, but
+                # the rule stands. Otherwise the set went into a slot that was Available when it was
                 # picked (enumerated, or a resend to a slot_available attempt), so
                 # it's slot_available unless a readback answered empty (issue #128).
                 _record_unconfirmed_slot_attempt(
@@ -2671,15 +2984,18 @@ def push_door_code_to_lock(
                     and not adopted_existing_slot
                     and not (isinstance(exc, LockCodeUnverified) and exc.read_back_empty),
                 )
-            _record_push_failure(
+            _record_lock_push_failure(
                 door_code=door_code, error_message=error_message, terminal=False, lock_entity_id=lock_entity_id
             )
             raise LockUnreachable("Lock did not accept the code in time; will retry.") from exc
 
-        # Success — claim the slot and stamp pushed state. Resetting the attempt
-        # counter is important: the cap is on *consecutive* failures, so a single
-        # successful push must zero the meter.
-        schedule_applied = bool(weekdays_pushed)
+        # Step 1: the PIN is confirmed, so claim the slot. Resetting the lock's
+        # attempt counter is important: the cap is on *consecutive* failures, so
+        # a single successful push must zero the meter. A code with a schedule
+        # keeps the lock pending with schedule_pending until step 2 lands it, so
+        # a schedule that fails (or a process that dies) after this still has the
+        # slot on record and the scheduler sends only the schedule (issue #123).
+        has_schedule = bool(door_code.days_of_week)
         # The PIN is in the slot now, so record it as an unconfirmed attempt first.
         # In autocommit (the only way a push runs, see _check_no_outer_transaction)
         # it commits on its own, so if the block below rolls back (the process dies,
@@ -2696,41 +3012,24 @@ def push_door_code_to_lock(
             pin=pin,
             slot_verified=True,
         )
-        before_stamp = {
-            name: getattr(door_code, name)
-            for name in ("push_state", "last_push_attempt_at", "last_push_error", "push_attempt_count", "updated_at")
-        }
+        before_stamp = _snapshot_push_fields(door_code)
         try:
-            # One transaction for the slot, the pushed stamp and its event (issue
-            # #130), so a process that dies between them can't leave the code
-            # pending with a slot, which the scheduler never retries. A savepoint
+            # One transaction for the slot, the lock's state, its event and the
+            # code's rollup (issue #130), so a process that dies between them
+            # can't leave the code pending with a slot nothing retries. A savepoint
             # inside an outer transaction, so a unique-constraint hit doesn't poison it.
             with transaction.atomic():
                 pushed_at = django_timezone.now()
                 # The code row before its assignment rows, the same order every
                 # other writer of both takes, so two of them can't deadlock.
-                door_code.push_state = DoorCode.PushState.PUSHED
-                door_code.last_push_attempt_at = pushed_at
-                door_code.last_push_error = ""
-                door_code.push_attempt_count = 0
-                door_code.save(
-                    update_fields=[
-                        "push_state",
-                        "last_push_attempt_at",
-                        "last_push_error",
-                        "push_attempt_count",
-                        "updated_at",
-                    ]
-                )
-                # The per-lock state goes with the slot (issue #126). The schedule
-                # is in the same step for now, so the lock is pushed outright.
+                _stamp_push_attempt(door_code=door_code, at=pushed_at)
                 DoorCodeLockAssignment.objects.filter(door_code=door_code, lock_entity_id=lock_entity_id).update(
                     slot_index=slot_index,
-                    push_state=DoorCode.PushState.PUSHED,
+                    push_state=DoorCode.PushState.PENDING if has_schedule else DoorCode.PushState.PUSHED,
                     push_attempt_count=0,
                     last_push_attempt_at=pushed_at,
                     last_push_error="",
-                    schedule_pending=False,
+                    schedule_pending=has_schedule,
                 )
                 DoorCodeEvent.objects.create(
                     door_code=door_code,
@@ -2740,46 +3039,211 @@ def push_door_code_to_lock(
                     metadata={
                         "action": "pushed",
                         "slot_index": slot_index,
-                        "schedule_applied": schedule_applied,
+                        "schedule_applied": False,
+                        **({"schedule_pending": True} if has_schedule else {}),
                         **({"adopted_existing_slot": True} if adopted_existing_slot else {}),
                         **({"resent_to_attempted_slot": True} if resend_to_attempted_slot else {}),
                     },
                 )
                 pending_marker.delete()
-        except IntegrityError as exc:
+                refresh_push_state(door_code=door_code)
+        except BaseException as exc:
+            # The block rolled back, so the fields it set on door_code didn't
+            # land either. Put them back to what they were before it, which a
+            # failure recorded next then counts on top of (PR #195 review).
+            _restore_push_fields(door_code, before_stamp)
+            if not isinstance(exc, IntegrityError):
+                raise
             # Another writer recorded this slot after we enumerated, so the lock
             # may now hold this PIN over that code's. Retrying would only park the
-            # PIN in a second slot, so fail terminally for the operator to check.
-            # The block rolled the pushed stamp back, so put the code's fields back
-            # to what they were before it, which the failure then counts on top of.
-            for name, value in before_stamp.items():
-                setattr(door_code, name, value)
+            # PIN in a second slot, so this lock fails terminally for the operator
+            # to check. The code's other locks carry on (issue #126).
             raise _fail_slot_recorded_for_another_code(
                 door_code=door_code, lock_entity_id=lock_entity_id, slot_index=slot_index
             ) from exc
 
-        timestamp = django_timezone.now()
-        try:
-            from alarm.dispatcher import notify_entities_changed
-
-            notify_entities_changed(
-                source="lock_push",
-                entity_ids=[lock_entity_id],
-                changed_at=timestamp,
+        weekdays_pushed: list[int] = []
+        if has_schedule:
+            weekdays_pushed = _push_schedule_to_slot(
+                door_code=door_code,
+                lock_entity_id=lock_entity_id,
+                node_id=node_id,
+                slot_index=slot_index,
+                zwavejs=zwavejs,
+                actor_user=actor_user,
+                timeout_seconds=timeout_seconds,
             )
-        except Exception:
-            logger.warning("Failed to notify dispatcher after push for %s", lock_entity_id, exc_info=True)
-
-        return PushResult(
-            lock_entity_id=lock_entity_id,
-            node_id=node_id,
-            slot_index=slot_index,
-            schedule_applied=schedule_applied,
-            weekdays_pushed=weekdays_pushed,
-            timestamp=timestamp,
+        return _pushed_result(
+            lock_entity_id=lock_entity_id, node_id=node_id, slot_index=slot_index, weekdays_pushed=weekdays_pushed
         )
     finally:
         _release_sync_lock(lock_key=lock_key, lock_id=lock_id)
+
+
+_PUSH_FIELDS = ("push_state", "last_push_attempt_at", "last_push_error", "push_attempt_count", "updated_at")
+
+
+def _snapshot_push_fields(door_code: DoorCode) -> dict[str, object]:
+    return {name: getattr(door_code, name) for name in _PUSH_FIELDS}
+
+
+def _restore_push_fields(door_code: DoorCode, snapshot: dict[str, object]) -> None:
+    for name, value in snapshot.items():
+        setattr(door_code, name, value)
+
+
+def _pushed_result(*, lock_entity_id: str, node_id: int, slot_index: int, weekdays_pushed: list[int]) -> PushResult:
+    """Tell the dispatcher the lock changed and build the push's result."""
+    timestamp = django_timezone.now()
+    try:
+        from alarm.dispatcher import notify_entities_changed
+
+        notify_entities_changed(
+            source="lock_push",
+            entity_ids=[lock_entity_id],
+            changed_at=timestamp,
+        )
+    except Exception:
+        logger.warning("Failed to notify dispatcher after push for %s", lock_entity_id, exc_info=True)
+
+    return PushResult(
+        lock_entity_id=lock_entity_id,
+        node_id=node_id,
+        slot_index=slot_index,
+        schedule_applied=bool(weekdays_pushed),
+        weekdays_pushed=weekdays_pushed,
+        timestamp=timestamp,
+    )
+
+
+def _push_schedule_to_slot(
+    *,
+    door_code: DoorCode,
+    lock_entity_id: str,
+    node_id: int,
+    slot_index: int,
+    zwavejs: ZwavejsGateway,
+    actor_user,
+    timeout_seconds: float,
+) -> list[int]:
+    """Step 2 of a push: send the CC 78 schedule into the slot step 1 recorded, then mark the lock pushed (issue #123).
+
+    The slot stays on record whatever happens, so a delete or deactivate still
+    clears it. A transient failure leaves the lock ``pending`` with
+    ``schedule_pending`` and one more attempt, and the scheduler sends only the
+    schedule next time. A terminal one (a Z-Wave JS config error, or a window
+    that ends before it starts) makes it ``failed`` with the slot kept and
+    ``schedule_pending`` still set, so Retry sends only the schedule too.
+    Success clears ``schedule_pending`` with a ``code_synced`` event
+    (``action=schedule_pushed``). Returns the CC 78 weekdays pushed.
+    """
+    try:
+        weekdays_pushed = _push_daily_repeating_schedule(
+            zwavejs=zwavejs,
+            node_id=node_id,
+            slot_index=slot_index,
+            door_code=door_code,
+            timeout_seconds=timeout_seconds,
+        )
+    except InvalidPin as exc:
+        _record_lock_push_failure(
+            door_code=door_code, lock_entity_id=lock_entity_id, error_message=str(exc), terminal=True
+        )
+        raise
+    except (ZwavejsNotConfigured, ZwavejsClientUnavailable, ZwavejsCommandValidationError) as exc:
+        _record_lock_push_failure(
+            door_code=door_code,
+            lock_entity_id=lock_entity_id,
+            error_message=f"Schedule not applied: {exc}",
+            terminal=True,
+            event_metadata={"slot_index": int(slot_index), "schedule_pending": True},
+        )
+        raise LockPushFailed(str(exc)) from exc
+    except GatewayError as exc:
+        _record_lock_push_failure(
+            door_code=door_code,
+            lock_entity_id=lock_entity_id,
+            error_message=f"Schedule not applied: {exc.__class__.__name__}: {exc}",
+            terminal=False,
+        )
+        raise LockUnreachable("Lock did not accept the schedule in time; will retry.") from exc
+
+    before_stamp = _snapshot_push_fields(door_code)
+    try:
+        with transaction.atomic():
+            pushed_at = django_timezone.now()
+            _stamp_push_attempt(door_code=door_code, at=pushed_at)
+            DoorCodeLockAssignment.objects.filter(
+                door_code=door_code, lock_entity_id=lock_entity_id, slot_index=slot_index
+            ).update(
+                push_state=DoorCode.PushState.PUSHED,
+                schedule_pending=False,
+                push_attempt_count=0,
+                last_push_attempt_at=pushed_at,
+                last_push_error="",
+            )
+            DoorCodeEvent.objects.create(
+                door_code=door_code,
+                user=actor_user or door_code.user,
+                lock_entity_id=lock_entity_id,
+                event_type=DoorCodeEvent.EventType.CODE_SYNCED,
+                metadata={
+                    "action": "schedule_pushed",
+                    "slot_index": int(slot_index),
+                    "schedule_applied": bool(weekdays_pushed),
+                    "weekdays": weekdays_pushed,
+                },
+            )
+            refresh_push_state(door_code=door_code)
+    except BaseException:
+        _restore_push_fields(door_code, before_stamp)
+        raise
+    return weekdays_pushed
+
+
+def _push_pending_schedule(
+    *,
+    door_code: DoorCode,
+    lock_entity_id: str,
+    node_id: int,
+    slot_index: int,
+    zwavejs: ZwavejsGateway,
+    actor_user,
+    timeout_seconds: float,
+) -> PushResult:
+    """Send only the schedule into a slot that already holds the PIN, no CC 99 ``set`` (issue #123).
+
+    For a lock left ``schedule_pending`` by a schedule that didn't land (or a
+    process that died) after its slot was recorded. The caller holds the lock
+    and has read the code again. A window that ends before it starts is
+    recorded as a terminal failure, the slot kept.
+    """
+    logger.info(
+        "Re-sending only the schedule for door code id=%d to %s (node=%d slot=%d)",
+        door_code.id,
+        lock_entity_id,
+        node_id,
+        slot_index,
+    )
+    try:
+        _validate_schedule_or_raise(door_code)
+    except InvalidPin as exc:
+        _record_lock_push_failure(
+            door_code=door_code, lock_entity_id=lock_entity_id, error_message=str(exc), terminal=True
+        )
+        raise
+    weekdays_pushed = _push_schedule_to_slot(
+        door_code=door_code,
+        lock_entity_id=lock_entity_id,
+        node_id=node_id,
+        slot_index=slot_index,
+        zwavejs=zwavejs,
+        actor_user=actor_user,
+        timeout_seconds=timeout_seconds,
+    )
+    return _pushed_result(
+        lock_entity_id=lock_entity_id, node_id=node_id, slot_index=slot_index, weekdays_pushed=weekdays_pushed
+    )
 
 
 def push_door_code_to_assigned_locks(
@@ -2789,33 +3253,31 @@ def push_door_code_to_assigned_locks(
     actor_user=None,
     timeout_seconds: float = 5.0,
     only_unassigned: bool = True,
+    include_failed: bool = False,
 ) -> tuple[list[PushResult], list[tuple[str, str]]]:
-    """Push ``door_code`` to every lock it is assigned to.
+    """Push ``door_code`` to the locks it is assigned to, then refresh its rollup.
 
     Returns ``(successes, failures)``. Failures is a list of ``(lock_entity_id, reason)``
-    tuples; transient failures leave the row at ``pending`` for the scheduler.
+    tuples; transient failures leave that lock ``pending`` for the scheduler.
 
-    ``only_unassigned=True`` (the default) skips assignments that already carry a
-    ``slot_index`` — used by the scheduler retry path to avoid re-pushing locks that
-    succeeded in a previous attempt.
+    ``only_unassigned=True`` (the default) only pushes the locks that still need
+    it: no slot yet, or a slot whose schedule is pending (issue #123). A lock
+    whose push failed terminally is ``failed`` and skipped unless
+    ``include_failed`` (Retry only), so one lock needing a human doesn't stop
+    the scheduler retrying the others (issue #126). A lock the code is being
+    dropped from is never pushed (issue #151).
 
-    ``push_state`` / ``last_push_error`` live on the shared DoorCode row, so each
-    lock's push overwrites the previous lock's. The final state is derived after
-    the loop instead: ``failed`` if any lock failed terminally (keeping that
-    error), else ``pending`` if any lock failed or is still without a slot, else
-    ``pushed``. One lock's success never hides another lock's failure.
+    Each lock's outcome goes on its own assignment and
+    :func:`refresh_push_state` works out the code's state from all of them, so
+    one lock's success never hides another lock's failure.
 
     An inactive code is never pushed: it returns ``([], [])`` without touching the
     locks or the row (issue #138). Neither is one before its ``start_at`` or from
     its ``end_at`` on (issue #145). ``enforce_door_code_validity`` pushes it once
     it starts and retires it once it expires.
     """
-    # Sorted in Python so the prefetch is kept and the push order is deterministic.
-    assignments = sorted(door_code.lock_assignments.all(), key=lambda assignment: assignment.pk)
     successes: list[PushResult] = []
     failures: list[tuple[str, str]] = []
-    terminal_error: str | None = None
-    pending_error: str | None = None
 
     door_code.refresh_from_db(
         fields=["is_active", "push_state", "last_push_attempt_at", "last_push_error", *_VALIDITY_FIELDS]
@@ -2826,10 +3288,14 @@ def push_door_code_to_assigned_locks(
     if not belongs_on_lock(door_code):
         logger.info("Not pushing door code id=%s outside its start_at/end_at", door_code.id)
         return successes, failures
-    for assignment in assignments:
-        if only_unassigned and assignment.slot_index is not None:
-            continue
-        attempt_marker = door_code.last_push_attempt_at
+    # Sorted in Python so the prefetch is kept and the push order is deterministic.
+    # It may be stale (the scheduler loaded it earlier), which is fine:
+    # push_door_code_to_lock reads the lock's assignment again once it holds the
+    # lock, so a lock an update already pushed or dropped isn't written twice (PR #157).
+    assignments = sorted(door_code.lock_assignments.all(), key=lambda assignment: assignment.pk)
+    for assignment in locks_to_push(
+        door_code=door_code, assignments=assignments, include_failed=include_failed, only_unassigned=only_unassigned
+    ):
         try:
             result = push_door_code_to_lock(
                 door_code=door_code,
@@ -2846,38 +3312,8 @@ def push_door_code_to_assigned_locks(
             return successes, failures
         except (LockUnreachable, LockSlotsFull, LockPushFailed, InvalidPin) as exc:
             failures.append((assignment.lock_entity_id, str(exc)))
-            door_code.refresh_from_db(fields=["push_state", "last_push_attempt_at", "last_push_error"])
-            # Capture what this lock's failure recorded before a later lock overwrites it.
-            # Some failures (a lock another sync holds) don't record anything.
-            recorded = door_code.last_push_attempt_at != attempt_marker
-            if recorded and door_code.push_state == DoorCode.PushState.FAILED:
-                terminal_error = terminal_error or door_code.last_push_error or str(exc)
-            else:
-                pending_error = pending_error or (door_code.last_push_error if recorded else "") or str(exc)
-        # Refresh push_state from DB — each push may have updated it.
-        door_code.refresh_from_db(fields=["push_state", "last_push_attempt_at", "last_push_error"])
 
-    if terminal_error is not None:
-        final_state, final_error = DoorCode.PushState.FAILED, terminal_error
-    elif not successes:
-        # Nothing succeeded and nothing failed terminally: the per-lock records stand.
-        settle_clear_failure_state(door_code=door_code)
-        return successes, failures
-    elif (
-        pending_error is not None
-        or door_code.lock_assignments.filter(slot_index__isnull=True).exists()
-        or unresolved_clear_failures(door_code=door_code)
-    ):
-        final_state, final_error = DoorCode.PushState.PENDING, pending_error or ""
-    else:
-        final_state, final_error = DoorCode.PushState.PUSHED, ""
-
-    if door_code.push_state != final_state or door_code.last_push_error != final_error:
-        door_code.push_state = final_state
-        door_code.last_push_error = final_error
-        door_code.save(update_fields=["push_state", "last_push_error", "updated_at"])
-    # A lock whose clear failed may still hold the PIN, so the code is never pushed then.
-    settle_clear_failure_state(door_code=door_code)
+    refresh_push_state(door_code=door_code)
     return successes, failures
 
 
@@ -2886,54 +3322,35 @@ def push_or_settle_after_clear_retry(
     door_code: DoorCode,
     zwavejs: ZwavejsGateway,
     actor_user=None,
+    include_failed: bool = False,
 ) -> tuple[list[PushResult], list[tuple[str, str]]]:
-    """After :func:`retry_failed_slot_clears`, push an active code to its locks without a slot.
+    """After :func:`retry_failed_slot_clears`, push an active code to the locks that need it.
 
     An inactive code is never pushed. Whatever it may still have on its locks
     with no clear failure on record (a tracked slot, or an unconfirmed attempt
     slot) is cleared first (:func:`clear_inactive_code_slots`, issue #158), and
-    those still outstanding come back as the failures. It's marked ``pushed``
-    once nothing is left to clear, the same as a deactivate, since its locks
-    then hold nothing.
+    those still outstanding come back as the failures. It's ``pushed`` once
+    nothing is left to clear, the same as a deactivate, since its locks then
+    hold nothing. ``include_failed`` goes to :func:`push_door_code_to_assigned_locks`.
     """
     door_code = DoorCode.objects.prefetch_related("lock_assignments").get(id=door_code.id)
     if not door_code.is_active:
         still_failing = clear_inactive_code_slots(door_code=door_code, zwavejs=zwavejs)
         failures = [(f.lock_entity_id, f.reason) for f in still_failing]
         # The clear may have waited behind an update that turned the code back on
-        # (PR #167 review). That update owns its state now, so nothing below may
-        # write over it, and the writes only land while the code is still off.
-        try:
-            door_code.refresh_from_db(fields=["is_active", "push_state", "last_push_error"])
-        except DoorCode.DoesNotExist:
-            return [], failures
-        if door_code.is_active:
-            return [], failures
-        still_off = DoorCode.objects.filter(id=door_code.id, is_active=False)
-        if settle_clear_failure_state(door_code=door_code):
-            pass
-        elif still_failing:
-            # A lock still busy, or a readback that got no answer, leaves a slot
-            # behind with nothing recorded.
-            error = sanitize_push_error_for_storage(clear_failures_message(still_failing))[:500]
-            if (door_code.push_state, door_code.last_push_error) != (DoorCode.PushState.PENDING, error):
-                still_off.update(
-                    push_state=DoorCode.PushState.PENDING, last_push_error=error, updated_at=django_timezone.now()
-                )
-        elif door_code.push_state != DoorCode.PushState.PUSHED or door_code.last_push_error:
-            still_off.update(
-                push_state=DoorCode.PushState.PUSHED,
-                last_push_error="",
-                push_attempt_count=0,
-                updated_at=django_timezone.now(),
-            )
+        # (PR #167 review). That update owns its state now, so the rollup only
+        # lands while the code is still off. A lock still busy, or a readback
+        # that got no answer, leaves a slot behind with nothing recorded, so it
+        # goes in the error.
+        refresh_push_state(door_code=door_code, unrecorded_failures=still_failing, only_if_active=False)
         return [], failures
     successes, failures = push_door_code_to_assigned_locks(
         door_code=door_code,
         zwavejs=zwavejs,
         actor_user=actor_user,
         only_unassigned=True,
+        include_failed=include_failed,
     )
-    if not failures:
-        mark_pushed_if_settled(door_code=door_code)
+    # Also for a code the push left alone (not started, expired), whose clears may have changed.
+    refresh_push_state(door_code=door_code)
     return successes, failures

@@ -311,8 +311,12 @@ class PushDoorCodeToLockTests(EncryptionTestMixin, TestCase):
             self.assertEqual(len(schedule["weekdays"]), 1)
             self.assertIn(schedule["weekdays"][0], (0, 6))
 
-        event = DoorCodeEvent.objects.get(door_code=code)
-        self.assertTrue(event.metadata.get("schedule_applied"))
+        # The PIN's event says the schedule is pending, the schedule's own event that it landed (issue #123).
+        pushed, scheduled = DoorCodeEvent.objects.filter(door_code=code).order_by("id")
+        self.assertEqual(pushed.metadata.get("action"), "pushed")
+        self.assertTrue(pushed.metadata.get("schedule_pending"))
+        self.assertEqual(scheduled.metadata.get("action"), "schedule_pushed")
+        self.assertTrue(scheduled.metadata.get("schedule_applied"))
 
     def test_full_day_schedule_uses_correct_weekday_enum(self):
         # No window, Mon (bit0) + Wed (bit2): enum maps Mon=1, Wed=3.
@@ -482,6 +486,8 @@ class PushDoorCodeToLockTests(EncryptionTestMixin, TestCase):
         """The lock_entity_id does not exist in Entity — push must terminate, not silently stall."""
         gateway = FakeGateway(usersNumber=3, slot_status={1: 0, 2: 0, 3: 0})
         code = self._make_code(pin="1234")
+        # The failure goes on that lock, and the code is the rollup of its locks (issue #126).
+        DoorCodeLockAssignment.objects.create(door_code=code, lock_entity_id="lock.does_not_exist")
 
         with self.assertRaises(LockPushFailed):
             push_door_code_to_lock(
@@ -649,7 +655,8 @@ class PushPendingSchedulerTaskTests(EncryptionTestMixin, TestCase):
             invoke_raises=ZwavejsCommandError("driver TimeoutError after 5.0s"),
             invoke_raises_after=0,
         )
-        # Start the row 1 tick away from the 24-attempt cap so this tick trips it.
+        # Start the lock 1 tick away from the 24-attempt cap so this tick trips it.
+        # The cap is per lock now (issue #126).
         code = DoorCode.objects.create(
             user=self.user,
             encrypted_pin=SettingsEncryption.get().encrypt("2222"),
@@ -657,16 +664,18 @@ class PushPendingSchedulerTaskTests(EncryptionTestMixin, TestCase):
             code_type=DoorCode.CodeType.PERMANENT,
             is_active=True,
             push_state=DoorCode.PushState.PENDING,
-            push_attempt_count=23,
         )
-        DoorCodeLockAssignment.objects.create(door_code=code, lock_entity_id=self.LOCK_ENTITY_ID)
+        assignment = DoorCodeLockAssignment.objects.create(
+            door_code=code, lock_entity_id=self.LOCK_ENTITY_ID, push_attempt_count=23
+        )
 
         with patch("locks.tasks.default_zwavejs_gateway", gateway):
             push_pending_door_codes()
 
         code.refresh_from_db()
         self.assertEqual(code.push_state, DoorCode.PushState.FAILED)
-        self.assertGreaterEqual(code.push_attempt_count, 24)
+        assignment.refresh_from_db()
+        self.assertEqual((assignment.push_state, assignment.push_attempt_count), (DoorCode.PushState.FAILED, 24))
         cap_event = (
             DoorCodeEvent.objects.filter(
                 door_code=code, event_type=DoorCodeEvent.EventType.CODE_FAILED, metadata__reason="max_attempts_exceeded"
@@ -733,8 +742,13 @@ class PushReadbackAndAdminCodeTests(EncryptionTestMixin, TestCase):
         code.refresh_from_db()
         self.assertEqual(code.push_state, DoorCode.PushState.FAILED)
         self.assertIn(error_contains, code.last_push_error)
-        self.assertEqual(code.push_attempt_count, 1)
-        self.assertIsNone(DoorCodeLockAssignment.objects.get(door_code=code).slot_index)
+        # Counted on the lock; the code's own count only counts clear retries (issue #126).
+        assignment = DoorCodeLockAssignment.objects.get(door_code=code)
+        self.assertEqual(
+            (assignment.push_state, assignment.push_attempt_count, code.push_attempt_count),
+            (DoorCode.PushState.FAILED, 1, 0),
+        )
+        self.assertIsNone(assignment.slot_index)
         self.assertTrue(
             DoorCodeEvent.objects.filter(
                 door_code=code, event_type=DoorCodeEvent.EventType.CODE_FAILED, metadata__action="push"
@@ -970,8 +984,11 @@ class PushReadbackAndAdminCodeTests(EncryptionTestMixin, TestCase):
         self.assertEqual(code.push_state, DoorCode.PushState.PENDING)
         self.assertIn("LockCodeUnverified", code.last_push_error)
         self.assertIn("TimeoutError", code.last_push_error)
-        self.assertEqual(code.push_attempt_count, 1)
-        self.assertIsNone(DoorCodeLockAssignment.objects.get(door_code=code).slot_index)
+        # Counted on the lock; the code's own count only counts clear retries (issue #126).
+        self.assertEqual(code.push_attempt_count, 0)
+        assignment = DoorCodeLockAssignment.objects.get(door_code=code)
+        self.assertEqual((assignment.push_state, assignment.push_attempt_count), (DoorCode.PushState.PENDING, 1))
+        self.assertIsNone(assignment.slot_index)
         self.assertFalse(
             DoorCodeEvent.objects.filter(door_code=code, event_type=DoorCodeEvent.EventType.CODE_SYNCED).exists()
         )
@@ -1058,8 +1075,9 @@ class PushReadbackAndAdminCodeTests(EncryptionTestMixin, TestCase):
         code.refresh_from_db()
         self.assertEqual(code.push_state, DoorCode.PushState.FAILED)
         self.assertIn("admin code", code.last_push_error)
-        # First tick fails it terminally, the second tick skips the failed row.
-        self.assertEqual(code.push_attempt_count, 1)
+        # First tick fails the lock terminally, the second tick skips the failed lock.
+        assignment = DoorCodeLockAssignment.objects.get(door_code=code)
+        self.assertEqual((assignment.push_state, assignment.push_attempt_count), (DoorCode.PushState.FAILED, 1))
 
 
 class MultiLockAndAdoptionTests(EncryptionTestMixin, TestCase):
@@ -1202,7 +1220,9 @@ class MultiLockAndAdoptionTests(EncryptionTestMixin, TestCase):
         schedule_calls = [c for c in gateway.invoke_calls if c["command_class"] == 78]
         self.assertEqual(len(schedule_calls), 1)
         self.assertEqual(schedule_calls[0]["args"][0]["userId"], 1)
-        synced = DoorCodeEvent.objects.get(door_code=code, event_type=DoorCodeEvent.EventType.CODE_SYNCED)
+        synced = DoorCodeEvent.objects.get(
+            door_code=code, event_type=DoorCodeEvent.EventType.CODE_SYNCED, metadata__action="pushed"
+        )
         self.assertEqual(synced.metadata.get("slot_index"), 1)
         self.assertIs(synced.metadata.get("adopted_existing_slot"), True)
 
@@ -1242,7 +1262,9 @@ class MultiLockAndAdoptionTests(EncryptionTestMixin, TestCase):
         self.assertEqual(self._set_nodes(gateway), [12])
         self.assertEqual(self._slot_calls(gateway, 3), [])
         self.assertEqual(gateway._lock_codes[(12, 3)], "4321")
-        synced = DoorCodeEvent.objects.get(door_code=code, event_type=DoorCodeEvent.EventType.CODE_SYNCED)
+        synced = DoorCodeEvent.objects.get(
+            door_code=code, event_type=DoorCodeEvent.EventType.CODE_SYNCED, metadata__action="pushed"
+        )
         self.assertNotIn("adopted_existing_slot", synced.metadata)
 
     def test_keypad_code_with_same_pin_on_a_yale_fails_without_touching_slot_3(self):
@@ -1926,7 +1948,7 @@ class LockListChangeTests(EncryptionTestMixin, TestCase):
         code.refresh_from_db()
         self.assertEqual(code.push_state, DoorCode.PushState.PUSHED)
 
-    def test_dropping_every_lock_keeps_the_state_while_a_clear_is_still_outstanding(self):
+    def test_dropping_every_lock_keeps_the_code_pending_while_a_clear_is_still_outstanding(self):
         from integrations_zwavejs.manager import ZwavejsCommandError
 
         # BACK's push landed but was never confirmed, and its cleanup readback times out too.
@@ -1938,7 +1960,10 @@ class LockListChangeTests(EncryptionTestMixin, TestCase):
 
         self.assertEqual(self._slots(code), {})
         self.assertEqual(self._lock_codes(gateway, 12), {1: self.PIN})
-        self.assertEqual(code.push_state, DoorCode.PushState.FAILED)
+        # Not reset like a code without locks. The state is the rollup now, so the
+        # dropped lock's failure goes with it and the clear keeps it pending (issue #126).
+        self.assertEqual(code.push_state, DoorCode.PushState.PENDING)
+        self.assertNotIn("old error", code.last_push_error)
         self.assertTrue(code.last_push_error.startswith(f"Couldn't clear slot 1 on {self.BACK}"))
 
     def test_lock_lists_in_the_event_are_sorted(self):
@@ -2688,11 +2713,24 @@ class LockListChangeApiTests(_TwoLockUpdateTestBase, APITestCase):
         self.assertEqual(response.status_code, 200, response.content)
         data = response.json()["data"]
         self.assertEqual(data["lock_entity_ids"], [self.BACK, self.FRONT])
+        fields = ("lock_entity_id", "slot_index", "pending_removal", "push_state", "schedule_pending")
         self.assertCountEqual(
-            data["lock_slot_assignments"],
+            [{key: entry[key] for key in fields} for entry in data["lock_slot_assignments"]],
             [
-                {"lock_entity_id": self.BACK, "slot_index": 1, "pending_removal": False},
-                {"lock_entity_id": self.FRONT, "slot_index": 1, "pending_removal": False},
+                {
+                    "lock_entity_id": self.BACK,
+                    "slot_index": 1,
+                    "pending_removal": False,
+                    "push_state": DoorCode.PushState.PUSHED,
+                    "schedule_pending": False,
+                },
+                {
+                    "lock_entity_id": self.FRONT,
+                    "slot_index": 1,
+                    "pending_removal": False,
+                    "push_state": DoorCode.PushState.PUSHED,
+                    "schedule_pending": False,
+                },
             ],
         )
         self.assertEqual(data["push_state"], DoorCode.PushState.PUSHED)
@@ -2791,7 +2829,10 @@ class LockListChangeApiTests(_TwoLockUpdateTestBase, APITestCase):
         self.assertEqual(self._lock_codes(gateway, 13), {1: self.PIN})
         self.assertEqual(self._slots(code), {self.BACK: 1, self.SIDE: 1, self.FRONT: 1})
         adopted = DoorCodeEvent.objects.filter(
-            door_code=code, lock_entity_id=self.SIDE, event_type=DoorCodeEvent.EventType.CODE_SYNCED
+            door_code=code,
+            lock_entity_id=self.SIDE,
+            event_type=DoorCodeEvent.EventType.CODE_SYNCED,
+            metadata__action="pushed",
         ).get()
         self.assertTrue(adopted.metadata["adopted_existing_slot"])
         self.assertEqual(code.push_state, DoorCode.PushState.PUSHED)
@@ -2830,7 +2871,18 @@ class LockSlotAssignmentsSerializerTests(EncryptionTestMixin, TestCase):
 
         self.assertEqual(
             data["lock_slot_assignments"],
-            [{"lock_entity_id": self.LOCK_ENTITY_ID, "slot_index": 7, "pending_removal": False}],
+            [
+                {
+                    "lock_entity_id": self.LOCK_ENTITY_ID,
+                    "slot_index": 7,
+                    "pending_removal": False,
+                    "push_state": DoorCode.PushState.PENDING,
+                    "last_push_error": "",
+                    "last_push_attempt_at": None,
+                    "push_attempt_count": 0,
+                    "schedule_pending": False,
+                }
+            ],
         )
 
     def test_returns_null_slot_index_for_unpushed_assignment(self):
@@ -2850,7 +2902,18 @@ class LockSlotAssignmentsSerializerTests(EncryptionTestMixin, TestCase):
 
         self.assertEqual(
             data["lock_slot_assignments"],
-            [{"lock_entity_id": self.LOCK_ENTITY_ID, "slot_index": None, "pending_removal": False}],
+            [
+                {
+                    "lock_entity_id": self.LOCK_ENTITY_ID,
+                    "slot_index": None,
+                    "pending_removal": False,
+                    "push_state": DoorCode.PushState.PENDING,
+                    "last_push_error": "",
+                    "last_push_attempt_at": None,
+                    "push_attempt_count": 0,
+                    "schedule_pending": False,
+                }
+            ],
         )
 
     def test_raises_runtime_error_when_lock_assignments_not_prefetched(self):
@@ -3324,8 +3387,8 @@ class PushSlotClaimRaceTests(EncryptionTestMixin, TestCase):
 
     MASKED = {"userIdStatus": 1, "userCode": "****"}
 
-    def _die_at_the_pushed_stamp(self, *, drops_duplicates: bool, masked: bool = False) -> tuple[DoorCode, FakeGateway]:
-        """Push with the process dying at the ``pushed`` stamp, after the PIN landed in slot 1 (issue #130).
+    def _die_at_the_slot_commit(self, *, drops_duplicates: bool, masked: bool = False) -> tuple[DoorCode, FakeGateway]:
+        """Push with the process dying in the transaction that records slot 1, after the PIN landed there (issue #130).
 
         ``masked`` makes every CC 99 ``get`` answer occupied with a masked code, like a lock that hides PINs.
         """
@@ -3337,33 +3400,31 @@ class PushSlotClaimRaceTests(EncryptionTestMixin, TestCase):
             get_responses=[self.MASKED] * 20 if masked else None,
         )
         code = self._make_code(pin="1234")
-        real_save = DoorCode.save
 
-        def dying_save(instance, *args, **kwargs):
-            if instance.push_state == DoorCode.PushState.PUSHED and "push_state" in (kwargs.get("update_fields") or []):
-                raise KeyboardInterrupt
-            return real_save(instance, *args, **kwargs)
-
-        with patch.object(DoorCode, "save", dying_save), self.assertRaises(KeyboardInterrupt):
+        # The code's rollup is the last write of the slot's transaction (issue #126).
+        with (
+            patch.object(lock_push_uc, "refresh_push_state", side_effect=KeyboardInterrupt),
+            self.assertRaises(KeyboardInterrupt),
+        ):
             push_door_code_to_lock(door_code=code, lock_entity_id=self.LOCK_ENTITY_ID, zwavejs=gateway)
         self.assertEqual(gateway._lock_codes, {(7, 1): "1234"})
         return code, gateway
 
-    def test_process_dying_before_the_pushed_stamp_records_no_slot(self):
-        # The slot and the pushed stamp commit together, so the code isn't left
-        # pending with a slot, which the scheduler never retries.
-        code, _gateway = self._die_at_the_pushed_stamp(drops_duplicates=True)
+    def test_process_dying_in_the_slot_commit_records_no_slot(self):
+        # The slot, the lock's state and the code's rollup commit together, so the
+        # code isn't left pending with a slot nothing retries.
+        code, _gateway = self._die_at_the_slot_commit(drops_duplicates=True)
 
         self.assertIsNone(self._slot_of(code))
         code.refresh_from_db()
         self.assertEqual(code.push_state, DoorCode.PushState.PENDING)
         self.assertFalse(DoorCodeEvent.objects.filter(door_code=code, metadata__action="pushed").exists())
 
-    def test_retry_after_dying_at_the_pushed_stamp_adopts_the_slot_and_delete_clears_it(self):
+    def test_retry_after_dying_at_the_slot_commit_adopts_the_slot_and_delete_clears_it(self):
         # PR #190 review: the rollback must not lose the slot the PIN already landed in.
         for drops_duplicates in (False, True):
             with self.subTest(drops_duplicates=drops_duplicates):
-                code, gateway = self._die_at_the_pushed_stamp(drops_duplicates=drops_duplicates)
+                code, gateway = self._die_at_the_slot_commit(drops_duplicates=drops_duplicates)
 
                 result = push_door_code_to_lock(door_code=code, lock_entity_id=self.LOCK_ENTITY_ID, zwavejs=gateway)
 
@@ -3377,22 +3438,22 @@ class PushSlotClaimRaceTests(EncryptionTestMixin, TestCase):
 
                 self.assertEqual(gateway._lock_codes, {})
 
-    def test_delete_after_dying_at_the_pushed_stamp_clears_the_slot(self):
+    def test_delete_after_dying_at_the_slot_commit_clears_the_slot(self):
         for drops_duplicates in (False, True):
             with self.subTest(drops_duplicates=drops_duplicates):
-                code, gateway = self._die_at_the_pushed_stamp(drops_duplicates=drops_duplicates)
+                code, gateway = self._die_at_the_slot_commit(drops_duplicates=drops_duplicates)
 
                 door_codes_uc.delete_door_code(code=code, zwavejs=gateway)
 
                 self.assertFalse(DoorCode.objects.filter(id=code.id).exists())
                 self.assertEqual(gateway._lock_codes, {})
 
-    def test_masked_lock_retry_after_dying_at_the_pushed_stamp_adopts_the_slot_and_delete_clears_it(self):
+    def test_masked_lock_retry_after_dying_at_the_slot_commit_adopts_the_slot_and_delete_clears_it(self):
         # PR #190 review: a lock that masks PINs can't show the PIN on the retry's
         # readback, so the push's own earlier readback has to count.
         for drops_duplicates in (False, True):
             with self.subTest(drops_duplicates=drops_duplicates):
-                code, gateway = self._die_at_the_pushed_stamp(drops_duplicates=drops_duplicates, masked=True)
+                code, gateway = self._die_at_the_slot_commit(drops_duplicates=drops_duplicates, masked=True)
 
                 result = push_door_code_to_lock(door_code=code, lock_entity_id=self.LOCK_ENTITY_ID, zwavejs=gateway)
 
@@ -3402,10 +3463,10 @@ class PushSlotClaimRaceTests(EncryptionTestMixin, TestCase):
 
                 self.assertEqual(gateway._lock_codes, {})
 
-    def test_masked_lock_delete_after_dying_at_the_pushed_stamp_clears_the_slot(self):
+    def test_masked_lock_delete_after_dying_at_the_slot_commit_clears_the_slot(self):
         for drops_duplicates in (False, True):
             with self.subTest(drops_duplicates=drops_duplicates):
-                code, gateway = self._die_at_the_pushed_stamp(drops_duplicates=drops_duplicates, masked=True)
+                code, gateway = self._die_at_the_slot_commit(drops_duplicates=drops_duplicates, masked=True)
 
                 door_codes_uc.delete_door_code(code=code, zwavejs=gateway)
 
@@ -3417,7 +3478,7 @@ class PushSlotClaimRaceTests(EncryptionTestMixin, TestCase):
         # since the new PIN's push closes the attempt's window on that lock.
         from integrations_zwavejs.manager import ZwavejsCommandError
 
-        code, gateway = self._die_at_the_pushed_stamp(drops_duplicates=False, masked=True)
+        code, gateway = self._die_at_the_slot_commit(drops_duplicates=False, masked=True)
         real_invoke = gateway.invoke_cc_api
 
         def clear_fails(**kwargs):
@@ -3658,7 +3719,9 @@ class SlotStatusFreeTests(EncryptionTestMixin, TestCase):
             with self.assertRaises(LockSlotsFull):
                 push_door_code_to_lock(door_code=self.code, lock_entity_id=self.LOCK_ENTITY_ID, zwavejs=gateway)
             self.code.refresh_from_db()
-            self.assertEqual(self.code.push_attempt_count, attempt)
+            # Counted on the lock, which the cap is on now (issue #126).
+            assignment = DoorCodeLockAssignment.objects.get(door_code=self.code)
+            self.assertEqual(assignment.push_attempt_count, attempt)
             self.assertEqual(self.code.push_state, DoorCode.PushState.PENDING)
             self.assertIn("No user-code slot on this lock is Available", self.code.last_push_error)
 
@@ -3666,7 +3729,10 @@ class SlotStatusFreeTests(EncryptionTestMixin, TestCase):
         from locks.tasks import _get_push_max_attempts, push_pending_door_codes
 
         gateway = FakeGateway(usersNumber=2, slot_status={1: self.MESSAGING, 2: self.PASSAGE_MODE})
-        DoorCode.objects.filter(id=self.code.id).update(push_attempt_count=_get_push_max_attempts() - 1)
+        # The cap is on the lock's own count now (issue #126).
+        DoorCodeLockAssignment.objects.filter(door_code=self.code).update(
+            push_attempt_count=_get_push_max_attempts() - 1
+        )
 
         with patch("locks.tasks.default_zwavejs_gateway", gateway):
             push_pending_door_codes()
@@ -3882,7 +3948,10 @@ class TerminalPushErrorRecordingTests(EncryptionTestMixin, TestCase):
     def _assert_terminal_failure_recorded(self, code: DoorCode, error: str) -> None:
         code.refresh_from_db()
         self.assertEqual(code.push_state, DoorCode.PushState.FAILED)
-        self.assertEqual(code.push_attempt_count, 1)
+        # Counted on the lock; the code's own count only counts clear retries (issue #126).
+        self.assertEqual(code.push_attempt_count, 0)
+        assignment = DoorCodeLockAssignment.objects.get(door_code=code)
+        self.assertEqual((assignment.push_state, assignment.push_attempt_count), (DoorCode.PushState.FAILED, 1))
         self.assertIsNotNone(code.last_push_attempt_at)
         self.assertIn(error, code.last_push_error)
         event = DoorCodeEvent.objects.get(door_code=code, metadata__action="push")
@@ -3973,7 +4042,12 @@ class TerminalPushErrorRecordingTests(EncryptionTestMixin, TestCase):
             push_door_code_to_lock(door_code=code, lock_entity_id=self.LOCK_ENTITY_ID, zwavejs=gateway)
 
         self.assertEqual(gateway._lock_codes, {(7, 1): "1234"})
-        self.assertIsNone(DoorCodeLockAssignment.objects.get(door_code=code).slot_index)
+        assignment = DoorCodeLockAssignment.objects.get(door_code=code)
+        if during == "readback":
+            self.assertIsNone(assignment.slot_index)
+        else:
+            # The PIN was confirmed before the schedule, so its slot is on record (issue #123).
+            self.assertEqual((assignment.slot_index, assignment.schedule_pending), (1, True))
         self._assert_terminal_failure_recorded(code, message)
         return code, gateway
 
@@ -4007,13 +4081,18 @@ class TerminalPushErrorRecordingTests(EncryptionTestMixin, TestCase):
         self.assertEqual(self._set_slots(gateway), [1])
         self.assertEqual(gateway._lock_codes, {(7, 1): "1234"})
 
-    def test_client_unavailable_during_the_schedule_push_leaves_a_tagged_marker(self):
+    def test_client_unavailable_during_the_schedule_push_keeps_the_slot_failed_with_its_schedule_pending(self):
+        # Issue #123: the slot is tracked before the schedule goes out, so no
+        # marker is needed and the lock is failed with the slot kept.
         code, _gateway = self._terminal_error_after_the_set(during="schedule")
 
-        [marker] = self._markers(code)
-        self.assertEqual(marker["slot_index"], 1)
-        # The post-set readback had already accepted the slot.
-        self.assertIs(marker["slot_verified"], True)
+        self.assertEqual(self._markers(code), [])
+        assignment = DoorCodeLockAssignment.objects.get(door_code=code)
+        self.assertEqual(
+            (assignment.slot_index, assignment.push_state, assignment.schedule_pending),
+            (1, DoorCode.PushState.FAILED, True),
+        )
+        self.assertIn("Schedule not applied", assignment.last_push_error)
 
     def test_delete_after_client_unavailable_during_the_schedule_push_clears_the_slot(self):
         for masked in (False, True):
@@ -4076,7 +4155,9 @@ class TerminalPushErrorRecordingTests(EncryptionTestMixin, TestCase):
             .first()
         )
 
-    def test_masked_lock_schedule_timeout_after_the_readback_leaves_a_tagged_marker_a_delete_clears(self):
+    def test_masked_lock_schedule_timeout_after_the_readback_keeps_the_slot_and_a_delete_clears(self):
+        # Issue #123: the slot is tracked before the schedule, so even on a lock
+        # that masks PINs the delete clears it without a readback.
         gateway = self._schedule_times_out_gateway(usersNumber=3, get_responses=[self.MASKED] * 20)
         code = self._scheduled_code()
 
@@ -4084,7 +4165,12 @@ class TerminalPushErrorRecordingTests(EncryptionTestMixin, TestCase):
             push_door_code_to_lock(door_code=code, lock_entity_id=self.LOCK_ENTITY_ID, zwavejs=gateway)
 
         self.assertEqual(gateway._lock_codes, {(7, 1): "1234"})
-        self.assertIs(self._newest_marker(code)["slot_verified"], True)
+        self.assertEqual(self._markers(code), [])
+        assignment = DoorCodeLockAssignment.objects.get(door_code=code)
+        self.assertEqual(
+            (assignment.slot_index, assignment.push_state, assignment.schedule_pending, assignment.push_attempt_count),
+            (1, DoorCode.PushState.PENDING, True, 1),
+        )
         code.refresh_from_db()
         self.assertEqual(code.push_state, DoorCode.PushState.PENDING)
 
@@ -4108,7 +4194,7 @@ class TerminalPushErrorRecordingTests(EncryptionTestMixin, TestCase):
 
         self.assertNotIn("slot_verified", self._newest_marker(code))
 
-    def test_adopted_tagged_slot_keeps_its_tag_after_a_schedule_timeout(self):
+    def test_adopted_tagged_slot_is_tracked_with_its_schedule_pending_after_a_schedule_timeout(self):
         code = self._scheduled_code()
         lock_push_uc._record_unconfirmed_slot_attempt(
             door_code=code,
@@ -4125,9 +4211,11 @@ class TerminalPushErrorRecordingTests(EncryptionTestMixin, TestCase):
             push_door_code_to_lock(door_code=code, lock_entity_id=self.LOCK_ENTITY_ID, zwavejs=gateway)
 
         self.assertEqual(self._set_slots(gateway), [])
-        self.assertEqual(len(self._markers(code)), 2)
-        self.assertEqual(self._newest_marker(code)["slot_index"], 1)
-        self.assertIs(self._newest_marker(code)["slot_verified"], True)
+        # The adopted slot is tracked before the schedule now (issue #123), so the
+        # only marker is the one adopted, and the slot waits on its schedule.
+        self.assertEqual(len(self._markers(code)), 1)
+        assignment = DoorCodeLockAssignment.objects.get(door_code=code)
+        self.assertEqual((assignment.slot_index, assignment.schedule_pending), (1, True))
 
         door_codes_uc.delete_door_code(code=code, zwavejs=gateway)
 
@@ -4139,16 +4227,22 @@ class TerminalPushErrorRecordingTests(EncryptionTestMixin, TestCase):
         # old tag, so the new attempt must stay untagged.
         from integrations_zwavejs.manager import ZwavejsCommandError
 
-        gateway = self._schedule_times_out_gateway(usersNumber=3, get_responses=[self.MASKED])
+        # A schedule timeout keeps the slot tracked since issue #123, so the tagged
+        # attempt this starts from is #190's rolled back success marker.
+        gateway = self._schedule_times_out_gateway(usersNumber=3)
         code = self._scheduled_code()
-        with self.assertRaises(LockUnreachable):
-            push_door_code_to_lock(door_code=code, lock_entity_id=self.LOCK_ENTITY_ID, zwavejs=gateway)
+        lock_push_uc._record_unconfirmed_slot_attempt(
+            door_code=code,
+            lock_entity_id=self.LOCK_ENTITY_ID,
+            slot_index=1,
+            reason="PIN set on the lock, slot not saved yet",
+            pin="1234",
+            slot_verified=True,
+        )
         self.assertIs(self._newest_marker(code)["slot_verified"], True)
 
-        # The PIN leaves the slot, then push 2 reads it back empty twice, writes
+        # The PIN isn't in the slot, so the push reads it back empty twice, writes
         # the PIN there again, the lock drops it and the readback times out.
-        gateway._lock_codes.clear()
-        gateway._late_reports.clear()
         gateway._reject_pins = {7: {"1234"}}
         empty = {"userIdStatus": 0, "userCode": ""}
         timeout = ZwavejsCommandError("driver TimeoutError after 5.0s")
@@ -4158,7 +4252,7 @@ class TerminalPushErrorRecordingTests(EncryptionTestMixin, TestCase):
             self.assertRaises(LockUnreachable),
         ):
             push_door_code_to_lock(door_code=code, lock_entity_id=self.LOCK_ENTITY_ID, zwavejs=gateway)
-        self.assertEqual(self._set_slots(gateway), [1, 1])
+        self.assertEqual(self._set_slots(gateway), [1])
         self.assertNotIn("slot_verified", self._newest_marker(code))
 
         # Someone types a keypad code into that slot, and the lock masks it.

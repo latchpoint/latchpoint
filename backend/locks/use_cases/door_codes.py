@@ -327,7 +327,7 @@ def withdraw_door_code(*, code: DoorCode, zwavejs: ZwavejsGateway, now=None) -> 
     hold every lock it's on each tick and make a push there wait (PR #183 review).
     """
     from locks.use_cases.lock_push import (
-        settle_clear_failure_state,
+        refresh_push_state,
         slots_to_withdraw,
         withdraw_slots_before_start,
     )
@@ -343,11 +343,10 @@ def withdraw_door_code(*, code: DoorCode, zwavejs: ZwavejsGateway, now=None) -> 
             if nothing_to_withdraw():
                 return False
             cleared, failures = withdraw_slots_before_start(door_code=code, zwavejs=zwavejs)
-            # Off its locks until it starts, so it isn't pushed any more.
-            DoorCode.objects.filter(id=code.id, push_state=DoorCode.PushState.PUSHED).update(
-                push_state=DoorCode.PushState.PENDING, updated_at=django_timezone.now()
-            )
-            settle_clear_failure_state(door_code=code)
+            # Off its locks until it starts, so it's pending (scheduled), or
+            # failed once its clears hit the cap (issue #126). Each lock it
+            # cleared went back to pending through forget_cleared_slot.
+            refresh_push_state(door_code=code)
             DoorCodeEvent.objects.create(
                 door_code=code,
                 user=None,
@@ -398,10 +397,9 @@ def _update_door_code_locked(
             clear_unconfirmed_slots_holding_pin,
             decrypt_pin_or_none,
             forget_cleared_slot,
-            mark_pushed_if_settled,
             record_clear_failure,
+            refresh_push_state,
             resolve_clear_failure,
-            settle_clear_failure_state,
         )
 
         old_pin = decrypt_pin_or_none(code)
@@ -595,11 +593,12 @@ def _update_door_code_locked(
                         slot_index=slot_index,
                         outcome=outcome,
                     )
-                code.push_state = DoorCode.PushState.PENDING
-                code.last_push_error = ""
-                code.push_attempt_count = 0
                 with transaction.atomic():
-                    code.save(update_fields=["push_state", "last_push_error", "push_attempt_count", "updated_at"])
+                    # The code row before its assignment rows, like every writer of both.
+                    DoorCode.objects.select_for_update().filter(id=code.id).first()
+                    # A fresh start for the clear-retry cap (issue #126).
+                    code.push_attempt_count = 0
+                    DoorCode.objects.filter(id=code.id).update(push_attempt_count=0)
                     # Every kept lock without a slot now needs a fresh push (issue
                     # #126). One whose clear failed keeps its slot and its state.
                     DoorCodeLockAssignment.objects.filter(door_code=code, slot_index__isnull=True).exclude(
@@ -610,55 +609,34 @@ def _update_door_code_locked(
                         last_push_error="",
                         schedule_pending=False,
                     )
+                    refresh_push_state(door_code=code)
 
             if not code.is_active:
                 # An inactive code is never pushed (issue #138).
                 if push_relevant_change:
                     # Deactivation (or a change to an inactive code): the lock holds
                     # no programmed slots for this code anymore, so stop here.
-                    code.push_state = DoorCode.PushState.PUSHED
                     code.last_push_attempt_at = django_timezone.now()
-                    code.save(update_fields=["push_state", "last_push_attempt_at", "updated_at"])
+                    DoorCode.objects.filter(id=code.id).update(
+                        last_push_attempt_at=code.last_push_attempt_at, updated_at=code.last_push_attempt_at
+                    )
             else:
                 code = DoorCode.objects.prefetch_related("lock_assignments").get(id=code.id)
                 _push_to_assigned_locks_best_effort(code=code, zwavejs=zwavejs, actor_user=actor_user)
-                if dropped_lock_entity_ids and not push_relevant_change:
-                    # Locks that stay aren't re-pushed, so nothing recomputes
-                    # push_state and a failure left by a dropped lock would stick.
-                    mark_pushed_if_settled(door_code=code)
 
-        # Last, so neither the push's own state nor the pushed stamps above can
-        # show a code pushed while a lock may still hold its PIN.
-        settle_clear_failure_state(door_code=code)
         if failed_slot_clears and updated_event is not None:
             updated_event.metadata["failed_slot_clears"] = [f.as_metadata() for f in failed_slot_clears]
             updated_event.save(update_fields=["metadata"])
 
-    if "lock_entity_ids" in changes:
-        _reset_push_state_without_locks(code=code)
+    # Last, from what the clears and pushes above left (issue #126). That covers
+    # a code left with no locks (issue #142), a failure left by a dropped lock,
+    # and a lock that may still hold the PIN keeping the code from pushed (#144).
+    if zwavejs is not None or "lock_entity_ids" in changes:
+        from locks.use_cases.lock_push import refresh_push_state
+
+        refresh_push_state(door_code=code)
 
     return code
-
-
-def _reset_push_state_without_locks(*, code: DoorCode) -> None:
-    """Clear the push state a code left with no locks carried from the locks it was on (issue #142).
-
-    An active code goes back to ``pending`` like a new code without locks. An
-    inactive one is ``pushed``, as after a deactivate (issue #144), since no
-    lock holds anything for it. Kept while a clear is still outstanding, since
-    that slot may still hold the PIN and ``settle_clear_failure_state`` reports it.
-    """
-    from locks.use_cases.lock_push import unresolved_clear_failures
-
-    if DoorCodeLockAssignment.objects.filter(door_code=code).exists() or unresolved_clear_failures(door_code=code):
-        return
-    code.refresh_from_db(fields=["is_active", "push_state", "last_push_error", "push_attempt_count"])
-    state = DoorCode.PushState.PENDING if code.is_active else DoorCode.PushState.PUSHED
-    if (code.push_state, code.last_push_error, code.push_attempt_count) != (state, "", 0):
-        code.push_state = state
-        code.last_push_error = ""
-        code.push_attempt_count = 0
-        code.save(update_fields=["push_state", "last_push_error", "push_attempt_count", "updated_at"])
 
 
 def delete_door_code(
@@ -799,6 +777,10 @@ def _delete_door_code_locked(
         )
 
     with transaction.atomic():
+        # The code row first. code.delete() deletes the assignments before the
+        # code row, and the scheduler's cap sweep takes the code row then its
+        # assignments, so without this the two can deadlock (PR #195 review).
+        DoorCode.objects.select_for_update().filter(id=code.id).first()
         DoorCodeEvent.objects.create(
             door_code=None,
             user=actor_user,
@@ -822,7 +804,7 @@ def _refuse_delete_after_failed_clears(
     without pushing it back onto any lock, including one a clear just freed.
     Slots that were cleared are forgotten so the row stays truthful.
     """
-    from locks.use_cases.lock_push import clear_failures_message, forget_cleared_slot, settle_clear_failure_state
+    from locks.use_cases.lock_push import clear_failures_message, forget_cleared_slot, refresh_push_state
 
     unique = {(f.lock_entity_id, f.slot_index): f for f in failures}
     message = clear_failures_message(list(unique.values()))
@@ -843,7 +825,7 @@ def _refuse_delete_after_failed_clears(
             event_type=DoorCodeEvent.EventType.CODE_UPDATED,
             metadata={"updated_fields": ["is_active"], "reason": "delete_refused"},
         )
-    settle_clear_failure_state(door_code=code)
+    refresh_push_state(door_code=code)
     raise SlotClearFailed(f"{message}. The door code wasn't deleted and is now off, try again when the lock responds.")
 
 
@@ -892,8 +874,11 @@ def retry_push_door_code(
 ) -> DoorCode:
     """Admin-triggered manual retry.
 
-    Retries any slot clears that failed first, then pushes every lock without a
-    slot (which includes a kept lock whose stale slot just got cleared). An
+    Retries any slot clears that failed first, then re-arms every ``failed``
+    lock (and every ``pending`` one at the attempt cap) and resets the code's
+    clear-retry count (issue #126), then pushes every lock that needs it: no
+    slot (which includes a kept lock whose stale slot just got cleared), or a
+    slot whose schedule is pending, which only gets the schedule. An
     inactive code is only retried when it has clears outstanding, which
     includes a slot it still holds or an unconfirmed attempt slot left to check
     (issue #158), and is never pushed.
@@ -907,11 +892,13 @@ def retry_push_door_code(
     """
     assert_admin(user=actor_user) if actor_user is not None else None
 
+    from locks.tasks import _get_push_max_attempts
     from locks.use_cases.lock_push import (
         inactive_slots_to_clear,
         push_or_settle_after_clear_retry,
+        rearm_failed_locks,
+        refresh_push_state,
         retry_failed_slot_clears,
-        settle_clear_failure_state,
         slots_to_withdraw,
         unresolved_clear_failures,
     )
@@ -942,20 +929,15 @@ def retry_push_door_code(
 
     retry_failed_slot_clears(door_code=code, zwavejs=zwavejs)
 
-    # Failed codes were intentionally retired by the scheduler; an explicit retry
-    # is the operator saying "yes, try again," so re-arm pending state and zero
-    # the cap counter. A clear that's still failing puts its error back afterwards.
-    code.refresh_from_db(fields=["push_state"])
+    # A failed lock or a capped clear was given up on by the scheduler; an
+    # explicit retry is the operator saying "yes, try again". So every failed
+    # lock, and every pending one already at the cap, goes back to pending with
+    # no attempts, and the code's clear-retry count goes back to 0 (issue #126).
+    # The rollup then shows whatever is still outstanding.
     with transaction.atomic():
-        if code.push_state == DoorCode.PushState.FAILED:
-            code.push_state = DoorCode.PushState.PENDING
-            code.last_push_error = ""
-            code.push_attempt_count = 0
-            code.save(update_fields=["push_state", "last_push_error", "push_attempt_count", "updated_at"])
-        # Re-arm each failed lock the same way (issue #126).
-        DoorCodeLockAssignment.objects.filter(door_code=code, push_state=DoorCode.PushState.FAILED).update(
-            push_state=DoorCode.PushState.PENDING, push_attempt_count=0, last_push_error=""
-        )
+        DoorCode.objects.select_for_update().filter(id=code.id).first()
+        DoorCode.objects.filter(id=code.id).update(push_attempt_count=0)
+        rearm_failed_locks(door_code=code, max_attempts=_get_push_max_attempts())
 
     if not_started:
         # Never pushed before its start. Take off anything it may still hold that
@@ -964,8 +946,8 @@ def retry_push_door_code(
         try:
             withdraw_door_code(code=code, zwavejs=zwavejs)
         finally:
-            settle_clear_failure_state(door_code=code)
+            refresh_push_state(door_code=code)
         return fresh()
 
-    push_or_settle_after_clear_retry(door_code=code, zwavejs=zwavejs, actor_user=actor_user)
+    push_or_settle_after_clear_retry(door_code=code, zwavejs=zwavejs, actor_user=actor_user, include_failed=True)
     return fresh()

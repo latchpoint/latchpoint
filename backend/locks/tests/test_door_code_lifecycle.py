@@ -605,10 +605,13 @@ class StartTests(_LifecycleTestBase):
         code, gateway = self._withdraw_that_hit_the_cap()
 
         # Nothing else picks it up: the PIN would keep working until its start.
+        # The code-level cap only counts clear retries now and is read every tick
+        # (issue #126), so it stays at the 2 that failed the code.
         gateway.clear_fails_on = set()
         gateway.invoke_calls.clear()
         self.assertEqual(self._enforce(gateway), 0)
-        self.assertEqual(self._push_pending(gateway), 0)
+        with patch("locks.tasks._get_push_max_attempts", return_value=2):
+            self.assertEqual(self._push_pending(gateway), 0)
         self.assertEqual(gateway.invoke_calls, [])
 
         door_codes_uc.retry_push_door_code(code=code, actor_user=self.user, zwavejs=gateway)

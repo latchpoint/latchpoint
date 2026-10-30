@@ -757,6 +757,7 @@ _SYNC_SKIPPED_ACTION = "sync_skipped"
 _SKIP_CLEAR_OUTSTANDING = "clear_outstanding"
 _SKIP_INACTIVE_MANUAL_CODE = "inactive_code_on_lock"
 _SKIP_PIN_MISMATCH = "pin_mismatch"
+_SKIP_SCHEDULE_PENDING = "schedule_pending"
 _WARN_DUPLICATE_PIN = "duplicate_pin"
 
 
@@ -923,9 +924,18 @@ def _existing_code_skip_reason(*, code: DoorCode, lock_entity_id: str, raw_pin: 
     - a manual code that's off: latchpoint turned it off, so the PIN still in its
       slot is a clear that hasn't happened, not the lock's say
     - a manual code whose slot holds a different PIN: flagged, never adopted
+    - any code whose schedule latchpoint still owes this lock (``schedule_pending``,
+      issue #123): the lock has the PIN without its schedule, so taking the
+      schedule (or none) from the lock and marking it pushed would drop the
+      resend and leave the PIN working around the clock. The scheduler sends the
+      schedule, and the next sync reconciles it
     """
     if _has_outstanding_slot_cleanup(door_code=code, lock_entity_id=lock_entity_id):
         return _SKIP_CLEAR_OUTSTANDING
+    if DoorCodeLockAssignment.objects.filter(
+        door_code=code, lock_entity_id=lock_entity_id, schedule_pending=True
+    ).exists():
+        return _SKIP_SCHEDULE_PENDING
     if code.source == DoorCode.Source.SYNCED:
         return None
     if not code.is_active:
@@ -1029,6 +1039,8 @@ def _sync_lock_config_atomically(
 ) -> SyncResult:
     """The body of :func:`sync_lock_config`, run in one transaction while the caller holds the lock."""
     result = SyncResult(lock_entity_id=lock_entity_id, node_id=node_id, slots=[])
+    # Codes whose row or assignment the sync changed; their rollup is refreshed at the end (issue #126).
+    touched_code_ids: set[int] = set()
     with transaction.atomic():
         value_ids = zwavejs.node_get_defined_value_ids(node_id=node_id, timeout_seconds=10.0)
         if not isinstance(value_ids, list):
@@ -1296,6 +1308,7 @@ def _sync_lock_config_atomically(
                 action = "unchanged"
                 if updated_fields:
                     code.save(update_fields=[*set(updated_fields), "updated_at"])
+                    touched_code_ids.add(code.id)
                     action = "updated"
                     result.updated += 1
                     logger.info("Slot %d on %s: updated (fields: %s)", slot_index, lock_entity_id, updated_fields)
@@ -1420,6 +1433,7 @@ def _sync_lock_config_atomically(
                         race_fields.append("is_active")
                     if race_fields:
                         existing_code.save(update_fields=[*race_fields, "updated_at"])
+                        touched_code_ids.add(existing_code.id)
                     result.updated += 1
                     add_slot_result(
                         SlotSyncResult(
@@ -1507,11 +1521,14 @@ def _sync_lock_config_atomically(
                 code.id,
                 "deactivating and releasing the slot" if was_active else "releasing the slot",
             )
-            # The code row before its assignment row, like every writer of both.
+            # The code row before its assignment row, like every writer of both,
+            # including a code that's already off and only loses its slot here.
+            DoorCode.objects.select_for_update().filter(id=code.id).first()
             if was_active:
                 code.is_active = False
                 code.save(update_fields=["is_active", "updated_at"])
                 result.deactivated += 1
+            touched_code_ids.add(code.id)
             assignment.slot_index = None
             # Nothing left on this lock, so per lock it's pending, attempts kept (issue #126).
             assignment.push_state = DoorCode.PushState.PENDING
@@ -1534,6 +1551,14 @@ def _sync_lock_config_atomically(
             slot_results=slot_results,
             slot_events=slot_events,
         )
+
+        # The code-level state is the rollup of the locks, so a code the sync
+        # converted, turned off or released a slot of gets it worked out again
+        # (issue #126). Still in the sync's transaction.
+        from locks.use_cases.lock_push import refresh_push_state
+
+        for code_id in sorted(touched_code_ids):
+            refresh_push_state(door_code=DoorCode(id=code_id))
 
         result.timestamp = django_timezone.now()
 

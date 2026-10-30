@@ -129,6 +129,12 @@ class DoorCodeSerializer(serializers.ModelSerializer):
         slot clear hasn't worked yet. Its assignment stays until it does (issue
         #139), and only listing it again in ``lock_entity_ids`` on an update keeps
         it on the code (issue #151).
+
+        Each lock also has its own ``push_state``, ``last_push_error``,
+        ``last_push_attempt_at``, ``push_attempt_count`` and
+        ``schedule_pending`` (the PIN is on the lock but its schedule isn't)
+        (issues #126, #123). The code-level fields stay the rollup of these.
+        Never a PIN.
         """
         prefetched = getattr(obj, "_prefetched_objects_cache", {}) or {}
         if "lock_assignments" not in prefetched:
@@ -139,6 +145,15 @@ class DoorCodeSerializer(serializers.ModelSerializer):
                 "lock_entity_id": assignment.lock_entity_id,
                 "slot_index": assignment.slot_index,
                 "pending_removal": assignment.lock_entity_id in removing,
+                "push_state": assignment.push_state,
+                "last_push_error": assignment.last_push_error,
+                "last_push_attempt_at": (
+                    serializers.DateTimeField().to_representation(assignment.last_push_attempt_at)
+                    if assignment.last_push_attempt_at
+                    else None
+                ),
+                "push_attempt_count": assignment.push_attempt_count,
+                "schedule_pending": assignment.schedule_pending,
             }
             for assignment in obj.lock_assignments.all()
         ]

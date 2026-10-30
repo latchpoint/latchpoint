@@ -226,7 +226,9 @@ class PushDualWriteTests(_TwoLockUpdateTestBase):
         with self.assertRaises(LockPushFailed):
             self._push(code, gateway)
 
-        self.assertEqual(_lock_state(assignment), (None, FAILED, 2, "ws_url not set", False))
+        # A terminal failure counts an attempt on the lock now, since the code's
+        # count only counts clear retries (issue #126) and PR #192 counts the attempt.
+        self.assertEqual(_lock_state(assignment), (None, FAILED, 3, "ws_url not set", False))
         code.refresh_from_db()
         self.assertEqual(assignment.last_push_attempt_at, code.last_push_attempt_at)
 
@@ -278,11 +280,12 @@ class PushDualWriteTests(_TwoLockUpdateTestBase):
             self._push(code, ConcurrentWriterGateway(usersNumber=5, cache_updates_on_set=True))
 
         slot_index, state, count, error, _ = _lock_state(assignment)
-        self.assertEqual((slot_index, state, count), (None, FAILED, 2))
+        # The rolled back success didn't zero the count the failure adds to.
+        self.assertEqual((slot_index, state, count), (None, FAILED, 3))
         self.assertIn("recorded for another door code", error)
         code.refresh_from_db()
-        # The rolled back pushed stamp didn't zero the count the failure adds to.
-        self.assertEqual((code.push_state, code.push_attempt_count), (FAILED, 4))
+        # The rollup, and nothing left to clear zeroes the code's clear-retry count (issue #126).
+        self.assertEqual((code.push_state, code.push_attempt_count), (FAILED, 0))
         self.assertEqual(_lock_state(other_assignment), (1, PENDING, 0, "", False))
 
     def _code_on_back_for_a_second_code(self, **assignment_fields) -> tuple[DoorCode, DoorCodeLockAssignment]:
@@ -299,23 +302,24 @@ class PushDualWriteTests(_TwoLockUpdateTestBase):
         return code, assignment
 
     def test_rolled_back_success_leaves_the_lock_untouched(self):
-        # #190's rollback case, dying at either write in the success block.
+        # #190's rollback case, dying at either end of the success block: the
+        # slot write, or the code's rollup after it (issue #126).
         from django.db.models.query import QuerySet
 
-        real_save = DoorCode.save
         real_update = QuerySet.update
 
-        def dying_save(instance, *args, **kwargs):
-            if instance.push_state == PUSHED and "push_state" in (kwargs.get("update_fields") or []):
-                raise KeyboardInterrupt
-            return real_save(instance, *args, **kwargs)
+        def dying_refresh(**kwargs):
+            raise KeyboardInterrupt
 
         def dying_update(queryset, **kwargs):
             if queryset.model is DoorCodeLockAssignment and kwargs.get("slot_index") is not None:
                 raise KeyboardInterrupt
             return real_update(queryset, **kwargs)
 
-        for target, replacement in ((DoorCode, ("save", dying_save)), (QuerySet, ("update", dying_update))):
+        for target, replacement in (
+            (lock_push_uc, ("refresh_push_state", dying_refresh)),
+            (QuerySet, ("update", dying_update)),
+        ):
             with self.subTest(dies_in=replacement[0]):
                 code, assignment = self._code_on_back_for_a_second_code(push_attempt_count=2, last_push_error="old")
                 gateway = FakeGateway(usersNumber=5, cache_updates_on_set=True)
@@ -323,6 +327,8 @@ class PushDualWriteTests(_TwoLockUpdateTestBase):
                 with patch.object(target, *replacement), self.assertRaises(KeyboardInterrupt):
                     self._push(code, gateway)
 
+                # It died after the PIN landed, so it's the success block that rolled back.
+                self.assertEqual(gateway._lock_codes, {(12, 1): "8642"})
                 self.assertEqual(_lock_state(assignment), (None, PENDING, 2, "old", False))
                 self.assertIsNone(assignment.last_push_attempt_at)
                 code.refresh_from_db()
@@ -351,7 +357,8 @@ class PushDualWriteTests(_TwoLockUpdateTestBase):
         self.assertEqual(_lock_state(assignment), (3, PUSHED, 0, "", False))
         self.assertIsNone(assignment.last_push_attempt_at)
         code.refresh_from_db()
-        self.assertEqual(code.push_state, FAILED)
+        # The code is the rollup of its locks now, and this one holds its slot (issue #126).
+        self.assertEqual(code.push_state, PUSHED)
 
 
 class SlotForgetDualWriteTests(_TwoLockUpdateTestBase):
@@ -461,8 +468,8 @@ class RetryDualWriteTests(_TwoLockUpdateTestBase):
         self.assertEqual((slot_index, state, count), (None, PENDING, 1))
         self.assertIn("ZwavejsCommandError", error)
         code.refresh_from_db()
-        # The code itself wasn't failed, so its count isn't reset, same as before.
-        self.assertEqual((code.push_state, code.push_attempt_count), (PENDING, 4))
+        # Retry always resets the code's clear-retry count now, and the timeout counts on the lock (issue #126).
+        self.assertEqual((code.push_state, code.push_attempt_count), (PENDING, 0))
 
     def test_retry_pushes_a_failed_lock(self):
         rejecting = ClearFailingGateway(usersNumber=5, cache_updates_on_set=True, admin_code=self.PIN)
@@ -482,6 +489,7 @@ class SchedulerCapDualWriteTests(_TwoLockUpdateTestBase):
     """The scheduler's cap fails each lock still waiting on a push along with the code."""
 
     def test_cap_fails_the_locks_still_waiting_and_keeps_their_own_error(self):
+        # Each lock's own count against the cap now (issue #126), not the code's.
         from locks.tasks import push_pending_door_codes
 
         code = DoorCode.objects.create(
@@ -491,9 +499,8 @@ class SchedulerCapDualWriteTests(_TwoLockUpdateTestBase):
             code_type=DoorCode.CodeType.PERMANENT,
             is_active=True,
             push_state=PENDING,
-            push_attempt_count=23,
         )
-        waiting = DoorCodeLockAssignment.objects.create(door_code=code, lock_entity_id=self.BACK, push_attempt_count=7)
+        waiting = DoorCodeLockAssignment.objects.create(door_code=code, lock_entity_id=self.BACK, push_attempt_count=23)
         on_lock = DoorCodeLockAssignment.objects.create(
             door_code=code, lock_entity_id=self.SIDE, slot_index=2, push_state=PUSHED
         )
@@ -504,8 +511,9 @@ class SchedulerCapDualWriteTests(_TwoLockUpdateTestBase):
 
         code.refresh_from_db()
         self.assertEqual(code.push_state, FAILED)
+        self.assertIn(f"{self.BACK}: Push gave up after 24 attempts", code.last_push_error)
         slot_index, state, count, error, _ = _lock_state(waiting)
-        self.assertEqual((slot_index, state, count), (None, FAILED, 8))
+        self.assertEqual((slot_index, state, count), (None, FAILED, 24))
         self.assertIn("ZwavejsCommandError", error)
         self.assertNotIn("gave up", error)
         self.assertEqual(_lock_state(on_lock), (2, PUSHED, 0, "", False))
