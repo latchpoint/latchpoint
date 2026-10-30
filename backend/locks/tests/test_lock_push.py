@@ -3935,14 +3935,17 @@ class TerminalPushErrorRecordingTests(EncryptionTestMixin, TestCase):
         self.assertEqual(gateway.invoke_calls, [])
         self._assert_terminal_failure_recorded(code, "Stored PIN could not be decrypted.")
 
-    def _client_unavailable_after_the_set(self, *, during: str) -> tuple[DoorCode, FakeGateway]:
-        from integrations_zwavejs.manager import ZwavejsClientUnavailable
+    def _terminal_error_after_the_set(self, *, during: str) -> tuple[DoorCode, FakeGateway]:
+        from integrations_zwavejs.manager import ZwavejsClientUnavailable, ZwavejsCommandValidationError
 
-        unavailable = ZwavejsClientUnavailable("Z-Wave JS client library not installed.")
         if during == "readback":
-            gateway = FakeGateway(usersNumber=3, get_responses=[unavailable])
+            # What reaches this path in prod: invoke_cc_api's own argument checks.
+            message = "node_id must be a positive integer."
+            gateway = FakeGateway(usersNumber=3, get_responses=[ZwavejsCommandValidationError(message)])
             code = self._make_code()
         else:
+            message = "Z-Wave JS client library not installed."
+            unavailable = ZwavejsClientUnavailable(message)
 
             class ScheduleFailsGateway(FakeGateway):
                 def invoke_cc_api(self, *, node_id, command_class, method_name, args=None, timeout_seconds=10.0):
@@ -3969,19 +3972,19 @@ class TerminalPushErrorRecordingTests(EncryptionTestMixin, TestCase):
 
         self.assertEqual(gateway._lock_codes, {(7, 1): "1234"})
         self.assertIsNone(DoorCodeLockAssignment.objects.get(door_code=code).slot_index)
-        self._assert_terminal_failure_recorded(code, "client library not installed")
+        self._assert_terminal_failure_recorded(code, message)
         return code, gateway
 
-    def test_client_unavailable_during_the_readback_leaves_an_untagged_marker(self):
-        code, _gateway = self._client_unavailable_after_the_set(during="readback")
+    def test_validation_error_during_the_readback_leaves_an_untagged_marker(self):
+        code, _gateway = self._terminal_error_after_the_set(during="readback")
 
         [marker] = self._markers(code)
         self.assertEqual(marker["slot_index"], 1)
         # The readback never accepted the slot, so a masked readback later doesn't count as ours.
         self.assertNotIn("slot_verified", marker)
 
-    def test_delete_after_client_unavailable_during_the_readback_reads_the_slot_back_and_clears_it(self):
-        code, gateway = self._client_unavailable_after_the_set(during="readback")
+    def test_delete_after_validation_error_during_the_readback_reads_the_slot_back_and_clears_it(self):
+        code, gateway = self._terminal_error_after_the_set(during="readback")
         gateway.invoke_calls.clear()
 
         door_codes_uc.delete_door_code(code=code, zwavejs=gateway)
@@ -3991,9 +3994,9 @@ class TerminalPushErrorRecordingTests(EncryptionTestMixin, TestCase):
         self.assertEqual(cc99, [("get", [1]), ("clear", [1])])
         self.assertEqual(gateway._lock_codes, {})
 
-    def test_retry_after_client_unavailable_during_the_readback_adopts_the_slot(self):
+    def test_retry_after_validation_error_during_the_readback_adopts_the_slot(self):
         # On a lock that takes duplicates, a retry without the marker puts the PIN in a second slot.
-        code, gateway = self._client_unavailable_after_the_set(during="readback")
+        code, gateway = self._terminal_error_after_the_set(during="readback")
         gateway._drops_duplicates = False
 
         result = push_door_code_to_lock(door_code=code, lock_entity_id=self.LOCK_ENTITY_ID, zwavejs=gateway)
@@ -4003,7 +4006,7 @@ class TerminalPushErrorRecordingTests(EncryptionTestMixin, TestCase):
         self.assertEqual(gateway._lock_codes, {(7, 1): "1234"})
 
     def test_client_unavailable_during_the_schedule_push_leaves_a_tagged_marker(self):
-        code, _gateway = self._client_unavailable_after_the_set(during="schedule")
+        code, _gateway = self._terminal_error_after_the_set(during="schedule")
 
         [marker] = self._markers(code)
         self.assertEqual(marker["slot_index"], 1)
@@ -4013,7 +4016,7 @@ class TerminalPushErrorRecordingTests(EncryptionTestMixin, TestCase):
     def test_delete_after_client_unavailable_during_the_schedule_push_clears_the_slot(self):
         for masked in (False, True):
             with self.subTest(masked=masked):
-                code, gateway = self._client_unavailable_after_the_set(during="schedule")
+                code, gateway = self._terminal_error_after_the_set(during="schedule")
                 if masked:
                     gateway._get_scripts = {None: [self.MASKED] * 20}
 
@@ -4128,21 +4131,40 @@ class TerminalPushErrorRecordingTests(EncryptionTestMixin, TestCase):
 
         self.assertEqual(gateway._lock_codes, {})
 
-    def test_untagged_attempt_keeps_the_tag_of_a_tagged_one_for_the_same_slot_and_pin(self):
-        def record(*, pin: str, slot_verified: bool = False) -> dict:
-            return lock_push_uc._record_unconfirmed_slot_attempt(
-                door_code=code,
-                lock_entity_id=self.LOCK_ENTITY_ID,
-                slot_index=1,
-                reason="timeout",
-                pin=pin,
-                slot_verified=slot_verified,
-            ).metadata
+    def test_masked_slot_read_back_empty_before_a_fresh_set_isnt_ours_once_a_keypad_code_lands(self):
+        # PR #192 review: a fresh set only goes into the slot of an older tagged
+        # attempt after adoption read that slot back empty, which disproves the
+        # old tag, so the new attempt must stay untagged.
+        from integrations_zwavejs.manager import ZwavejsCommandError
 
-        code = self._make_code()
-        self.assertNotIn("slot_verified", record(pin="1234"))
-        record(pin="1234", slot_verified=True)
+        gateway = self._schedule_times_out_gateway(usersNumber=3, get_responses=[self.MASKED])
+        code = self._scheduled_code()
+        with self.assertRaises(LockUnreachable):
+            push_door_code_to_lock(door_code=code, lock_entity_id=self.LOCK_ENTITY_ID, zwavejs=gateway)
+        self.assertIs(self._newest_marker(code)["slot_verified"], True)
 
-        self.assertIs(record(pin="1234")["slot_verified"], True)
-        # A different PIN isn't vouched for by the earlier readback.
-        self.assertNotIn("slot_verified", record(pin="5678"))
+        # The PIN leaves the slot, then push 2 reads it back empty twice, writes
+        # the PIN there again, the lock drops it and the readback times out.
+        gateway._lock_codes.clear()
+        gateway._late_reports.clear()
+        gateway._reject_pins = {7: {"1234"}}
+        empty = {"userIdStatus": 0, "userCode": ""}
+        timeout = ZwavejsCommandError("driver TimeoutError after 5.0s")
+        gateway._get_scripts = {None: [empty, empty, timeout, timeout, timeout]}
+        with (
+            patch.object(lock_push_uc, "_READBACK_RETRY_DELAYS_SECONDS", (0.0, 0.0)),
+            self.assertRaises(LockUnreachable),
+        ):
+            push_door_code_to_lock(door_code=code, lock_entity_id=self.LOCK_ENTITY_ID, zwavejs=gateway)
+        self.assertEqual(self._set_slots(gateway), [1, 1])
+        self.assertNotIn("slot_verified", self._newest_marker(code))
+
+        # Someone types a keypad code into that slot, and the lock masks it.
+        gateway._lock_codes[(7, 1)] = "9999"
+        gateway._get_scripts = {None: [self.MASKED] * 20}
+
+        door_codes_uc.delete_door_code(code=code, zwavejs=gateway)
+
+        self.assertFalse(DoorCode.objects.filter(id=code.id).exists())
+        self.assertEqual(gateway._lock_codes, {(7, 1): "9999"})
+        self.assertFalse(any(c["method_name"] == "clear" for c in gateway.invoke_calls))
