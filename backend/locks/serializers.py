@@ -154,6 +154,9 @@ class DoorCodeSerializer(serializers.ModelSerializer):
         ``last_push_attempt_at``, ``push_attempt_count`` and
         ``schedule_pending`` (the PIN is on the lock but its schedule isn't)
         (issues #126, #123). The code-level fields stay the rollup of these.
+        ``push_requested_at`` is when a save or Retry queued a push of the lock
+        (issue #124). It's still queued while that's after
+        ``last_push_attempt_at`` (or that's null) and the lock is ``pending``.
         Never a PIN.
         """
         prefetched = getattr(obj, "_prefetched_objects_cache", {}) or {}
@@ -174,6 +177,11 @@ class DoorCodeSerializer(serializers.ModelSerializer):
                 ),
                 "push_attempt_count": assignment.push_attempt_count,
                 "schedule_pending": assignment.schedule_pending,
+                "push_requested_at": (
+                    serializers.DateTimeField().to_representation(assignment.push_requested_at)
+                    if assignment.push_requested_at
+                    else None
+                ),
             }
             for assignment in obj.lock_assignments.all()
         ]

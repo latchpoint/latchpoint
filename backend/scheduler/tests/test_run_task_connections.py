@@ -179,6 +179,7 @@ class TaskConnectionDeclarationTests(TestCase):
         for module_name, task_name, expected in (
             ("control_panels.tasks", "resync_ring_keypad_siren", ("zwavejs",)),
             ("locks.tasks", "push_pending_door_codes", ("zwavejs",)),
+            ("locks.tasks", "push_requested_door_codes", ("zwavejs",)),
             ("alarm.tasks", "fire_due_pending_actions", ("mqtt", "zwavejs")),
             ("alarm.tasks", "process_due_rule_runtimes", ("mqtt", "zwavejs")),
             ("alarm.tasks", "cleanup_old_events", ()),

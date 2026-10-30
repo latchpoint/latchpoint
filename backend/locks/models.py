@@ -112,6 +112,11 @@ class DoorCodeLockAssignment(models.Model):
     last_push_attempt_at = models.DateTimeField(null=True, blank=True)
     last_push_error = models.CharField(max_length=500, blank=True, default="", db_default="")
     schedule_pending = models.BooleanField(default=False, db_default=False)
+    # A push of this lock queued for the push_requested_door_codes task (issue #124).
+    # It's done once last_push_attempt_at passes it, and lapses after a while.
+    push_requested_at = models.DateTimeField(null=True, blank=True)
+    # Who queued it, for the code_synced event the deferred push records.
+    push_requested_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

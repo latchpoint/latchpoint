@@ -148,6 +148,65 @@ class PushInTransaction(RuntimeError):
     """A push was called inside a DB transaction someone else opened (issue #130). Raised in dev and tests only."""
 
 
+class TimeBudgetExceeded(GatewayError):
+    """A call :class:`BudgetedGateway` refused because its time budget ran out. Nothing was sent (issue #124)."""
+
+    gateway_name = "zwavejs"
+
+
+# How long one lock's push may take, the queued push and the inline fallback alike (issue #124).
+# A slow lock that answers runs out of it and is left pending, uncounted, for the next retry.
+PUSH_LOCK_BUDGET_SECONDS = 30.0
+
+
+class BudgetedGateway:
+    """Wraps a Z-Wave JS gateway so the calls made through it end by one deadline (issue #124).
+
+    Each call's ``timeout_seconds`` is cut to what's left of the budget, and a
+    call once it's used up raises :class:`TimeBudgetExceeded` without reaching
+    the gateway. ``exhausted`` is set once that happens or a call fails after the
+    deadline, which is how a push tells a lock that ran out of time (not
+    counted toward the cap) from one that failed. Everything else is passed
+    through, so callers and tests see the same calls.
+    """
+
+    def __init__(self, inner: ZwavejsGateway, *, seconds: float):
+        self._inner = inner
+        self.seconds = float(seconds)
+        self.deadline = _time.monotonic() + self.seconds
+        self.exhausted = False
+
+    def remaining(self) -> float:
+        return self.deadline - _time.monotonic()
+
+    def __getattr__(self, name: str):
+        attr = getattr(self._inner, name)
+        if not callable(attr):
+            return attr
+
+        def call(*args, **kwargs):
+            remaining = self.remaining()
+            if remaining <= 0:
+                self.exhausted = True
+                raise TimeBudgetExceeded(f"Ran out of its {self.seconds:g}s time budget before {name}; will retry.")
+            timeout = kwargs.get("timeout_seconds")
+            if isinstance(timeout, (int, float)) and remaining < timeout:
+                kwargs["timeout_seconds"] = remaining
+            try:
+                return attr(*args, **kwargs)
+            except Exception:
+                if self.remaining() <= 0:
+                    self.exhausted = True
+                raise
+
+        return call
+
+
+def _out_of_budget(zwavejs: object) -> bool:
+    """Whether ``zwavejs`` is a :class:`BudgetedGateway` whose budget ran out, ie a failure not to count."""
+    return isinstance(zwavejs, BudgetedGateway) and zwavejs.exhausted
+
+
 def _in_outer_transaction() -> bool:
     """Whether this connection is inside a transaction a caller opened, ``TestCase``'s own aside.
 
@@ -287,6 +346,9 @@ def _enumerate_free_slot(
         }
         try:
             status_value = zwavejs.node_get_value(node_id=node_id, value_id=status_vid, timeout_seconds=timeout_seconds)
+        except TimeBudgetExceeded:
+            # Out of time, not out of slots (issue #124).
+            raise
         except Exception:
             # Treat unknown status as occupied to avoid clobbering a real code.
             continue
@@ -519,7 +581,8 @@ def _verify_user_code_slot(
                 slot_index=slot_index,
                 timeout_seconds=timeout_seconds,
             )
-        except (ZwavejsNotConfigured, ZwavejsClientUnavailable):
+        except (ZwavejsNotConfigured, ZwavejsClientUnavailable, TimeBudgetExceeded):
+            # Out of time is no answer either, but asking again would only sleep (issue #124).
             raise
         except GatewayError as exc:
             last_reason = f"{exc.__class__.__name__}: {exc}"
@@ -1905,8 +1968,14 @@ def retry_failed_slot_clears(
     door_code: DoorCode,
     zwavejs: ZwavejsGateway,
     timeout_seconds: float = 5.0,
+    budget_seconds: float | None = None,
 ) -> list[ClearFailure]:
     """Retry the clears recorded by :func:`record_clear_failure`. Returns the ones still failing.
+
+    ``budget_seconds`` bounds the whole call, lock waits and Z-Wave JS calls
+    together (:class:`BudgetedGateway`), for Retry's request (issue #124). A
+    clear that doesn't fit keeps its ``clear_failed`` event, so it's still
+    outstanding and the scheduler retries it.
 
     A slot held by another code's assignment now is settled as ``tracked`` and
     never touched, as is an unconfirmed slot this code's assignment now tracks
@@ -1932,6 +2001,9 @@ def retry_failed_slot_clears(
     still_failing: list[ClearFailure] = []
     attempted_and_failed = False
     deadline = sync_lock_deadline()
+    if budget_seconds is not None:
+        zwavejs = BudgetedGateway(zwavejs, seconds=budget_seconds)
+        deadline = min(deadline, zwavejs.deadline)
     failures = unresolved_clear_failures(door_code=door_code)
     for lock_entity_id in sorted({f.lock_entity_id for f in failures}):
         try:
@@ -2720,13 +2792,15 @@ def _record_lock_push_failure(
     error_message: str,
     terminal: bool,
     event_metadata: dict[str, object] | None = None,
+    counted: bool = True,
 ) -> None:
     """Record a push failure on this lock, then refresh the code (issue #126).
 
     A transient failure leaves the lock ``pending`` and a terminal one makes it
     ``failed``. Either way the attempt is counted on the lock (the code-level
     count only counts clear retries now, and PR #192 counts a terminal
-    ``InvalidPin``), and it gets the error and the attempt time. Only a lock that still needs a
+    ``InvalidPin``), unless ``counted`` is off for a push that ran out of its
+    time budget (issue #124), and it gets the error and the attempt time. Only a lock that still needs a
     push is written: no slot, or a slot whose schedule is pending (issue #123),
     which it keeps. A pushed lock is left alone (the node lookup records its
     failure before the push checks for a slot). The code-level
@@ -2744,7 +2818,7 @@ def _record_lock_push_failure(
             Q(slot_index__isnull=True) | Q(schedule_pending=True)
         ).update(
             push_state=DoorCode.PushState.FAILED if terminal else DoorCode.PushState.PENDING,
-            push_attempt_count=F("push_attempt_count") + 1,
+            push_attempt_count=F("push_attempt_count") + (1 if counted else 0),
             last_push_error=_cut_push_error(safe_message),
             last_push_attempt_at=attempted_at,
         )
@@ -2982,7 +3056,11 @@ def push_door_code_to_lock(
             # Counted like any transient failure, so a lock with nothing Available
             # ends up failed at the attempt cap instead of retried forever.
             _record_lock_push_failure(
-                door_code=door_code, error_message=str(exc), terminal=False, lock_entity_id=lock_entity_id
+                door_code=door_code,
+                error_message=str(exc),
+                terminal=False,
+                lock_entity_id=lock_entity_id,
+                counted=not _out_of_budget(zwavejs),
             )
             raise
         except LockRejectedCode as exc:
@@ -2993,11 +3071,13 @@ def push_door_code_to_lock(
         except LockPushFailed:
             raise
         except GatewayError as exc:
+            # Out of time isn't counted toward the cap (issue #124).
             _record_lock_push_failure(
                 door_code=door_code,
                 error_message=f"{exc.__class__.__name__}: {exc}",
                 terminal=False,
                 lock_entity_id=lock_entity_id,
+                counted=not _out_of_budget(zwavejs),
             )
             raise LockUnreachable("Lock is not reachable right now; will retry.") from exc
 
@@ -3145,6 +3225,9 @@ def push_door_code_to_lock(
             raise
         except GatewayError as exc:
             error_message = f"{exc.__class__.__name__}: {exc}"
+            if isinstance(exc, TimeBudgetExceeded) and not set_returned:
+                # The budget refused the set itself, so nothing went to the slot (issue #124).
+                pin_sent_to_slot = False
             if (
                 isinstance(exc, LockCodeUnverified)
                 and exc.read_back_empty
@@ -3181,7 +3264,11 @@ def push_door_code_to_lock(
                     and not (isinstance(exc, LockCodeUnverified) and exc.read_back_empty),
                 )
             _record_lock_push_failure(
-                door_code=door_code, error_message=error_message, terminal=False, lock_entity_id=lock_entity_id
+                door_code=door_code,
+                error_message=error_message,
+                terminal=False,
+                lock_entity_id=lock_entity_id,
+                counted=not _out_of_budget(zwavejs),
             )
             raise LockUnreachable("Lock did not accept the code in time; will retry.") from exc
 
@@ -3361,6 +3448,7 @@ def _push_schedule_to_slot(
             lock_entity_id=lock_entity_id,
             error_message=f"Schedule not applied: {exc.__class__.__name__}: {exc}",
             terminal=False,
+            counted=not _out_of_budget(zwavejs),
         )
         raise LockUnreachable("Lock did not accept the schedule in time; will retry.") from exc
 
@@ -3450,8 +3538,12 @@ def push_door_code_to_assigned_locks(
     timeout_seconds: float = 5.0,
     only_unassigned: bool = True,
     include_failed: bool = False,
+    lock_budget_seconds: float | None = None,
 ) -> tuple[list[PushResult], list[tuple[str, str]]]:
     """Push ``door_code`` to the locks it is assigned to, then refresh its rollup.
+
+    ``lock_budget_seconds`` gives each lock's push its own :class:`BudgetedGateway`
+    (the request path's inline fallback, issue #124).
 
     Returns ``(successes, failures)``. Failures is a list of ``(lock_entity_id, reason)``
     tuples; transient failures leave that lock ``pending`` for the scheduler.
@@ -3496,7 +3588,9 @@ def push_door_code_to_assigned_locks(
             result = push_door_code_to_lock(
                 door_code=door_code,
                 lock_entity_id=assignment.lock_entity_id,
-                zwavejs=zwavejs,
+                zwavejs=zwavejs
+                if lock_budget_seconds is None
+                else BudgetedGateway(zwavejs, seconds=lock_budget_seconds),
                 actor_user=actor_user,
                 timeout_seconds=timeout_seconds,
             )
@@ -3519,6 +3613,7 @@ def push_or_settle_after_clear_retry(
     zwavejs: ZwavejsGateway,
     actor_user=None,
     include_failed: bool = False,
+    lock_budget_seconds: float | None = None,
 ) -> tuple[list[PushResult], list[tuple[str, str]]]:
     """After :func:`retry_failed_slot_clears`, push an active code to the locks that need it.
 
@@ -3527,7 +3622,8 @@ def push_or_settle_after_clear_retry(
     slot) is cleared first (:func:`clear_inactive_code_slots`, issue #158), and
     those still outstanding come back as the failures. It's ``pushed`` once
     nothing is left to clear, the same as a deactivate, since its locks then
-    hold nothing. ``include_failed`` goes to :func:`push_door_code_to_assigned_locks`.
+    hold nothing. ``include_failed`` and ``lock_budget_seconds`` go to
+    :func:`push_door_code_to_assigned_locks`.
     """
     door_code = DoorCode.objects.prefetch_related("lock_assignments").get(id=door_code.id)
     if not door_code.is_active:
@@ -3546,7 +3642,99 @@ def push_or_settle_after_clear_retry(
         actor_user=actor_user,
         only_unassigned=True,
         include_failed=include_failed,
+        lock_budget_seconds=lock_budget_seconds,
     )
     # Also for a code the push left alone (not started, expired), whose clears may have changed.
     refresh_push_state(door_code=door_code)
     return successes, failures
+
+
+# The scheduler task that pushes what request_push queued, in locks/tasks.py (issue #124).
+PUSH_REQUESTED_TASK = "push_requested_door_codes"
+
+# How long a queued push stays queued. A lock still busy that long is left to
+# push_pending_door_codes, which retries every pending lock every 300s anyway.
+PUSH_REQUEST_TTL = timedelta(minutes=10)
+
+
+def push_task_running() -> bool:
+    """Whether this process runs :data:`PUSH_REQUESTED_TASK`, so a push :func:`request_push` queues goes out in seconds.
+
+    It's the scheduler's own record of the task's loop
+    (:func:`scheduler.runner.is_task_running`): a live thread that isn't
+    stopping, which is also the only thing :func:`scheduler.runner.wake_task`
+    reaches. So it's false with ``SCHEDULER_ENABLED=False``, in tests and
+    management commands, and in a process that didn't get the leader lock, and
+    the save pushes inline there like before (issue #124).
+    """
+    from scheduler.runner import is_task_running
+
+    return is_task_running(PUSH_REQUESTED_TASK)
+
+
+def _wake_push_task() -> None:
+    from scheduler.runner import wake_task
+
+    wake_task(PUSH_REQUESTED_TASK)
+
+
+def request_push(
+    code: DoorCode,
+    lock_entity_ids: list[str] | None = None,
+    *,
+    actor_user=None,
+) -> list[str]:
+    """Queue a push of ``code`` to its locks for :data:`PUSH_REQUESTED_TASK` instead of pushing it now (issue #124).
+
+    Stamps ``push_requested_at`` and ``push_requested_by`` (the actor on the
+    ``code_synced`` event the push records) on the locks a push would send
+    something to, by :func:`locks_to_push`'s rule, limited to
+    ``lock_entity_ids`` when given. Nothing for a code that's inactive, not
+    started or expired, since nothing pushes one of those. The code row is
+    taken first like every writer of a code's assignments. The task is woken
+    once the caller's transaction commits, never on a rollback, and a wake in a
+    process that doesn't run the task does nothing (the stamp still is
+    picked up by the process that does, within its 5s tick). Returns the locks
+    stamped.
+    """
+    now = django_timezone.now()
+    wanted = None if lock_entity_ids is None else set(lock_entity_ids)
+    with transaction.atomic():
+        row = _lock_code_row(code.id)
+        if row is None or not row.is_active or not belongs_on_lock(row, now=now):
+            return []
+        locks = [a for a in locks_to_push(door_code=row) if wanted is None or a.lock_entity_id in wanted]
+        if not locks:
+            return []
+        DoorCodeLockAssignment.objects.filter(id__in=[a.id for a in locks]).update(
+            push_requested_at=now, push_requested_by=actor_user
+        )
+        transaction.on_commit(_wake_push_task, robust=True)
+    return sorted(a.lock_entity_id for a in locks)
+
+
+def queued_push_assignments(*, now: datetime, max_attempts: int):
+    """The locks :data:`PUSH_REQUESTED_TASK` pushes at ``now``, as a ``DoorCodeLockAssignment`` queryset (issue #124).
+
+    ``pending`` and needing a ``set`` or a schedule, not being dropped, under
+    the cap, on a code that's active, started and not expired, and with a
+    ``push_requested_at`` inside :data:`PUSH_REQUEST_TTL` that no push attempt
+    on that lock has come after. Any attempt counts, the scheduler's 300s retry
+    and an inline push included, so a request is used up by the first push that
+    gets to the lock. :func:`locks_to_push` has the rest of the rule (a slot
+    with a clear outstanding), which needs the code's events.
+    """
+    pushable = DoorCode.objects.filter(is_active=True).filter(started_q(now) & ~expired_q(now))
+    queued = (
+        DoorCodeLockAssignment.objects.filter(
+            door_code__in=pushable,
+            push_state=DoorCode.PushState.PENDING,
+            push_requested_at__gt=now - PUSH_REQUEST_TTL,
+        )
+        .filter(Q(slot_index__isnull=True) | Q(schedule_pending=True))
+        .filter(Q(last_push_attempt_at__isnull=True) | Q(last_push_attempt_at__lt=F("push_requested_at")))
+        .exclude(being_removed_q())
+    )
+    if max_attempts > 0:
+        queued = queued.filter(push_attempt_count__lt=max_attempts)
+    return queued

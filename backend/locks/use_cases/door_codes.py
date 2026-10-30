@@ -22,6 +22,10 @@ logger = logging.getLogger(__name__)
 # default (issue #124).
 _REQUEST_CLEAR_TIMEOUT_SECONDS = 5.0
 
+# How long Retry's clear retries may take in the request, lock waits included.
+# Room for one unconfirmed slot's readback and clear on a slow lock (issue #124).
+_RETRY_CLEAR_BUDGET_SECONDS = 15.0
+
 if TYPE_CHECKING:
     from alarm.gateways.zwavejs import ZwavejsGateway
     from locks.use_cases.lock_push import ClearFailure
@@ -174,9 +178,15 @@ def create_door_code(
     )
 
     if zwavejs is not None and lock_entity_ids:
-        # Refresh so the freshly-created assignments are visible to push.
-        code = DoorCode.objects.prefetch_related("lock_assignments").get(id=code.id)
-        _push_to_assigned_locks_best_effort(code=code, zwavejs=zwavejs, actor_user=actor_user)
+        from locks.use_cases.lock_push import push_task_running, request_push
+
+        if push_task_running():
+            # Saved and returned pending; the scheduler pushes it in seconds (issue #124).
+            request_push(code, actor_user=actor_user)
+        else:
+            # Refresh so the freshly-created assignments are visible to push.
+            code = DoorCode.objects.prefetch_related("lock_assignments").get(id=code.id)
+            _push_to_assigned_locks_best_effort(code=code, zwavejs=zwavejs, actor_user=actor_user)
 
     return code
 
@@ -274,9 +284,20 @@ def update_door_code(
     Waits for a push or config sync already running on one of those locks, and
     raises :class:`LockBusy` (409) without changing anything when one is still
     running at the wait limit. See :func:`_update_door_code_locked`.
+
+    Its push isn't made while those locks are held (issue #124): it's queued
+    for the scheduler, or where that doesn't run in this process it goes out
+    inline once they're let go, each lock's push still taking its own
+    ``lock_sync:`` lock and reading the code again.
     """
     with _hold_door_code_locks(code=code, extra_lock_entity_ids=changes.get("lock_entity_ids") or ()):
-        return _update_door_code_locked(code=code, changes=changes, actor_user=actor_user, zwavejs=zwavejs)
+        code, push_inline = _update_door_code_locked(code=code, changes=changes, actor_user=actor_user, zwavejs=zwavejs)
+    if push_inline and zwavejs is not None:
+        fresh = DoorCode.objects.prefetch_related("lock_assignments").filter(id=code.id).first()
+        if fresh is not None:
+            _push_to_assigned_locks_best_effort(code=fresh, zwavejs=zwavejs, actor_user=actor_user)
+            code = fresh
+    return code
 
 
 def retire_door_code(
@@ -302,13 +323,15 @@ def retire_door_code(
             check_at = now if now is not None else django_timezone.now()
             if not code.is_active or not is_expired(code, now=check_at):
                 return None
-            return _update_door_code_locked(
+            # A deactivate, so there's never a push to make afterwards.
+            code, _push_inline = _update_door_code_locked(
                 code=code,
                 changes={"is_active": False},
                 actor_user=None,
                 zwavejs=zwavejs,
                 event_metadata={"reason": reason},
             )
+            return code
     except NotFound:
         return None
 
@@ -375,8 +398,13 @@ def _update_door_code_locked(
     actor_user: User | None = None,
     zwavejs: ZwavejsGateway | None = None,
     event_metadata: dict[str, object] | None = None,
-) -> DoorCode:
+) -> tuple[DoorCode, bool]:
     """Update a door code and its lock assignments, emitting a `DoorCodeEvent` when changed.
+
+    Returns the code and whether the caller still has to push it inline, once
+    it lets go of the ``lock_sync:`` locks (issue #124). When the scheduler's
+    push task runs in this process the push is queued here instead
+    (:func:`locks.use_cases.lock_push.request_push`) and that's ``False``.
 
     When ``zwavejs`` is provided, dropped locks' slots are CC 99 ``clear``-ed. A
     change to a push-relevant field's value clears and re-pushes every lock; a
@@ -390,6 +418,7 @@ def _update_door_code_locked(
     ``event_metadata`` is added to the ``code_updated`` event.
     """
     updated_fields = []
+    push_inline = False
 
     # Snapshot the PIN before it can be overwritten: a still-pending push may have
     # left it in a slot that only the recorded unconfirmed attempts know about.
@@ -628,8 +657,14 @@ def _update_door_code_locked(
                         last_push_attempt_at=code.last_push_attempt_at, updated_at=code.last_push_attempt_at
                     )
             else:
-                code = DoorCode.objects.prefetch_related("lock_assignments").get(id=code.id)
-                _push_to_assigned_locks_best_effort(code=code, zwavejs=zwavejs, actor_user=actor_user)
+                from locks.use_cases.lock_push import push_task_running, request_push
+
+                # Not under the locks this holds, so a slow lock doesn't keep the
+                # others busy for the whole push (issue #124).
+                if push_task_running():
+                    request_push(code, actor_user=actor_user)
+                else:
+                    push_inline = True
 
         if failed_slot_clears and updated_event is not None:
             updated_event.metadata["failed_slot_clears"] = [f.as_metadata() for f in failed_slot_clears]
@@ -643,7 +678,7 @@ def _update_door_code_locked(
 
         refresh_push_state(door_code=code)
 
-    return code
+    return code, push_inline
 
 
 def delete_door_code(
@@ -847,16 +882,18 @@ def _push_to_assigned_locks_best_effort(
 
     Failures persist on the row (``push_state``, ``last_push_error``) and are
     picked up by the scheduler retry. The HTTP caller still gets a 201/200 with
-    the saved row.
+    the saved row. The inline fallback for a process that doesn't run the push
+    task (issue #124), so each lock gets :data:`PUSH_LOCK_BUDGET_SECONDS`.
     """
     try:
-        from locks.use_cases.lock_push import push_door_code_to_assigned_locks
+        from locks.use_cases.lock_push import PUSH_LOCK_BUDGET_SECONDS, push_door_code_to_assigned_locks
 
         push_door_code_to_assigned_locks(
             door_code=code,
             zwavejs=zwavejs,
             actor_user=actor_user,
             only_unassigned=True,
+            lock_budget_seconds=PUSH_LOCK_BUDGET_SECONDS,
         )
     except Exception:
         # Unexpected error from the push pipeline. Per-lock failures are recorded
@@ -897,15 +934,25 @@ def retry_push_door_code(
     and it gets a 409 when there's nothing to clear. An active code past its
     ``end_at`` that the scheduler hasn't turned off yet is retired right away
     (:func:`retire_door_code`) instead of being retried (PR #183 review).
+
+    The clear retries run in the request but only for
+    :data:`_RETRY_CLEAR_BUDGET_SECONDS` together; the ones that don't fit stay
+    on record for the scheduler. The push of an active code is then queued for
+    the scheduler (:func:`locks.use_cases.lock_push.request_push`), or made
+    inline with each lock's budget where that doesn't run in this process
+    (issue #124).
     """
     assert_admin(user=actor_user) if actor_user is not None else None
 
     from locks.tasks import _get_push_max_attempts
     from locks.use_cases.lock_push import (
+        PUSH_LOCK_BUDGET_SECONDS,
         inactive_slots_to_clear,
         push_or_settle_after_clear_retry,
+        push_task_running,
         rearm_failed_locks,
         refresh_push_state,
+        request_push,
         retry_failed_slot_clears,
         slots_to_withdraw,
         unresolved_clear_failures,
@@ -935,7 +982,7 @@ def retry_push_door_code(
     if not_started and not unresolved_clear_failures(door_code=code) and not slots_to_withdraw(door_code=code):
         raise DoorCodeNotStarted("Door code hasn't started yet. It goes on its locks at its start time.")
 
-    retry_failed_slot_clears(door_code=code, zwavejs=zwavejs)
+    retry_failed_slot_clears(door_code=code, zwavejs=zwavejs, budget_seconds=_RETRY_CLEAR_BUDGET_SECONDS)
 
     # A failed lock or a capped clear was given up on by the scheduler; an
     # explicit retry is the operator saying "yes, try again". So every failed
@@ -957,5 +1004,17 @@ def retry_push_door_code(
             refresh_push_state(door_code=code)
         return fresh()
 
-    push_or_settle_after_clear_retry(door_code=code, zwavejs=zwavejs, actor_user=actor_user, include_failed=True)
+    if code.is_active and push_task_running():
+        # Every failed lock was re-armed above, so the queued push gets them too.
+        request_push(code, actor_user=actor_user)
+        refresh_push_state(door_code=code)
+        return fresh()
+
+    push_or_settle_after_clear_retry(
+        door_code=code,
+        zwavejs=zwavejs,
+        actor_user=actor_user,
+        include_failed=True,
+        lock_budget_seconds=PUSH_LOCK_BUDGET_SECONDS,
+    )
     return fresh()

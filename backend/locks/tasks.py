@@ -236,6 +236,108 @@ def push_pending_door_codes() -> int:
     return attempted
 
 
+# How long the queued push task waits for a lock someone else holds before moving
+# on. The lock stays queued, so the next 5s tick waits for it again (issue #124).
+_QUEUED_PUSH_LOCK_WAIT_SECONDS = 10.0
+
+
+@register(
+    "push_requested_door_codes",
+    schedule=Every(seconds=5, jitter=1),
+    description="Pushes door codes onto their locks right after they're saved or retried.",
+    connections=("zwavejs",),
+)
+def push_requested_door_codes() -> int:
+    """Push the locks a create, update or Retry queued with ``request_push``, lock by lock (issue #124).
+
+    Woken by ``scheduler.runner.wake_task`` once the save commits, so a queued
+    push goes out within moments, and the 5s tick is the backstop. The locks are
+    ``queued_push_assignments`` (one cheap query when there's nothing queued,
+    ADR-0103) and ``locks_to_push``'s rule on top. Each lock is pushed on its
+    own: the task waits up to ``_QUEUED_PUSH_LOCK_WAIT_SECONDS`` for its
+    ``lock_sync:`` lock, checks it's still queued once it holds it (a push that
+    got there first used the request up), and pushes through a
+    ``BudgetedGateway``, so a slow lock gives up after
+    ``PUSH_LOCK_BUDGET_SECONDS`` and is left ``pending`` without the attempt
+    counting toward the cap. An attempt that ran counts like any other push. A
+    lock still busy at the wait stays queued for the next tick, until the
+    request lapses after ``PUSH_REQUEST_TTL`` and ``push_pending_door_codes``
+    has it. The ``code_synced`` event's actor is whoever queued it, and each
+    code ends with ``refresh_push_state``. Errors are caught per lock and per
+    code. Returns the number of locks it tried.
+    """
+    from locks.use_cases.lock_config_sync import LockBusy, hold_lock_sync, sync_lock_deadline
+    from locks.use_cases.lock_push import (
+        PUSH_LOCK_BUDGET_SECONDS,
+        BudgetedGateway,
+        InvalidPin,
+        LockPushFailed,
+        LockSlotsFull,
+        LockUnreachable,
+        PushSuperseded,
+        locks_to_push,
+        push_door_code_to_lock,
+        queued_push_assignments,
+        refresh_push_state,
+    )
+
+    now = timezone.now()
+    # Idle fast path (ADR-0103): one query, before the cap is even read.
+    if not queued_push_assignments(now=now, max_attempts=0).exists():
+        return 0
+    queued = queued_push_assignments(now=now, max_attempts=_get_push_max_attempts())
+
+    attempted = 0
+    for code_id in sorted(set(queued.values_list("door_code_id", flat=True))):
+        code = DoorCode.objects.filter(id=code_id).first()
+        if code is None:
+            continue
+        try:
+            lock_entity_ids = [
+                a.lock_entity_id
+                for a in locks_to_push(
+                    door_code=code, assignments=list(queued.filter(door_code_id=code_id).order_by("lock_entity_id"))
+                )
+            ]
+            for lock_entity_id in lock_entity_ids:
+                try:
+                    with hold_lock_sync([lock_entity_id], deadline=sync_lock_deadline(_QUEUED_PUSH_LOCK_WAIT_SECONDS)):
+                        current = (
+                            DoorCodeLockAssignment.objects.select_related("push_requested_by")
+                            .filter(door_code_id=code_id, lock_entity_id=lock_entity_id)
+                            .first()
+                        )
+                        if current is not None and not queued.filter(id=current.id).exists():
+                            # Pushed, tried or changed while this waited for the lock.
+                            continue
+                        # A code deleted or a lock dropped meanwhile goes through the push
+                        # too, which finds that out and raises PushSuperseded with nothing sent.
+                        attempted += 1
+                        push_door_code_to_lock(
+                            door_code=code,
+                            lock_entity_id=lock_entity_id,
+                            zwavejs=BudgetedGateway(default_zwavejs_gateway, seconds=PUSH_LOCK_BUDGET_SECONDS),
+                            actor_user=current.push_requested_by if current is not None else None,
+                        )
+                except LockBusy:
+                    logger.info(
+                        "Queued push of door code id=%d to %s is still waiting for the lock", code_id, lock_entity_id
+                    )
+                except PushSuperseded:
+                    logger.info("Door code id=%d changed while its queued push waited; stopping", code_id)
+                    break
+                except (LockUnreachable, LockSlotsFull, LockPushFailed, InvalidPin):
+                    # Recorded on the lock by the push itself.
+                    pass
+                except Exception:
+                    logger.exception("Unexpected error pushing queued door code id=%d to %s", code_id, lock_entity_id)
+            refresh_push_state(door_code=code)
+        except Exception:
+            logger.exception("Unexpected error in the queued push of door code id=%d", code_id)
+
+    return attempted
+
+
 @register(
     "enforce_door_code_validity",
     schedule=Every(seconds=60),
