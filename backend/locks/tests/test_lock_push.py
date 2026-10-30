@@ -4620,3 +4620,100 @@ class MaskedUnconfirmedSlotTests(EncryptionTestMixin, TestCase):
 
         self.assertEqual(self._calls(gateway, "clear"), [])
         self.assertEqual(gateway._lock_codes, {(7, 1): "9999"})
+
+    @staticmethod
+    def _prune_old_events() -> None:
+        """Age every event past a 90 day retention and run the retention task."""
+        from django.utils import timezone
+
+        from locks.tasks import cleanup_door_code_events
+
+        DoorCodeEvent.objects.update(created_at=timezone.now() - timedelta(days=100))
+        with patch("locks.tasks._get_door_code_event_retention_days", return_value=90):
+            cleanup_door_code_events()
+
+    def test_pruning_doesnt_bring_back_the_trust_adoption_dropped(self):
+        # PR #193 re-review R1.
+        code, gateway = self._adoption_reads_empty_once_then_times_out()
+        self._prune_old_events()
+
+        door_codes_uc.delete_door_code(code=code, zwavejs=gateway)
+
+        self.assertEqual(self._calls(gateway, "clear"), [])
+        self.assertEqual(gateway._lock_codes, {(7, 1): "9999"})
+
+    def test_pruning_doesnt_bring_back_the_trust_a_clear_retry_dropped(self):
+        # PR #193 re-review R2.
+        code, gateway = self._unconfirmed_push(gateway_class=ClearFailingGateway)
+        gateway.clear_fails_on = {7}
+        door_codes_uc.update_door_code(code=code, changes={"code": "5678"}, zwavejs=gateway)
+        gateway.clear_fails_on = set()
+        del gateway._lock_codes[(7, 1)]
+        gateway._get_scripts = {None: [self.EMPTY, *self._timeouts(2)]}
+        self.assertEqual(len(lock_push_uc.retry_failed_slot_clears(door_code=code, zwavejs=gateway)), 1)
+        self._keypad_code_lands_in_slot_1(gateway)
+
+        self._prune_old_events()
+
+        [failure] = lock_push_uc.unresolved_clear_failures(door_code=code)
+        self.assertEqual((failure.slot_index, failure.slot_available), (1, False))
+        lock_push_uc.retry_failed_slot_clears(door_code=code, zwavejs=gateway)
+        self.assertEqual(self._calls(gateway, "clear"), [])
+        self.assertEqual(gateway._lock_codes[(7, 1)], "9999")
+
+    def _other_code_reads_slot_1(
+        self, *, get_responses: list, expected_error: type[Exception]
+    ) -> tuple[DoorCode, FakeGateway]:
+        """X's set into slot 1 never stuck. Y's push picks slot 1 too, its set is dropped and its readback runs."""
+        code, gateway = self._unconfirmed_push()
+        gateway._lock_codes.clear()
+        gateway._cache_codes.clear()
+        other = self._make_code(pin="5555")
+        gateway._reject_pins = {7: {"5555"}}
+        gateway._get_scripts = {None: list(get_responses)}
+        with self.assertRaises(expected_error):
+            push_door_code_to_lock(door_code=other, lock_entity_id=self.LOCK_ENTITY_ID, zwavejs=gateway)
+        self.assertEqual(self._calls(gateway, "set"), [1])
+        gateway._reject_pins = {}
+        self._keypad_code_lands_in_slot_1(gateway)
+        return code, gateway
+
+    def test_pruning_keeps_another_codes_marker_that_dropped_the_trust(self):
+        code, gateway = self._other_code_reads_slot_1(
+            get_responses=[self.EMPTY, self.EMPTY], expected_error=LockRejectedCode
+        )
+        self._prune_old_events()
+
+        door_codes_uc.delete_door_code(code=code, zwavejs=gateway)
+
+        self.assertEqual(self._calls(gateway, "clear"), [])
+        self.assertEqual(gateway._lock_codes, {(7, 1): "9999"})
+
+    def test_another_codes_post_set_readback_seeing_the_slot_empty_once_drops_the_trust(self):
+        code, gateway = self._other_code_reads_slot_1(
+            get_responses=[self.EMPTY, *self._timeouts(2)], expected_error=LockUnreachable
+        )
+
+        door_codes_uc.delete_door_code(code=code, zwavejs=gateway)
+
+        self.assertEqual(self._calls(gateway, "clear"), [])
+        self.assertEqual(gateway._lock_codes, {(7, 1): "9999"})
+
+    def test_another_codes_cleanup_seeing_the_slot_empty_once_drops_the_trust(self):
+        # X's attempt on slot 1 is tagged. Y also has an attempt there, and Y's PIN
+        # change cleanup reads slot 1 back empty once, then gets no answer.
+        code, gateway = self._unconfirmed_push()
+        del gateway._lock_codes[(7, 1)]  # the Z-Wave JS cache still says slot 1 is taken
+        other = self._make_code(pin="5555")
+        lock_push_uc._record_unconfirmed_slot_attempt(
+            door_code=other, lock_entity_id=self.LOCK_ENTITY_ID, slot_index=1, reason="timeout", pin="5555"
+        )
+        gateway._get_scripts = {None: [self.EMPTY, *self._timeouts(2), *[self.MASKED] * 20]}
+        door_codes_uc.update_door_code(code=other, changes={"code": "6666"}, zwavejs=gateway)
+        self.assertEqual(self._slot_of(other), 2)
+        self._keypad_code_lands_in_slot_1(gateway)
+
+        door_codes_uc.delete_door_code(code=code, zwavejs=gateway)
+
+        self.assertEqual(self._calls(gateway, "clear"), [])
+        self.assertEqual(gateway._lock_codes[(7, 1)], "9999")

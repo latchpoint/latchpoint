@@ -588,21 +588,20 @@ def _slot_empty_markers(
     *, lock_entity_id: str, slot_index: int, door_code: DoorCode | None = None, after_id: int | None = None
 ) -> list[int]:
     """Ids of the ``slot_empty`` markers for this lock and slot, every code's unless ``door_code`` is given."""
-    markers = DoorCodeEvent.objects.filter(
-        lock_entity_id=lock_entity_id,
-        metadata__action__in=[_UNCONFIRMED_RESOLVED_ACTION, _CLEAR_RESOLVED_ACTION, _SLOT_SEEN_EMPTY_ACTION],
-    )
+    markers = _slot_empty_marker_events().filter(lock_entity_id=lock_entity_id, metadata__slot_index=int(slot_index))
     if door_code is not None:
         markers = markers.filter(door_code=door_code)
     if after_id is not None:
         markers = markers.filter(id__gt=after_id)
-    return [
-        event_id
-        for event_id, metadata in markers.values_list("id", "metadata")
-        if isinstance(metadata, dict)
-        and metadata.get(_SLOT_EMPTY_KEY)
-        and _coerce_int(metadata.get("slot_index")) == slot_index
-    ]
+    return list(markers.values_list("id", flat=True))
+
+
+def _slot_empty_marker_events():
+    """Every ``slot_empty`` marker: settle markers whose slot read back empty, and ``slot_read_back_empty``."""
+    return DoorCodeEvent.objects.filter(
+        metadata__action__in=[_UNCONFIRMED_RESOLVED_ACTION, _CLEAR_RESOLVED_ACTION, _SLOT_SEEN_EMPTY_ACTION],
+        metadata__slot_empty=True,
+    )
 
 
 def _masked_trust_dropped(*, lock_entity_id: str, slot_index: int, since_id: int | None) -> bool:
@@ -882,6 +881,21 @@ def _find_adoptable_attempted_slot(
                 # Empty once, then no answer: no verdict, but the slot doesn't
                 # get counted as ours on a masked readback again (PR #193 review).
                 _record_slot_read_back_empty(door_code=door_code, lock_entity_id=lock_entity_id, slot_index=slot_index)
+                if (slot_index in verified or slot_index in available) and _unresolved_clear_failure(
+                    door_code=door_code, lock_entity_id=lock_entity_id, slot_index=slot_index
+                ) is None:
+                    # Superseded by an untagged attempt for the same PIN, so the
+                    # drop holds once retention prunes the marker. Not while a
+                    # clear failure is open there, since that failure's
+                    # clear_resolved only settles the attempts before it; the
+                    # retention rule for the marker covers that case.
+                    _record_unconfirmed_slot_attempt(
+                        door_code=door_code,
+                        lock_entity_id=lock_entity_id,
+                        slot_index=slot_index,
+                        reason=f"Slot {slot_index} read back empty once, then didn't answer",
+                        pin=attempted_pin or pin,
+                    )
             raise
         except LockRejectedCode as exc:
             if exc.clear_slot and not exc.holds_pin:
@@ -1044,6 +1058,33 @@ def unresolved_clear_failures(*, door_code: DoorCode) -> list[ClearFailure]:
     return [_without_dropped_trust(failure) for failure in pending.values()]
 
 
+def _stored_failure(failure: ClearFailure | None) -> ClearFailure | None:
+    """``failure`` with the tags its ``clear_failed`` event stores, before :func:`_without_dropped_trust`."""
+    if failure is None or failure.event_id is None:
+        return failure
+    metadata = DoorCodeEvent.objects.filter(id=failure.event_id).values_list("metadata", flat=True).first()
+    if not isinstance(metadata, dict):
+        return failure
+    return replace(
+        failure,
+        slot_verified=bool(metadata.get(_SLOT_VERIFIED_KEY)),
+        slot_available=bool(metadata.get(_SLOT_AVAILABLE_KEY)),
+    )
+
+
+def _strip_dropped_trust(*, door_code: DoorCode, failure: ClearFailure) -> None:
+    """Write a new ``clear_failed`` without the tags :func:`_without_dropped_trust` dropped, if the stored one has them.
+
+    So the drop holds once retention prunes the marker that caused it (PR #193 review).
+    """
+    stored = _stored_failure(failure)
+    if stored is None or not (stored.slot_verified or stored.slot_available):
+        return
+    if (stored.slot_verified, stored.slot_available) == (failure.slot_verified, failure.slot_available):
+        return
+    _create_clear_failed_event(door_code=door_code, failure=failure)
+
+
 def _without_dropped_trust(failure: ClearFailure) -> ClearFailure:
     """``failure`` without its masked-slot tags once any code's readback saw its slot empty (PR #193 review)."""
     if not (failure.slot_verified or failure.slot_available) or not _masked_trust_dropped(
@@ -1121,7 +1162,11 @@ def record_clear_failure(
     repeat failure only adds an event when it changes the flags (a tracked slot
     that's now being dropped, say) or brings the first known expected PIN.
     ``slot_verified`` and ``slot_available`` only mean something for an
-    ``unconfirmed`` slot, and once recorded for one they're kept.
+    ``unconfirmed`` slot, and once recorded for one they're kept until a
+    readback sees the slot empty (:func:`_without_dropped_trust`). The flags are
+    compared against the stored event, so a failure whose tags were dropped gets
+    a new event without them, which keeps the drop once retention prunes the
+    marker that caused it (PR #193 review).
     """
     described = describe_clear_failure(
         door_code=door_code, lock_entity_id=lock_entity_id, slot_index=slot_index, exc=exc
@@ -1130,6 +1175,7 @@ def record_clear_failure(
         return described
 
     current = _unresolved_clear_failure(door_code=door_code, lock_entity_id=lock_entity_id, slot_index=slot_index)
+    stored = _stored_failure(current)
     if current is not None:
         removing = removing or current.removing
         unconfirmed = unconfirmed and current.unconfirmed
@@ -1148,12 +1194,12 @@ def record_clear_failure(
         slot_available=slot_available,
         expected_pin=expected_pin,
     )
-    if current is None or (
-        current.removing,
-        current.unconfirmed,
-        current.slot_verified,
-        current.slot_available,
-        bool(current.expected_pin),
+    if stored is None or (
+        stored.removing,
+        stored.unconfirmed,
+        stored.slot_verified,
+        stored.slot_available,
+        bool(stored.expected_pin),
     ) != (
         removing,
         unconfirmed,
@@ -1404,6 +1450,10 @@ def _retry_failed_slot_clear(
         if seen_empty:
             # Still retried, but the failure's masked-slot tags stop counting (PR #193 review).
             _record_slot_read_back_empty(door_code=door_code, lock_entity_id=lock_entity_id, slot_index=slot_index)
+            _strip_dropped_trust(
+                door_code=door_code,
+                failure=replace(failure, reason=_clear_error_reason(exc), slot_verified=False, slot_available=False),
+            )
         return ClearFailure(
             lock_entity_id=lock_entity_id,
             slot_index=slot_index,
@@ -2030,6 +2080,11 @@ def retained_marker_event_ids(*, older_than: datetime) -> set[int]:
     its last successful push to that lock). Pruning either would forget a slot
     that may still hold a PIN. Settled markers, including attempts a cleanup has
     checked or cleared (issue #161), and markers whose code is gone, aren't kept.
+
+    Also kept is every ``slot_empty`` marker, from any code, newer than a kept
+    ``slot_verified`` or ``slot_available`` attempt or failure on the same lock
+    and slot, since pruning it would bring back that record's masked-slot trust
+    (PR #193 review, :func:`_masked_trust_dropped`).
     """
     old_markers = DoorCodeEvent.objects.filter(
         created_at__lt=older_than,
@@ -2052,7 +2107,37 @@ def retained_marker_event_ids(*, older_than: datetime) -> set[int]:
                     door_code=door_code, lock_entity_id=lock_entity_id
                 ).values()
             )
+    keep.update(_slot_empty_markers_disarming(kept_ids=keep, older_than=older_than))
     return keep
+
+
+def _slot_empty_markers_disarming(*, kept_ids: set[int], older_than: datetime) -> set[int]:
+    """Ids of ``slot_empty`` markers older than ``older_than`` newer than a kept tagged record on their slot."""
+    oldest_tagged: dict[tuple[str, int], int] = {}
+    kept = DoorCodeEvent.objects.filter(id__in=kept_ids).values_list("id", "lock_entity_id", "metadata")
+    for event_id, lock_entity_id, metadata in kept:
+        if not isinstance(metadata, dict):
+            continue
+        if not (metadata.get(_SLOT_VERIFIED_KEY) or metadata.get(_SLOT_AVAILABLE_KEY)):
+            continue
+        slot_index = _coerce_int(metadata.get("slot_index"))
+        if slot_index is None:
+            continue
+        key = (lock_entity_id, slot_index)
+        oldest_tagged[key] = min(oldest_tagged.get(key, event_id), event_id)
+    markers: set[int] = set()
+    for (lock_entity_id, slot_index), since_id in oldest_tagged.items():
+        markers.update(
+            _slot_empty_marker_events()
+            .filter(
+                created_at__lt=older_than,
+                lock_entity_id=lock_entity_id,
+                metadata__slot_index=slot_index,
+                id__gt=since_id,
+            )
+            .values_list("id", flat=True)
+        )
+    return markers
 
 
 def _clear_slot_best_effort(
