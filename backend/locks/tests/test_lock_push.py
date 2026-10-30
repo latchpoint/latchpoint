@@ -98,6 +98,10 @@ class FakeGateway:
         self._cache_codes: dict[tuple[int, int], str] = {}
         self._late_reports: list[tuple[int, int, str]] = []
         self.invoke_calls: list[dict] = []
+        # How many times node_get_defined_value_ids was called (issue #124).
+        self.value_id_fetches = 0
+        # (method_name, timeout_seconds) for every CC 99 call that got past validation.
+        self.invoke_timeouts: list[tuple[str, float]] = []
 
     def deliver_late_reports(self) -> None:
         """Apply queued user-code reports to the value cache."""
@@ -106,6 +110,7 @@ class FakeGateway:
         self._late_reports = []
 
     def node_get_defined_value_ids(self, *, node_id: int, timeout_seconds: float = 5.0):  # noqa: ARG002
+        self.value_id_fetches += 1
         value_ids = [{"commandClass": 99, "property": "usersNumber"}]
         if self._admin_code is not None:
             value_ids.append({"commandClass": 99, "property": "adminCode"})
@@ -171,7 +176,7 @@ class FakeGateway:
         command_class: int,
         method_name: str,
         args: list | None = None,
-        timeout_seconds: float = 10.0,  # noqa: ARG002
+        timeout_seconds: float = 10.0,
     ):
         # Enforce the CC API contract on every recorded call. If a future change
         # to lock_push starts sending the wrong arg shape (the kind of bug that
@@ -186,6 +191,8 @@ class FakeGateway:
                 "args": json.loads(json.dumps(args or [])),
             }
         )
+        if command_class == 99:
+            self.invoke_timeouts.append((method_name, timeout_seconds))
         if self._invoke_raises is not None and (
             self._invoke_raises_after is None or len(self.invoke_calls) > self._invoke_raises_after
         ):
@@ -1389,6 +1396,114 @@ class PushReadbackAndAdminCodeTests(EncryptionTestMixin, TestCase):
         self._assert_terminal_failure(code, error_contains="Supervision reported Fail")
         self._assert_admin_code_hint_without_the_code(code, ctx.exception, logs)
 
+    def test_a_long_error_keeps_the_hint_whole_on_the_lock_and_drops_it_whole_from_the_rollup(self):
+        # PR #200 review: a 500 character cut never lands inside the hint.
+        hint = lock_push_uc._ADMIN_CODE_HINT
+        gateway = FakeGateway(usersNumber=3, slot_status={1: 0, 2: 0, 3: 0}, admin_code="4321")
+        code = self._make_code(pin="4321")
+        rejection = LockRejectedCode(f"Lock did not store the code {'x' * 480}", clear_slot=True)
+
+        with (
+            patch.object(lock_push_uc, "_verify_user_code_slot", side_effect=rejection),
+            self.assertRaises(LockRejectedCode),
+        ):
+            self._push(code, gateway)
+
+        code.refresh_from_db()
+        lock_error = DoorCodeLockAssignment.objects.get(door_code=code).last_push_error
+        self.assertEqual(len(lock_error), 500)
+        self.assertTrue(lock_error.endswith(f"x {hint}"))
+        self.assertEqual(lock_push_uc.strip_admin_code_hint(lock_error), lock_error[: -len(hint) - 1])
+        # The rollup adds "lock.back_door: " in front, so the hint doesn't fit and goes whole.
+        self.assertTrue(code.last_push_error.startswith(f"{self.LOCK_ENTITY_ID}: Lock did not store the code x"))
+        self.assertLessEqual(len(code.last_push_error), 500)
+        self.assertTrue(code.last_push_error.endswith("x"))
+        self.assertNotIn("This PIN", code.last_push_error)
+
+    def test_cut_push_error_never_cuts_inside_the_hint(self):
+        hint = lock_push_uc._ADMIN_CODE_HINT
+        cut = lock_push_uc._cut_push_error
+        fits = f"{'x' * (499 - len(hint))} {hint}"
+        self.assertEqual(len(fits), 500)
+        self.assertEqual(cut(fits), fits)
+        self.assertEqual(cut(f"{fits}; lock.b: timeout"), fits)
+        # One character more and the hint would end past 500, so it goes with its space.
+        crossing = f"{'x' * (500 - len(hint))} {hint}"
+        self.assertEqual(cut(crossing), "x" * (500 - len(hint)))
+        # A hint that starts at 500 or later is past the cut anyway.
+        self.assertEqual(cut(f"{'x' * 500} {hint}"), "x" * 500)
+        self.assertEqual(cut("x" * 600), "x" * 500)
+
+    # Issue #124: the node's value IDs are fetched once per push and shared.
+
+    def test_a_fresh_push_fetches_the_value_ids_once(self):
+        gateway = FakeGateway(usersNumber=3, slot_status={1: 0, 2: 0, 3: 0}, admin_code="8765")
+        code = self._make_code(pin="4321")
+
+        self._push(code, gateway)
+
+        self.assertEqual(gateway.value_id_fetches, 1)
+
+    def test_an_empty_readback_with_the_admin_code_hint_fetches_the_value_ids_once(self):
+        gateway = FakeGateway(usersNumber=3, slot_status={1: 0, 2: 0, 3: 0}, admin_code="4321")
+        code = self._make_code(pin="4321")
+
+        with self.assertRaises(LockRejectedCode) as ctx:
+            self._push(code, gateway)
+
+        self.assertIn(lock_push_uc._ADMIN_CODE_HINT, str(ctx.exception))
+        self.assertEqual(gateway.value_id_fetches, 1)
+
+    def test_a_supervision_fail_with_the_admin_code_hint_fetches_the_value_ids_once(self):
+        gateway = FakeGateway(
+            usersNumber=3, slot_status={1: 0, 2: 0, 3: 0}, admin_code="4321", set_result={"status": 2}
+        )
+        code = self._make_code(pin="4321")
+
+        with self.assertRaises(LockRejectedCode) as ctx:
+            self._push(code, gateway)
+
+        self.assertIn(lock_push_uc._ADMIN_CODE_HINT, str(ctx.exception))
+        self.assertEqual(gateway.value_id_fetches, 1)
+
+    def test_one_empty_answer_then_silence_with_the_hint_fetches_the_value_ids_once(self):
+        from integrations_zwavejs.manager import ZwavejsCommandError
+
+        timeout = ZwavejsCommandError("driver TimeoutError after 5.0s")
+        gateway = FakeGateway(
+            usersNumber=3,
+            slot_status={1: 0, 2: 0, 3: 0},
+            admin_code="4321",
+            get_responses=[{"userIdStatus": 0, "userCode": ""}, timeout, timeout],
+        )
+        code = self._make_code(pin="4321")
+
+        with (
+            patch.object(lock_push_uc, "sanitize_push_error_for_storage", lambda message: message or ""),
+            self.assertRaises(LockUnreachable),
+        ):
+            self._push(code, gateway)
+
+        self.assertIn(lock_push_uc._ADMIN_CODE_HINT, DoorCodeLockAssignment.objects.get(door_code=code).last_push_error)
+        self.assertEqual(gateway.value_id_fetches, 1)
+
+    def test_an_adopted_slot_doesnt_fetch_the_value_ids(self):
+        from integrations_zwavejs.manager import ZwavejsCommandError
+
+        timeout = ZwavejsCommandError("driver TimeoutError after 5.0s")
+        gateway = FakeGateway(usersNumber=3, slot_status={1: 0, 2: 0, 3: 0}, get_responses=[timeout, timeout, timeout])
+        code = self._make_code(pin="4321")
+        with self.assertRaises(LockUnreachable):
+            self._push(code, gateway)
+        gateway.value_id_fetches = 0
+
+        result = self._push(code, gateway)
+
+        self.assertEqual(result.slot_index, 1)
+        synced = DoorCodeEvent.objects.get(door_code=code, event_type=DoorCodeEvent.EventType.CODE_SYNCED)
+        self.assertIs(synced.metadata.get("adopted_existing_slot"), True)
+        self.assertEqual(gateway.value_id_fetches, 0)
+
     def test_supervision_fail_on_one_lock_doesnt_stop_another(self):
         class FailsOnSide(FakeGateway):
             def invoke_cc_api(self, *, node_id, command_class, method_name, args=None, timeout_seconds=10.0):
@@ -2494,6 +2609,37 @@ class _TwoLockUpdateTestBase(EncryptionTestMixin, TestCase):
         return DoorCodeEvent.objects.filter(door_code=code, event_type=DoorCodeEvent.EventType.CODE_UPDATED).latest(
             "id"
         )
+
+
+class RequestPathClearTimeoutTests(_TwoLockUpdateTestBase):
+    """Issue #124: the clears an update or delete runs in the request wait 5s, not the gateway's 10s."""
+
+    def _clear_timeouts(self, gateway: FakeGateway) -> list[float]:
+        return [timeout for method_name, timeout in gateway.invoke_timeouts if method_name == "clear"]
+
+    def test_a_pin_change_clears_the_old_slot_with_a_5s_timeout(self):
+        code, gateway = self._pushed_code([self.BACK])
+        gateway.invoke_timeouts.clear()
+
+        self._update(code, gateway, {"code": "5678"})
+
+        self.assertEqual(self._clear_timeouts(gateway), [5.0])
+
+    def test_dropping_a_lock_clears_its_slot_with_a_5s_timeout(self):
+        code, gateway = self._pushed_code([self.BACK, self.SIDE])
+        gateway.invoke_timeouts.clear()
+
+        self._update(code, gateway, {"lock_entity_ids": [self.BACK]})
+
+        self.assertEqual(self._clear_timeouts(gateway), [5.0])
+
+    def test_a_delete_clears_its_slots_with_a_5s_timeout(self):
+        code, gateway = self._pushed_code([self.BACK, self.SIDE])
+        gateway.invoke_timeouts.clear()
+
+        door_codes_uc.delete_door_code(code=code, actor_user=self.user, zwavejs=gateway)
+
+        self.assertEqual(self._clear_timeouts(gateway), [5.0, 5.0])
 
 
 class InactiveCodeIsNeverPushedTests(_TwoLockUpdateTestBase):
@@ -3629,6 +3775,70 @@ class AdminCodeHintVisibilityTests(EncryptionTestMixin, APITestCase):
             lock_push_uc.strip_admin_code_hint(f"lock.a: Lock did not store the code. {hint}; lock.b: timeout"),
             "lock.a: Lock did not store the code.; lock.b: timeout",
         )
+
+    def test_a_full_length_error_ending_in_the_hints_first_words_only_loses_a_real_cut_hint(self):
+        # PR #198 review: " This" or " This PIN" at the end of any 500 character error isn't the hint.
+        for ending in (" T", " This", " This PIN", " This PIN m"):
+            message = f"{'x' * (500 - len(ending))}{ending}"
+            self.assertEqual(lock_push_uc.strip_admin_code_hint(message), message)
+        for ending in (" This PIN may", " This PIN may match the lock's adm"):
+            message = f"{'x' * (500 - len(ending))}{ending}"
+            self.assertEqual(lock_push_uc.strip_admin_code_hint(message), "x" * (500 - len(ending)))
+        # Under 500 characters nothing was cut, so only the whole hint goes. Pinned at the boundary.
+        self.assertEqual(lock_push_uc.strip_admin_code_hint("x This PIN may"), "x This PIN may")
+        ending = " This PIN may match"
+        at_499 = f"{'x' * (499 - len(ending))}{ending}"
+        self.assertEqual(len(at_499), 499)
+        self.assertEqual(lock_push_uc.strip_admin_code_hint(at_499), at_499)
+        at_500 = f"x{at_499}"
+        self.assertEqual(lock_push_uc.strip_admin_code_hint(at_500), "x" * (500 - len(ending)))
+
+    # PR #198 review: the create, PATCH and Retry responses keep the hint for an admin,
+    # which needs the request in the serializer context.
+
+    def _admin_errors_from(self, method: str, url: str, data: dict, use_case: str) -> list[str]:
+        code = DoorCode.objects.select_related("user").prefetch_related("lock_assignments").get(id=self.code.id)
+        self.client.force_authenticate(self.admin)
+        with patch.object(door_codes_uc, use_case, return_value=code):
+            response = getattr(self.client, method)(url, data, format="json")
+        self.assertLess(response.status_code, 300, response.content)
+        return self._errors(response.json()["data"])
+
+    def test_the_create_response_keeps_the_hint_for_an_admin(self):
+        errors = self._admin_errors_from(
+            "post",
+            reverse("door-codes"),
+            {
+                "user_id": str(self.user.id),
+                "code": "4321",
+                "code_type": DoorCode.CodeType.PERMANENT,
+                "lock_entity_ids": [self.LOCK_ENTITY_ID],
+                "reauth_password": "pass",
+            },
+            "create_door_code",
+        )
+
+        for error in errors:
+            self.assertIn(lock_push_uc._ADMIN_CODE_HINT, error)
+
+    def test_the_patch_response_keeps_the_hint_for_an_admin(self):
+        errors = self._admin_errors_from(
+            "patch",
+            reverse("door-code-detail", args=[self.code.id]),
+            {"label": "Cleaner", "reauth_password": "pass"},
+            "update_door_code",
+        )
+
+        for error in errors:
+            self.assertIn(lock_push_uc._ADMIN_CODE_HINT, error)
+
+    def test_the_retry_response_keeps_the_hint_for_an_admin(self):
+        errors = self._admin_errors_from(
+            "post", reverse("door-code-push", args=[self.code.id]), {}, "retry_push_door_code"
+        )
+
+        for error in errors:
+            self.assertIn(lock_push_uc._ADMIN_CODE_HINT, error)
 
 
 class PushSlotClaimRaceTests(EncryptionTestMixin, TestCase):

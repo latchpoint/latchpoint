@@ -780,15 +780,29 @@ class ZwavejsConnectionManager:
             await asyncio.sleep(_backoff_seconds(attempt=attempt, min_seconds=reconnect_min, max_seconds=reconnect_max))
 
     def _run_coro(self, coro, *, timeout_seconds: float):
-        """Run an async coroutine on the background loop and return its result or raise on failure."""
+        """Run an async coroutine on the background loop and return its result or raise on failure.
+
+        On a timeout the coroutine is cancelled, so it stops waiting on the loop
+        for an answer (issue #124). That doesn't stop the command itself once
+        its task has run its first step, since the websocket send happens in
+        that step, so a command that timed out may still be carried out by the
+        node. Only one whose task never got to run is dropped.
+        """
         loop = None
         with self._lock:
             loop = self._loop
         if loop is None:
             raise ZwavejsNotConnected("Not connected to Z-Wave JS server.")
+        fut = None
         try:
             fut = asyncio.run_coroutine_threadsafe(coro, loop)
             return fut.result(timeout=timeout_seconds)
+        except concurrent.futures.TimeoutError as exc:
+            if fut is None or (fut.done() and not fut.cancelled() and fut.exception() is exc):
+                # The coroutine raised the TimeoutError itself, the wait didn't run out.
+                raise ZwavejsCommandError(str(exc) or "Z-Wave JS command timed out") from exc
+            fut.cancel()
+            raise ZwavejsCommandError(f"Z-Wave JS command timed out after {timeout_seconds}s") from exc
         except Exception as exc:
             raise ZwavejsCommandError(str(exc)) from exc
 

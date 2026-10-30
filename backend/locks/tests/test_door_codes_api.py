@@ -299,7 +299,7 @@ class DoorCodesApiTests(EncryptionTestMixin, APITestCase):
             command_class=99,
             method_name="clear",
             args=[1],
-            timeout_seconds=10.0,
+            timeout_seconds=5.0,
         )
 
         # Code and assignment should be fully deleted from DB.
