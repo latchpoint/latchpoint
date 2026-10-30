@@ -1396,6 +1396,44 @@ class PushReadbackAndAdminCodeTests(EncryptionTestMixin, TestCase):
         self._assert_terminal_failure(code, error_contains="Supervision reported Fail")
         self._assert_admin_code_hint_without_the_code(code, ctx.exception, logs)
 
+    def test_a_long_error_keeps_the_hint_whole_on_the_lock_and_drops_it_whole_from_the_rollup(self):
+        # PR #200 review: a 500 character cut never lands inside the hint.
+        hint = lock_push_uc._ADMIN_CODE_HINT
+        gateway = FakeGateway(usersNumber=3, slot_status={1: 0, 2: 0, 3: 0}, admin_code="4321")
+        code = self._make_code(pin="4321")
+        rejection = LockRejectedCode(f"Lock did not store the code {'x' * 480}", clear_slot=True)
+
+        with (
+            patch.object(lock_push_uc, "_verify_user_code_slot", side_effect=rejection),
+            self.assertRaises(LockRejectedCode),
+        ):
+            self._push(code, gateway)
+
+        code.refresh_from_db()
+        lock_error = DoorCodeLockAssignment.objects.get(door_code=code).last_push_error
+        self.assertEqual(len(lock_error), 500)
+        self.assertTrue(lock_error.endswith(f"x {hint}"))
+        self.assertEqual(lock_push_uc.strip_admin_code_hint(lock_error), lock_error[: -len(hint) - 1])
+        # The rollup adds "lock.back_door: " in front, so the hint doesn't fit and goes whole.
+        self.assertTrue(code.last_push_error.startswith(f"{self.LOCK_ENTITY_ID}: Lock did not store the code x"))
+        self.assertLessEqual(len(code.last_push_error), 500)
+        self.assertTrue(code.last_push_error.endswith("x"))
+        self.assertNotIn("This PIN", code.last_push_error)
+
+    def test_cut_push_error_never_cuts_inside_the_hint(self):
+        hint = lock_push_uc._ADMIN_CODE_HINT
+        cut = lock_push_uc._cut_push_error
+        fits = f"{'x' * (499 - len(hint))} {hint}"
+        self.assertEqual(len(fits), 500)
+        self.assertEqual(cut(fits), fits)
+        self.assertEqual(cut(f"{fits}; lock.b: timeout"), fits)
+        # One character more and the hint would end past 500, so it goes with its space.
+        crossing = f"{'x' * (500 - len(hint))} {hint}"
+        self.assertEqual(cut(crossing), "x" * (500 - len(hint)))
+        # A hint that starts at 500 or later is past the cut anyway.
+        self.assertEqual(cut(f"{'x' * 500} {hint}"), "x" * 500)
+        self.assertEqual(cut("x" * 600), "x" * 500)
+
     # Issue #124: the node's value IDs are fetched once per push and shared.
 
     def test_a_fresh_push_fetches_the_value_ids_once(self):
@@ -3746,8 +3784,14 @@ class AdminCodeHintVisibilityTests(EncryptionTestMixin, APITestCase):
         for ending in (" This PIN may", " This PIN may match the lock's adm"):
             message = f"{'x' * (500 - len(ending))}{ending}"
             self.assertEqual(lock_push_uc.strip_admin_code_hint(message), "x" * (500 - len(ending)))
-        # Under 500 characters nothing was cut, so only the whole hint goes.
+        # Under 500 characters nothing was cut, so only the whole hint goes. Pinned at the boundary.
         self.assertEqual(lock_push_uc.strip_admin_code_hint("x This PIN may"), "x This PIN may")
+        ending = " This PIN may match"
+        at_499 = f"{'x' * (499 - len(ending))}{ending}"
+        self.assertEqual(len(at_499), 499)
+        self.assertEqual(lock_push_uc.strip_admin_code_hint(at_499), at_499)
+        at_500 = f"x{at_499}"
+        self.assertEqual(lock_push_uc.strip_admin_code_hint(at_500), "x" * (500 - len(ending)))
 
     # PR #198 review: the create, PATCH and Retry responses keep the hint for an admin,
     # which needs the request in the serializer context.

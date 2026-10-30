@@ -332,17 +332,47 @@ _ADMIN_CODE_HINT = "This PIN may match the lock's admin code."
 # it, and a shorter piece of the hint says nothing about the admin code.
 _ADMIN_CODE_HINT_MIN_CUT = len("This PIN may")
 
+# What ``last_push_error`` holds at most, on the code and on each lock.
+_PUSH_ERROR_MAX_LENGTH = 500
+
+
+def _with_admin_code_hint(message: str) -> str:
+    """``message`` with :data:`_ADMIN_CODE_HINT` on the end, the message cut first so the whole hint fits in 500.
+
+    A cut that lands inside the hint would leave a piece of it that
+    :func:`strip_admin_code_hint` can't tell from ordinary words (PR #200 review).
+    """
+    suffix = f" {_ADMIN_CODE_HINT}"
+    return f"{message[: _PUSH_ERROR_MAX_LENGTH - len(suffix)]}{suffix}"
+
+
+def _cut_push_error(message: str) -> str:
+    """``message`` cut to 500 characters for ``last_push_error``, never in the middle of the admin code hint.
+
+    A hint the cut would land in goes whole, with the space before it, so a
+    code-level error that runs long (the ``lock.x:`` and gave-up prefixes on
+    each lock's error) never ends in a piece of it (PR #200 review).
+    """
+    limit = _PUSH_ERROR_MAX_LENGTH
+    if len(message) <= limit:
+        return message
+    start = message.find(_ADMIN_CODE_HINT, max(0, limit - len(_ADMIN_CODE_HINT) + 1))
+    if start != -1 and start < limit:
+        return message[:start].rstrip()
+    return message[:limit]
+
 
 def strip_admin_code_hint(message: str | None) -> str:
     """``message`` without :data:`_ADMIN_CODE_HINT`, for viewers who aren't admins (PR #198 review).
 
     The hint tells whoever reads it that their PIN may be the lock's admin code
-    (issue #125). The code-level error is cut at 500 characters, so a hint cut
-    short at the end of a full-length error goes too, once at least
-    :data:`_ADMIN_CODE_HINT_MIN_CUT` characters of it are left.
+    (issue #125). Errors are stored with the hint whole or not at all
+    (:func:`_with_admin_code_hint`, :func:`_cut_push_error`), but one stored
+    before that may end in a hint cut short at 500 characters, so that goes
+    too, once at least :data:`_ADMIN_CODE_HINT_MIN_CUT` characters of it are left.
     """
     text = (message or "").replace(f" {_ADMIN_CODE_HINT}", "").replace(_ADMIN_CODE_HINT, "")
-    if len(message or "") >= 500:
+    if len(message or "") >= _PUSH_ERROR_MAX_LENGTH:
         for size in range(len(_ADMIN_CODE_HINT) - 1, _ADMIN_CODE_HINT_MIN_CUT - 1, -1):
             cut = f" {_ADMIN_CODE_HINT[:size]}"
             if text.endswith(cut):
@@ -1478,7 +1508,7 @@ def _derive_push_state(*, code: DoorCode, unrecorded_failures: list[ClearFailure
     if capped:
         state = failed
         clear_parts.append(f"Push gave up after {code.push_attempt_count} attempts")
-    error = sanitize_push_error_for_storage("; ".join([*clear_parts, *lock_parts]))[:500]
+    error = _cut_push_error(sanitize_push_error_for_storage("; ".join([*clear_parts, *lock_parts])))
     return state, error, not outstanding
 
 
@@ -2715,7 +2745,7 @@ def _record_lock_push_failure(
         ).update(
             push_state=DoorCode.PushState.FAILED if terminal else DoorCode.PushState.PENDING,
             push_attempt_count=F("push_attempt_count") + 1,
-            last_push_error=safe_message[:500],
+            last_push_error=_cut_push_error(safe_message),
             last_push_attempt_at=attempted_at,
         )
         refresh_push_state(door_code=door_code)
@@ -3103,7 +3133,7 @@ def push_door_code_to_lock(
             if (exc.supervision_failed or (exc.clear_slot and not exc.holds_pin)) and _pin_may_match_admin_code(
                 zwavejs=zwavejs, node_id=node_id, pin=pin, timeout_seconds=timeout_seconds, get_value_ids=get_value_ids
             ):
-                exc.args = (f"{exc} {_ADMIN_CODE_HINT}",)
+                exc.args = (_with_admin_code_hint(str(exc)),)
                 event_metadata["may_match_admin_code"] = True
             _record_lock_push_failure(
                 door_code=door_code,
@@ -3128,7 +3158,7 @@ def push_door_code_to_lock(
             ):
                 # One empty answer and then silence is no verdict, so this stays
                 # transient, but the hint goes with it (issue #125).
-                error_message = f"{error_message} {_ADMIN_CODE_HINT}"
+                error_message = _with_admin_code_hint(error_message)
             if pin_sent_to_slot and isinstance(exc, LockCodeUnverified) and exc.read_back_empty:
                 # Drops the masked-slot trust of anything else on record for this slot (PR #193 review).
                 _record_slot_read_back_empty(door_code=door_code, lock_entity_id=lock_entity_id, slot_index=slot_index)

@@ -49,6 +49,15 @@ class RunCoroTimeoutTests(SimpleTestCase):
 
         self.assertEqual(str(ctx.exception), "driver gave up")
 
+    def test_an_empty_timeout_error_from_the_command_still_says_it_timed_out(self):
+        async def failing_command():
+            raise TimeoutError()
+
+        with self.assertRaises(ZwavejsCommandError) as ctx:
+            self.manager._run_coro(failing_command(), timeout_seconds=2)
+
+        self.assertEqual(str(ctx.exception), "Z-Wave JS command timed out")
+
     def test_a_command_that_finishes_in_time_returns_its_result(self):
         async def quick_command():
             return {"status": 255}
