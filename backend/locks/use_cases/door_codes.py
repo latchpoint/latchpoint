@@ -5,7 +5,7 @@ import logging
 from typing import TYPE_CHECKING
 
 from django.db import transaction
-from django.db.models import Exists, OuterRef, Q, QuerySet
+from django.db.models import Exists, F, OuterRef, Q, QuerySet
 from django.utils import timezone as django_timezone
 
 from accounts.models import User
@@ -351,11 +351,19 @@ def withdraw_door_code(*, code: DoorCode, zwavejs: ZwavejsGateway, now=None) -> 
     pushes the code again once it starts. Returns whether anything was tried.
     Raises :class:`LockBusy` like an update.
 
+    A withdraw with a failure left (a clear that failed, or a readback with no
+    answer, which isn't recorded) counts one attempt on the code's clear-retry
+    count like the #167 inactive clear, and a code at
+    ``door_codes.push_max_attempts`` isn't withdrawn again, so its rollup is
+    ``failed`` until Retry resets the count (PR #207 review). The
+    ``withdrawn`` event is only written when a slot was cleared.
+
     Checked once before the locks are taken too, so a code with nothing left to
     withdraw (its slots already cleared or left to the clear retries) doesn't
     hold every lock it's on each tick and make a push there wait (PR #183 review).
     """
     from locks.use_cases.lock_push import (
+        _push_max_attempts,
         refresh_push_state,
         slots_to_withdraw,
         withdraw_slots_before_start,
@@ -363,7 +371,13 @@ def withdraw_door_code(*, code: DoorCode, zwavejs: ZwavejsGateway, now=None) -> 
 
     def nothing_to_withdraw() -> bool:
         check_at = now if now is not None else django_timezone.now()
-        return not code.is_active or is_started(code, now=check_at) or not slots_to_withdraw(door_code=code)
+        max_attempts = _push_max_attempts()
+        return (
+            not code.is_active
+            or is_started(code, now=check_at)
+            or (max_attempts > 0 and (code.push_attempt_count or 0) >= max_attempts)
+            or not slots_to_withdraw(door_code=code)
+        )
 
     if nothing_to_withdraw():
         return False
@@ -372,10 +386,23 @@ def withdraw_door_code(*, code: DoorCode, zwavejs: ZwavejsGateway, now=None) -> 
             if nothing_to_withdraw():
                 return False
             cleared, failures = withdraw_slots_before_start(door_code=code, zwavejs=zwavejs)
+            if any(not f.permanent for f in failures):
+                # Counted like the #167 inactive clear, so a slot that keeps not
+                # answering hits the cap instead of being read back every tick.
+                attempted_at = django_timezone.now()
+                DoorCode.objects.filter(id=code.id).update(
+                    push_attempt_count=F("push_attempt_count") + 1,
+                    last_push_attempt_at=attempted_at,
+                    updated_at=attempted_at,
+                )
             # Off its locks until it starts, so it's pending (scheduled), or
             # failed once its clears hit the cap (issue #126). Each lock it
-            # cleared went back to pending through forget_cleared_slot.
-            refresh_push_state(door_code=code)
+            # cleared went back to pending through forget_cleared_slot. A
+            # readback with no answer left no event, so it's passed in to show
+            # in the error.
+            refresh_push_state(door_code=code, unrecorded_failures=failures)
+            if not cleared:
+                return True
             DoorCodeEvent.objects.create(
                 door_code=code,
                 user=None,
@@ -1007,6 +1034,8 @@ def retry_push_door_code(
     with transaction.atomic():
         DoorCode.objects.select_for_update().filter(id=code.id).first()
         DoorCode.objects.filter(id=code.id).update(push_attempt_count=0)
+        # The withdraw below skips a code at the cap, and reads this copy first.
+        code.push_attempt_count = 0
         rearm_failed_locks(door_code=code, max_attempts=_get_push_max_attempts())
 
     if not_started:

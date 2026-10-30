@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import threading
 from datetime import time
 from unittest.mock import patch
 
-from django.db import OperationalError
+from django.db import InterfaceError, OperationalError
 from django.db.models.query import QuerySet
 from django.test import TestCase
-from integrations_zwavejs.manager import ZwavejsClientUnavailable, ZwavejsCommandError
+from integrations_zwavejs.manager import ZwavejsClientUnavailable, ZwavejsCommandError, ZwavejsNotConfigured
 
 from accounts.models import User
 from alarm.crypto import SettingsEncryption
@@ -21,7 +22,7 @@ from locks.tests.test_lock_push import FakeGateway
 from locks.use_cases import door_codes as door_codes_uc
 from locks.use_cases import lock_config_sync as lock_config_sync_uc
 from locks.use_cases import lock_push as lock_push_uc
-from locks.use_cases.lock_push import LockUnreachable, push_door_code_to_lock
+from locks.use_cases.lock_push import LockPushFailed, LockUnreachable, push_door_code_to_lock
 
 LOCK = "lock.front_door"  # node 7
 
@@ -63,7 +64,14 @@ class _ScheduleClientDownGateway(FakeGateway):
 
 
 class ClientUnavailableIsTransientTests(EncryptionTestMixin, TestCase):
-    """Issue #191: Z-Wave JS down or restarting leaves the lock pending for the scheduler, under its cap."""
+    """Issue #191: ``ZwavejsClientUnavailable`` reaching the push leaves the lock pending, retried under its cap.
+
+    The manager only raises it when zwave-js-server-python is missing, and
+    ``_run_coro`` wraps anything raised inside a command as
+    ``ZwavejsCommandError``, so with the default gateway it doesn't reach the
+    push raw. A Z-Wave JS that's down is ``ZwavejsNotConnected``, transient
+    before this. These pin what the push does with the class itself.
+    """
 
     PIN = "1234"
 
@@ -243,6 +251,23 @@ class ClientUnavailableIsTransientTests(EncryptionTestMixin, TestCase):
         self.assertEqual(self._cc(gateway, 99, "set"), [])
         self.assertTrue(self._cc(gateway, 78, "setDailyRepeatingSchedule"))
 
+    def test_not_configured_during_the_readback_stays_terminal(self):
+        # The readback lets it through instead of asking again, so the lock fails for good.
+        gateway = FakeGateway(usersNumber=3, get_responses=[ZwavejsNotConfigured("Z-Wave JS ws_url not set.")])
+        code = self._make_code()
+
+        with self.assertRaises(LockPushFailed):
+            self._push(code, gateway)
+
+        self.assertEqual(self._cc(gateway, 99, "get"), [[1]])
+        assignment = self._assignment(code)
+        self.assertEqual((assignment.push_state, assignment.slot_index), (DoorCode.PushState.FAILED, None))
+        # The set went out, so the slot is on record untagged (PR #192).
+        [marker] = self._markers(code)
+        self.assertEqual(marker["slot_index"], 1)
+        self.assertNotIn("slot_available", marker)
+        self.assertNotIn("slot_verified", marker)
+
 
 class ValidityTaskDbErrorTests(_LifecycleTestBase):
     """Issue #186: a DB error while loading a pass's codes is logged, never raised."""
@@ -250,16 +275,24 @@ class ValidityTaskDbErrorTests(_LifecycleTestBase):
     def test_a_db_error_loading_any_pass_is_logged_and_the_task_returns(self):
         gateway = FakeGateway(usersNumber=3)
         real_fetch_all = QuerySet._fetch_all
+        test_thread = threading.get_ident()
 
-        for failing_load in (1, 2, 3):
-            with self.subTest(failing_load=failing_load):
+        # InterfaceError isn't a DatabaseError, and a dropped connection can come back as one (PR #207 review).
+        cases = [(OperationalError, failing_load) for failing_load in (1, 2, 3)] + [(InterfaceError, 1)]
+        for error, failing_load in cases:
+            with self.subTest(error=error.__name__, failing_load=failing_load):
                 loads: list[QuerySet] = []
 
-                def fetch_all(queryset, failing_load=failing_load, loads=loads):
-                    if queryset._result_cache is None:
+                def fetch_all(queryset, error=error, failing_load=failing_load, loads=loads):
+                    # Only the task's own loads, not the dispatcher thread's queries.
+                    if (
+                        queryset._result_cache is None
+                        and queryset.model is DoorCode
+                        and threading.get_ident() == test_thread
+                    ):
                         loads.append(queryset)
                         if len(loads) >= failing_load:
-                            raise OperationalError("server closed the connection unexpectedly")
+                            raise error("server closed the connection unexpectedly")
                     return real_fetch_all(queryset)
 
                 with (
@@ -300,7 +333,8 @@ class WithdrawReadsTheSlotBackTests(_LifecycleTestBase):
         code.refresh_from_db()
         self.assertTrue(code.is_active)
         self.assertEqual(code.push_state, DoorCode.PushState.PENDING)
-        self.assertEqual(self._withdrawn_event(code).metadata["cleared_slots"], [])
+        # Nothing was cleared, so no withdrawn event (PR #207 review).
+        self.assertFalse(DoorCodeEvent.objects.filter(door_code=code, metadata__action="withdrawn").exists())
         self.assertEqual(lock_push_uc.unresolved_clear_failures(door_code=code), [])
 
     def test_a_slot_that_reads_back_our_pin_or_masked_is_cleared(self):
@@ -333,10 +367,12 @@ class WithdrawReadsTheSlotBackTests(_LifecycleTestBase):
         self.assertEqual(self._slots(code), {self.BACK: 1})
         # Not recorded, so the clear retry doesn't clear it without a readback.
         self.assertEqual(lock_push_uc.unresolved_clear_failures(door_code=code), [])
-        [failure] = self._withdrawn_event(code).metadata["failed_slot_clears"]
-        self.assertEqual((failure["lock_entity_id"], failure["slot_index"]), (self.BACK, 1))
+        self.assertFalse(DoorCodeEvent.objects.filter(door_code=code, metadata__action="withdrawn").exists())
         code.refresh_from_db()
         self.assertEqual(code.push_state, DoorCode.PushState.PENDING)
+        # Counted like the #167 inactive clear, and on show in the error.
+        self.assertEqual(code.push_attempt_count, 1)
+        self.assertIn(f"Couldn't clear slot 1 on {self.BACK}", code.last_push_error)
 
         gateway.invoke_calls.clear()
         self._enforce(gateway)
@@ -345,6 +381,39 @@ class WithdrawReadsTheSlotBackTests(_LifecycleTestBase):
         self.assertEqual(self._calls(gateway, "clear"), [(12, [1])])
         self.assertEqual(self._lock_codes(gateway, 12), {})
         self.assertEqual(self._slots(code), {self.BACK: None})
+        code.refresh_from_db()
+        self.assertEqual((code.push_state, code.push_attempt_count, code.last_push_error), ("pending", 0, ""))
+
+    def test_a_readback_that_never_answers_fails_the_code_at_the_cap_and_retry_withdraws_it(self):
+        # The PR #207 review's probe: 30 ticks were 30 withdrawn events, 90 gets and a count stuck at 0.
+        code, gateway = self._early_pushed_code()
+        gateway._get_scripts = {None: [ZwavejsCommandError("driver TimeoutError after 5.0s") for _ in range(90)]}
+
+        with patch("locks.tasks._get_push_max_attempts", return_value=3):
+            for _tick in range(30):
+                self._enforce(gateway)
+
+            # 3 gets per readback, and none after the cap.
+            self.assertEqual(len(self._calls(gateway, "get")), 9)
+            self.assertEqual(self._calls(gateway, "clear"), [])
+            self.assertFalse(DoorCodeEvent.objects.filter(door_code=code, metadata__action="withdrawn").exists())
+            code.refresh_from_db()
+            self.assertEqual((code.push_state, code.push_attempt_count), (DoorCode.PushState.FAILED, 3))
+            self.assertIn("Push gave up after 3 attempts", code.last_push_error)
+            self.assertIn(f"Couldn't clear slot 1 on {self.BACK}", code.last_push_error)
+            self.assertEqual(self._slots(code), {self.BACK: 1})
+
+            # Retry resets the count, and the lock answers now.
+            gateway._get_scripts = {None: []}
+            gateway.invoke_calls.clear()
+            door_codes_uc.retry_push_door_code(code=code, actor_user=self.user, zwavejs=gateway)
+
+        self.assertEqual(self._calls(gateway, "get"), [(12, [1])])
+        self.assertEqual(self._calls(gateway, "clear"), [(12, [1])])
+        self.assertEqual(self._lock_codes(gateway, 12), {})
+        self.assertEqual(self._slots(code), {self.BACK: None})
+        code.refresh_from_db()
+        self.assertEqual((code.push_state, code.push_attempt_count), (DoorCode.PushState.PENDING, 0))
 
 
 class SaveOutwaitsAQueuedPushTests(_LockingTestBase):
@@ -362,12 +431,16 @@ class SaveOutwaitsAQueuedPushTests(_LockingTestBase):
             self.addCleanup(patcher.stop)
 
     def _push_holding_back_for_its_whole_budget(self) -> _OtherHolder:
-        """The queued push of a just-created code holds BACK for its budget plus a readback sleep past it."""
+        """The queued push of a just-created code holds BACK for its budget, every readback sleep and some room.
+
+        A real hold past the budget is at most one readback sleep plus the DB
+        writes, so this pins the constant's headroom too (PR #207 review).
+        """
         push = self._hold_elsewhere(BACK)
-        held_for = lock_push_uc.PUSH_LOCK_BUDGET_SECONDS + max(lock_push_uc._READBACK_RETRY_DELAYS_SECONDS) + 1
+        self.held_for = lock_push_uc.PUSH_LOCK_BUDGET_SECONDS + sum(lock_push_uc._READBACK_RETRY_DELAYS_SECONDS) + 10
 
         def tick(now):
-            if now - self.start >= held_for:
+            if now - self.start >= self.held_for:
                 push.release()
 
         self.clock.on_tick = tick
@@ -383,7 +456,7 @@ class SaveOutwaitsAQueuedPushTests(_LockingTestBase):
 
         code.refresh_from_db()
         self.assertEqual(code.label, "Cleaner")
-        self.assertGreater(self.clock.now - self.start, lock_push_uc.PUSH_LOCK_BUDGET_SECONDS)
+        self.assertGreaterEqual(self.clock.now - self.start, self.held_for)
         self.assertTrue(_free_elsewhere(BACK))
 
     def test_a_delete_right_after_a_create_waits_for_the_queued_push(self):
@@ -393,5 +466,6 @@ class SaveOutwaitsAQueuedPushTests(_LockingTestBase):
         door_codes_uc.delete_door_code(code=self._fresh(code), actor_user=self.user, zwavejs=self.gateway)
 
         self.assertFalse(DoorCode.objects.filter(id=code.id).exists())
+        self.assertGreaterEqual(self.clock.now - self.start, self.held_for)
         self.assertEqual(self._lock_codes(12), {})
         self.assertTrue(_free_elsewhere(BACK))

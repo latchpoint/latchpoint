@@ -567,9 +567,9 @@ def _verify_user_code_slot(
     (``holds_other``), which every caller leaves alone; 0xfe is still no answer.
     Raises :class:`LockCodeUnverified`
     (transient) when no attempt gets a usable answer, including a single empty
-    answer followed only by silence. A Z-Wave JS client that's unavailable is
-    no answer like any other gateway error (issue #191). ``ZwavejsNotConfigured``
-    propagates unchanged.
+    answer followed only by silence. ``ZwavejsClientUnavailable`` is no answer
+    like any other gateway error (issue #191). ``ZwavejsNotConfigured``
+    propagates unchanged, so it stays terminal for the push.
     """
     attempts = len(_READBACK_RETRY_DELAYS_SECONDS) + 1
     last_reason = "no response"
@@ -3100,9 +3100,11 @@ def push_door_code_to_lock(
                     claimed_slots=claimed_slots,
                 )
         except (ZwavejsNotConfigured, ZwavejsCommandValidationError) as exc:
-            # A client that's unavailable (Z-Wave JS down or restarting) isn't
-            # here: it takes the transient path below, so the scheduler retries
-            # this lock under its cap instead of failing it for good (issue #191).
+            # ZwavejsClientUnavailable takes the transient path below, so the
+            # scheduler retries the lock under its cap (issue #191). The manager
+            # only raises it when zwave-js-server-python is missing, and inside a
+            # command _run_coro wraps it as ZwavejsCommandError, which was
+            # already transient, like a Z-Wave JS that's down (ZwavejsNotConnected).
             _record_lock_push_failure(
                 door_code=door_code, error_message=str(exc), terminal=True, lock_entity_id=lock_entity_id
             )
@@ -3282,8 +3284,8 @@ def push_door_code_to_lock(
             error_message = f"{exc.__class__.__name__}: {exc}"
             if isinstance(exc, (TimeBudgetExceeded, ZwavejsClientUnavailable)) and not set_returned:
                 # The budget refused the set itself, so nothing went to the slot
-                # (issue #124). Same for a client that's unavailable, which used
-                # to be terminal and recorded nothing for the set itself (PR #192,
+                # (issue #124). Same for ZwavejsClientUnavailable, which used to
+                # be terminal and recorded nothing for the set itself (PR #192,
                 # issue #191).
                 pin_sent_to_slot = False
             if (
@@ -3501,7 +3503,7 @@ def _push_schedule_to_slot(
         )
         raise
     except (ZwavejsNotConfigured, ZwavejsCommandValidationError) as exc:
-        # A client that's unavailable is transient, below (issue #191).
+        # ZwavejsClientUnavailable is transient, below (issue #191).
         _record_lock_push_failure(
             door_code=door_code,
             lock_entity_id=lock_entity_id,

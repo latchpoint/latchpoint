@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from datetime import timedelta
 
-from django.db import DatabaseError
+from django.db import Error as DbError
 from django.db.models import Exists, F, OuterRef, Q
 from django.utils import timezone
 
@@ -369,10 +369,12 @@ def _load_validity_pass(codes) -> list[DoorCode] | None:
     """Run one of ``enforce_door_code_validity``'s querysets, or log a DB error and give ``None`` (issue #186).
 
     Building a queryset doesn't touch the DB, so this is where one fails.
+    ``django.db.Error`` rather than ``DatabaseError``, since a dropped
+    connection can come back as ``InterfaceError``, which isn't one.
     """
     try:
         return list(codes)
-    except DatabaseError:
+    except DbError:
         logger.warning("Couldn't load door codes to enforce their validity this tick", exc_info=True)
         return None
 
