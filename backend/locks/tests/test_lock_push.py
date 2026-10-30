@@ -4495,3 +4495,128 @@ class MaskedUnconfirmedSlotTests(EncryptionTestMixin, TestCase):
                     self.assertEqual(self._calls(gateway, "clear"), [])
                     self.assertEqual(gateway._lock_codes, {(7, 1): "9999"})
                 DoorCode.objects.filter(id=code.id).delete()
+
+    def test_a_resend_only_goes_into_an_attempt_that_sent_the_current_pin(self):
+        # The attempt sent 1234 and the code's PIN is 5678 now, so slot 1 may hold the old PIN.
+        code, gateway = self._unconfirmed_push(drops_duplicates=False)
+        DoorCode.objects.filter(id=code.id).update(encrypted_pin=SettingsEncryption.get().encrypt("5678"))
+
+        result = push_door_code_to_lock(door_code=code, lock_entity_id=self.LOCK_ENTITY_ID, zwavejs=gateway)
+
+        self.assertEqual(result.slot_index, 2)
+        self.assertEqual(self._calls(gateway, "set"), [2])
+        self.assertEqual(gateway._lock_codes, {(7, 1): "1234", (7, 2): "5678"})
+
+    def _keypad_code_lands_in_slot_1(self, gateway: FakeGateway) -> None:
+        gateway._lock_codes[(7, 1)] = "9999"
+        gateway._cache_codes[(7, 1)] = "9999"
+        gateway._get_scripts = {None: [self.MASKED] * 20}
+        gateway.invoke_calls.clear()
+
+    def _adoption_reads_empty_once_then_times_out(self) -> tuple[DoorCode, FakeGateway]:
+        """PR #193 review P1: the retry's adoption readback answers empty once, then gets no answer."""
+        code, gateway = self._unconfirmed_push()
+        gateway._lock_codes.clear()
+        gateway._get_scripts = {None: [self.EMPTY, *self._timeouts(2)]}
+        with self.assertRaises(LockUnreachable):
+            push_door_code_to_lock(door_code=code, lock_entity_id=self.LOCK_ENTITY_ID, zwavejs=gateway)
+        self.assertEqual(self._calls(gateway, "set"), [])
+        self._keypad_code_lands_in_slot_1(gateway)
+        return code, gateway
+
+    def test_a_retry_doesnt_resend_over_a_keypad_code_after_adoption_saw_the_slot_empty_once(self):
+        code, gateway = self._adoption_reads_empty_once_then_times_out()
+
+        self._push_ignoring_failure(code, gateway)
+
+        self.assertNotIn(1, self._calls(gateway, "set"))
+        self.assertEqual(gateway._lock_codes[(7, 1)], "9999")
+
+    def test_a_delete_doesnt_clear_a_keypad_code_after_adoption_saw_the_slot_empty_once(self):
+        code, gateway = self._adoption_reads_empty_once_then_times_out()
+
+        door_codes_uc.delete_door_code(code=code, zwavejs=gateway)
+
+        self.assertFalse(DoorCode.objects.filter(id=code.id).exists())
+        self.assertEqual(self._calls(gateway, "clear"), [])
+        self.assertEqual(gateway._lock_codes, {(7, 1): "9999"})
+
+    def test_a_slot_seen_empty_once_still_gets_its_readable_pin_cleared(self):
+        # The marker settles nothing, so a lock that shows codes still gets the PIN taken off.
+        code, gateway = self._unconfirmed_push()
+        gateway._get_scripts = {None: [self.EMPTY, *self._timeouts(2)]}
+        with self.assertRaises(LockUnreachable):
+            push_door_code_to_lock(door_code=code, lock_entity_id=self.LOCK_ENTITY_ID, zwavejs=gateway)
+        gateway._get_scripts = {None: []}
+
+        door_codes_uc.delete_door_code(code=code, zwavejs=gateway)
+
+        self.assertEqual(gateway._lock_codes, {})
+
+    def test_a_clear_retry_leaves_a_keypad_code_after_the_cleanup_saw_the_slot_empty_once(self):
+        # PR #193 review P2: the PIN change's cleanup readback answers empty once, then gets no answer.
+        code, gateway = self._unconfirmed_push()
+        del gateway._lock_codes[(7, 1)]  # the Z-Wave JS cache still says slot 1 is taken
+        gateway._get_scripts = {None: [self.EMPTY, *self._timeouts(2), *[self.MASKED] * 20]}
+
+        door_codes_uc.update_door_code(code=code, changes={"code": "5678"}, zwavejs=gateway)
+
+        [failure] = lock_push_uc.unresolved_clear_failures(door_code=code)
+        self.assertEqual((failure.slot_index, failure.slot_available, failure.slot_verified), (1, False, False))
+        self.assertEqual(self._slot_of(code), 2)
+        self._keypad_code_lands_in_slot_1(gateway)
+
+        lock_push_uc.retry_failed_slot_clears(door_code=code, zwavejs=gateway)
+
+        self.assertEqual(self._calls(gateway, "clear"), [])
+        self.assertEqual(gateway._lock_codes[(7, 1)], "9999")
+        self.assertEqual(lock_push_uc.unresolved_clear_failures(door_code=code), [])
+
+    def test_a_clear_retry_leaves_a_keypad_code_after_an_earlier_retry_saw_the_slot_empty_once(self):
+        code, gateway = self._unconfirmed_push(gateway_class=ClearFailingGateway)
+        gateway.clear_fails_on = {7}
+        door_codes_uc.update_door_code(code=code, changes={"code": "5678"}, zwavejs=gateway)
+        [failure] = lock_push_uc.unresolved_clear_failures(door_code=code)
+        self.assertIs(failure.slot_available, True)
+        gateway.clear_fails_on = set()
+        del gateway._lock_codes[(7, 1)]
+        gateway._get_scripts = {None: [self.EMPTY, *self._timeouts(2)]}
+
+        self.assertEqual(len(lock_push_uc.retry_failed_slot_clears(door_code=code, zwavejs=gateway)), 1)
+        self._keypad_code_lands_in_slot_1(gateway)
+        lock_push_uc.retry_failed_slot_clears(door_code=code, zwavejs=gateway)
+
+        self.assertEqual(self._calls(gateway, "clear"), [])
+        self.assertEqual(gateway._lock_codes[(7, 1)], "9999")
+
+    def test_a_disabled_masked_slot_isnt_ours_for_an_attempt_nothing_confirmed(self):
+        # PR #193 review P3: we always send the code enabled, so a disabled one may be someone else's.
+        code, gateway = self._unconfirmed_push()
+        gateway._lock_codes[(7, 1)] = "9999"
+        gateway._get_scripts = {None: [{"userIdStatus": 2, "userCode": "****"}] * 20}
+
+        door_codes_uc.delete_door_code(code=code, zwavejs=gateway)
+
+        self.assertFalse(DoorCode.objects.filter(id=code.id).exists())
+        self.assertEqual(self._calls(gateway, "clear"), [])
+        self.assertEqual(gateway._lock_codes, {(7, 1): "9999"})
+
+    def test_another_codes_readback_seeing_the_slot_empty_drops_the_trust(self):
+        # X's set into slot 1 never stuck. Y's push picks slot 1 too and reads it back
+        # empty twice, then someone types a keypad code in there.
+        code, gateway = self._unconfirmed_push()
+        gateway._lock_codes.clear()
+        gateway._cache_codes.clear()
+        other = self._make_code(pin="5555")
+        gateway._reject_pins = {7: {"5555"}}
+        gateway._get_scripts = {None: [self.EMPTY, self.EMPTY]}
+        with self.assertRaises(LockRejectedCode):
+            push_door_code_to_lock(door_code=other, lock_entity_id=self.LOCK_ENTITY_ID, zwavejs=gateway)
+        self.assertEqual(self._calls(gateway, "set"), [1])
+        gateway._reject_pins = {}
+        self._keypad_code_lands_in_slot_1(gateway)
+
+        door_codes_uc.delete_door_code(code=code, zwavejs=gateway)
+
+        self.assertEqual(self._calls(gateway, "clear"), [])
+        self.assertEqual(gateway._lock_codes, {(7, 1): "9999"})

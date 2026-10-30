@@ -17,7 +17,7 @@ from __future__ import annotations
 import logging
 import re
 import time as _time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, time, timedelta, timezone
 from typing import TYPE_CHECKING
 
@@ -488,7 +488,16 @@ _SLOT_AVAILABLE_KEY = "slot_available"
 # slot read back empty. An empty slot holds nothing of the code's whatever PIN
 # was sent there, so it settles every attempt before it, and no later attempt on
 # that slot gets ``slot_available`` until the code's next confirmed push there.
+# Any code's marker for the lock and slot also drops the masked-slot trust of
+# attempts and clear failures recorded before it (:func:`_masked_trust_dropped`).
 _SLOT_EMPTY_KEY = "slot_empty"
+
+# DoorCodeEvent metadata ``action`` (on a ``code_removed`` event, with
+# ``slot_empty``) for a readback that answered empty once and then got no
+# answer (PR #193 review). That's no verdict, so it settles nothing and a
+# readable PIN in the slot still gets cleared, but it drops the masked-slot
+# trust like a ``slot_empty`` settle marker does.
+_SLOT_SEEN_EMPTY_ACTION = "slot_read_back_empty"
 
 
 def _encrypt_expected_pin(pin: str | None) -> dict[str, str]:
@@ -564,38 +573,86 @@ def _available_attempt_slots(*, door_code: DoorCode, lock_entity_id: str) -> set
 
 
 def _tagged_attempt_slots(*, door_code: DoorCode, lock_entity_id: str, key: str) -> set[int]:
+    """Unsettled attempt slots whose newest attempt has ``key``, minus those whose trust was dropped since."""
     return {
         slot_index
-        for slot_index, (_event_id, metadata) in _unsettled_unconfirmed_attempts(
+        for slot_index, (event_id, metadata) in _unsettled_unconfirmed_attempts(
             door_code=door_code, lock_entity_id=lock_entity_id
         ).items()
         if metadata.get(key)
+        and not _masked_trust_dropped(lock_entity_id=lock_entity_id, slot_index=slot_index, since_id=event_id)
     }
+
+
+def _slot_empty_markers(
+    *, lock_entity_id: str, slot_index: int, door_code: DoorCode | None = None, after_id: int | None = None
+) -> list[int]:
+    """Ids of the ``slot_empty`` markers for this lock and slot, every code's unless ``door_code`` is given."""
+    markers = DoorCodeEvent.objects.filter(
+        lock_entity_id=lock_entity_id,
+        metadata__action__in=[_UNCONFIRMED_RESOLVED_ACTION, _CLEAR_RESOLVED_ACTION, _SLOT_SEEN_EMPTY_ACTION],
+    )
+    if door_code is not None:
+        markers = markers.filter(door_code=door_code)
+    if after_id is not None:
+        markers = markers.filter(id__gt=after_id)
+    return [
+        event_id
+        for event_id, metadata in markers.values_list("id", "metadata")
+        if isinstance(metadata, dict)
+        and metadata.get(_SLOT_EMPTY_KEY)
+        and _coerce_int(metadata.get("slot_index")) == slot_index
+    ]
+
+
+def _masked_trust_dropped(*, lock_entity_id: str, slot_index: int, since_id: int | None) -> bool:
+    """Whether any code's readback of this slot came back empty after event ``since_id`` (PR #193 review).
+
+    Checked when a ``slot_verified`` or ``slot_available`` attempt or clear
+    failure is honoured. Latchpoint has seen the slot empty since that event,
+    whichever code's readback it was, so a masked code there now may be a
+    keypad code and isn't counted as ours.
+    """
+    if since_id is None:
+        return False
+    return bool(_slot_empty_markers(lock_entity_id=lock_entity_id, slot_index=slot_index, after_id=since_id))
+
+
+def _record_slot_read_back_empty(*, door_code: DoorCode, lock_entity_id: str, slot_index: int) -> None:
+    """Record a readback of the slot that answered empty once before it got no answer (PR #193 review)."""
+    DoorCodeEvent.objects.create(
+        door_code=door_code,
+        user=door_code.user,
+        lock_entity_id=lock_entity_id,
+        event_type=DoorCodeEvent.EventType.CODE_REMOVED,
+        metadata={"action": _SLOT_SEEN_EMPTY_ACTION, "slot_index": int(slot_index), _SLOT_EMPTY_KEY: True},
+    )
 
 
 def _slot_read_back_empty_since_last_push(*, door_code: DoorCode, lock_entity_id: str, slot_index: int) -> bool:
     """Whether a readback of this slot by ``door_code`` came back empty since its last successful push to the lock.
 
     Those readbacks leave a ``slot_empty`` marker (adoption, the unconfirmed
-    cleanups, the clear retries, the post-set readback). Once there is one, the
-    slot lost this code's PIN or never kept it, and a later unconfirmed ``set``
-    there doesn't count a masked readback as ours (PR #192 review, issue #128).
+    cleanups, the clear retries, the post-set readback), including one that
+    answered empty once and then got no answer. Once there is one, the slot lost
+    this code's PIN or never kept it, and a later unconfirmed ``set`` there
+    doesn't count a masked readback as ours (PR #192 review, issue #128).
+    Another code's markers from before this attempt don't count, since this
+    code's own ``set`` went into the slot after them; the ones after it are
+    checked when the attempt is honoured (:func:`_masked_trust_dropped`).
     """
-    events = DoorCodeEvent.objects.filter(door_code=door_code, lock_entity_id=lock_entity_id)
     last_pushed_id = (
-        events.filter(event_type=DoorCodeEvent.EventType.CODE_SYNCED)
+        DoorCodeEvent.objects.filter(
+            door_code=door_code, lock_entity_id=lock_entity_id, event_type=DoorCodeEvent.EventType.CODE_SYNCED
+        )
         .order_by("-id")
         .values_list("id", flat=True)
         .first()
     )
-    markers = events.filter(metadata__action__in=[_UNCONFIRMED_RESOLVED_ACTION, _CLEAR_RESOLVED_ACTION])
-    if last_pushed_id is not None:
-        markers = markers.filter(id__gt=last_pushed_id)
-    return any(
-        isinstance(metadata, dict)
-        and metadata.get(_SLOT_EMPTY_KEY)
-        and _coerce_int(metadata.get("slot_index")) == slot_index
-        for metadata in markers.values_list("metadata", flat=True)
+    return bool(
+        _slot_empty_markers(
+            lock_entity_id=lock_entity_id, slot_index=slot_index, door_code=door_code, after_id=last_pushed_id
+        )
     )
 
 
@@ -613,17 +670,22 @@ def _read_back_attempt_slot(
     pin: str,
     timeout_seconds: float,
     masked_counts: bool,
+    disabled_masked_counts: bool = False,
 ) -> str:
     """Read an unconfirmed attempt slot back. :data:`_HOLDS_OURS` when it holds ``pin``, enabled or disabled.
 
-    With ``masked_counts`` a slot that reads back occupied with a code the lock
-    won't show is ours too, the rule :func:`_tracked_slot_may_hold_pin` uses for
-    a tracked slot. That's for a ``slot_verified`` attempt, since this push's own
-    readback already accepted it (PR #190 review), and a ``slot_available`` one,
-    since the slot was Available when the push picked it (issues #128, #152).
+    With ``masked_counts`` a slot that reads back occupied and enabled with a
+    code the lock won't show is ours too, the rule :func:`_tracked_slot_may_hold_pin`
+    uses for a tracked slot. That's for a ``slot_verified`` attempt, since this
+    push's own readback already accepted it (PR #190 review), and a
+    ``slot_available`` one, since the slot was Available when the push picked it
+    (issues #128, #152). A disabled slot with a masked code only counts with
+    ``disabled_masked_counts``, which is for ``slot_verified`` only: we always
+    send the code enabled, so for an attempt nothing confirmed that may be
+    someone else's code (PR #193 review).
     :data:`_READ_BACK_EMPTY` when it answers empty twice, and :data:`_HOLDS_OTHER`
     for anything else that isn't ours: a readable different code, a messaging or
-    passage mode slot, or a masked one without ``masked_counts``.
+    passage mode slot, or a masked one without the flag for it.
     :class:`LockCodeUnverified` and gateway errors propagate.
     """
     try:
@@ -636,7 +698,8 @@ def _read_back_attempt_slot(
         if exc.clear_slot:
             # The only rejection that asks for a clear without holding the PIN.
             return _READ_BACK_EMPTY
-        if exc.holds_other or not masked_counts:
+        # Left: disabled with a code the lock won't show.
+        if exc.holds_other or not disabled_masked_counts:
             return _HOLDS_OTHER
         return _HOLDS_OURS
     return _HOLDS_OURS if confirmed or masked_counts else _HOLDS_OTHER
@@ -794,8 +857,9 @@ def _find_adoptable_attempted_slot(
     ``slot_empty``, so the attempt stops counting and no later attempt on it
     counts a masked readback as ours (:func:`_slot_read_back_empty_since_last_push`).
     A slot holding anything else is left for the cleanups, since an attempt that
-    sent an older PIN may still be what's in it.
-    :class:`LockCodeUnverified` propagates.
+    sent an older PIN may still be what's in it. :class:`LockCodeUnverified`
+    propagates, after leaving a ``slot_read_back_empty`` marker when one of its
+    answers was empty.
     """
     attempts = _unconfirmed_attempts(
         door_code=door_code,
@@ -813,6 +877,12 @@ def _find_adoptable_attempted_slot(
                 pin=pin,
                 timeout_seconds=timeout_seconds,
             )
+        except LockCodeUnverified as exc:
+            if exc.read_back_empty:
+                # Empty once, then no answer: no verdict, but the slot doesn't
+                # get counted as ours on a masked readback again (PR #193 review).
+                _record_slot_read_back_empty(door_code=door_code, lock_entity_id=lock_entity_id, slot_index=slot_index)
+            raise
         except LockRejectedCode as exc:
             if exc.clear_slot and not exc.holds_pin:
                 _settle_unconfirmed_slot(
@@ -971,7 +1041,16 @@ def unresolved_clear_failures(*, door_code: DoorCode) -> list[ClearFailure]:
             )
         else:
             pending.pop(key, None)
-    return list(pending.values())
+    return [_without_dropped_trust(failure) for failure in pending.values()]
+
+
+def _without_dropped_trust(failure: ClearFailure) -> ClearFailure:
+    """``failure`` without its masked-slot tags once any code's readback saw its slot empty (PR #193 review)."""
+    if not (failure.slot_verified or failure.slot_available) or not _masked_trust_dropped(
+        lock_entity_id=failure.lock_entity_id, slot_index=failure.slot_index, since_id=failure.event_id
+    ):
+        return failure
+    return replace(failure, slot_verified=False, slot_available=False)
 
 
 def _unresolved_clear_failure(*, door_code: DoorCode, lock_entity_id: str, slot_index: int) -> ClearFailure | None:
@@ -1222,12 +1301,15 @@ def _read_back_failed_slot(
     pin: str | None,
     timeout_seconds: float,
     masked_counts: bool = False,
+    disabled_masked_counts: bool = False,
 ) -> str:
     """Read the slot back with :func:`_read_back_attempt_slot`; :data:`_HOLDS_OURS` only when it reports ``pin``.
 
     With ``masked_counts`` (a ``slot_verified`` or ``slot_available`` attempt
-    slot) it's ours too when it reads back occupied with a masked code. With no
-    ``pin`` to compare against nothing is read and it's :data:`_HOLDS_OTHER`.
+    slot) it's ours too when it reads back occupied with a masked code, and with
+    ``disabled_masked_counts`` (``slot_verified`` only) when that code is
+    disabled. With no ``pin`` to compare against nothing is read and it's
+    :data:`_HOLDS_OTHER`.
     """
     if not pin:
         return _HOLDS_OTHER
@@ -1238,6 +1320,7 @@ def _read_back_failed_slot(
         pin=pin,
         timeout_seconds=timeout_seconds,
         masked_counts=masked_counts,
+        disabled_masked_counts=disabled_masked_counts,
     )
 
 
@@ -1279,6 +1362,7 @@ def _retry_failed_slot_clear(
                 # Carried on the failure, since a later push to this lock closes the
                 # attempt's window. Only an unconfirmed slot's tags count (issues #128, #152).
                 masked_counts=failure.unconfirmed and (failure.slot_verified or failure.slot_available),
+                disabled_masked_counts=failure.unconfirmed and failure.slot_verified,
             )
             if verdict != _HOLDS_OURS:
                 forget_cleared_slot(
@@ -1316,14 +1400,18 @@ def _retry_failed_slot_clear(
             door_code.id,
             exc_info=True,
         )
+        seen_empty = isinstance(exc, LockCodeUnverified) and exc.read_back_empty
+        if seen_empty:
+            # Still retried, but the failure's masked-slot tags stop counting (PR #193 review).
+            _record_slot_read_back_empty(door_code=door_code, lock_entity_id=lock_entity_id, slot_index=slot_index)
         return ClearFailure(
             lock_entity_id=lock_entity_id,
             slot_index=slot_index,
             reason=_clear_error_reason(exc),
             removing=failure.removing,
             unconfirmed=failure.unconfirmed,
-            slot_verified=failure.slot_verified,
-            slot_available=failure.slot_available,
+            slot_verified=failure.slot_verified and not seen_empty,
+            slot_available=failure.slot_available and not seen_empty,
         )
     forget_cleared_slot(door_code=door_code, lock_entity_id=lock_entity_id, slot_index=slot_index, outcome="cleared")
     return None
@@ -1498,7 +1586,9 @@ def _clear_unconfirmed_slots_on_lock(
     left alone, and so is a slot with no PIN to compare against. A
     ``slot_verified`` or ``slot_available`` attempt's slot is cleared when it
     reads back occupied with a masked code too (:func:`_read_back_attempt_slot`,
-    issue #152). A slot that reads back empty is settled with ``slot_empty``.
+    issue #152). A slot that reads back empty is settled with ``slot_empty``,
+    and one that answered empty once before it got no answer is recorded as a
+    failure without those tags (PR #193 review).
     """
     cleared: list[dict[str, object]] = []
     failed: list[ClearFailure] = []
@@ -1546,6 +1636,7 @@ def _clear_unconfirmed_slots_on_lock(
                 pin=expected_pin,
                 timeout_seconds=timeout_seconds,
                 masked_counts=slot_index in verified or slot_index in available,
+                disabled_masked_counts=slot_index in verified,
             )
             if verdict != _HOLDS_OURS:
                 _settle_unconfirmed_slot(
@@ -1579,6 +1670,10 @@ def _clear_unconfirmed_slots_on_lock(
                 lock_entity_id,
                 door_code.id,
             )
+            seen_empty = isinstance(exc, LockCodeUnverified) and exc.read_back_empty
+            if seen_empty:
+                # The retry reads it back again, but a masked code there isn't ours any more (PR #193 review).
+                _record_slot_read_back_empty(door_code=door_code, lock_entity_id=lock_entity_id, slot_index=slot_index)
             failure = record_clear_failure(
                 door_code=door_code,
                 lock_entity_id=lock_entity_id,
@@ -1586,8 +1681,8 @@ def _clear_unconfirmed_slots_on_lock(
                 exc=exc,
                 expected_pin=expected_pin,
                 unconfirmed=True,
-                slot_verified=slot_index in verified,
-                slot_available=slot_index in available,
+                slot_verified=slot_index in verified and not seen_empty,
+                slot_available=slot_index in available and not seen_empty,
             )
             failed.append(failure)
             if failure.permanent:
@@ -2445,6 +2540,9 @@ def push_door_code_to_lock(
             raise
         except GatewayError as exc:
             error_message = f"{exc.__class__.__name__}: {exc}"
+            if pin_sent_to_slot and isinstance(exc, LockCodeUnverified) and exc.read_back_empty:
+                # Drops the masked-slot trust of anything else on record for this slot (PR #193 review).
+                _record_slot_read_back_empty(door_code=door_code, lock_entity_id=lock_entity_id, slot_index=slot_index)
             if pin_sent_to_slot:
                 # Tagged like the terminal branch above: only once a readback in
                 # this push accepted the slot (a schedule timeout, or an adopted slot).

@@ -699,6 +699,39 @@ class StartTests(_LifecycleTestBase):
             self.assertEqual(self._enforce(gateway), 0)
         withdraw.assert_not_called()
 
+    def test_a_scheduled_code_whose_attempt_a_clear_retry_read_back_empty_is_not_withdrawn_again(self):
+        # Issues #128, #152: a clear_resolved with slot_empty settles the attempt.
+        code = DoorCode.objects.create(
+            user=self.user,
+            encrypted_pin=SettingsEncryption.get().encrypt(self.PIN),
+            pin_length=len(self.PIN),
+            code_type=DoorCode.CodeType.TEMPORARY,
+            is_active=True,
+            start_at=self._from_now(hours=1),
+            end_at=self._from_now(days=1),
+        )
+        DoorCodeLockAssignment.objects.create(door_code=code, lock_entity_id=self.SIDE)
+        lock_push_uc._record_unconfirmed_slot_attempt(
+            door_code=code, lock_entity_id=self.SIDE, slot_index=1, reason="timeout", pin=self.PIN, slot_available=True
+        )
+        lock_push_uc.record_clear_failure(
+            door_code=code,
+            lock_entity_id=self.SIDE,
+            slot_index=1,
+            exc=ZwavejsCommandError("driver TimeoutError after 5.0s"),
+            expected_pin=self.PIN,
+            unconfirmed=True,
+            slot_available=True,
+        )
+        lock_push_uc.forget_cleared_slot(
+            door_code=code, lock_entity_id=self.SIDE, slot_index=1, outcome="not_holding_pin", slot_empty=True
+        )
+        self.assertEqual(lock_push_uc.slots_to_withdraw(door_code=code), [])
+
+        with patch.object(door_codes_uc, "withdraw_door_code") as withdraw:
+            self.assertEqual(self._enforce(FakeGateway(usersNumber=5)), 0)
+        withdraw.assert_not_called()
+
 
 class StartAtUpdateTests(_LifecycleTestBase, APITestCase):
     """Moving start_at across now on an update takes the code off its locks or puts it on."""

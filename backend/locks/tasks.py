@@ -245,6 +245,12 @@ def enforce_door_code_validity() -> int:
             metadata__outcome__in=["cleared", "lock_missing"],
             metadata__slot_index=OuterRef("metadata__slot_index"),
         )
+        | Q(
+            # A clear retry that read the slot back empty settles it too (issues #128, #152).
+            metadata__action="clear_resolved",
+            metadata__slot_empty=True,
+            metadata__slot_index=OuterRef("metadata__slot_index"),
+        )
     )
     still_on_lock = DoorCodeLockAssignment.objects.filter(
         door_code=OuterRef("door_code"), lock_entity_id=OuterRef("lock_entity_id")
