@@ -175,14 +175,18 @@ def push_pending_door_codes() -> int:
             code.last_push_error = (f"Push gave up after {code.push_attempt_count} attempts: {safe_reason}")[:500]
             with transaction.atomic():
                 code.save(update_fields=["push_state", "last_push_error", "updated_at"])
-                # Every lock of an active code still waiting on a push gave up with
-                # the code, keeping its own error and count, so nothing starts
-                # retrying on its own once the scheduler reads per-lock state
-                # (issue #126). An inactive code is never pushed, so its locks
-                # aren't waiting on one.
+                # Every lock still waiting on a push gave up with the code, keeping
+                # its own error and count, so nothing starts retrying on its own
+                # once the scheduler reads per-lock state (issue #126). Only for a
+                # code that's pushed now, ie active, started and not expired. One
+                # before its start only hit the cap on clear retries, and
+                # enforce_door_code_validity still pushes its locks once it starts.
+                cap_now = timezone.now()
+                pushable = DoorCode.objects.filter(id=code.id, is_active=True).filter(
+                    started_q(cap_now) & ~expired_q(cap_now)
+                )
                 DoorCodeLockAssignment.objects.filter(
-                    door_code=code,
-                    door_code__is_active=True,
+                    door_code__in=pushable,
                     push_state=DoorCode.PushState.PENDING,
                     slot_index__isnull=True,
                 ).update(push_state=DoorCode.PushState.FAILED)

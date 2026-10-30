@@ -1240,16 +1240,10 @@ def _sync_lock_config_atomically(
                     updated_fields.append("user")
                     warnings.append("owner_changed")
 
-                if code.source != DoorCode.Source.SYNCED:
+                converted_to_synced = code.source != DoorCode.Source.SYNCED
+                if converted_to_synced:
                     code.source = DoorCode.Source.SYNCED
                     updated_fields.append("source")
-                    # The lock holds it in this tracked slot now, so per lock it's pushed (issue #126).
-                    DoorCodeLockAssignment.objects.filter(id=existing.id).update(
-                        push_state=DoorCode.PushState.PUSHED,
-                        push_attempt_count=0,
-                        last_push_error="",
-                        schedule_pending=False,
-                    )
 
                 # A manual code only gets this far when the slot holds its PIN or
                 # a masked one, so its own PIN stays either way.
@@ -1305,6 +1299,15 @@ def _sync_lock_config_atomically(
                     action = "updated"
                     result.updated += 1
                     logger.info("Slot %d on %s: updated (fields: %s)", slot_index, lock_entity_id, updated_fields)
+                    if converted_to_synced:
+                        # The lock holds it in this tracked slot now, so per lock it's
+                        # pushed (issue #126). After the code row, like every writer of both.
+                        DoorCodeLockAssignment.objects.filter(id=existing.id).update(
+                            push_state=DoorCode.PushState.PUSHED,
+                            push_attempt_count=0,
+                            last_push_error="",
+                            schedule_pending=False,
+                        )
                 else:
                     result.unchanged += 1
                     logger.debug("Slot %d on %s: unchanged", slot_index, lock_entity_id)
@@ -1504,15 +1507,16 @@ def _sync_lock_config_atomically(
                 code.id,
                 "deactivating and releasing the slot" if was_active else "releasing the slot",
             )
+            # The code row before its assignment row, like every writer of both.
+            if was_active:
+                code.is_active = False
+                code.save(update_fields=["is_active", "updated_at"])
+                result.deactivated += 1
             assignment.slot_index = None
             # Nothing left on this lock, so per lock it's pending, attempts kept (issue #126).
             assignment.push_state = DoorCode.PushState.PENDING
             assignment.schedule_pending = False
             assignment.save(update_fields=["slot_index", "push_state", "schedule_pending", "updated_at"])
-            if was_active:
-                code.is_active = False
-                code.save(update_fields=["is_active", "updated_at"])
-                result.deactivated += 1
             DoorCodeEvent.objects.create(
                 door_code=code,
                 user=actor_user,

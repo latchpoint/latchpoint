@@ -2284,9 +2284,10 @@ def _record_push_failure(
 
     ``event_metadata`` is added to the ``code_failed`` event a terminal failure
     records, and ``lock_entity_id`` is set on it. With ``lock_entity_id`` the
-    failure is also written to that lock's assignment in the same transaction:
-    a transient one leaves it ``pending`` with one more attempt, a terminal one
-    makes it ``failed`` (issue #126). Nothing reads those yet.
+    failure is also written to that lock's assignment in the same transaction
+    when it has no slot: a transient one leaves it ``pending`` with one more
+    attempt, a terminal one makes it ``failed`` (issue #126). Nothing reads
+    those yet.
     """
     safe_message = sanitize_push_error_for_storage(error_message)
     door_code.last_push_attempt_at = django_timezone.now()
@@ -2312,7 +2313,11 @@ def _record_push_failure(
                 if terminal
                 else {"push_state": DoorCode.PushState.PENDING, "push_attempt_count": F("push_attempt_count") + 1}
             )
-            DoorCodeLockAssignment.objects.filter(door_code=door_code, lock_entity_id=lock_entity_id).update(
+            # A lock that holds a slot stays pushed. The node lookup records its
+            # failure before the push checks for one, and nothing else is sent then.
+            DoorCodeLockAssignment.objects.filter(
+                door_code=door_code, lock_entity_id=lock_entity_id, slot_index__isnull=True
+            ).update(
                 **lock_fields,
                 last_push_error=door_code.last_push_error,
                 last_push_attempt_at=door_code.last_push_attempt_at,
@@ -2691,6 +2696,10 @@ def push_door_code_to_lock(
             pin=pin,
             slot_verified=True,
         )
+        before_stamp = {
+            name: getattr(door_code, name)
+            for name in ("push_state", "last_push_attempt_at", "last_push_error", "push_attempt_count", "updated_at")
+        }
         try:
             # One transaction for the slot, the pushed stamp and its event (issue
             # #130), so a process that dies between them can't leave the code
@@ -2698,16 +2707,8 @@ def push_door_code_to_lock(
             # inside an outer transaction, so a unique-constraint hit doesn't poison it.
             with transaction.atomic():
                 pushed_at = django_timezone.now()
-                # The per-lock state goes with the slot (issue #126). The schedule
-                # is in the same step for now, so the lock is pushed outright.
-                DoorCodeLockAssignment.objects.filter(door_code=door_code, lock_entity_id=lock_entity_id).update(
-                    slot_index=slot_index,
-                    push_state=DoorCode.PushState.PUSHED,
-                    push_attempt_count=0,
-                    last_push_attempt_at=pushed_at,
-                    last_push_error="",
-                    schedule_pending=False,
-                )
+                # The code row before its assignment rows, the same order every
+                # other writer of both takes, so two of them can't deadlock.
                 door_code.push_state = DoorCode.PushState.PUSHED
                 door_code.last_push_attempt_at = pushed_at
                 door_code.last_push_error = ""
@@ -2720,6 +2721,16 @@ def push_door_code_to_lock(
                         "push_attempt_count",
                         "updated_at",
                     ]
+                )
+                # The per-lock state goes with the slot (issue #126). The schedule
+                # is in the same step for now, so the lock is pushed outright.
+                DoorCodeLockAssignment.objects.filter(door_code=door_code, lock_entity_id=lock_entity_id).update(
+                    slot_index=slot_index,
+                    push_state=DoorCode.PushState.PUSHED,
+                    push_attempt_count=0,
+                    last_push_attempt_at=pushed_at,
+                    last_push_error="",
+                    schedule_pending=False,
                 )
                 DoorCodeEvent.objects.create(
                     door_code=door_code,
@@ -2739,6 +2750,10 @@ def push_door_code_to_lock(
             # Another writer recorded this slot after we enumerated, so the lock
             # may now hold this PIN over that code's. Retrying would only park the
             # PIN in a second slot, so fail terminally for the operator to check.
+            # The block rolled the pushed stamp back, so put the code's fields back
+            # to what they were before it, which the failure then counts on top of.
+            for name, value in before_stamp.items():
+                setattr(door_code, name, value)
             raise _fail_slot_recorded_for_another_code(
                 door_code=door_code, lock_entity_id=lock_entity_id, slot_index=slot_index
             ) from exc
