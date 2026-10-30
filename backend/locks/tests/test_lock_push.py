@@ -1261,9 +1261,108 @@ class PushReadbackAndAdminCodeTests(EncryptionTestMixin, TestCase):
                 self.assertEqual(
                     (failed.metadata.get("slot_index"), failed.metadata.get("supervision_status")), (1, "fail")
                 )
-                # The PIN didn't land, so the slot isn't kept on record for a retry or a delete.
-                self.assertEqual(self._unconfirmed_slots(code), [])
+                # Kept on record in case the lock stored it anyway, untagged, so only
+                # a readback of this exact readable PIN counts the slot as ours.
+                markers = list(
+                    DoorCodeEvent.objects.filter(
+                        door_code=code, metadata__action=lock_push_uc._UNCONFIRMED_PUSH_ACTION
+                    ).values_list("lock_entity_id", "metadata")
+                )
+                self.assertEqual(len(markers), 1)
+                lock_entity_id, metadata = markers[0]
+                self.assertEqual((lock_entity_id, metadata["slot_index"]), (self.LOCK_ENTITY_ID, 1))
+                self.assertNotIn(lock_push_uc._SLOT_VERIFIED_KEY, metadata)
+                self.assertNotIn(lock_push_uc._SLOT_AVAILABLE_KEY, metadata)
+                self.assertEqual(lock_push_uc._decrypt_expected_pin(metadata), pin)
                 code.delete()
+
+    def _supervision_fail(self, *, lock_stores_it: bool, **gateway_kwargs) -> tuple[DoorCode, FakeGateway]:
+        """Push a code whose set comes back with Supervision Fail, the lock storing the PIN or not."""
+        gateway = FakeGateway(
+            usersNumber=3,
+            slot_status={1: 0, 2: 0, 3: 0},
+            set_result={"status": 2},
+            reject_pins={} if lock_stores_it else {12: {"4321"}},
+            cache_updates_on_set=True,
+            **gateway_kwargs,
+        )
+        code = self._make_code(pin="4321")
+        with self.assertRaises(LockRejectedCode):
+            self._push(code, gateway)
+        self.assertEqual(self._calls(gateway, "get"), [])
+        gateway.invoke_calls.clear()
+        gateway._set_result = None
+        return code, gateway
+
+    def test_supervision_fail_where_the_lock_stored_the_pin_anyway_is_cleared_by_a_delete(self):
+        code, gateway = self._supervision_fail(lock_stores_it=True)
+        self.assertEqual(gateway._lock_codes, {(12, 1): "4321"})
+
+        door_codes_uc.delete_door_code(code=code, actor_user=self.user, zwavejs=gateway)
+
+        self.assertFalse(DoorCode.objects.filter(id=code.id).exists())
+        self.assertEqual(self._calls(gateway, "get")[0]["args"], [1])
+        self.assertEqual(self._cleared_slots(gateway), [1])
+        self.assertEqual(gateway._lock_codes, {})
+
+    def test_supervision_fail_then_a_masked_keypad_code_in_the_slot_is_left_by_a_delete(self):
+        code, gateway = self._supervision_fail(lock_stores_it=False)
+        # Someone types a keypad code into slot 1 and the lock masks user codes.
+        gateway._lock_codes[(12, 1)] = "9999"
+        gateway._get_scripts = {None: [{"userIdStatus": 1, "userCode": "****"}]}
+
+        door_codes_uc.delete_door_code(code=code, actor_user=self.user, zwavejs=gateway)
+
+        self.assertFalse(DoorCode.objects.filter(id=code.id).exists())
+        self.assertEqual(len(self._calls(gateway, "get")), 1)
+        self.assertEqual(self._cleared_slots(gateway), [])
+        self.assertEqual(gateway._lock_codes, {(12, 1): "9999"})
+
+    def _retry(self, code: DoorCode, gateway: FakeGateway) -> DoorCode:
+        admin = User.objects.create_superuser(email="admin@example.com", password="pass")
+        door_codes_uc.retry_push_door_code(code=code, actor_user=admin, zwavejs=gateway)
+        code.refresh_from_db()
+        return code
+
+    def test_retry_after_a_supervision_fail_doesnt_adopt_or_resend_to_a_masked_slot(self):
+        code, gateway = self._supervision_fail(lock_stores_it=False, drops_duplicates=False)
+        gateway._reject_pins = {}
+        gateway._lock_codes[(12, 1)] = "9999"
+        gateway._slot_status[1] = 1
+        gateway._get_scripts = {None: [{"userIdStatus": 1, "userCode": "****"}]}
+
+        code = self._retry(code, gateway)
+
+        self.assertEqual(code.push_state, DoorCode.PushState.PUSHED)
+        self.assertEqual(DoorCodeLockAssignment.objects.get(door_code=code).slot_index, 2)
+        self.assertEqual([c["args"][0] for c in self._calls(gateway, "set")], [2])
+        self.assertEqual(gateway._lock_codes, {(12, 1): "9999", (12, 2): "4321"})
+        synced = DoorCodeEvent.objects.get(door_code=code, event_type=DoorCodeEvent.EventType.CODE_SYNCED)
+        self.assertNotIn("adopted_existing_slot", synced.metadata)
+        self.assertNotIn("resent_to_attempted_slot", synced.metadata)
+
+    def test_retry_after_a_supervision_fail_where_the_slot_reads_back_empty_pushes_fresh(self):
+        code, gateway = self._supervision_fail(lock_stores_it=False)
+        gateway._reject_pins = {}
+
+        code = self._retry(code, gateway)
+
+        self.assertEqual(code.push_state, DoorCode.PushState.PUSHED)
+        self.assertEqual([c["args"][0] for c in self._calls(gateway, "set")], [1])
+        synced = DoorCodeEvent.objects.get(door_code=code, event_type=DoorCodeEvent.EventType.CODE_SYNCED)
+        self.assertNotIn("adopted_existing_slot", synced.metadata)
+
+    def test_retry_after_a_supervision_fail_adopts_only_a_readable_pin(self):
+        # The lock stored the PIN despite the Fail and shows it, which is the one case adoption takes.
+        code, gateway = self._supervision_fail(lock_stores_it=True)
+
+        code = self._retry(code, gateway)
+
+        self.assertEqual(code.push_state, DoorCode.PushState.PUSHED)
+        self.assertEqual(self._calls(gateway, "set"), [])
+        self.assertEqual(DoorCodeLockAssignment.objects.get(door_code=code).slot_index, 1)
+        synced = DoorCodeEvent.objects.get(door_code=code, event_type=DoorCodeEvent.EventType.CODE_SYNCED)
+        self.assertIs(synced.metadata.get("adopted_existing_slot"), True)
 
     def test_supervision_fail_with_a_cached_admin_code_match_says_it_may_match(self):
         gateway = FakeGateway(

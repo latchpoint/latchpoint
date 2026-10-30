@@ -2957,8 +2957,9 @@ def push_door_code_to_lock(
                 )
                 set_returned = True
                 if _supervision_status(set_result) == _SUPERVISION_STATUS_FAIL:
-                    # The lock says it didn't carry out the set, so the PIN isn't in
-                    # the slot and there's nothing to read back or clear (issue #125).
+                    # The lock says it didn't carry out the set, so the push takes
+                    # that as a rejection with no readback (issue #125). The handler
+                    # below still keeps the slot on record in case the lock lied.
                     # A supervised Success or no result still goes to the readback
                     # below, since a lock can say Success and drop the code.
                     raise LockRejectedCode(
@@ -3020,6 +3021,19 @@ def push_door_code_to_lock(
             event_metadata: dict[str, object] = {}
             if exc.supervision_failed:
                 event_metadata.update(slot_index=int(slot_index), supervision_status="fail")
+                # In case the lock stored the PIN anyway, so a delete, deactivate or
+                # PIN change reads the slot back and clears it. Untagged on purpose:
+                # nothing has seen the PIN there, so only a readback showing this
+                # exact readable PIN counts the slot as ours (for those cleanups and
+                # for adoption on Retry), and a masked slot, maybe a keypad code
+                # typed in there, is left alone (#193's rules).
+                _record_unconfirmed_slot_attempt(
+                    door_code=door_code,
+                    lock_entity_id=lock_entity_id,
+                    slot_index=slot_index,
+                    reason="Lock answered the set with Supervision Fail",
+                    pin=pin,
+                )
             # The lock turned the PIN down (Supervision Fail, or the slot read back
             # empty). Still terminal with an admin code match, like without one: the
             # lock's answer decides, the cache only explains it, so a stale cache
