@@ -917,7 +917,7 @@ wheels = [
 
 [[package]]
 name = "latchpoint"
-version = "1.8.0"
+version = "1.9.0"
 source = { virtual = "." }
 dependencies = [
     { name = "argon2-cffi" },
