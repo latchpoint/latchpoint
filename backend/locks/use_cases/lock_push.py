@@ -3769,3 +3769,42 @@ def queued_push_assignments(*, now: datetime, max_attempts: int):
     if max_attempts > 0:
         queued = queued.filter(push_attempt_count__lt=max_attempts)
     return queued
+
+
+def push_queued(
+    assignment: DoorCodeLockAssignment,
+    *,
+    code: DoorCode,
+    now: datetime,
+    max_attempts: int,
+    failures: list[ClearFailure],
+) -> bool:
+    """Whether :data:`PUSH_REQUESTED_TASK` would push this lock at ``now``, for the API (issue #205).
+
+    The same rule as :func:`queued_push_assignments` plus :func:`locks_to_push`
+    on top, the two the task uses, worked out on an assignment that's already
+    loaded and the code's :func:`unresolved_clear_failures`, so it runs no
+    query. A ``push_requested_at`` inside :data:`PUSH_REQUEST_TTL` that no push
+    attempt on the lock came after (compared as datetimes, so the schedule
+    re-queue's 1µs counts), the lock ``pending`` and still needing its ``set``
+    or schedule, under the cap when there is one, not being dropped, not on a
+    slot with a clear outstanding, and the code active, started and not expired.
+    """
+    requested = assignment.push_requested_at
+    if requested is None or requested <= now - PUSH_REQUEST_TTL:
+        return False
+    if assignment.last_push_attempt_at is not None and assignment.last_push_attempt_at >= requested:
+        return False
+    if assignment.push_state != DoorCode.PushState.PENDING or not _lock_needs_push(assignment):
+        return False
+    if max_attempts > 0 and assignment.push_attempt_count >= max_attempts:
+        return False
+    if not code.is_active or not belongs_on_lock(code, now=now):
+        return False
+    # locks_to_push's rule, from the same failures it would load.
+    if any(f.removing and f.lock_entity_id == assignment.lock_entity_id for f in failures):
+        return False
+    slot = assignment.slot_index
+    return slot is None or not any(
+        (f.lock_entity_id, f.slot_index) == (assignment.lock_entity_id, int(slot)) for f in failures
+    )

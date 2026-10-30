@@ -769,6 +769,70 @@ describe('DoorCodeCard', () => {
         expect(screen.queryByText(/\(queued\)/)).toBeNull()
       })
 
+      // The test above passes whatever the chip order, since neither lock is
+      // queued there. Here each lock is queued, so only the order keeps (queued)
+      // below (removing) and (clearing) (#205).
+      it('puts removing and clearing ahead of queued on a lock that is queued', () => {
+        const { unmount } = renderCard(
+          twoLocks(
+            [
+              back({ pushState: 'pending', pendingRemoval: true, pushRequestedAt: requestedAt, pushQueued: true }),
+              // Slot 3 held its old PIN and the clear failed. It still needs its set, so it's queued too.
+              front({ pushState: 'pending', pushRequestedAt: requestedAt, pushQueued: true }),
+            ],
+            { pushState: 'pending', pendingSlotClears: [{ lockEntityId: 'lock.front_door', slotIndex: 3, removing: false }] },
+          ),
+        )
+        expect(screen.getByText('Back Door (removing)')).toBeTruthy()
+        expect(screen.getByText('Front Door (clearing)')).toHaveAttribute(
+          'title',
+          'Slot 3 may still hold the PIN, retried automatically.',
+        )
+        expect(screen.queryByText(/\(queued\)/)).toBeNull()
+        unmount()
+
+        // The same with the timestamps alone, for an API from before pushQueued.
+        renderCard(
+          twoLocks(
+            [back({ slotIndex: 2 }), front({ pushState: 'pending', pushRequestedAt: requestedAt })],
+            { pushState: 'pending', pendingSlotClears: [{ lockEntityId: 'lock.front_door', slotIndex: 3, removing: false }] },
+          ),
+        )
+        expect(screen.getByText('Front Door (clearing)')).toBeTruthy()
+        expect(screen.queryByText(/\(queued\)/)).toBeNull()
+      })
+
+      it("goes by the server's pushQueued for the chip", () => {
+        const sameMs = '2026-10-30T10:05:00.123Z'
+        const { unmount } = renderCard(
+          twoLocks(
+            [
+              back({ slotIndex: 2 }),
+              front({
+                pushState: 'pending',
+                slotIndex: 4,
+                schedulePending: true,
+                lastPushAttemptAt: sameMs,
+                pushRequestedAt: sameMs,
+                pushQueued: true,
+              }),
+            ],
+            { pushState: 'pending' },
+          ),
+        )
+        // The schedule re-queue, 1µs after the attempt.
+        expect(screen.getByText('Front Door (queued)')).toBeTruthy()
+        unmount()
+
+        renderCard(
+          twoLocks([back({ slotIndex: 2 }), front({ pushState: 'pending', lastPushError: 'Lock timed out', pushRequestedAt: requestedAt, pushQueued: false })], {
+            pushState: 'pending',
+          }),
+        )
+        // Lapsed or capped.
+        expect(screen.getByText('Front Door (pending)')).toHaveAttribute('title', 'Lock timed out')
+      })
+
       it('moves from queued to on lock through the fast poll after a Retry', async () => {
         vi.useFakeTimers({ shouldAdvanceTime: true })
         try {

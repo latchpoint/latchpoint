@@ -663,6 +663,88 @@ describe('DoorCodePushStatusBadge', () => {
         expect(screen.getByText('Pending sync')).toHaveAttribute('title', 'Being sent to Back Door and Front Door.')
       })
 
+      it("still names another lock's pending error while one is queued (#205)", () => {
+        renderBadge(
+          makeCode({
+            lastPushError: 'lock.back_door: Busy; lock.front_door: Lock timed out',
+            lockEntityIds: ['lock.back_door', 'lock.front_door', 'lock.garage', 'lock.shed'],
+            lockSlotAssignments: [
+              queuedLock('lock.back_door', { lastPushError: 'Busy' }),
+              // Tried since its own request, so it's pending with this error.
+              queuedLock('lock.front_door', { lastPushAttemptAt: '2026-10-30T10:05:02Z' }),
+              // A pushed lock and one being dropped don't go in the code's error either.
+              { lockEntityId: 'lock.garage', slotIndex: 2, pendingRemoval: false, pushState: 'pushed', lastPushError: 'Old' },
+              queuedLock('lock.shed', { pendingRemoval: true, lastPushError: 'Gone' }),
+            ],
+          }),
+        )
+
+        expect(screen.getByText('Pending sync')).toHaveAttribute(
+          'title',
+          'Being sent to Back Door. Front Door: Lock timed out',
+        )
+      })
+
+      it('names every other lock with an error, including one still waiting on its schedule', () => {
+        renderBadge(
+          makeCode({
+            lockEntityIds: ['lock.back_door', 'lock.front_door', 'lock.garage'],
+            lockSlotAssignments: [
+              queuedLock('lock.back_door', { lastPushError: '' }),
+              queuedLock('lock.front_door', { pushRequestedAt: null }),
+              queuedLock('lock.garage', {
+                slotIndex: 4,
+                schedulePending: true,
+                pushRequestedAt: null,
+                lastPushError: 'Schedule timed out',
+              }),
+            ],
+          }),
+        )
+
+        expect(screen.getByText('Pending sync')).toHaveAttribute(
+          'title',
+          'Being sent to Back Door. Front Door: Lock timed out; Garage: Schedule timed out',
+        )
+      })
+
+      it("goes by the server's pushQueued over the timestamps", () => {
+        // The schedule re-queue is 1µs after the attempt, which the browser reads as the same instant.
+        const sameMs = '2026-10-30T10:05:00.123Z'
+        const { unmount } = renderWithProviders(
+          <DoorCodePushStatusBadge
+            code={makeCode({
+              lockEntityIds: ['lock.back_door'],
+              lockSlotAssignments: [
+                queuedLock('lock.back_door', {
+                  slotIndex: 2,
+                  schedulePending: true,
+                  lastPushAttemptAt: sameMs,
+                  pushRequestedAt: sameMs,
+                  pushQueued: true,
+                }),
+              ],
+            })}
+            lockNameByEntityId={twoLockNames}
+            canRetry
+            isRetrying={false}
+            onRetry={vi.fn()}
+          />,
+        )
+        expect(screen.getByText('Pending sync')).toHaveAttribute('title', 'Being sent to Back Door.')
+        unmount()
+
+        // Lapsed or capped: the timestamps still look queued, the server says it isn't.
+        renderBadge(
+          makeCode({
+            lastPushError: 'lock.back_door: Lock timed out',
+            lockEntityIds: ['lock.back_door'],
+            lockSlotAssignments: [queuedLock('lock.back_door', { pushQueued: false })],
+          }),
+        )
+        expect(screen.getByText('Pending sync')).toHaveAttribute('title', 'lock.back_door: Lock timed out')
+      })
+
       it('goes back to the error once the queued push was tried', () => {
         renderBadge(
           makeCode({
