@@ -499,7 +499,22 @@ def _record_unconfirmed_slot_attempt(
     that masks PINs a later readback of that slot can't show the PIN, so
     adoption and the cleanups count a masked occupied slot as this code's for
     those attempts only (:func:`_attempt_slot_counts_as_ours`).
+
+    Only the newest attempt per slot counts, so an untagged attempt keeps the
+    tag of the unsettled tagged one it would replace when both sent the same
+    PIN (issue #123). The newer one says nothing that undoes that earlier
+    readback, and dropping the tag would leave the PIN on a masked lock with
+    nothing clearing it.
     """
+    if not slot_verified:
+        current = _unsettled_unconfirmed_attempts(door_code=door_code, lock_entity_id=lock_entity_id).get(
+            int(slot_index)
+        )
+        slot_verified = (
+            current is not None
+            and bool(current[1].get(_SLOT_VERIFIED_KEY))
+            and _decrypt_expected_pin(current[1]) == pin
+        )
     return DoorCodeEvent.objects.create(
         door_code=door_code,
         user=door_code.user,
@@ -2259,12 +2274,15 @@ def push_door_code_to_lock(
         except GatewayError as exc:
             error_message = f"{exc.__class__.__name__}: {exc}"
             if pin_sent_to_slot:
+                # Tagged like the terminal branch above: only once a readback in
+                # this push accepted the slot (a schedule timeout, or an adopted slot).
                 _record_unconfirmed_slot_attempt(
                     door_code=door_code,
                     lock_entity_id=lock_entity_id,
                     slot_index=slot_index,
                     reason=error_message,
                     pin=pin,
+                    slot_verified=slot_accepted,
                 )
             _record_push_failure(door_code=door_code, error_message=error_message, terminal=False)
             raise LockUnreachable("Lock did not accept the code in time; will retry.") from exc

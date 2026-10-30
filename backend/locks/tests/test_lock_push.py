@@ -4036,3 +4036,113 @@ class TerminalPushErrorRecordingTests(EncryptionTestMixin, TestCase):
 
         self.assertEqual(self._markers(code), [])
         self._assert_terminal_failure_recorded(code, "bad args")
+
+    @staticmethod
+    def _schedule_times_out_gateway(**kwargs) -> FakeGateway:
+        from integrations_zwavejs.manager import ZwavejsCommandError
+
+        class ScheduleTimesOutGateway(FakeGateway):
+            def invoke_cc_api(self, *, node_id, command_class, method_name, args=None, timeout_seconds=10.0):
+                if command_class == 78:
+                    raise ZwavejsCommandError("driver TimeoutError after 5.0s")
+                return super().invoke_cc_api(
+                    node_id=node_id,
+                    command_class=command_class,
+                    method_name=method_name,
+                    args=args,
+                    timeout_seconds=timeout_seconds,
+                )
+
+        return ScheduleTimesOutGateway(**kwargs)
+
+    def _scheduled_code(self) -> DoorCode:
+        return self._make_code(
+            code_type=DoorCode.CodeType.TEMPORARY,
+            days_of_week=0b1,
+            window_start=time(9, 0),
+            window_end=time(17, 0),
+        )
+
+    def _newest_marker(self, code: DoorCode) -> dict:
+        return (
+            DoorCodeEvent.objects.filter(door_code=code, metadata__action="push_unconfirmed")
+            .order_by("-id")
+            .values_list("metadata", flat=True)
+            .first()
+        )
+
+    def test_masked_lock_schedule_timeout_after_the_readback_leaves_a_tagged_marker_a_delete_clears(self):
+        gateway = self._schedule_times_out_gateway(usersNumber=3, get_responses=[self.MASKED] * 20)
+        code = self._scheduled_code()
+
+        with self.assertRaises(LockUnreachable):
+            push_door_code_to_lock(door_code=code, lock_entity_id=self.LOCK_ENTITY_ID, zwavejs=gateway)
+
+        self.assertEqual(gateway._lock_codes, {(7, 1): "1234"})
+        self.assertIs(self._newest_marker(code)["slot_verified"], True)
+        code.refresh_from_db()
+        self.assertEqual(code.push_state, DoorCode.PushState.PENDING)
+
+        door_codes_uc.delete_door_code(code=code, zwavejs=gateway)
+
+        self.assertFalse(DoorCode.objects.filter(id=code.id).exists())
+        self.assertEqual(gateway._lock_codes, {})
+
+    def test_readback_timeout_leaves_an_untagged_marker(self):
+        from integrations_zwavejs.manager import ZwavejsCommandError
+
+        timeout = ZwavejsCommandError("driver TimeoutError after 5.0s")
+        gateway = FakeGateway(usersNumber=3, get_responses=[timeout, timeout, timeout])
+        code = self._make_code()
+
+        with (
+            patch.object(lock_push_uc, "_READBACK_RETRY_DELAYS_SECONDS", (0.0, 0.0)),
+            self.assertRaises(LockUnreachable),
+        ):
+            push_door_code_to_lock(door_code=code, lock_entity_id=self.LOCK_ENTITY_ID, zwavejs=gateway)
+
+        self.assertNotIn("slot_verified", self._newest_marker(code))
+
+    def test_adopted_tagged_slot_keeps_its_tag_after_a_schedule_timeout(self):
+        code = self._scheduled_code()
+        lock_push_uc._record_unconfirmed_slot_attempt(
+            door_code=code,
+            lock_entity_id=self.LOCK_ENTITY_ID,
+            slot_index=1,
+            reason="PIN set on the lock, slot not saved yet",
+            pin="1234",
+            slot_verified=True,
+        )
+        gateway = self._schedule_times_out_gateway(usersNumber=3, get_responses=[self.MASKED] * 20)
+        gateway._lock_codes[(7, 1)] = "1234"
+
+        with self.assertRaises(LockUnreachable):
+            push_door_code_to_lock(door_code=code, lock_entity_id=self.LOCK_ENTITY_ID, zwavejs=gateway)
+
+        self.assertEqual(self._set_slots(gateway), [])
+        self.assertEqual(len(self._markers(code)), 2)
+        self.assertEqual(self._newest_marker(code)["slot_index"], 1)
+        self.assertIs(self._newest_marker(code)["slot_verified"], True)
+
+        door_codes_uc.delete_door_code(code=code, zwavejs=gateway)
+
+        self.assertEqual(gateway._lock_codes, {})
+
+    def test_untagged_attempt_keeps_the_tag_of_a_tagged_one_for_the_same_slot_and_pin(self):
+        def record(*, pin: str, slot_verified: bool = False) -> dict:
+            return lock_push_uc._record_unconfirmed_slot_attempt(
+                door_code=code,
+                lock_entity_id=self.LOCK_ENTITY_ID,
+                slot_index=1,
+                reason="timeout",
+                pin=pin,
+                slot_verified=slot_verified,
+            ).metadata
+
+        code = self._make_code()
+        self.assertNotIn("slot_verified", record(pin="1234"))
+        record(pin="1234", slot_verified=True)
+
+        self.assertIs(record(pin="1234")["slot_verified"], True)
+        # A different PIN isn't vouched for by the earlier readback.
+        self.assertNotIn("slot_verified", record(pin="5678"))
