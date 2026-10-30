@@ -17,6 +17,11 @@ from locks.use_cases.code_lifecycle import is_expired, is_started, starts_by
 
 logger = logging.getLogger(__name__)
 
+# The CC 99 clear timeout for the clears an update or delete runs while the request
+# waits, the 5s the push and the shared clear helpers use, not the gateway's 10s
+# default (issue #124).
+_REQUEST_CLEAR_TIMEOUT_SECONDS = 5.0
+
 if TYPE_CHECKING:
     from alarm.gateways.zwavejs import ZwavejsGateway
     from locks.use_cases.lock_push import ClearFailure
@@ -470,6 +475,7 @@ def _update_door_code_locked(
                         lock_entity_id=assignment.lock_entity_id,
                         slot_index=slot_index,
                         zwavejs=zwavejs,
+                        timeout_seconds=_REQUEST_CLEAR_TIMEOUT_SECONDS,
                     )
                 except Exception as exc:
                     failure = record_clear_failure(
@@ -568,6 +574,7 @@ def _update_door_code_locked(
                             lock_entity_id=assignment.lock_entity_id,
                             slot_index=slot_index,
                             zwavejs=zwavejs,
+                            timeout_seconds=_REQUEST_CLEAR_TIMEOUT_SECONDS,
                         )
                     except Exception as exc:
                         failure = record_clear_failure(
@@ -709,6 +716,7 @@ def _delete_door_code_locked(
                         lock_entity_id=slot_info["lock_entity_id"],
                         slot_index=slot_info["slot_index"],
                         zwavejs=zwavejs,
+                        timeout_seconds=_REQUEST_CLEAR_TIMEOUT_SECONDS,
                     )
                     cleared.append(slot_info)
                 except Exception as exc:

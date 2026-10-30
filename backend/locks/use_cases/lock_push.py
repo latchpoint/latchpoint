@@ -58,6 +58,8 @@ from locks.use_cases.lock_config_sync import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from alarm.gateways.zwavejs import ZwavejsGateway
 
 logger = logging.getLogger(__name__)
@@ -218,6 +220,7 @@ def _enumerate_free_slot(
     zwavejs: ZwavejsGateway,
     node_id: int,
     timeout_seconds: float,
+    value_ids: object,
     claimed_slots: set[int] | frozenset[int] = frozenset(),
 ) -> int:
     """Return the lowest free user-code slot on the node. Raises :class:`LockSlotsFull`.
@@ -227,11 +230,13 @@ def _enumerate_free_slot(
     a missing value or anything unrecognised isn't a verdict, so none of them
     get a PIN written over them (issue #168).
 
+    ``value_ids`` is the node's defined value IDs, which the push fetches once
+    and shares with the admin code hint (issue #124).
+
     ``claimed_slots`` are slots the DB already has a ``DoorCodeLockAssignment`` for
     on this lock. They are skipped even when the Z-Wave JS value cache still reads
     them as Available, which it does for a while after a CC 99 ``set``.
     """
-    value_ids = zwavejs.node_get_defined_value_ids(node_id=node_id, timeout_seconds=timeout_seconds)
     if not isinstance(value_ids, list):
         value_ids = []
 
@@ -322,21 +327,44 @@ _ADMIN_CODE_PROPERTIES = ("adminCode", "masterCode")
 # interview or refresh, so it's a hint, never a reason to hold a push back.
 _ADMIN_CODE_HINT = "This PIN may match the lock's admin code."
 
+# The shortest cut-off hint :func:`strip_admin_code_hint` takes off: its first
+# three words. A full-length error that just ends in " This" or " This PIN" keeps
+# it, and a shorter piece of the hint says nothing about the admin code.
+_ADMIN_CODE_HINT_MIN_CUT = len("This PIN may")
+
 
 def strip_admin_code_hint(message: str | None) -> str:
     """``message`` without :data:`_ADMIN_CODE_HINT`, for viewers who aren't admins (PR #198 review).
 
     The hint tells whoever reads it that their PIN may be the lock's admin code
     (issue #125). The code-level error is cut at 500 characters, so a hint cut
-    short at the end of a full-length error goes too.
+    short at the end of a full-length error goes too, once at least
+    :data:`_ADMIN_CODE_HINT_MIN_CUT` characters of it are left.
     """
     text = (message or "").replace(f" {_ADMIN_CODE_HINT}", "").replace(_ADMIN_CODE_HINT, "")
     if len(message or "") >= 500:
-        for size in range(len(_ADMIN_CODE_HINT) - 1, 0, -1):
+        for size in range(len(_ADMIN_CODE_HINT) - 1, _ADMIN_CODE_HINT_MIN_CUT - 1, -1):
             cut = f" {_ADMIN_CODE_HINT[:size]}"
             if text.endswith(cut):
                 return text[: -len(cut)]
     return text
+
+
+def _defined_value_ids_once(*, zwavejs: ZwavejsGateway, node_id: int, timeout_seconds: float) -> Callable[[], object]:
+    """A fetch of the node's defined value IDs that asks Z-Wave JS at most once per push (issue #124).
+
+    Fetched on the first call, since an adopted slot skips the free-slot search
+    and most pushes never need the admin code hint. A fetch that raises isn't
+    kept, so the next call asks again.
+    """
+    fetched: list[object] = []
+
+    def get() -> object:
+        if not fetched:
+            fetched.append(zwavejs.node_get_defined_value_ids(node_id=node_id, timeout_seconds=timeout_seconds))
+        return fetched[0]
+
+    return get
 
 
 def _pin_may_match_admin_code(
@@ -345,6 +373,7 @@ def _pin_may_match_admin_code(
     node_id: int,
     pin: str,
     timeout_seconds: float,
+    get_value_ids: Callable[[], object],
 ) -> bool:
     """Whether ``pin`` equals the CC 99 ``adminCode`` (or older ``masterCode``) Z-Wave JS has cached for the lock.
 
@@ -353,10 +382,12 @@ def _pin_may_match_admin_code(
     (the admin code changed at the keypad since the last interview), so this
     only explains a push the lock already turned down and never stops one
     (issue #125). Any read problem counts as no match. The admin code itself is
-    never logged or returned.
+    never logged or returned. ``get_value_ids`` is the push's
+    :func:`_defined_value_ids_once`, so a push that already searched for a free
+    slot doesn't fetch the value IDs again.
     """
     try:
-        value_ids = zwavejs.node_get_defined_value_ids(node_id=node_id, timeout_seconds=timeout_seconds)
+        value_ids = get_value_ids()
         admin_vids = [
             vid
             for vid in (value_ids if isinstance(value_ids, list) else [])
@@ -2886,6 +2917,8 @@ def push_door_code_to_lock(
             raise
 
         claimed_slots = _claimed_slots(lock_entity_id=lock_entity_id, door_code=door_code)
+        # Once per push, for the free-slot search and the admin code hint (issue #124).
+        get_value_ids = _defined_value_ids_once(zwavejs=zwavejs, node_id=node_id, timeout_seconds=timeout_seconds)
         try:
             # No admin code check here: Z-Wave JS's cached adminCode can be stale,
             # and a stale one would fail the code for good with nothing sent. The
@@ -2907,6 +2940,7 @@ def push_door_code_to_lock(
                     zwavejs=zwavejs,
                     node_id=node_id,
                     timeout_seconds=timeout_seconds,
+                    value_ids=get_value_ids(),
                     claimed_slots=claimed_slots,
                 )
         except (ZwavejsNotConfigured, ZwavejsClientUnavailable, ZwavejsCommandValidationError) as exc:
@@ -2948,13 +2982,6 @@ def push_door_code_to_lock(
             lock_entity_id,
             node_id,
             slot_index,
-        )
-
-        # Whether the attempt a resend goes to was tagged slot_verified, so a marker
-        # recorded on top of it keeps that (PR #198 review). Read before the set,
-        # while that attempt is still the newest one for the slot.
-        resend_target_verified = resend_to_attempted_slot and slot_index in _verified_attempt_slots(
-            door_code=door_code, lock_entity_id=lock_entity_id
         )
 
         # Once the PIN may be in the slot (set sent, or slot adopted), a gateway
@@ -3058,14 +3085,15 @@ def push_door_code_to_lock(
                 # since this marker becomes the newest one for the slot and an
                 # untagged one would leave the earlier PIN there on a delete (PR #198
                 # review). The slot_available tag is still dropped if this code read
-                # the slot back empty since its last push.
+                # the slot back empty since its last push. That trust is only ever
+                # slot_available: _find_adoptable_attempted_slot adopts a
+                # slot_verified attempt with this PIN instead of resending to it.
                 _record_unconfirmed_slot_attempt(
                     door_code=door_code,
                     lock_entity_id=lock_entity_id,
                     slot_index=slot_index,
                     reason="Lock answered the set with Supervision Fail",
                     pin=pin,
-                    slot_verified=resend_target_verified,
                     slot_available=resend_to_attempted_slot,
                 )
             # The lock turned the PIN down (Supervision Fail, or the slot read back
@@ -3073,7 +3101,7 @@ def push_door_code_to_lock(
             # lock's answer decides, the cache only explains it, so a stale cache
             # can't keep a PIN off a lock that takes it (issue #125).
             if (exc.supervision_failed or (exc.clear_slot and not exc.holds_pin)) and _pin_may_match_admin_code(
-                zwavejs=zwavejs, node_id=node_id, pin=pin, timeout_seconds=timeout_seconds
+                zwavejs=zwavejs, node_id=node_id, pin=pin, timeout_seconds=timeout_seconds, get_value_ids=get_value_ids
             ):
                 exc.args = (f"{exc} {_ADMIN_CODE_HINT}",)
                 event_metadata["may_match_admin_code"] = True
@@ -3091,7 +3119,11 @@ def push_door_code_to_lock(
                 isinstance(exc, LockCodeUnverified)
                 and exc.read_back_empty
                 and _pin_may_match_admin_code(
-                    zwavejs=zwavejs, node_id=node_id, pin=pin, timeout_seconds=timeout_seconds
+                    zwavejs=zwavejs,
+                    node_id=node_id,
+                    pin=pin,
+                    timeout_seconds=timeout_seconds,
+                    get_value_ids=get_value_ids,
                 )
             ):
                 # One empty answer and then silence is no verdict, so this stays
