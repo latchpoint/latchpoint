@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from datetime import datetime
 from datetime import timezone as dt_timezone
 
 from cryptography.fernet import InvalidToken
@@ -10,7 +9,7 @@ from rest_framework import serializers
 from alarm.crypto import SettingsEncryption
 
 from .models import DoorCode, DoorCodeLockAssignment
-from .use_cases.code_lifecycle import belongs_on_lock, ended_by, validity
+from .use_cases.code_lifecycle import ended_by, validity
 
 _END_AT_IN_PAST = "end_at must be in the future."
 _ACTIVE_WHEN_EXPIRED = "This code has expired. Set a later end_at to turn it back on."
@@ -30,47 +29,6 @@ def _same_minute(a, b) -> bool:
 def _validation_now(serializer: serializers.Serializer):
     """The time the date checks compare against; tests can pin it with ``context["now"]``."""
     return serializer.context.get("now") or timezone.now()
-
-
-def push_queued(
-    assignment: DoorCodeLockAssignment,
-    *,
-    code: DoorCode,
-    now: datetime,
-    max_attempts: int,
-    failures: list,
-) -> bool:
-    """Whether ``push_requested_door_codes`` would push this lock at ``now`` (issue #205).
-
-    The same rule as ``queued_push_assignments`` plus ``locks_to_push`` on top,
-    the two the task uses, worked out on an assignment that's already loaded and
-    the code's unresolved clear ``failures``, so it runs no query. A
-    ``push_requested_at`` inside ``PUSH_REQUEST_TTL`` that no push attempt on the
-    lock came after (compared as datetimes, so the schedule re-queue's 1µs
-    counts), the lock ``pending`` and still needing its ``set`` or schedule,
-    under the cap when there is one, not being dropped, not on a slot with a
-    clear outstanding, and the code active, started and not expired.
-    """
-    from locks.use_cases.lock_push import PUSH_REQUEST_TTL, _lock_needs_push
-
-    requested = assignment.push_requested_at
-    if requested is None or requested <= now - PUSH_REQUEST_TTL:
-        return False
-    if assignment.last_push_attempt_at is not None and assignment.last_push_attempt_at >= requested:
-        return False
-    if assignment.push_state != DoorCode.PushState.PENDING or not _lock_needs_push(assignment):
-        return False
-    if max_attempts > 0 and assignment.push_attempt_count >= max_attempts:
-        return False
-    if not code.is_active or not belongs_on_lock(code, now=now):
-        return False
-    # locks_to_push's rule, from the same failures it would load.
-    if any(f.removing and f.lock_entity_id == assignment.lock_entity_id for f in failures):
-        return False
-    slot = assignment.slot_index
-    return slot is None or not any(
-        (f.lock_entity_id, f.slot_index) == (assignment.lock_entity_id, int(slot)) for f in failures
-    )
 
 
 class DoorCodeLockAssignmentSerializer(serializers.ModelSerializer):
@@ -198,13 +156,15 @@ class DoorCodeSerializer(serializers.ModelSerializer):
         (issues #126, #123). The code-level fields stay the rollup of these.
         ``push_requested_at`` is when a save or Retry queued a push of the lock
         (issue #124). ``push_queued`` says whether the queued push task would
-        still push the lock now (:func:`push_queued`, issue #205), which the
+        still push the lock now (``lock_push.push_queued``, issue #205), which the
         frontend can't work out on its own: it needs the TTL, the cap and the
         microseconds the JSON timestamps can lose in the browser. Never a PIN.
         """
         prefetched = getattr(obj, "_prefetched_objects_cache", {}) or {}
         if "lock_assignments" not in prefetched:
             raise RuntimeError("DoorCode.lock_assignments must be prefetched for serialization.")
+        from locks.use_cases.lock_push import push_queued
+
         failures = self._clear_failures(obj)
         removing = {f.lock_entity_id for f in failures if f.removing}
         now = _validation_now(self)

@@ -76,10 +76,12 @@ class PushQueuedFieldTests(EncryptionTestMixin, APITestCase):
     def _push_queued(self, code: DoorCode, lock_entity_id: str = BACK) -> bool:
         return self._entries(code)[lock_entity_id]["push_queued"]
 
-    def _clear_failed(self, code: DoorCode, *, slot_index: int, removing: bool = False) -> None:
+    def _clear_failed(
+        self, code: DoorCode, *, slot_index: int, removing: bool = False, lock_entity_id: str = BACK
+    ) -> None:
         lock_push_uc.record_clear_failure(
             door_code=code,
-            lock_entity_id=BACK,
+            lock_entity_id=lock_entity_id,
             slot_index=slot_index,
             exc=ZwavejsCommandError("driver TimeoutError after 5.0s"),
             expected_pin=PIN,
@@ -213,31 +215,47 @@ class PushQueuedFieldTests(EncryptionTestMixin, APITestCase):
 
     def test_agrees_with_what_the_task_picks(self):
         requested = self.now - timedelta(seconds=10)
+        temporary = DoorCode.CodeType.TEMPORARY
+        both, back_only, neither = {BACK, FRONT}, {BACK}, set()
+        # name: (the front lock's fields, the code's fields, a clear failure on the front lock, what the task picks)
         rows = {
-            "fresh": {},
-            "older attempt": {"last_push_attempt_at": requested - timedelta(seconds=1)},
-            "same attempt": {"last_push_attempt_at": requested},
-            "requeued 1µs": {
-                "slot_index": 2,
-                "schedule_pending": True,
-                "last_push_attempt_at": requested - timedelta(microseconds=1),
-            },
-            "lapsed": {"push_requested_at": self.now - lock_push_uc.PUSH_REQUEST_TTL},
-            "capped": {"push_attempt_count": MAX_ATTEMPTS},
-            "pushed": {"slot_index": 2, "push_state": PUSHED},
-            "failed": {"push_state": FAILED},
-            "no request": {"push_requested_at": None},
+            "fresh": ({}, {}, None, both),
+            "older attempt": ({"last_push_attempt_at": requested - timedelta(seconds=1)}, {}, None, both),
+            "same attempt": ({"last_push_attempt_at": requested}, {}, None, back_only),
+            "requeued 1µs": (
+                {
+                    "slot_index": 2,
+                    "schedule_pending": True,
+                    "last_push_attempt_at": requested - timedelta(microseconds=1),
+                },
+                {},
+                None,
+                both,
+            ),
+            "lapsed": ({"push_requested_at": self.now - lock_push_uc.PUSH_REQUEST_TTL}, {}, None, back_only),
+            "capped": ({"push_attempt_count": MAX_ATTEMPTS}, {}, None, back_only),
+            "pushed": ({"slot_index": 2, "push_state": PUSHED}, {}, None, back_only),
+            "failed": ({"push_state": FAILED}, {}, None, back_only),
+            "no request": ({"push_requested_at": None}, {}, None, back_only),
+            "a slot with nothing to send": ({"slot_index": 2}, {}, None, back_only),
+            "being removed": ({}, {}, {"slot_index": 3, "removing": True}, back_only),
+            "clear outstanding": ({"slot_index": 2, "schedule_pending": True}, {}, {"slot_index": 2}, back_only),
+            "inactive": ({}, {"is_active": False}, None, neither),
+            "not started": ({}, {"code_type": temporary, "start_at": self.now + timedelta(minutes=1)}, None, neither),
+            "expired": ({}, {"code_type": temporary, "end_at": self.now - timedelta(minutes=1)}, None, neither),
         }
-        for name, fields in rows.items():
+        for name, (front_fields, code_fields, clear, expected) in rows.items():
             with self.subTest(name):
                 DoorCode.objects.all().delete()  # a slot is unique per lock
-                code = self._code([BACK, FRONT])
+                code = self._code([BACK, FRONT], **code_fields)
                 self._set(code, push_requested_at=requested)
-                self._set(code, FRONT, **{"push_requested_at": requested, **fields})
+                self._set(code, FRONT, **{"push_requested_at": requested, **front_fields})
+                if clear is not None:
+                    self._clear_failed(code, lock_entity_id=FRONT, **clear)
                 entries = self._entries(code)
                 picked = self._task_picks(code)
+                self.assertEqual(picked, expected)
                 self.assertEqual({k for k, entry in entries.items() if entry["push_queued"]}, picked)
-                self.assertIn(BACK, picked)
 
     def test_reads_the_cap_once_for_a_whole_list_and_not_at_all_with_nothing_queued(self):
         codes = [self._queued(self._code()) for _ in range(3)]

@@ -718,6 +718,35 @@ describe('useDoorCodesQueries', () => {
         await expectSettlingPollOnly(served)
       })
 
+      it("doesn't poll fast after a Retry that queued nothing, eg an inactive code's clear retry (#205)", async () => {
+        vi.useFakeTimers({ shouldAdvanceTime: true })
+        // Off with a slot still to clear: Retry only retries the clear, so it's settling with nothing queued.
+        const clearing = makeCode({
+          isActive: false,
+          pushState: 'pending',
+          pendingSlotClears: [{ lockEntityId: 'lock.front_door', slotIndex: 3, removing: false }],
+          lockSlotAssignments: [
+            {
+              lockEntityId: 'lock.front_door',
+              slotIndex: 3,
+              pendingRemoval: false,
+              pushState: 'pending',
+              pushRequestedAt: '2026-10-30T10:05:00Z',
+              pushQueued: false,
+            },
+          ],
+        })
+        const served = serveCodes([clearing])
+        server.use(http.post('/api/door-codes/7/push/', () => HttpResponse.json({ data: clearing })))
+        const { result } = renderPage()
+        await waitFor(() => expect(result.current.codes.isSuccess).toBe(true))
+        await flush()
+
+        await act(() => result.current.retry.mutateAsync(7))
+
+        await expectSettlingPollOnly(served)
+      })
+
       it("doesn't poll fast after a refused Retry, since that's still answered in the request", async () => {
         vi.useFakeTimers({ shouldAdvanceTime: true })
         const served = serveCodes([pendingPush()])
