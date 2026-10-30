@@ -270,6 +270,24 @@ describe('useDoorCodesQueries', () => {
         expect(isDoorCodeSettling(code)).toBe(true)
       })
 
+      it("is settled when the only lock left waits on a slot whose clear hit the cap, since nothing's sent to it", () => {
+        // A PIN change whose clear of slot 3 failed until the clear-retry cap failed the code.
+        const code = makeCode({
+          pushState: 'failed',
+          lockSlotAssignments: [lockOf('lock.front_door', { slotIndex: 3, pushState: 'pending', schedulePending: true })],
+          pendingSlotClears: [{ lockEntityId: 'lock.front_door', slotIndex: 3, removing: false }],
+        })
+        expect(isDoorCodeSettling(code)).toBe(false)
+      })
+
+      it('is settled when a failed code has another lock waiting on a slot whose clear is outstanding', () => {
+        const code = failedWith(
+          { pushState: 'pending', slotIndex: 3, schedulePending: true },
+          { pendingSlotClears: [{ lockEntityId: 'lock.front_door', slotIndex: 3, removing: false }] },
+        )
+        expect(isDoorCodeSettling(code)).toBe(false)
+      })
+
       it('falls back to the code-level state when the API sends no per-lock fields', () => {
         const withoutPerLock = (pushState: DoorCode['pushState']) =>
           makeCode({

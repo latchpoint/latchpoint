@@ -18,11 +18,22 @@ export const DOOR_CODES_SETTLING_POLL_MS = 15_000
  * Whether the scheduler still pushes to this lock of an active, started code:
  * it's `pending` and needs its `set` (no slot) or its schedule, matching
  * push_pending_door_codes' push arm (#126, #123). A `failed` lock waits for a
- * Retry, and a lock being dropped is never pushed. Without the per-lock fields
- * (an API from before #196) it falls back to the code's own state.
+ * Retry, and a lock being dropped is never pushed. Nor is a slot whose clear is
+ * still outstanding (a PIN change whose clear failed), since it may hold the
+ * old PIN and the scheduler sends nothing to it until the clear works. Without
+ * the per-lock fields (an API from before #196) it falls back to the code's own
+ * state.
  */
 export function isLockAwaitingPush(code: DoorCode, assignment: DoorCodeLockSlotAssignment): boolean {
   if (assignment.pendingRemoval) return false
+  if (
+    assignment.slotIndex != null &&
+    (code.pendingSlotClears ?? []).some(
+      (c) => c.lockEntityId === assignment.lockEntityId && c.slotIndex === assignment.slotIndex,
+    )
+  ) {
+    return false
+  }
   if (assignment.pushState == null) return code.pushState === 'pending' && assignment.slotIndex == null
   return assignment.pushState === 'pending' && (assignment.slotIndex == null || !!assignment.schedulePending)
 }

@@ -35,13 +35,36 @@ type Props = {
 
 // What a Retry error is about. When this changes the error is out of date. A
 // lock can land or fail while the code stays failed (#126), so each lock's
-// state counts too.
+// state counts too, along with everything else its chip shows.
 function pushStateKeyOf(code: DoorCode): string {
+  const clears = code.pendingSlotClears ?? []
   const locks = (code.lockSlotAssignments ?? [])
-    .map((a) => `${a.lockEntityId}:${a.pushState ?? ''}:${a.schedulePending ? 1 : 0}`)
+    .map((a) => {
+      const lockClears = clears
+        .filter((c) => c.lockEntityId === a.lockEntityId)
+        .map((c) => c.slotIndex)
+        .sort((x, y) => x - y)
+        .join('+')
+      return JSON.stringify([
+        a.lockEntityId,
+        a.pushState ?? '',
+        !!a.schedulePending,
+        a.pendingRemoval,
+        a.lastPushError ?? '',
+        lockClears,
+      ])
+    })
     .sort()
     .join(',')
   return `${code.isActive}|${code.pushState}|${code.lastPushAttemptAt ?? ''}|${locks}`
+}
+
+// The tooltip of a failed lock with no error of its own, which the attempt cap
+// can leave (a busy lock).
+function failedLockFallback(count: number, schedulePending: boolean): string {
+  if (schedulePending) return "Its schedule couldn't be sent, Retry sends it again."
+  if (count <= 0) return 'Push failed, Retry sends it again.'
+  return `Push gave up after ${count} ${count === 1 ? 'attempt' : 'attempts'}, Retry sends it again.`
 }
 
 type LockChip = { suffix: string; title?: string; failed?: boolean }
@@ -64,12 +87,11 @@ function lockChipOf(code: DoorCode, lockEntityId: string): LockChip {
   const onItsLocks = code.isActive && code.validity !== 'scheduled' && code.validity !== 'expired'
   const pushState = onItsLocks ? assignment?.pushState : undefined
   if (assignment && pushState === 'failed') {
-    const count = assignment.pushAttemptCount ?? 0
-    // The attempt cap can fail a lock with no error of its own (a busy lock).
-    const fallback = `${count > 0 ? `Push gave up after ${count} attempts` : 'Push failed'}, Retry sends it again.`
     return {
       suffix: assignment.schedulePending ? ' (schedule not applied)' : ' (push failed)',
-      title: assignment.lastPushError || fallback,
+      title:
+        assignment.lastPushError ||
+        failedLockFallback(assignment.pushAttemptCount ?? 0, !!assignment.schedulePending),
       failed: true,
     }
   }
@@ -81,9 +103,11 @@ function lockChipOf(code: DoorCode, lockEntityId: string): LockChip {
       ? (code.pendingSlotClears ?? []).filter((c) => c.lockEntityId === lockEntityId).map((c) => c.slotIndex)
       : []
   if (clearSlots.length) {
-    // A failed code with no failed lock is failed by the clear-retry cap.
+    // A failed code with no failed lock is failed by the clear-retry cap. An
+    // API without per-lock state can't say which, so it stays "clearing".
+    const hasPerLockState = assignments.some((a) => a.pushState != null)
     const lockFailed = onItsLocks && assignments.some((a) => !a.pendingRemoval && a.pushState === 'failed')
-    if (code.pushState === 'failed' && !lockFailed) {
+    if (hasPerLockState && code.pushState === 'failed' && !lockFailed) {
       return {
         suffix: ' (clear failed)',
         title: `${slotsText(clearSlots)} may still hold the PIN, Retry tries the clear again.`,

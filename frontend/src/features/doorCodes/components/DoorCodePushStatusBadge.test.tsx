@@ -616,5 +616,23 @@ describe('DoorCodePushStatusBadge', () => {
 
       expect(screen.getByText(`Push failed: ${rollupError}`)).toBeTruthy()
     })
+
+    it("doesn't count a lock whose slot is waiting on its clear as still retrying", () => {
+      renderBadge(
+        makeCode({
+          pushState: 'failed',
+          lastPushError: rollupError,
+          lockEntityIds: ['lock.back_door', 'lock.front_door'],
+          lockSlotAssignments: [
+            { lockEntityId: 'lock.back_door', slotIndex: null, pendingRemoval: false, pushState: 'failed' },
+            { lockEntityId: 'lock.front_door', slotIndex: 3, pendingRemoval: false, pushState: 'pending', schedulePending: true },
+          ],
+          pendingSlotClears: [clearOf(3)],
+        }),
+      )
+
+      expect(screen.getByText(`Push failed: ${rollupError}`)).toBeTruthy()
+      expect(screen.queryByText(/still retrying/)).toBeNull()
+    })
   })
 })
