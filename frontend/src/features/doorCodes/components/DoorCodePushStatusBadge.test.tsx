@@ -519,4 +519,102 @@ describe('DoorCodePushStatusBadge', () => {
 
     expect(container.firstChild).toBeNull()
   })
+
+  describe('with per-lock push state', () => {
+    const twoLockNames = new Map([
+      ['lock.back_door', 'Back Door'],
+      ['lock.front_door', 'Front Door'],
+      ['lock.garage', 'Garage'],
+    ])
+    const rollupError = 'lock.back_door: Lock rejected the PIN'
+
+    function renderBadge(code: DoorCode, onRetry = vi.fn()) {
+      renderWithProviders(
+        <DoorCodePushStatusBadge
+          code={code}
+          lockNameByEntityId={twoLockNames}
+          canRetry
+          isRetrying={false}
+          onRetry={onRetry}
+        />,
+      )
+    }
+
+    it('says which lock failed and which is still being retried, and keeps Retry', () => {
+      const onRetry = vi.fn()
+      renderBadge(
+        makeCode({
+          pushState: 'failed',
+          lastPushError: rollupError,
+          lockEntityIds: ['lock.back_door', 'lock.front_door'],
+          lockSlotAssignments: [
+            { lockEntityId: 'lock.back_door', slotIndex: null, pendingRemoval: false, pushState: 'failed' },
+            { lockEntityId: 'lock.front_door', slotIndex: null, pendingRemoval: false, pushState: 'pending' },
+          ],
+        }),
+        onRetry,
+      )
+
+      const badge = screen.getByText('Push failed on Back Door, still retrying Front Door')
+      expect(badge).toHaveAttribute('title', rollupError)
+      fireEvent.click(screen.getByRole('button', { name: /^Retry$/ }))
+      expect(onRetry).toHaveBeenCalledTimes(1)
+    })
+
+    it('counts a lock whose schedule is still being retried', () => {
+      renderBadge(
+        makeCode({
+          pushState: 'failed',
+          lastPushError: rollupError,
+          lockEntityIds: ['lock.back_door', 'lock.front_door', 'lock.garage'],
+          lockSlotAssignments: [
+            { lockEntityId: 'lock.back_door', slotIndex: null, pendingRemoval: false, pushState: 'failed' },
+            { lockEntityId: 'lock.garage', slotIndex: 4, pendingRemoval: false, pushState: 'failed', schedulePending: true },
+            {
+              lockEntityId: 'lock.front_door',
+              slotIndex: 2,
+              pendingRemoval: false,
+              pushState: 'pending',
+              schedulePending: true,
+            },
+          ],
+        }),
+      )
+
+      expect(screen.getByText('Push failed on Back Door and Garage, still retrying Front Door')).toBeTruthy()
+    })
+
+    it('keeps Push failed with the error once no other lock is being retried', () => {
+      renderBadge(
+        makeCode({
+          pushState: 'failed',
+          lastPushError: rollupError,
+          lockEntityIds: ['lock.back_door', 'lock.front_door'],
+          lockSlotAssignments: [
+            { lockEntityId: 'lock.back_door', slotIndex: null, pendingRemoval: false, pushState: 'failed' },
+            { lockEntityId: 'lock.front_door', slotIndex: 2, pendingRemoval: false, pushState: 'pushed' },
+          ],
+        }),
+      )
+
+      expect(screen.getByText(`Push failed: ${rollupError}`)).toBeTruthy()
+      expect(screen.queryByText(/still retrying/)).toBeNull()
+    })
+
+    it("doesn't count a lock being dropped as still retrying", () => {
+      renderBadge(
+        makeCode({
+          pushState: 'failed',
+          lastPushError: rollupError,
+          lockEntityIds: ['lock.back_door', 'lock.front_door'],
+          lockSlotAssignments: [
+            { lockEntityId: 'lock.back_door', slotIndex: null, pendingRemoval: false, pushState: 'failed' },
+            { lockEntityId: 'lock.front_door', slotIndex: 2, pendingRemoval: true, pushState: 'pending', schedulePending: true },
+          ],
+        }),
+      )
+
+      expect(screen.getByText(`Push failed: ${rollupError}`)).toBeTruthy()
+    })
+  })
 })

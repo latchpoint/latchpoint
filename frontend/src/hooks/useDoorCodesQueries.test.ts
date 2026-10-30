@@ -211,6 +211,79 @@ describe('useDoorCodesQueries', () => {
       const clear = { lockEntityId: 'lock.front_door', slotIndex: 3, removing: true }
       expect(isDoorCodeSettling(makeCode({ pushState: 'failed', pendingSlotClears: [clear] }))).toBe(false)
     })
+
+    describe('with per-lock push state', () => {
+      type Slot = DoorCode['lockSlotAssignments'][number]
+      const lockOf = (lockEntityId: string, overrides: Partial<Slot> = {}): Slot => ({
+        lockEntityId,
+        slotIndex: null,
+        pendingRemoval: false,
+        pushState: 'pending',
+        lastPushError: '',
+        lastPushAttemptAt: null,
+        pushAttemptCount: 0,
+        schedulePending: false,
+        ...overrides,
+      })
+      // Failed on the back door, whatever the front door is doing.
+      const failedWith = (frontDoor: Partial<Slot>, overrides: Partial<DoorCode> = {}) =>
+        makeCode({
+          pushState: 'failed',
+          lastPushError: 'lock.back_door: Lock rejected the PIN',
+          lockEntityIds: ['lock.back_door', 'lock.front_door'],
+          lockSlotAssignments: [
+            lockOf('lock.back_door', { pushState: 'failed', lastPushError: 'Lock rejected the PIN' }),
+            lockOf('lock.front_door', frontDoor),
+          ],
+          ...overrides,
+        })
+
+      it('is settling while a lock is pending under a failed code, since the scheduler still retries it', () => {
+        expect(isDoorCodeSettling(failedWith({ pushState: 'pending' }))).toBe(true)
+      })
+
+      it("is settling while a lock's schedule is pending under a failed code", () => {
+        expect(isDoorCodeSettling(failedWith({ pushState: 'pending', slotIndex: 4, schedulePending: true }))).toBe(true)
+      })
+
+      it('is settled once every other lock is pushed or failed too', () => {
+        expect(isDoorCodeSettling(failedWith({ pushState: 'pushed', slotIndex: 2 }))).toBe(false)
+        // A schedule that failed for good waits for a Retry like any failed lock.
+        expect(
+          isDoorCodeSettling(failedWith({ pushState: 'failed', slotIndex: 2, schedulePending: true })),
+        ).toBe(false)
+      })
+
+      it("doesn't count a pending lock that's being dropped, or one of a code that's off or not started", () => {
+        expect(isDoorCodeSettling(failedWith({ pushState: 'pending', pendingRemoval: true }))).toBe(false)
+        expect(isDoorCodeSettling(failedWith({ pushState: 'pending' }, { isActive: false }))).toBe(false)
+        expect(
+          isDoorCodeSettling(failedWith({ pushState: 'pending' }, { validity: 'scheduled', pendingSlotClears: [] })),
+        ).toBe(false)
+      })
+
+      it("is settling while a pending code's lock waits on its schedule, even though it holds a slot", () => {
+        const code = makeCode({
+          pushState: 'pending',
+          lockSlotAssignments: [lockOf('lock.front_door', { slotIndex: 4, schedulePending: true })],
+        })
+        expect(isDoorCodeSettling(code)).toBe(true)
+      })
+
+      it('falls back to the code-level state when the API sends no per-lock fields', () => {
+        const withoutPerLock = (pushState: DoorCode['pushState']) =>
+          makeCode({
+            pushState,
+            lockEntityIds: ['lock.back_door', 'lock.front_door'],
+            lockSlotAssignments: [
+              { lockEntityId: 'lock.back_door', slotIndex: null, pendingRemoval: false },
+              { lockEntityId: 'lock.front_door', slotIndex: null, pendingRemoval: false },
+            ],
+          })
+        expect(isDoorCodeSettling(withoutPerLock('failed'))).toBe(false)
+        expect(isDoorCodeSettling(withoutPerLock('pending'))).toBe(true)
+      })
+    })
   })
 
   describe('useDoorCodesQuery', () => {
@@ -238,6 +311,42 @@ describe('useDoorCodesQueries', () => {
       expect(served.fetches).toBe(3)
 
       // Nothing is settling now, so it stops.
+      await act(() => vi.advanceTimersByTimeAsync(DOOR_CODES_SETTLING_POLL_MS * 4))
+      expect(served.fetches).toBe(3)
+    })
+
+    it('keeps polling a failed code while another of its locks is still being retried', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true })
+      const slot = (lockEntityId: string, pushState: DoorCode['pushState'], slotIndex: number | null = null) => ({
+        lockEntityId,
+        slotIndex,
+        pendingRemoval: false,
+        pushState,
+      })
+      const failedOn = (frontState: DoorCode['pushState']) =>
+        makeCode({
+          pushState: 'failed',
+          lastPushError: 'lock.back_door: Lock rejected the PIN',
+          lockEntityIds: ['lock.back_door', 'lock.front_door'],
+          lockSlotAssignments: [
+            slot('lock.back_door', 'failed'),
+            slot('lock.front_door', frontState, frontState === 'pushed' ? 2 : null),
+          ],
+        })
+      const served = serveCodes([failedOn('pending')])
+      const { result } = renderCodes()
+      await waitFor(() => expect(result.current.data?.[0].lockSlotAssignments[1].pushState).toBe('pending'))
+      expect(served.fetches).toBe(1)
+
+      await act(() => vi.advanceTimersByTimeAsync(DOOR_CODES_SETTLING_POLL_MS))
+      await waitFor(() => expect(served.fetches).toBe(2))
+
+      // The front door lands, only a Retry moves the back door now.
+      served.codes = [failedOn('pushed')]
+      await act(() => vi.advanceTimersByTimeAsync(DOOR_CODES_SETTLING_POLL_MS))
+      await waitFor(() => expect(result.current.data?.[0].lockSlotAssignments[1].pushState).toBe('pushed'))
+      expect(served.fetches).toBe(3)
+
       await act(() => vi.advanceTimersByTimeAsync(DOOR_CODES_SETTLING_POLL_MS * 4))
       expect(served.fetches).toBe(3)
     })

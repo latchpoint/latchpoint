@@ -2,16 +2,37 @@ import { useCallback } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { doorCodesService, locksService } from '@/services'
 import { queryKeys } from '@/types'
-import type { CreateDoorCodeRequest, DoorCode, LockConfigSyncRequest, LockConfigSyncResult, UpdateDoorCodeRequest } from '@/types'
+import type {
+  CreateDoorCodeRequest,
+  DoorCode,
+  DoorCodeLockSlotAssignment,
+  LockConfigSyncRequest,
+  LockConfigSyncResult,
+  UpdateDoorCodeRequest,
+} from '@/types'
 
 /** How often the door codes refetch while one is waiting on its locks. */
 export const DOOR_CODES_SETTLING_POLL_MS = 15_000
 
 /**
+ * Whether the scheduler still pushes to this lock of an active, started code:
+ * it's `pending` and needs its `set` (no slot) or its schedule, matching
+ * push_pending_door_codes' push arm (#126, #123). A `failed` lock waits for a
+ * Retry, and a lock being dropped is never pushed. Without the per-lock fields
+ * (an API from before #196) it falls back to the code's own state.
+ */
+export function isLockAwaitingPush(code: DoorCode, assignment: DoorCodeLockSlotAssignment): boolean {
+  if (assignment.pendingRemoval) return false
+  if (assignment.pushState == null) return code.pushState === 'pending' && assignment.slotIndex == null
+  return assignment.pushState === 'pending' && (assignment.slotIndex == null || !!assignment.schedulePending)
+}
+
+/**
  * Whether the scheduler is still working on `code`, matching what
  * push_pending_door_codes retries: a slot it still has to clear (#151), or an
- * active pending code with a lock that has no slot yet. A failed code isn't,
- * since the scheduler gives up on those and only a Retry moves them. Nor is a
+ * active code with a lock still waiting on its `set` or schedule, even when the
+ * code is failed because another of its locks is (#126). A failed code with no
+ * lock left waiting isn't, since only a Retry moves it. Nor is a
  * pending code the scheduler never picks up, like one lock sync created or an
  * active one with no locks. An active code that's expired is, since the
  * scheduler turns it off and clears it within a minute. A scheduled one is
@@ -28,13 +49,14 @@ export function isDoorCodeSettling(code: DoorCode): boolean {
     if (code.pushState === 'failed' && hasPendingClears) return false
     return hasPendingClears || (code.lockSlotAssignments ?? []).some((a) => a.slotIndex != null || a.pendingRemoval)
   }
-  if (code.pushState === 'failed') return false
+  const lockAwaitingPush =
+    code.isActive &&
+    code.validity !== 'scheduled' &&
+    (code.lockSlotAssignments ?? []).some((a) => isLockAwaitingPush(code, a))
+  if (code.pushState === 'failed') return lockAwaitingPush
   if (hasPendingClears) return true
   if ((code.lockSlotAssignments ?? []).some((a) => a.pendingRemoval)) return true
-  if (code.validity === 'scheduled') return false
-  return (
-    code.pushState === 'pending' && code.isActive && (code.lockSlotAssignments ?? []).some((a) => a.slotIndex == null)
-  )
+  return lockAwaitingPush
 }
 
 export function useDoorCodesQuery(params: { userId: string; isAdmin: boolean }) {
