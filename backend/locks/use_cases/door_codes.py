@@ -775,17 +775,26 @@ def _has_lock_changes(changes: dict) -> bool:
     return "add_lock_entity_ids" in changes or "remove_lock_entity_ids" in changes
 
 
+# Written only by the keypad use count (``locks.use_cases.code_usage``) with
+# ``F()``. An update's save leaves them alone, since the code it holds was read
+# before a use may have landed (issue #145).
+_USAGE_FIELDS = frozenset({"uses_count", "last_used_at", "last_used_lock"})
+
+
 def _save_unless_deleted(code: DoorCode) -> None:
     """Save ``code``, raising :class:`NotFound` if it was deleted meanwhile (issue #189).
 
     A plain ``save()`` on a row that's gone inserts it again. The code row is
     taken first, like every writer of it, so a delete can't land between the
-    check and the write.
+    check and the write. Every field but :data:`_USAGE_FIELDS` is written, and
+    those are read back from the row so ``code`` has the current count.
     """
+    fields = [f.name for f in DoorCode._meta.concrete_fields if not f.primary_key and f.name not in _USAGE_FIELDS]
     with transaction.atomic():
         if DoorCode.objects.select_for_update().filter(id=code.id).first() is None:
             raise NotFound("Not found.")
-        code.save(force_update=True)
+        code.save(update_fields=fields)
+        code.refresh_from_db(fields=sorted(_USAGE_FIELDS))
 
 
 def _locks_after_save(*, code: DoorCode, changes: dict) -> list[str]:
