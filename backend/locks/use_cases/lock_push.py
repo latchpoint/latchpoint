@@ -170,8 +170,9 @@ class BudgetedGateway:
 
     Each call's ``timeout_seconds`` is cut to what's left of the budget, and a
     call once it's used up raises :class:`TimeBudgetExceeded` without reaching
-    the gateway. ``exhausted`` is set once that happens or a call fails after the
-    deadline, which is how a push tells a lock that ran out of time (not
+    the gateway. ``exhausted`` is set once that happens, a call fails after the
+    deadline or a readback finds too little budget left to ask again (PR #216
+    review), which is how a push tells a lock that ran out of time (not
     counted toward the cap) from one that failed. Everything else is passed
     through, so callers and tests see the same calls.
     """
@@ -552,11 +553,33 @@ _READBACK_GET_TIMEOUT_SECONDS = 15.0
 # How long a whole readback may take, every ``get`` and delay included. The
 # 18s that 3 ``get``s at 5s and the delays took before (issue #199).
 _READBACK_DEADLINE_SECONDS = 18.0
+# The least time a ``get`` that asks again has to wait for its answer, or how
+# long the previous answer took when that's longer. With less it would likely
+# time out and leave a stacked ``get`` in the driver (PR #216 review).
+_READBACK_MIN_REASK_WAIT_SECONDS = 5.0
 
 # CC 99 userIdStatus "Available": the slot is definitively empty.
 _USER_ID_STATUS_AVAILABLE = 0
 # CC 99 userIdStatus values for a slot the lock uses for its own config (issue #168).
 _USER_ID_STATUS_CONFIG_USES = {3: "messaging", 4: "passage mode"}
+
+
+def _readback_out_of_budget(*, zwavejs: object, slot_index: int, empty_answers: int, doing: str) -> GatewayError:
+    """What a readback that ran out of its :class:`BudgetedGateway`'s budget raises (issue #124).
+
+    :class:`TimeBudgetExceeded`, which the push doesn't count, or
+    :class:`LockCodeUnverified` with ``read_back_empty`` once an answer was
+    empty, so a masked readback of the slot later isn't counted as ours
+    (issues #128, #152, PR #201 review).
+    """
+    if empty_answers:
+        return LockCodeUnverified(
+            f"Could not read back slot {slot_index} before running out of time (slot read back empty once).",
+            read_back_empty=True,
+        )
+    seconds = getattr(zwavejs, "seconds", None)
+    budget = f"its {seconds:g}s" if isinstance(seconds, (int, float)) else "its"
+    return TimeBudgetExceeded(f"Ran out of {budget} time budget {doing} slot {slot_index}; will retry.")
 
 
 def _verify_user_code_slot(
@@ -590,27 +613,43 @@ def _verify_user_code_slot(
     again, since the driver may still be working on it, so the readback stops
     there with :class:`LockCodeUnverified`. An answer that's no verdict, or an
     error that came back before the wait ran out, is asked again after its
-    delay, unless the delay doesn't fit before the deadline. A
-    :class:`BudgetedGateway` running out of budget raises
-    :class:`TimeBudgetExceeded` like before, or :class:`LockCodeUnverified`
-    with ``read_back_empty`` once an answer was empty.
+    delay, but only when what's left after the delay is at least
+    :data:`_READBACK_MIN_REASK_WAIT_SECONDS`, or the previous answer's latency
+    when that's longer, so the new ``get`` isn't set up to time out and stack
+    (PR #216 review). Otherwise it stops there with :class:`LockCodeUnverified`.
+    A :class:`BudgetedGateway` running out of budget, including one whose
+    budget is what's too short for a re-ask, raises :class:`TimeBudgetExceeded`
+    like before, or :class:`LockCodeUnverified` with ``read_back_empty`` once
+    an answer was empty.
     """
     deadline = _time.monotonic() + _READBACK_DEADLINE_SECONDS
     attempts = len(_READBACK_RETRY_DELAYS_SECONDS) + 1
     asks = 0
     last_reason = "no response"
     empty_answers = 0
+    latency = 0.0
     for attempt in range(attempts):
         if attempt:
             delay = _READBACK_RETRY_DELAYS_SECONDS[attempt - 1]
-            if delay >= deadline - _time.monotonic():
-                # Asking again wouldn't fit before the deadline (issue #199).
+            min_wait = max(_READBACK_MIN_REASK_WAIT_SECONDS, latency)
+            deadline_left = deadline - _time.monotonic()
+            budget_left = zwavejs.remaining() if isinstance(zwavejs, BudgetedGateway) else deadline_left
+            if min(deadline_left, budget_left) - delay < min_wait:
+                if budget_left < deadline_left:
+                    # The budget is what's too short, so it's out of time and the
+                    # push doesn't count it, like a call the budget refused (issue #124).
+                    zwavejs.exhausted = True
+                    raise _readback_out_of_budget(
+                        zwavejs=zwavejs, slot_index=slot_index, empty_answers=empty_answers, doing="asking again for"
+                    )
+                # Asking again wouldn't leave the get time to answer before the deadline (issue #199).
                 break
             _time.sleep(delay)
         get_timeout = min(_READBACK_GET_TIMEOUT_SECONDS, deadline - _time.monotonic())
         if get_timeout <= 0:
             break
         asks += 1
+        asked_at = _time.monotonic()
         try:
             response = _refresh_user_code_slot(
                 zwavejs=zwavejs,
@@ -626,23 +665,16 @@ def _verify_user_code_slot(
             # caller, or a masked readback of the slot later counts as ours
             # (issues #128, #152, PR #201 review).
             if empty_answers:
-                raise LockCodeUnverified(
-                    f"Could not read back slot {slot_index} before running out of time (slot read back empty once).",
-                    read_back_empty=True,
+                raise _readback_out_of_budget(
+                    zwavejs=zwavejs, slot_index=slot_index, empty_answers=empty_answers, doing="reading back"
                 ) from exc
             raise
         except ZwavejsCommandTimeout as exc:
             if _out_of_budget(zwavejs):
                 # The budget cut this wait short, so it's out of time like the
                 # branch above and the push doesn't count it (issue #124).
-                if empty_answers:
-                    raise LockCodeUnverified(
-                        f"Could not read back slot {slot_index} before running out of time "
-                        "(slot read back empty once).",
-                        read_back_empty=True,
-                    ) from exc
-                raise TimeBudgetExceeded(
-                    f"Ran out of its {zwavejs.seconds:g}s time budget reading back slot {slot_index}; will retry."
+                raise _readback_out_of_budget(
+                    zwavejs=zwavejs, slot_index=slot_index, empty_answers=empty_answers, doing="reading back"
                 ) from exc
             # Still no verdict, but the driver may still be working on this get,
             # so another one would only queue behind it (issue #199).
@@ -656,6 +688,9 @@ def _verify_user_code_slot(
         except GatewayError as exc:
             last_reason = f"{exc.__class__.__name__}: {exc}"
             continue
+        finally:
+            # How long the lock took, so a re-ask waits at least that long (PR #216 review).
+            latency = _time.monotonic() - asked_at
 
         if isinstance(response, dict) and "response" in response:
             response = response["response"]

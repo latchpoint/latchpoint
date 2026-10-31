@@ -815,7 +815,9 @@ class ZwavejsConnectionManager:
                 # The coroutine raised the TimeoutError itself, the wait didn't run out.
                 raise ZwavejsCommandError(str(exc) or "Z-Wave JS command timed out") from exc
             fut.cancel()
-            raise ZwavejsCommandTimeout(f"Z-Wave JS command timed out after {timeout_seconds}s") from exc
+            # One decimal, since a budget-cut timeout is a long float whose digits
+            # the push error sanitizer would mask as a PIN (PR #216 review).
+            raise ZwavejsCommandTimeout(f"Z-Wave JS command timed out after {timeout_seconds:.1f}s") from exc
         except Exception as exc:
             raise ZwavejsCommandError(str(exc)) from exc
 

@@ -155,17 +155,62 @@ class VerifyUserCodeSlotTimeoutTests(_ClockTestMixin, SimpleTestCase):
         self.assertEqual(len(gateway.get_timeouts), 1)
         self.assertEqual(self.clock.sleeps, [])
 
-    def test_each_get_waits_for_what_is_left_of_the_deadline_and_the_last_delay_must_fit(self):
-        # 10s answer, 1s delay, then the second get gets the 7s left and answers
-        # in 5.5s, so 1.5s is left for the 2s delay.
-        gateway = self._gateway([UNKNOWN, EMPTY, HOLDS_PIN], get_seconds=[10.0, 5.5])
+    def test_each_get_waits_for_what_is_left_of_the_deadline_and_the_last_reask_must_fit(self):
+        # 6s answer, 1s delay, then the second get gets the 11s left and answers
+        # in 5.5s, so after the 2s delay 3.5s would be left, under the 5.5s it took.
+        gateway = self._gateway([UNKNOWN, EMPTY, HOLDS_PIN], get_seconds=[6.0, 5.5])
 
         with self.assertRaises(LockCodeUnverified) as ctx:
             self._verify(gateway)
 
         self.assertTrue(ctx.exception.read_back_empty)
-        self.assertEqual(gateway.get_timeouts, [15.0, 7.0])
+        self.assertEqual(gateway.get_timeouts, [15.0, 11.0])
         self.assertEqual(self.clock.sleeps, [1.0])
+
+    def test_a_reask_needs_at_least_the_minimum_wait_left_after_its_delay(self):
+        # 8s, 1s delay, 4s: after the 2s delay 3s would be left, under the 5s minimum.
+        gateway = self._gateway([UNKNOWN, UNKNOWN, HOLDS_PIN], get_seconds=[8.0, 4.0])
+
+        with self.assertRaises(LockCodeUnverified) as ctx:
+            self._verify(gateway)
+
+        self.assertFalse(ctx.exception.read_back_empty)
+        self.assertEqual(gateway.get_timeouts, [15.0, 9.0])
+        self.assertEqual(self.clock.sleeps, [1.0])
+
+    def test_a_reask_needs_the_previous_answers_latency_left_when_that_is_longer(self):
+        # 12s answer: after the 1s delay 5s would be left, enough for the 5s
+        # minimum but not for a lock that took 12s.
+        gateway = self._gateway([UNKNOWN, HOLDS_PIN], get_seconds=[12.0])
+
+        with self.assertRaises(LockCodeUnverified):
+            self._verify(gateway)
+
+        self.assertEqual(len(gateway.get_timeouts), 1)
+        self.assertEqual(self.clock.sleeps, [])
+
+    def test_a_budget_too_short_for_a_reask_is_out_of_time(self):
+        # 3s of an 8s budget: 5s left, 4s after the delay, under the 5s minimum.
+        gateway = self._gateway([UNKNOWN, HOLDS_PIN], get_seconds=[3.0])
+        budgeted = BudgetedGateway(gateway, seconds=8.0)
+
+        with self.assertRaises(TimeBudgetExceeded):
+            self._verify(budgeted)
+
+        self.assertEqual(gateway.get_timeouts, [8.0])
+        self.assertTrue(budgeted.exhausted)
+        self.assertEqual(self.clock.sleeps, [])
+
+    def test_a_budget_too_short_for_a_reask_after_an_empty_answer_keeps_read_back_empty(self):
+        gateway = self._gateway([EMPTY, EMPTY], get_seconds=[3.0])
+        budgeted = BudgetedGateway(gateway, seconds=8.0)
+
+        with self.assertRaises(LockCodeUnverified) as ctx:
+            self._verify(budgeted)
+
+        self.assertTrue(ctx.exception.read_back_empty)
+        self.assertTrue(budgeted.exhausted)
+        self.assertEqual(len(gateway.get_timeouts), 1)
 
     def test_a_timeout_that_runs_out_the_budget_is_out_of_time(self):
         gateway = self._gateway([_timeout(), HOLDS_PIN])
@@ -269,4 +314,15 @@ class PostSetReadbackTimeoutTests(_ClockTestMixin, EncryptionTestMixin, TestCase
         self.assertEqual((assignment.push_state, assignment.push_attempt_count), (DoorCode.PushState.PENDING, 0))
         self.assertIn("TimeBudgetExceeded", assignment.last_push_error)
         # The set went out, so the slot is still on record.
+        self.assertEqual(self._marker(lock_push_uc._UNCONFIRMED_PUSH_ACTION)["slot_index"], 1)
+
+    def test_a_budget_too_short_for_a_reask_is_not_counted(self):
+        gateway = self._gateway([UNKNOWN, HOLDS_PIN], get_seconds=[3.0])
+
+        self._push(BudgetedGateway(gateway, seconds=8.0))
+
+        self.assertEqual(self._gets(gateway), 1)
+        assignment = DoorCodeLockAssignment.objects.get(door_code=self.code)
+        self.assertEqual((assignment.push_state, assignment.push_attempt_count), (DoorCode.PushState.PENDING, 0))
+        self.assertIn("TimeBudgetExceeded", assignment.last_push_error)
         self.assertEqual(self._marker(lock_push_uc._UNCONFIRMED_PUSH_ACTION)["slot_index"], 1)

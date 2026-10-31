@@ -44,8 +44,13 @@ the transaction, so asking again doesn't stack anything.
   own any more, so the callers' 5s doesn't reach the `get`.
 - **Answers that aren't a verdict are still asked again.** Empty once, 0xfe,
   no report and a fast `ZwavejsCommandError` still get up to 3 asks with the
-  1s and 2s delays, unless the delay doesn't fit before the 18s deadline, in
-  which case the readback stops there with `LockCodeUnverified`.
+  1s and 2s delays. A re-ask only goes out when what's left after its delay,
+  of the 18s and of the budget, is at least
+  `_READBACK_MIN_REASK_WAIT_SECONDS` (5s), or the previous answer's latency
+  when that's longer, since a `get` with less would likely time out and stack
+  (PR #216 review). Otherwise the readback stops there with
+  `LockCodeUnverified`, or as out of time (`TimeBudgetExceeded`, not counted)
+  when the budget is what's too short.
 - **The budget works like before.** A `ZwavejsCommandTimeout` once the
   `BudgetedGateway` ran out raises `TimeBudgetExceeded` (or
   `LockCodeUnverified` with `read_back_empty` after an empty answer), the same
@@ -84,7 +89,9 @@ the transaction, so asking again doesn't stack anything.
 - A readback `get` can now hold the driver for up to 15s for one node. Other
   nodes' commands queue behind that one `get` instead of behind 3.
 - Errors of anything that timed out read `ZwavejsCommandTimeout: Z-Wave JS
-  command timed out after 5.0s` instead of `ZwavejsCommandError: ...`.
+  command timed out after 5.0s` instead of `ZwavejsCommandError: ...`, and
+  the seconds always have one decimal, so a budget-cut timeout doesn't show
+  a long float whose digits the push error sanitizer would mask as a PIN.
 - The 15s and 18s weren't measured on the Yales. The QA on the PR is what
   checks them.
 

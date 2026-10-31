@@ -35,9 +35,11 @@ class RunCoroTimeoutTests(SimpleTestCase):
                 raise
 
         with self.assertRaises(ZwavejsCommandError) as ctx:
-            self.manager._run_coro(slow_command(), timeout_seconds=0.05)
+            # A budget-cut timeout is a long float like this one (PR #216 review).
+            self.manager._run_coro(slow_command(), timeout_seconds=0.12345678)
 
-        self.assertEqual(str(ctx.exception), "Z-Wave JS command timed out after 0.05s")
+        # One decimal, so no digit run the push error sanitizer would mask as a PIN.
+        self.assertEqual(str(ctx.exception), "Z-Wave JS command timed out after 0.1s")
         self.assertTrue(cancelled.wait(timeout=2), "the command never saw CancelledError")
 
     def test_a_wait_that_runs_out_raises_the_timeout_subclass(self):
