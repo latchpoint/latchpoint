@@ -2,9 +2,9 @@
 
 The PIN only belongs on a lock from ``start_at`` up to ``end_at``. ``end_at`` is
 exclusive, so a code is expired at ``end_at`` itself. These only look at the
-dates (and the use count), never at ``code_type`` or ``source``, since lock sync
-can turn a temporary manual code into a permanent synced one that keeps its
-dates. Callers compare against one ``now`` per pass so every check in it agrees.
+dates (and the use count), never at ``code_type`` or ``source``, since lock syncs
+before #166 turned temporary manual codes into permanent synced ones that kept
+their dates. Callers compare against one ``now`` per pass so every check in it agrees.
 """
 
 from __future__ import annotations

@@ -140,6 +140,8 @@ export interface LockConfigSyncSlotResult {
   schedule: LockConfigSyncScheduleWindow | null
   warnings: string[]
   error: string | null
+  // Other door codes on this lock whose PIN this slot also holds (#140). Optional for an API without it.
+  duplicatePinDoorCodeIds?: number[]
 }
 
 export interface LockConfigSyncResult {

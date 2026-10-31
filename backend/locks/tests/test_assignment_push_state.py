@@ -578,7 +578,7 @@ class LockSyncDualWriteTests(EncryptionTestMixin, APITestCase):
 
         self.assertEqual(_lock_state(assignment), (None, PENDING, 2, "", False))
 
-    def test_manual_code_converted_to_synced_is_pushed(self):
+    def test_manual_code_found_in_its_slot_is_pushed(self):
         code = self._manual_code(pin="4321", slot_index=1)
         DoorCodeLockAssignment.objects.filter(door_code=code).update(
             push_state=PENDING, push_attempt_count=3, last_push_error="old"
@@ -587,6 +587,7 @@ class LockSyncDualWriteTests(EncryptionTestMixin, APITestCase):
         self._sync(sync_tests.SlotGateway({1: (1, "4321")}))
 
         code.refresh_from_db()
-        self.assertEqual(code.source, DoorCode.Source.SYNCED)
+        # It stays manual since #166.
+        self.assertEqual(code.source, DoorCode.Source.MANUAL)
         assignment = DoorCodeLockAssignment.objects.get(door_code=code)
         self.assertEqual(_lock_state(assignment), (1, PUSHED, 0, "", False))

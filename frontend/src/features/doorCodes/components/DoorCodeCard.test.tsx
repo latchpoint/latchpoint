@@ -523,6 +523,18 @@ describe('DoorCodeCard', () => {
       expect(screen.getByRole('button', { name: /^Retry$/ })).toBeTruthy()
     })
 
+    it('flags a pushed lock whose slot lock sync found disabled (#166)', () => {
+      renderCard(
+        twoLocks(
+          [back({ slotIndex: 2, lastPushError: 'Slot 2 is disabled at the lock.' }), front({ slotIndex: 1 })],
+          { pushState: 'pushed', lastPushError: '' },
+        ),
+      )
+
+      expect(screen.getByText('Back Door (check lock)')).toHaveAttribute('title', 'Slot 2 is disabled at the lock.')
+      expect(screen.getByText('Front Door')).toBeTruthy()
+    })
+
     it('says the push gave up when the cap failed a lock with no error of its own', () => {
       renderCard(
         twoLocks([back({ pushState: 'failed', pushAttemptCount: 24 }), front({ pushState: 'failed' })], {

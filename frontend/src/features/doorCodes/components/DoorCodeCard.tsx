@@ -135,6 +135,11 @@ function lockChipOf(code: DoorCode, lockEntityId: string): LockChip {
     }
     return { suffix: ' (pending)', title: assignment.lastPushError || 'Waiting for the lock to accept the code.' }
   }
+  // A pushed lock only keeps an error when lock sync found something wrong with
+  // its slot, ie the slot is disabled at the lock (#166).
+  if (assignment && pushState === 'pushed' && assignment.lastPushError) {
+    return { suffix: ' (check lock)', title: assignment.lastPushError }
+  }
   return { suffix: '' }
 }
 
