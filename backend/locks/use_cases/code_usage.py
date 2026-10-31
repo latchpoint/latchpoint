@@ -54,23 +54,40 @@ class _SlotMatch:
     lock_entity_id: str
 
 
-def lock_entity_ids_for_node(*, node_id: int, home_id: int | None) -> list[str]:
-    """Entities linked to Z-Wave node ``node_id``, on ``home_id`` or with no home id recorded.
+def lock_entity_ids_for_node(*, node_id: int) -> list[str]:
+    """Entities linked to Z-Wave node ``node_id``, by ``attributes.zwavejs.node_id`` alone.
 
-    Entity sync records a home id of 0 when it didn't know one, so that counts
-    as none. With ``home_id`` unknown every entity on the node matches.
+    The same rule the push uses to find a lock's node
+    (``lock_config_sync._resolve_lock_node_id``), which doesn't look at the
+    home id, so every lock that gets pushes gets counts.
+    :func:`handle_keypad_unlock` warns when the lock's recorded home id isn't
+    the connected one.
     """
     query = Entity.objects.filter(
         Q(attributes__zwavejs__node_id=node_id) | Q(attributes__zwavejs__node_id=str(node_id))
     )
-    if home_id:
-        query = query.filter(
-            Q(attributes__zwavejs__home_id=home_id)
-            | Q(attributes__zwavejs__home_id__isnull=True)
-            | Q(attributes__zwavejs__home_id=None)
-            | Q(attributes__zwavejs__home_id=0)
-        )
     return list(query.order_by("entity_id").values_list("entity_id", flat=True))
+
+
+def _warn_if_other_home(*, lock_entity_id: str, home_id: int | None, node_id: int) -> None:
+    """Log a WARNING when ``lock_entity_id`` records a home id that isn't the connected network's.
+
+    Entity sync records 0 when it didn't know the home id, so 0 or none is never a mismatch.
+    """
+    if not home_id or not lock_entity_id:
+        return
+    attrs = Entity.objects.filter(entity_id=lock_entity_id).values_list("attributes", flat=True).first()
+    zwavejs = attrs.get("zwavejs") if isinstance(attrs, dict) else None
+    recorded = zwavejs.get("home_id") if isinstance(zwavejs, dict) else None
+    if recorded and recorded != home_id:
+        logger.warning(
+            "Door code use: %s records Z-Wave home id %s but the unlock came from home id %s (node %s). "
+            "Counted anyway, the same as pushes resolve it",
+            lock_entity_id,
+            recorded,
+            home_id,
+            node_id,
+        )
 
 
 def _clear_outstanding_on(*, door_code: DoorCode, lock_entity_id: str, slot_index: int) -> bool:
@@ -130,32 +147,43 @@ def _base_metadata(*, slot_index: int, notification_event: int) -> dict[str, obj
 
 
 def _is_duplicate(*, lock_entity_id: str, slot_index: int, now: datetime, node_id: int | None = None) -> bool:
-    """Whether a use on this lock and slot was already recorded inside :data:`DEDUPE_WINDOW`.
+    """Whether a use on this lock and slot was recorded within :data:`DEDUPE_WINDOW` of ``now``.
 
-    A use with no lock goes by its node instead, so two unknown locks don't dedupe each other.
+    ``now`` is when this use came in, and a use event's ``created_at`` is when
+    it came in too (:func:`_create_use_event`), so a use that waited to be
+    counted is compared by when it happened. A use with no lock goes by its
+    node instead, so two unknown locks don't dedupe each other.
     """
     query = DoorCodeEvent.objects.filter(
         event_type=DoorCodeEvent.EventType.CODE_USED,
         lock_entity_id=lock_entity_id,
         metadata__slot_index=slot_index,
         created_at__gte=now - DEDUPE_WINDOW,
+        created_at__lte=now + DEDUPE_WINDOW,
     )
     if not lock_entity_id:
         query = query.filter(metadata__node_id=node_id)
     return query.exists()
 
 
-def _record_unmatched(*, lock_entity_id: str, node_id: int | None, slot_index: int, notification_event: int) -> None:
+def _create_use_event(*, at: datetime, **fields) -> DoorCodeEvent:
+    """A ``code_used`` event whose ``created_at`` is ``at``, when the use came in.
+
+    ``created_at`` is ``auto_now_add``, so it's set after the insert.
+    """
+    event = DoorCodeEvent.objects.create(user=None, event_type=DoorCodeEvent.EventType.CODE_USED, **fields)
+    DoorCodeEvent.objects.filter(id=event.id).update(created_at=at)
+    event.created_at = at
+    return event
+
+
+def _record_unmatched(
+    *, lock_entity_id: str, node_id: int | None, slot_index: int, notification_event: int, at: datetime
+) -> None:
     metadata = {**_base_metadata(slot_index=slot_index, notification_event=notification_event), "unmatched": True}
     if node_id is not None:
         metadata["node_id"] = node_id
-    DoorCodeEvent.objects.create(
-        door_code=None,
-        user=None,
-        lock_entity_id=lock_entity_id,
-        event_type=DoorCodeEvent.EventType.CODE_USED,
-        metadata=metadata,
-    )
+    _create_use_event(at=at, door_code=None, lock_entity_id=lock_entity_id, metadata=metadata)
 
 
 def record_unmatched_use(
@@ -172,7 +200,11 @@ def record_unmatched_use(
         if _is_duplicate(lock_entity_id=lock_entity_id, slot_index=slot_index, now=now, node_id=node_id):
             return UseOutcome.DUPLICATE
         _record_unmatched(
-            lock_entity_id=lock_entity_id, node_id=node_id, slot_index=slot_index, notification_event=notification_event
+            lock_entity_id=lock_entity_id,
+            node_id=node_id,
+            slot_index=slot_index,
+            notification_event=notification_event,
+            at=now,
         )
     return UseOutcome.UNMATCHED
 
@@ -220,6 +252,7 @@ def record_keypad_use(
                 node_id=node_id,
                 slot_index=slot_index,
                 notification_event=notification_event,
+                at=now,
             )
             return UseOutcome.UNMATCHED
 
@@ -228,11 +261,10 @@ def record_keypad_use(
         if stale_reason is None and not code.is_active:
             stale_reason = _STALE_INACTIVE
         if stale_reason is not None:
-            DoorCodeEvent.objects.create(
+            _create_use_event(
+                at=now,
                 door_code=code,
-                user=None,
                 lock_entity_id=lock_entity_id,
-                event_type=DoorCodeEvent.EventType.CODE_USED,
                 metadata={
                     **base,
                     "uses_count": code.uses_count,
@@ -249,11 +281,10 @@ def record_keypad_use(
         )
         # The row is held, so this is the count the update just wrote.
         uses_count = code.uses_count + 1
-        DoorCodeEvent.objects.create(
+        _create_use_event(
+            at=now,
             door_code=code,
-            user=None,
             lock_entity_id=lock_entity_id,
-            event_type=DoorCodeEvent.EventType.CODE_USED,
             metadata={
                 **base,
                 "uses_count": uses_count,
@@ -267,14 +298,20 @@ def record_keypad_use(
 def handle_keypad_unlock(unlock: KeypadUnlock, *, home_id: int | None, now: datetime | None = None) -> UseOutcome:
     """Map a keypad unlock to the code in its slot and record it (:func:`record_keypad_use`).
 
-    The node's entities (on ``home_id`` or with none recorded) give the locks,
-    and the slot gives the assignment. No assignment falls back to a code with
-    a clear of that slot outstanding, which is recorded as ``stale_slot``.
+    The node's entities give the locks (:func:`lock_entity_ids_for_node`), and
+    the slot gives the assignment. No assignment falls back to a code with a
+    clear of that slot outstanding, which is recorded as ``stale_slot``.
     Nothing at all is a ``code_used`` event with no code. More than one match
     (two lock entities for the node with a code in the same slot) is logged and
-    skipped, since there's no telling which code it was.
+    skipped, since there's no telling which code it was. A lock whose recorded
+    home id isn't ``home_id`` is still counted, with a WARNING.
+
+    The use is dated ``now``, else when the listener got it
+    (``unlock.received_at``), else when this runs.
     """
-    lock_entity_ids = lock_entity_ids_for_node(node_id=unlock.node_id, home_id=home_id)
+    if now is None:
+        now = unlock.received_at if unlock.received_at is not None else django_timezone.now()
+    lock_entity_ids = lock_entity_ids_for_node(node_id=unlock.node_id)
     if not lock_entity_ids:
         logger.info(
             "Door code use: no entity for Z-Wave node %s (slot %s), nothing recorded", unlock.node_id, unlock.slot
@@ -304,6 +341,7 @@ def handle_keypad_unlock(unlock: KeypadUnlock, *, home_id: int | None, now: date
 
     if not matches:
         lock_entity_id = _unmatched_lock(lock_entity_ids)
+        _warn_if_other_home(lock_entity_id=lock_entity_id, home_id=home_id, node_id=unlock.node_id)
         outcome = record_unmatched_use(
             lock_entity_id=lock_entity_id,
             node_id=unlock.node_id,
@@ -321,6 +359,7 @@ def handle_keypad_unlock(unlock: KeypadUnlock, *, home_id: int | None, now: date
         return outcome
 
     match = matches[0]
+    _warn_if_other_home(lock_entity_id=match.lock_entity_id, home_id=home_id, node_id=unlock.node_id)
     outcome = record_keypad_use(
         door_code_id=match.door_code_id,
         lock_entity_id=match.lock_entity_id,

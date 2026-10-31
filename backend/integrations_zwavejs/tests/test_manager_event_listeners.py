@@ -180,7 +180,7 @@ class ZwavejsManagerKeypadUnlockBridgeTests(SimpleTestCase):
                 got_unlock.set()
                 return True
 
-        manager.register_event_listener(make_event_listener(worker=_Worker(), sanitize=manager._sanitize_event_for_log))
+        manager.register_event_listener(make_event_listener(worker=_Worker()))
 
         with (
             patch(
@@ -226,3 +226,98 @@ class ZwavejsManagerSanitizeEventTests(SimpleTestCase):
     def test_entry_control_event_data_is_still_redacted(self):
         out = self._sanitize({"nodeId": 12, "ccId": 111, "args": {"eventType": 5, "eventData": "1996"}})
         self.assertEqual(out["args"]["eventData"], "***")
+
+    def test_parameters_that_arent_a_dict_or_a_number_are_hidden(self):
+        for parameters in ([52, 51, 50, 49], "4321", b"4321", ("4", "3", "2", "1")):
+            with self.subTest(parameters=parameters):
+                out = self._sanitize(_keypad_unlock_event_data(parameters=parameters))
+                self.assertEqual(out["args"]["parameters"], "***")
+
+    def test_number_parameters_are_kept(self):
+        # `None` is replaced by the helper's default, so it goes in by hand.
+        for parameters in (3, 2.5):
+            with self.subTest(parameters=parameters):
+                out = self._sanitize(_keypad_unlock_event_data(parameters=parameters))
+                self.assertEqual(out["args"]["parameters"], parameters)
+        event_data = _keypad_unlock_event_data()
+        event_data["args"]["parameters"] = None
+        self.assertIsNone(self._sanitize(event_data)["args"]["parameters"])
+
+
+def _user_code_value_event_data(*, event: str = "value updated", prop: str = "userCode", **values) -> dict:
+    """A CC 99 value event as zwave-js-server sends it after a push or a readback."""
+    return {
+        "source": "node",
+        "event": event,
+        "nodeId": 12,
+        "args": {
+            "commandClassName": "User Code",
+            "commandClass": 99,
+            "endpoint": 0,
+            "property": prop,
+            "propertyKey": 3,
+            "propertyName": prop,
+            "propertyKeyName": "3",
+            **values,
+        },
+    }
+
+
+class ZwavejsManagerSanitizeUserCodeValueTests(SimpleTestCase):
+    """The DEBUG ``event_in`` line logs CC 99 value events, whose values are the slot's PIN."""
+
+    def _sanitize(self, event_data: dict) -> dict:
+        return ZwavejsConnectionManager()._sanitize_event_for_log({"event": event_data})
+
+    def test_user_code_new_and_prev_values_are_redacted(self):
+        out = self._sanitize(_user_code_value_event_data(newValue="4321", prevValue="1996"))
+        self.assertEqual((out["args"]["newValue"], out["args"]["prevValue"]), ("***", "***"))
+        self.assertEqual(out["args"]["propertyKey"], 3)
+        self.assertNotIn("4321", repr(out))
+        self.assertNotIn("1996", repr(out))
+
+    def test_value_notification_and_value_added_are_redacted(self):
+        out = self._sanitize(_user_code_value_event_data(event="value notification", value="4321"))
+        self.assertEqual(out["args"]["value"], "***")
+        out = self._sanitize(_user_code_value_event_data(event="value added", newValue="4321"))
+        self.assertEqual(out["args"]["newValue"], "***")
+
+    def test_admin_code_is_redacted(self):
+        out = self._sanitize(_user_code_value_event_data(prop="adminCode", newValue="4321"))
+        self.assertEqual(out["args"]["newValue"], "***")
+
+    def test_other_user_code_values_and_other_command_classes_are_kept(self):
+        out = self._sanitize(_user_code_value_event_data(prop="userIdStatus", newValue=1, prevValue=0))
+        self.assertEqual((out["args"]["newValue"], out["args"]["prevValue"]), (1, 0))
+        battery = _user_code_value_event_data(newValue=80, prevValue=81)
+        battery["args"]["commandClass"] = 128
+        out = self._sanitize(battery)
+        self.assertEqual((out["args"]["newValue"], out["args"]["prevValue"]), (80, 81))
+
+    @override_settings(ALLOW_ZWAVEJS_IN_TESTS=True)
+    def test_the_debug_event_in_line_has_no_pin_for_a_user_code_value_event(self):
+        manager = ZwavejsConnectionManager()
+        got_event = threading.Event()
+        manager.register_event_listener(lambda _msg: got_event.set())
+        emitted = _user_code_value_event_data(newValue="4321", prevValue="1996")
+        with (
+            patch(
+                "integrations_zwavejs.manager._import_zwavejs_client",
+                return_value=_fake_imports(emitted_event=emitted),
+            ),
+            patch("alarm.dispatcher.notify_entities_changed"),
+            self.assertLogs("integrations_zwavejs.manager", level="DEBUG") as logs,
+        ):
+            manager.apply_settings(
+                settings_obj={"enabled": True, "ws_url": "ws://example.test:3000", "connect_timeout_seconds": 0.2}
+            )
+            manager.ensure_connected(timeout_seconds=1.0)
+            self.assertTrue(got_event.wait(timeout=1.0))
+            manager.apply_settings(settings_obj={"enabled": False})
+
+        event_in = [line for line in logs.output if "event_in" in line]
+        self.assertEqual(len(event_in), 1)
+        self.assertIn("'newValue': '***'", event_in[0])
+        for line in logs.output:
+            self.assertNotIn("4321", line)
+            self.assertNotIn("1996", line)

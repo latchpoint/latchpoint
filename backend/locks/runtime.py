@@ -16,7 +16,12 @@ import queue
 import threading
 from typing import Any
 
-from locks.keypad_events import KeypadUnlock, is_notification_cc_event, parse_keypad_unlock
+from locks.keypad_events import (
+    KeypadUnlock,
+    is_notification_cc_event,
+    keypad_event_log_fields,
+    parse_keypad_unlock,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -109,23 +114,21 @@ class KeypadUseWorker:
 keypad_use_worker = KeypadUseWorker()
 
 
-def make_event_listener(*, worker: KeypadUseWorker, sanitize=None):
+def make_event_listener(*, worker: KeypadUseWorker):
     """The bridge listener: log CC 113 events, queue keypad unlocks on ``worker``.
 
-    ``sanitize`` is the manager's ``_sanitize_event_for_log``, which takes the
-    PIN out (``args.eventData``, ``args.parameters.userCode``). Without it only
-    the parsed fields are logged.
+    The log line only has the allowlisted fields (:func:`keypad_event_log_fields`),
+    never the payload. Each unlock is stamped with when it came in.
     """
 
     def _on_event(msg: dict[str, Any]) -> None:
         try:
             if not is_notification_cc_event(msg):
                 return
-            unlock = parse_keypad_unlock(msg)
-            if callable(sanitize):
-                logger.info("zwavejs keypad event %s", sanitize(msg))
-            else:
-                logger.info("zwavejs keypad event (unsanitized payload not logged) parsed=%s", unlock)
+            from django.utils import timezone as django_timezone
+
+            unlock = parse_keypad_unlock(msg, received_at=django_timezone.now())
+            logger.info("zwavejs keypad event %s", keypad_event_log_fields(msg))
             if unlock is not None:
                 worker.submit(unlock)
         except Exception:
@@ -154,5 +157,5 @@ def initialize() -> None:
         return
 
     keypad_use_worker.start()
-    register(make_event_listener(worker=keypad_use_worker, sanitize=getattr(manager, "_sanitize_event_for_log", None)))
+    register(make_event_listener(worker=keypad_use_worker))
     logger.info("Locks: registered Z-Wave JS keypad unlock listener + keypad-use worker.")

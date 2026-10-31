@@ -204,13 +204,60 @@ class CountingTests(_UsageTestBase):
         self.assertEqual(self._unlock(node_id=99), UseOutcome.UNMATCHED)
         self.assertEqual(self._uses(), [])
 
-    def test_an_entity_on_another_home_id_is_not_this_lock(self):
-        _lock_entity("lock.neighbour", 14, home_id=1)
-        self._code(slots={"lock.neighbour": 3})
+    def test_a_lock_on_another_home_id_is_counted_like_the_push_finds_it_with_a_warning(self):
+        # The push resolves a lock by node id alone, so a lock it pushes to gets counts.
+        _lock_entity("lock.garage", 14, home_id=1)
+        code = self._code(slots={"lock.garage": 3})
 
-        self.assertEqual(lock_entity_ids_for_node(node_id=14, home_id=HOME_ID), [])
-        self.assertEqual(lock_entity_ids_for_node(node_id=13, home_id=HOME_ID), [SIDE])
-        self.assertEqual(self._unlock(node_id=14), UseOutcome.UNMATCHED)
+        self.assertEqual(lock_entity_ids_for_node(node_id=14), ["lock.garage"])
+        with self.assertLogs("locks.use_cases.code_usage", level="WARNING") as logs:
+            self.assertEqual(self._unlock(node_id=14), UseOutcome.COUNTED)
+
+        code.refresh_from_db()
+        self.assertEqual(code.uses_count, 1)
+        self.assertIn("lock.garage records Z-Wave home id 1", logs.output[0])
+
+    def test_a_lock_on_this_home_id_or_none_recorded_is_counted_without_a_warning(self):
+        self._code(slots={BACK: 3, SIDE: 5})
+        with self.assertNoLogs("locks.use_cases.code_usage", level="WARNING"):
+            self.assertEqual(self._unlock(node_id=12, slot=3), UseOutcome.COUNTED)
+            self.assertEqual(self._unlock(node_id=13, slot=5), UseOutcome.COUNTED)
+
+    def test_uses_are_dated_when_they_came_in(self):
+        code = self._code()
+        received = timezone.now() - timedelta(seconds=30)
+
+        handle_keypad_unlock(KeypadUnlock(node_id=12, slot=3, event=6, received_at=received), home_id=HOME_ID)
+
+        code.refresh_from_db()
+        self.assertEqual(code.last_used_at, received)
+        self.assertEqual(self._uses()[0].created_at, received)
+
+    def test_two_uses_20s_apart_counted_back_to_back_both_count(self):
+        # A row lock held for a while lets both queue up and get counted in the
+        # same moment, which used to put them in one dedupe window.
+        code = self._code()
+        first = timezone.now() - timedelta(seconds=25)
+        second = first + timedelta(seconds=20)
+
+        for received_at in (first, second):
+            unlock = KeypadUnlock(node_id=12, slot=3, event=6, received_at=received_at)
+            self.assertEqual(handle_keypad_unlock(unlock, home_id=HOME_ID), UseOutcome.COUNTED)
+
+        code.refresh_from_db()
+        self.assertEqual(code.uses_count, 2)
+        self.assertEqual(code.last_used_at, second)
+
+    def test_a_repeat_report_counted_late_is_still_the_same_use(self):
+        code = self._code()
+        first = timezone.now() - timedelta(seconds=60)
+
+        for received_at in (first, first + timedelta(seconds=3)):
+            handle_keypad_unlock(KeypadUnlock(node_id=12, slot=3, event=6, received_at=received_at), home_id=HOME_ID)
+
+        code.refresh_from_db()
+        self.assertEqual(code.uses_count, 1)
+        self.assertEqual(code.last_used_at, first)
 
     def test_two_codes_in_the_slot_on_one_node_are_skipped(self):
         # Two lock entities for the same node, each with a code in slot 3.
@@ -374,9 +421,7 @@ class KeypadListenerTests(SimpleTestCase):
     """The bridge listener only parses, logs and queues. The worker does the DB work."""
 
     def _listener(self, worker):
-        return locks_runtime.make_event_listener(
-            worker=worker, sanitize=lambda msg: {"args": msg["event"]["args"] | {"parameters": "<sanitized>"}}
-        )
+        return locks_runtime.make_event_listener(worker=worker)
 
     def _msg(self, *, cc_id=113, event=6, parameters=None):
         return {
@@ -385,18 +430,60 @@ class KeypadListenerTests(SimpleTestCase):
                 "event": "notification",
                 "nodeId": 12,
                 "ccId": cc_id,
-                "args": {"type": 6, "event": event, "parameters": parameters or {"userId": 3, "userCode": PIN}},
+                "args": {
+                    "type": 6,
+                    "label": "Access Control",
+                    "event": event,
+                    "eventLabel": "Keypad unlock operation",
+                    "parameters": parameters or {"userId": 3, "userCode": PIN},
+                },
             }
         }
 
-    def test_a_keypad_unlock_is_logged_sanitized_and_queued(self):
+    def test_a_keypad_unlock_is_logged_with_only_the_allowlisted_fields_and_queued(self):
         worker = locks_runtime.KeypadUseWorker()
+        before = timezone.now()
         with patch.object(worker, "submit") as submit, self.assertLogs("locks.runtime", level="INFO") as logs:
             self._listener(worker)(self._msg())
 
         submit.assert_called_once_with(KeypadUnlock(node_id=12, slot=3, event=6))
-        self.assertIn("zwavejs keypad event", logs.output[0])
-        self.assertNotIn(PIN, "\n".join(logs.output))
+        (unlock,), _ = submit.call_args
+        self.assertGreaterEqual(unlock.received_at, before)
+        self.assertEqual(
+            logs.output,
+            [
+                "INFO:locks.runtime:zwavejs keypad event {'nodeId': 12, 'ccId': 113, 'type': 6, 'event': 6, "
+                "'eventLabel': 'Keypad unlock operation', 'userId': 3}"
+            ],
+        )
+
+    def test_no_payload_shape_gets_the_pin_into_the_log(self):
+        # Shapes that got past the old redact-known-keys sanitizer, and a few more.
+        base = self._msg()["event"]
+        shapes = {
+            "nested parameters": {"userId": 3, "credential": {"userCode": PIN}},
+            "other parameter key": {"userId": 3, "code": PIN, "pin": PIN},
+            "userId as the PIN": {"userId": PIN},
+            "parameters as a list": [3, PIN],
+            "parameters as a string": PIN,
+        }
+        msgs = [{"event": {**base, "args": {**base["args"], "parameters": value}}} for value in shapes.values()]
+        msgs += [
+            {"event": {**base, "userCode": PIN, "extra": {"deep": [PIN]}}},
+            {"event": {**base, "args": {**base["args"], "eventData": PIN, "userCode": PIN, "value": PIN}}},
+            {"event": {**base, "args": {**base["args"], "eventLabel": f"Keypad unlock {PIN}"}}},
+            {"event": {**base, "args": {**base["args"], "eventLabel": {"text": PIN}}}},
+            {"event": {**base, "args": {**base["args"], "label": PIN, "type": PIN}}},
+            {"event": {**base, "nodeId": PIN, "endpointIndex": PIN}},
+        ]
+        worker = locks_runtime.KeypadUseWorker()
+        with patch.object(worker, "submit"), self.assertLogs("locks.runtime", level="INFO") as logs:
+            for msg in msgs:
+                self._listener(worker)(msg)
+
+        self.assertEqual(len(logs.output), len(msgs))
+        for line in logs.output:
+            self.assertNotIn(PIN, line)
 
     def test_a_keypad_lock_is_logged_but_not_queued(self):
         worker = locks_runtime.KeypadUseWorker()
@@ -409,14 +496,6 @@ class KeypadListenerTests(SimpleTestCase):
         with patch.object(worker, "submit") as submit, self.assertNoLogs("locks.runtime", level="INFO"):
             self._listener(worker)(self._msg(cc_id=111))
         submit.assert_not_called()
-
-    def test_without_the_sanitizer_the_payload_is_not_logged(self):
-        worker = locks_runtime.KeypadUseWorker()
-        listener = locks_runtime.make_event_listener(worker=worker, sanitize=None)
-        with patch.object(worker, "submit"), self.assertLogs("locks.runtime", level="INFO") as logs:
-            listener(self._msg())
-        self.assertNotIn(PIN, "\n".join(logs.output))
-        self.assertIn("slot=3", logs.output[0])
 
     def test_the_worker_counts_on_its_own_thread(self):
         worker = locks_runtime.KeypadUseWorker()

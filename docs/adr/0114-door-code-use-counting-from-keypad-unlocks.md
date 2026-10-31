@@ -36,25 +36,30 @@ used up code off is the next change.
 - **Listener.** `locks/runtime.py` registers on the bridge from
   `LocksConfig.ready()` behind `should_start_runtimes`, so only the process with
   the runtime lock counts (ADR-0112). On the `zwavejs-events` thread it only
-  parses, logs every CC 113 event at INFO (`zwavejs keypad event ...`, through
-  the manager's sanitizer) and queues keypad unlocks. Counting takes the code
+  parses, logs every CC 113 event at INFO (`zwavejs keypad event ...`), stamps
+  each keypad unlock with when it came in and queues it. Counting takes the code
   row with `select_for_update`, which can wait on a push or lock sync holding
   it, so it runs on its own `locks-keypad-uses` thread and the events thread
   that also carries Ring keypad codes never waits on it (ADR-0100). No Z-Wave
   I/O on either thread.
-- **Mapping.** The node's entities (`attributes.zwavejs.node_id`, on the
-  gateway's home id or with none recorded) give the locks, and an assignment on
-  one of them with `slot_index == userId` gives the code. No assignment falls
-  back to a code whose clear of that slot is still outstanding. More than one
-  match is logged and skipped.
+- **Mapping.** The node's entities (`attributes.zwavejs.node_id`) give the
+  locks, and an assignment on one of them with `slot_index == userId` gives the
+  code. That's the rule the push uses to find a lock's node
+  (`_resolve_lock_node_id`), which doesn't look at the home id, so a lock that
+  gets pushes gets counts. A lock whose recorded home id isn't the connected
+  one is counted with a WARNING. No assignment falls back to a code whose clear
+  of that slot is still outstanding. More than one match is logged and skipped.
 - **Counting.** `locks/use_cases/code_usage.py` `record_keypad_use` runs in one
   transaction. It takes the code row first, like every writer of a code, checks
   the code still has the slot (or a clear of it outstanding), dedupes against a
-  `code_used` event on the same lock and slot in the last 10s, then runs
+  `code_used` event on the same lock and slot within 10s, then runs
   `uses_count = F("uses_count") + 1` with `last_used_at` and `last_used_lock`
   and writes a `code_used` event with `slot_index`, `source: "zwavejs"`,
   `notification_event`, `uses_count`, `max_uses` and `over_limit`. Uses are one
-  total across all of a code's locks.
+  total across all of a code's locks. The dedupe window, `last_used_at` and the
+  event's `created_at` all go by when the unlock came in, not when it got
+  counted, so a use that waited behind a row lock isn't merged with the next
+  one or dated late.
 - **Not counted, still recorded.** A slot no code has is a `code_used` event
   with no code and `unmatched`, the lock and the slot. A slot that may still
   hold an older PIN (an unresolved clear) or a code that's off is a `code_used`
@@ -62,8 +67,13 @@ used up code off is the next change.
 - **Updates keep the count.** `_save_unless_deleted` writes every field but
   `uses_count`, `last_used_at` and `last_used_lock` and reads those back, so an
   update that read the code before a use landed doesn't put the old count back.
-- **Logs.** The event log sanitizer also hides `args.parameters.userCode`, and
-  raw (Buffer) parameters whole, so the INFO line never has the PIN.
+- **Logs.** The INFO line is an allowlist, only `nodeId`, `ccId`, `args.type`,
+  `args.event` and `parameters.userId` when they're ints and `args.eventLabel`
+  when it has no digits, so no payload shape can put a PIN in it. The manager's
+  DEBUG `event_in` sanitizer also hides `args.parameters.userCode`, raw
+  parameters whole, and `newValue`, `prevValue` and `value` of CC 99
+  `userCode` and `adminCode` value events, which carry the slot's PIN after
+  every push and readback.
 - **Dead code.** `locks/use_cases/code_validation.py` (`validate_door_code`,
   `record_door_code_usage`) and its tests are gone.
 

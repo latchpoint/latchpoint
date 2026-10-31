@@ -338,6 +338,15 @@ class ZwavejsConnectionManager:
                         args_out["parameters"] = {**parameters, "userCode": "***"}
                 elif parameters is not None and not isinstance(parameters, int | float):
                     args_out["parameters"] = "***"
+                # CC 99 User Code value events carry the slot's PIN (after every push
+                # and readback), and the admin code is a PIN too.
+                if args_out.get("commandClass") == CC_USER_CODE and args_out.get("property") in (
+                    "userCode",
+                    "adminCode",
+                ):
+                    for key in ("newValue", "prevValue", "value"):
+                        if key in args_out:
+                            args_out[key] = "***"
                 out["args"] = args_out
             return out
         except Exception:
