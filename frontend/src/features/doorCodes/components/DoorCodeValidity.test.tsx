@@ -346,6 +346,14 @@ describe('edit form for a synced code', () => {
       startAt: '2026-10-01T12:00:00Z',
       endAt: '2026-10-02T12:00:00Z',
     })
+  const expiredManual = () =>
+    makeCode({
+      validity: 'expired',
+      isActive: false,
+      pushState: 'pushed',
+      startAt: '2026-10-01T12:00:00Z',
+      endAt: '2026-10-02T12:00:00Z',
+    })
 
   it('shows the active window and lets a retired synced code be turned back on', async () => {
     // Its stored end is in the past. The clock is put before it so moving the
@@ -379,12 +387,32 @@ describe('edit form for a synced code', () => {
     }
   })
 
-  it("won't save a synced code with its end date cleared", async () => {
+  it("doesn't offer clearing a synced code's window or call it optional", () => {
     // #189: without an end date it would be stuck however it was left.
+    renderEditForm(retiredSynced())
+
+    expect(screen.getByText('Active date range')).toBeTruthy()
+    expect(screen.queryByText('Active date range (optional)')).toBeNull()
+    expect(screen.getByText('Active window')).toBeTruthy()
+    expect(screen.queryByText('Active window (optional)')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: /→/ }))
+    expect(screen.getByRole('button', { name: 'Clear' })).toBeDisabled()
+  })
+
+  it('keeps the window optional and clearable for a manual code', () => {
+    renderEditForm(expiredManual())
+
+    expect(screen.getByText('Active date range (optional)')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: /→/ }))
+    expect(screen.getByRole('button', { name: 'Clear' })).not.toBeDisabled()
+  })
+
+  it("won't save a synced code whose end date was dropped", async () => {
+    // Picking a new start day drops the end in the picker, so the form checks it too.
     const onUpdate = renderEditForm(retiredSynced())
 
     fireEvent.click(screen.getByRole('button', { name: /→/ }))
-    fireEvent.click(screen.getByRole('button', { name: 'Clear' }))
+    fireEvent.click(screen.getByRole('button', { name: '15' }))
     fireEvent.click(screen.getByRole('button', { name: 'Done' }))
     fireEvent.click(activeSwitch())
     fireEvent.change(screen.getByLabelText(/Re-authenticate/), { target: { value: 'pw' } })
@@ -479,5 +507,21 @@ describe('isDoorCodeSettling', () => {
     expect(
       isDoorCodeSettling(makeCode({ validity: 'expired', isActive: false, pushState: 'pushed', lockSlotAssignments: noSlot })),
     ).toBe(false)
+  })
+})
+
+describe('card active window', () => {
+  it('shows the active window of a one-time code with dates, without the days', () => {
+    // #184: the API can give one-time codes dates.
+    renderCard(makeCode({ codeType: 'one_time', daysOfWeek: null, startAt: START, endAt: '2026-11-02T12:00:00Z' }))
+
+    expect(screen.getByText(/Active window:/)).toBeTruthy()
+    expect(screen.queryByText(/Days:/)).toBeNull()
+  })
+
+  it("doesn't show an active window for a code without dates", () => {
+    renderCard(makeCode({ codeType: 'one_time', daysOfWeek: null }))
+
+    expect(screen.queryByText(/Active window:/)).toBeNull()
   })
 })

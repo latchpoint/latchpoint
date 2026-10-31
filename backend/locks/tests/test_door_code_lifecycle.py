@@ -1361,6 +1361,28 @@ class SubMinuteDateTests(_LifecycleTestBase, APITestCase):
         self.assertEqual(code.start_at, self._at(45))
         self.assertEqual(code.end_at, self._at(1200))
 
+    def test_an_expired_one_time_code_comes_back_with_a_later_end_and_active_in_one_save(self):
+        # Issue #184: what the edit form sends for a one-time code once its end passed.
+        code, gateway = self._pushed_code(
+            [self.BACK], code_type=DoorCode.CodeType.ONE_TIME, end_at=self._from_now(days=1)
+        )
+        code = self._move(code, end_at=self._ago(hours=1))
+        door_codes_uc.retire_door_code(code=code, reason="expired", zwavejs=gateway)
+        self.assertFalse(DoorCode.objects.get(id=code.id).is_active)
+        self.assertEqual(self._lock_codes(gateway, 12), {})
+        gateway.invoke_calls.clear()
+
+        response = self._patch(code, gateway, {"is_active": True, "end_at": _iso(self._from_now(days=2))})
+
+        self.assertEqual(response.status_code, 200, response.content)
+        code.refresh_from_db()
+        self.assertTrue(code.is_active)
+        self.assertEqual(code.code_type, DoorCode.CodeType.ONE_TIME)
+        self.assertEqual(self._calls(gateway, "set"), [(12, [1, 1, self.PIN])])
+        self.assertEqual(self._lock_codes(gateway, 12), {1: self.PIN})
+        self.assertEqual(code.push_state, DoorCode.PushState.PUSHED)
+        self.assertEqual(response.json()["data"]["validity"], "valid")
+
     def test_a_start_at_with_different_seconds_is_a_change(self):
         code, gateway = self._temporary_code([self.BACK], start_at=self._at(45), end_at=self._at(600))
 

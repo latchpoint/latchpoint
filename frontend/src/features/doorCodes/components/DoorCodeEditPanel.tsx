@@ -146,6 +146,7 @@ export function DoorCodeEditPanel({
           disabled={isBusy || isSynced}
           activeWindowDisabled={isBusy || activeLocked}
           showSchedule={isTemporary}
+          activeWindowRequired={syncedValidityEditable}
           activeWindow={{ start: editStartAtLocal, end: editEndAtLocal }}
           onActiveWindowChange={onActiveWindowChange}
           days={editDays}

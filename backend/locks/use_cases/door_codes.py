@@ -63,6 +63,10 @@ class DuplicatePinOnLock(ConflictError):
     """
 
 
+class DoorCodeWouldHaveNoLocks(ValidationError):
+    """Lock removals on an update that would leave the code on no lock (issue #159)."""
+
+
 class SlotClearFailed(GatewayError):
     """A slot that may hold the code's PIN couldn't be cleared, so the code was kept."""
 
@@ -743,12 +747,9 @@ def _refuse_duplicate_pin_when_turning_on(*, code: DoorCode, changes: dict) -> N
     pin = str(changes["code"]).strip() if changes.get("code") else decrypt_pin_or_none(code)
     if not pin:
         return
-    if "lock_entity_ids" in changes:
-        lock_entity_ids = list(dict.fromkeys(changes.get("lock_entity_ids") or []))
-    else:
-        lock_entity_ids = list(
-            DoorCodeLockAssignment.objects.filter(door_code=code).values_list("lock_entity_id", flat=True)
-        )
+    # The locks it's being saved with, so a lock added in the same save counts
+    # and one still being removed doesn't (issues #159, #171).
+    lock_entity_ids = _locks_after_save(code=code, changes=changes)
     others = (
         DoorCodeLockAssignment.objects.select_related("door_code")
         .filter(lock_entity_id__in=lock_entity_ids)
@@ -769,35 +770,56 @@ def _refuse_duplicate_pin_when_turning_on(*, code: DoorCode, changes: dict) -> N
         )
 
 
-def _lock_changes_as_lock_entity_ids(*, code: DoorCode, changes: dict) -> dict:
-    """``changes`` with ``add_lock_entity_ids`` / ``remove_lock_entity_ids`` as ``lock_entity_ids`` (issue #159).
+def _has_lock_changes(changes: dict) -> bool:
+    """Whether the update sends ``add_lock_entity_ids`` / ``remove_lock_entity_ids`` (issue #159)."""
+    return "add_lock_entity_ids" in changes or "remove_lock_entity_ids" in changes
 
-    The edit form sends only the locks the user added or removed, and they're
-    applied to the locks the code has when the save runs (under the update's
-    ``lock_sync:`` hold), not the ones the form last fetched. So a tab that
-    hasn't refetched since another tab removed a lock can't put it back by
-    saving an unrelated lock change. A lock whose removal is still waiting on
-    its clear stays removed unless it's added again, which cancels the removal
-    like listing it in ``lock_entity_ids`` does (issues #151, #171). When that
-    leaves the locks as they are, ``lock_entity_ids`` is left out, so the save
-    doesn't touch them.
+
+def _save_unless_deleted(code: DoorCode) -> None:
+    """Save ``code``, raising :class:`NotFound` if it was deleted meanwhile (issue #189).
+
+    A plain ``save()`` on a row that's gone inserts it again. The code row is
+    taken first, like every writer of it, so a delete can't land between the
+    check and the write.
     """
-    if "add_lock_entity_ids" not in changes and "remove_lock_entity_ids" not in changes:
-        return changes
+    with transaction.atomic():
+        if DoorCode.objects.select_for_update().filter(id=code.id).first() is None:
+            raise NotFound("Not found.")
+        code.save(force_update=True)
+
+
+def _locks_after_save(*, code: DoorCode, changes: dict) -> list[str]:
+    """The locks ``code`` is on once this save lands, without the ones still being removed.
+
+    The full ``lock_entity_ids`` when it's sent. With ``add_lock_entity_ids`` /
+    ``remove_lock_entity_ids`` (issue #159) the code's locks now, less the
+    removed ones and the ones whose removal is still waiting on its clear
+    (issue #171), plus the added ones, which is how a re-added one comes back.
+    Otherwise the code's locks without those still being removed.
+    """
+    if "lock_entity_ids" in changes:
+        return list(dict.fromkeys(changes.get("lock_entity_ids") or []))
     from locks.use_cases.lock_push import unresolved_clear_failures
 
-    changes = dict(changes)
-    added = list(dict.fromkeys(changes.pop("add_lock_entity_ids", None) or []))
-    removed = set(changes.pop("remove_lock_entity_ids", None) or [])
-    current = list(
+    removing = {f.lock_entity_id for f in unresolved_clear_failures(door_code=code) if f.removing}
+    removed = set(changes.get("remove_lock_entity_ids") or [])
+    current = (
         DoorCodeLockAssignment.objects.filter(door_code=code).order_by("pk").values_list("lock_entity_id", flat=True)
     )
-    removing = {f.lock_entity_id for f in unresolved_clear_failures(door_code=code) if f.removing}
-    kept = [lock for lock in current if lock not in removing]
-    new = list(dict.fromkeys([*(lock for lock in kept if lock not in removed), *added]))
-    if set(new) != set(kept):
-        changes["lock_entity_ids"] = new
-    return changes
+    kept = [lock for lock in current if lock not in removing and lock not in removed]
+    return list(dict.fromkeys([*kept, *(changes.get("add_lock_entity_ids") or [])]))
+
+
+def _refuse_lock_changes_leaving_no_locks(*, code: DoorCode, changes: dict) -> None:
+    """Raise :class:`DoorCodeWouldHaveNoLocks` when the save's lock removals would leave ``code`` on no lock.
+
+    Only for ``add_lock_entity_ids`` / ``remove_lock_entity_ids``. A full
+    ``lock_entity_ids: []`` is still taken, as it always was. Checked before
+    anything changes. A code with a lock is only saved while that lock's
+    ``lock_sync:`` lock is held, so two removals can't both pass this.
+    """
+    if changes.get("remove_lock_entity_ids") and not _locks_after_save(code=code, changes=changes):
+        raise DoorCodeWouldHaveNoLocks("This save would leave the code with no locks.")
 
 
 def _record_withdraw_gave_up(*, code: DoorCode, failure: ClearFailure, max_attempts: int) -> None:
@@ -850,10 +872,14 @@ def _update_door_code_locked(
     is dropped or forgotten anyway, since no clear can reach it.
     ``event_metadata`` is added to the ``code_updated`` event.
 
-    ``add_lock_entity_ids`` / ``remove_lock_entity_ids`` are applied to the
-    locks the code has now (:func:`_lock_changes_as_lock_entity_ids`, issue #159).
+    ``add_lock_entity_ids`` / ``remove_lock_entity_ids`` (issue #159) only add
+    and drop the locks they name, against the assignments read once in the
+    diff below, so a lock another save added meanwhile is never dropped by
+    this one, and a lock still being removed stays that way unless it's added
+    again. Removals that would leave no lock are refused before anything
+    changes. A code deleted meanwhile is a :class:`NotFound`, never saved back.
     """
-    changes = _lock_changes_as_lock_entity_ids(code=code, changes=changes)
+    _refuse_lock_changes_leaving_no_locks(code=code, changes=changes)
     _refuse_duplicate_pin_when_turning_on(code=code, changes=changes)
     updated_fields = []
     push_inline = False
@@ -913,7 +939,7 @@ def _update_door_code_locked(
             code.window_end = changes.get("window_end")
             updated_fields.append("window_end")
 
-    code.save()
+    _save_unless_deleted(code)
 
     # Diff the lock set. Locks that stay keep their assignment and slot_index;
     # recreating them would forget a slot the lock still holds the PIN in, and the
@@ -922,14 +948,38 @@ def _update_door_code_locked(
     removed_lock_entity_ids: list[str] = []
     added_lock_entity_ids: list[str] = []
     failed_slot_clears: list[ClearFailure] = []
-    if "lock_entity_ids" in changes:
-        new_entity_ids = list(dict.fromkeys(changes.get("lock_entity_ids") or []))
+    # A full lock_entity_ids always counts as a lock change, like before. Adds and
+    # removes only when they change something (issue #159).
+    locks_changed = "lock_entity_ids" in changes
+    if locks_changed or _has_lock_changes(changes):
         old_assignments = list(DoorCodeLockAssignment.objects.filter(door_code=code))
         old_entity_ids = {assignment.lock_entity_id for assignment in old_assignments}
+        if locks_changed:
+            new_entity_ids = list(dict.fromkeys(changes.get("lock_entity_ids") or []))
+            keeping_cancels_removal = set(new_entity_ids)
+        else:
+            # Only the named locks, against this one read, so a lock another
+            # save added meanwhile stays and one being removed is left to its
+            # clear unless it's added again.
+            added = list(dict.fromkeys(changes.get("add_lock_entity_ids") or []))
+            removed = set(changes.get("remove_lock_entity_ids") or [])
+            new_entity_ids = [
+                *(a.lock_entity_id for a in old_assignments if a.lock_entity_id not in removed),
+                *(lock for lock in added if lock not in old_entity_ids),
+            ]
+            keeping_cancels_removal = set(added)
+            from locks.use_cases.lock_push import unresolved_clear_failures
+
+            removing = {f.lock_entity_id for f in unresolved_clear_failures(door_code=code) if f.removing}
+            locks_changed = bool(
+                old_entity_ids & removed
+                or set(added) - old_entity_ids
+                or (zwavejs is not None and set(added) & removing)
+            )
         removed_assignment_ids: list[int] = []
         for assignment in old_assignments:
             if assignment.lock_entity_id in new_entity_ids:
-                if zwavejs is not None:
+                if zwavejs is not None and assignment.lock_entity_id in keeping_cancels_removal:
                     # Kept (or re-added) while an earlier drop's clear was still
                     # failing: the lock stays on the code once that clear works.
                     cancel_pending_removal(door_code=code, lock_entity_id=assignment.lock_entity_id)
@@ -974,17 +1024,23 @@ def _update_door_code_locked(
             DoorCodeLockAssignment.objects.filter(id__in=removed_assignment_ids).delete()
 
         if added_lock_entity_ids:
-            DoorCodeLockAssignment.objects.bulk_create(
-                [
-                    DoorCodeLockAssignment(
-                        door_code=code,
-                        lock_entity_id=entity_id,
-                    )
-                    for entity_id in added_lock_entity_ids
-                ],
-                ignore_conflicts=True,
-            )
-        updated_fields.append("lock_entity_ids")
+            with transaction.atomic():
+                # The code row first, so a delete that ran meanwhile is a 404
+                # rather than assignments for a code that's gone.
+                if DoorCode.objects.select_for_update().filter(id=code.id).first() is None:
+                    raise NotFound("Not found.")
+                DoorCodeLockAssignment.objects.bulk_create(
+                    [
+                        DoorCodeLockAssignment(
+                            door_code=code,
+                            lock_entity_id=entity_id,
+                        )
+                        for entity_id in added_lock_entity_ids
+                    ],
+                    ignore_conflicts=True,
+                )
+        if locks_changed:
+            updated_fields.append("lock_entity_ids")
 
     updated_event: DoorCodeEvent | None = None
     if updated_fields:
@@ -1023,7 +1079,7 @@ def _update_door_code_locked(
             failed_slot_clears.extend(unconfirmed_failures)
 
         push_relevant_change = bool(push_trigger_changes)
-        if push_relevant_change or "lock_entity_ids" in changes:
+        if push_relevant_change or locks_changed:
             if push_relevant_change:
                 # PIN, schedule, or is_active changed. The lock still holds the OLD
                 # PIN at the OLD slot; pushing fresh would pick a *different* slot
@@ -1111,7 +1167,7 @@ def _update_door_code_locked(
     # Last, from what the clears and pushes above left (issue #126). That covers
     # a code left with no locks (issue #142), a failure left by a dropped lock,
     # and a lock that may still hold the PIN keeping the code from pushed (#144).
-    if zwavejs is not None or "lock_entity_ids" in changes:
+    if zwavejs is not None or locks_changed:
         from locks.use_cases.lock_push import refresh_push_state
 
         refresh_push_state(door_code=code)

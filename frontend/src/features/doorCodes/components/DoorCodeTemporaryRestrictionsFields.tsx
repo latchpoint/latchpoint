@@ -20,6 +20,8 @@ type Props = {
   activeWindowDisabled?: boolean
   /** Hide the days and time window, for a code with dates but no schedule of its own. */
   showSchedule?: boolean
+  /** The window can't be cleared, ie a synced code's has to keep its end (#189). */
+  activeWindowRequired?: boolean
 }
 
 export function DoorCodeTemporaryRestrictionsFields({
@@ -37,15 +39,31 @@ export function DoorCodeTemporaryRestrictionsFields({
   showTimeWindowHelp = true,
   activeWindowDisabled = disabled,
   showSchedule = true,
+  activeWindowRequired = false,
 }: Props) {
   return (
     <div className="space-y-4">
       <div className="space-y-2">
         <div className="flex items-center gap-2">
-          <div className="text-sm font-medium">Active date range (optional)</div>
-          <HelpTip content="If set, the code is only valid between these timestamps." />
+          <div className="text-sm font-medium">
+            {activeWindowRequired ? 'Active date range' : 'Active date range (optional)'}
+          </div>
+          <HelpTip
+            content={
+              activeWindowRequired
+                ? 'The code is only valid between these timestamps. The end can be moved but not cleared.'
+                : 'If set, the code is only valid between these timestamps.'
+            }
+          />
         </div>
-        <ActiveWindowPicker value={activeWindow} onChange={onActiveWindowChange} disabled={activeWindowDisabled} showHelper={showActiveWindowHelper} />
+        <ActiveWindowPicker
+          label={activeWindowRequired ? 'Active window' : undefined}
+          value={activeWindow}
+          onChange={onActiveWindowChange}
+          disabled={activeWindowDisabled}
+          showHelper={showActiveWindowHelper}
+          clearable={!activeWindowRequired}
+        />
       </div>
 
       {showSchedule ? (

@@ -462,3 +462,128 @@ class DoorCodeListQueriesTests(_ApiTestBase):
         )
         queued_entries = {a["lock_entity_id"]: a["push_queued"] for a in listed[queued.id]["lock_slot_assignments"]}
         self.assertEqual(queued_entries, {self.BACK: False, self.SIDE: True})
+
+
+class LockChangeEdgeTests(_ApiTestBase):
+    """PR #213 review: empty lock sets, #188 with added locks, and saves racing other saves or a delete."""
+
+    OTHER_PIN_HOLDER_SLOT = 5
+
+    def _code(self, *, is_active: bool = True) -> DoorCode:
+        return DoorCode.objects.create(
+            user=self.user,
+            encrypted_pin=SettingsEncryption.get().encrypt(self.PIN),
+            pin_length=len(self.PIN),
+            code_type=DoorCode.CodeType.PERMANENT,
+            is_active=is_active,
+        )
+
+    def _same_pin_on(self, lock_entity_id: str) -> DoorCode:
+        """Another code with this PIN in a slot on ``lock_entity_id``, ie a keypad code lock sync imported."""
+        other = DoorCode.objects.create(
+            user=self.user,
+            source=DoorCode.Source.SYNCED,
+            label="Slot 5",
+            encrypted_pin=SettingsEncryption.get().encrypt(self.PIN),
+            pin_length=len(self.PIN),
+            code_type=DoorCode.CodeType.PERMANENT,
+        )
+        DoorCodeLockAssignment.objects.create(
+            door_code=other, lock_entity_id=lock_entity_id, slot_index=self.OTHER_PIN_HOLDER_SLOT
+        )
+        return other
+
+    def test_removing_the_last_lock_is_refused(self):
+        code, gateway = self._pushed_code([self.BACK])
+
+        response = self._patch_response(code, gateway, {"remove_lock_entity_ids": [self.BACK]})
+
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertEqual(response.json()["error"]["message"], "This save would leave the code with no locks.")
+        self.assertEqual(self._slots(code), {self.BACK: 1})
+        self.assertEqual(gateway.invoke_calls, [])
+
+    def test_a_lock_being_removed_doesnt_count_as_one_left(self):
+        code, gateway = self._failed_drop_of_side()
+
+        response = self._patch_response(code, gateway, {"remove_lock_entity_ids": [self.BACK]})
+
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertEqual(self._slots(code), {self.BACK: 1, self.SIDE: 1})
+
+    def test_a_full_empty_lock_list_is_still_taken(self):
+        code, gateway = self._pushed_code([self.BACK])
+
+        data = self._patch(code, gateway, {"lock_entity_ids": []})
+
+        self.assertEqual(data["lock_entity_ids"], [])
+        self.assertEqual(self._lock_codes(gateway, 12), {})
+
+    def test_turning_on_with_an_added_lock_that_has_the_pin_is_refused(self):
+        # Issue #188 through add_lock_entity_ids: Side gets added in the same save.
+        code = self._code(is_active=False)
+        DoorCodeLockAssignment.objects.create(door_code=code, lock_entity_id=self.BACK)
+        other = self._same_pin_on(self.SIDE)
+        gateway = ClearFailingGateway(usersNumber=5, cache_updates_on_set=True)
+
+        response = self._patch_response(code, gateway, {"is_active": True, "add_lock_entity_ids": [self.SIDE]})
+
+        self.assertEqual(response.status_code, 409, response.content)
+        self.assertIn(f"door code {other.id}", response.json()["error"]["message"])
+        code.refresh_from_db()
+        self.assertFalse(code.is_active)
+        self.assertEqual(self._slots(code), {self.BACK: None})
+        self.assertEqual(self._set_nodes(gateway), [])
+
+    def test_turning_on_ignores_the_pin_on_a_lock_still_being_removed(self):
+        # The push doesn't go to a lock being removed, so a code holding the PIN
+        # there isn't a second copy.
+        code = self._code(is_active=False)
+        DoorCodeLockAssignment.objects.create(door_code=code, lock_entity_id=self.BACK)
+        DoorCodeLockAssignment.objects.create(door_code=code, lock_entity_id=self.SIDE, slot_index=2)
+        lock_push_uc.record_clear_failure(
+            door_code=code,
+            lock_entity_id=self.SIDE,
+            slot_index=2,
+            exc=ZwavejsCommandError("driver TimeoutError after 5.0s"),
+            expected_pin=self.PIN,
+            removing=True,
+        )
+        self._same_pin_on(self.SIDE)
+        gateway = ClearFailingGateway(usersNumber=5, cache_updates_on_set=True)
+        gateway.clear_fails_on = {13}
+
+        data = self._patch(code, gateway, {"is_active": True})
+
+        self.assertTrue(data["is_active"])
+        self.assertEqual(self._set_nodes(gateway), [12])
+        self.assertEqual(self._removal(data), {self.BACK: False, self.SIDE: True})
+
+    def test_a_lock_another_save_added_meanwhile_isnt_dropped(self):
+        # Two adds on a code with no locks hold different lock_sync: locks, so
+        # they can run side by side. The other save's lock lands while this one runs.
+        code = self._code()
+        gateway = ClearFailingGateway(usersNumber=5, cache_updates_on_set=True)
+        real_check = door_codes_uc._refuse_duplicate_pin_when_turning_on
+
+        def other_save_lands(**kwargs):
+            if not DoorCodeLockAssignment.objects.filter(door_code=code, lock_entity_id=self.BACK).exists():
+                DoorCodeLockAssignment.objects.create(door_code=code, lock_entity_id=self.BACK)
+            return real_check(**kwargs)
+
+        with patch.object(door_codes_uc, "_refuse_duplicate_pin_when_turning_on", side_effect=other_save_lands):
+            data = self._patch(code, gateway, {"add_lock_entity_ids": [self.SIDE]})
+
+        self.assertEqual(data["lock_entity_ids"], [self.BACK, self.SIDE])
+
+    def test_a_save_on_a_code_deleted_meanwhile_is_a_404_and_doesnt_bring_it_back(self):
+        code, gateway = self._pushed_code([self.BACK])
+
+        def delete_it(**_kwargs):
+            DoorCode.objects.filter(id=code.id).delete()
+
+        with patch.object(door_codes_uc, "_refuse_duplicate_pin_when_turning_on", side_effect=delete_it):
+            response = self._patch_response(code, gateway, {"label": "Renamed"})
+
+        self.assertEqual(response.status_code, 404, response.content)
+        self.assertFalse(DoorCode.objects.filter(id=code.id).exists())
