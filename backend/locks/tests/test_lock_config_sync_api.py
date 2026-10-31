@@ -1188,6 +1188,27 @@ class LockConfigSyncReconcileTests(EncryptionTestMixin, APITestCase):
         self.assertEqual(lock_push_uc.decrypt_pin_or_none(winner), "5555")
         self.assertEqual(DoorCode.objects.filter(source=DoorCode.Source.SYNCED).count(), 0)
 
+    def test_integrity_race_fallback_leaves_a_manual_codes_active_flag_alone(self):
+        # Issue #166: the winner is an active manual code holding its own PIN, disabled at the lock.
+        winner = self._manual_code(pin="1234", slot_index=None)
+
+        def take_slot_first(sender, instance, created, **kwargs):
+            if created and instance.source == DoorCode.Source.SYNCED:
+                DoorCodeLockAssignment.objects.filter(door_code=winner).update(slot_index=1)
+
+        post_save.connect(take_slot_first, sender=DoorCode)
+        try:
+            body = self._sync(SlotGateway({1: (2, "1234")}))
+        finally:
+            post_save.disconnect(take_slot_first, sender=DoorCode)
+
+        slot = self._slot(body, 1)
+        self.assertEqual(slot["door_code_id"], winner.id)
+        self.assertIn("integrity_race", slot["warnings"])
+        winner.refresh_from_db()
+        self.assertTrue(winner.is_active)
+        self.assertEqual(winner.source, DoorCode.Source.MANUAL)
+
 
 class ConfirmedEmptyStatusTests(TestCase):
     """Only an Available userIdStatus releases a slot (issue #149)."""

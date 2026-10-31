@@ -92,6 +92,7 @@ describe('LockConfigSyncCard', () => {
       slotOf({ slotIndex: 1, warnings: ['slot_not_confirmed_empty'] }),
       slotOf({ slotIndex: 2, action: 'unchanged', warnings: ['disabled_on_lock'] }),
       slotOf({ slotIndex: 3, action: 'updated', pinKnown: null, warnings: ['slot_empty_repush'] }),
+      slotOf({ slotIndex: 4, pinKnown: null, warnings: ['pin_in_another_slot'] }),
     ])
 
     expect(screen.getByText("Lock didn't confirm the slot is empty")).toHaveAttribute(
@@ -100,6 +101,7 @@ describe('LockConfigSyncCard', () => {
     )
     expect(screen.getByText('Disabled at the lock')).toBeTruthy()
     expect(screen.getByText('PIN missing from the lock, sending it again')).toBeTruthy()
+    expect(screen.getByText('Slot is empty but the PIN is in another slot, not sent again')).toBeTruthy()
   })
 
   it('names the door codes a duplicate PIN points at', async () => {

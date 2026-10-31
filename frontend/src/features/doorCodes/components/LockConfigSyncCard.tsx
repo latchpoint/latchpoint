@@ -39,6 +39,7 @@ const SLOT_WARNING_LABELS: Record<string, string> = {
   integrity_race: 'Slot claimed during the sync',
   schedule_unsupported: 'Schedule not supported',
   slot_not_confirmed_empty: "Lock didn't confirm the slot is empty",
+  pin_in_another_slot: 'Slot is empty but the PIN is in another slot, not sent again',
   disabled_on_lock: 'Disabled at the lock',
   slot_empty_repush: 'PIN missing from the lock, sending it again',
 }

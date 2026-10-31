@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
+from django.db.models import Model, QuerySet
 from django.urls import reverse
 from integrations_zwavejs.manager import ZwavejsCommandError
 from rest_framework.test import APITestCase
@@ -106,6 +107,20 @@ class ManualCodeSyncTests(_TrackingTestBase, APITestCase):
         code.refresh_from_db()
         self.assertTrue(code.is_active)
         self.assertEqual(code.source, DoorCode.Source.MANUAL)
+        # The event and the lock's error say so, so the card doesn't just say On lock (PR #214 review).
+        event = DoorCodeEvent.objects.filter(door_code=code, event_type=DoorCodeEvent.EventType.CODE_SYNCED).latest(
+            "id"
+        )
+        self.assertTrue(event.metadata.get("disabled_on_lock"))
+        assignment = self._assignment(code)
+        self.assertEqual(assignment.push_state, DoorCode.PushState.PUSHED)
+        self.assertEqual(assignment.last_push_error, "Slot 1 is disabled at the lock.")
+
+        # Turned back on at the lock, the next sync clears it.
+        gateway._slot_status = {}
+        gateway._cache_codes[(12, 1)] = self.PIN
+        self._sync_for(gateway)
+        self.assertEqual(self._assignment(code).last_push_error, "")
 
     def test_a_dated_manual_code_left_manual_still_retires_off_its_lock(self):
         code, gateway = self._temporary_code([self.BACK])
@@ -231,10 +246,121 @@ class ManualCodeSyncTests(_TrackingTestBase, APITestCase):
         gateway = _SlowGateway(clock)
         gateway._get_scripts = {None: [EMPTY, EMPTY, EMPTY, EMPTY]}
 
-        # The untracked attempt slot's first answer takes the whole 30s.
+        # The manual code's tracked slot is read first, and its first answer takes the whole 30s.
         with patch.object(lock_push_uc, "_time", clock):
             result = self._sync_for(gateway)
 
-        self.assertEqual(self._calls(gateway, "get"), [(12, [3])])
+        self.assertEqual(self._calls(gateway, "get"), [(12, [1])])
         self.assertIn("slot_not_confirmed_empty", self._row(result, 1).warnings)
         self.assertEqual(self._assignment(code).slot_index, 1)
+        # The untracked attempt slot is left for the next sync.
+        self.assertFalse(lock_push_uc._slot_empty_markers(lock_entity_id=self.BACK, slot_index=3))
+        self.assertEqual(self._unsettled_slots(other), [3])
+
+    # --- PR #214 review ---
+
+    def test_an_empty_tracked_slot_is_kept_when_the_lock_has_the_pin_in_another_slot(self):
+        # Manual 4321 tracks slot 1, which was emptied at the lock, and slot 3 also holds 4321.
+        cases = (
+            # A #133 copy or a keypad re-entry an older sync imported as synced "Slot 3".
+            ("copy imported", self.PIN, True),
+            # Not imported yet, this same sync imports it.
+            ("copy not imported", self.PIN, False),
+            # A lock that hides its codes can only be checked against the imported copy.
+            ("masked, copy imported", "****", True),
+        )
+        for drops_duplicates in (True, False):
+            for name, cached, imported in cases:
+                with self.subTest(drops_duplicates=drops_duplicates, case=name):
+                    DoorCodeEvent.objects.all().delete()
+                    DoorCode.objects.all().delete()
+                    code = self._code(slots={self.BACK: 1})
+                    if imported:
+                        self._code(source=DoorCode.Source.SYNCED, slots={self.BACK: 3}, label="Slot 3")
+                    gateway = self._gateway({3: self.PIN}, cache={3: cached})
+                    gateway._drops_duplicates = drops_duplicates
+
+                    result = self._sync_for(gateway)
+
+                    row = self._row(result, 1)
+                    self.assertEqual(row.action, "skipped")
+                    self.assertIn("pin_in_another_slot", row.warnings)
+                    self.assertNotIn([1], [call[1] for call in self._calls(gateway, "get")])
+                    assignment = self._assignment(code)
+                    self.assertEqual(assignment.slot_index, 1)
+                    self.assertEqual(assignment.push_state, DoorCode.PushState.PUSHED)
+
+                    # So the scheduler doesn't push a second copy, or fail the code on a Yale.
+                    self._push_pending(gateway)
+                    self.assertEqual(self._calls(gateway, "set"), [])
+                    self.assertEqual(self._lock_codes(gateway, 12), {3: self.PIN})
+                    code.refresh_from_db()
+                    self.assertEqual(code.push_state, DoorCode.PushState.PUSHED)
+
+    def test_the_slot_empty_marker_comes_before_the_release_so_the_repush_keeps_its_tag(self):
+        code = self._code(slots={self.BACK: 1})
+        gateway = self._gateway()
+
+        self._sync_for(gateway)
+
+        marker = DoorCodeEvent.objects.get(
+            door_code=code, metadata__action="unconfirmed_resolved", metadata__slot_index=1
+        )
+        released = DoorCodeEvent.objects.get(door_code=code, metadata__action="slot_released")
+        self.assertTrue(marker.metadata.get("slot_empty"))
+        self.assertLess(marker.id, released.id)
+
+        # The re-push goes into slot 1 (Available, as the sync saw) and none of its readbacks answer.
+        gateway._get_scripts = {None: _timeouts(3)}
+        self._push_pending(gateway)
+
+        self.assertEqual(self._unsettled_slots(code), [1])
+        # Tagged like any push into an Available slot, which a marker after the release would drop.
+        self.assertEqual(lock_push_uc._available_attempt_slots(door_code=code, lock_entity_id=self.BACK), {1})
+
+    def test_the_tracked_slot_readbacks_run_before_the_sync_writes_any_row(self):
+        code = self._code(slots={self.BACK: 1})
+        # A synced code the lock changed the PIN of, so the sync writes its row.
+        synced = self._code(pin="1111", source=DoorCode.Source.SYNCED, slots={self.BACK: 2}, label="Slot 2")
+        gateway = self._gateway({2: "2222"}, cache={2: "2222"})
+        events: list[str] = []
+        real_invoke = gateway.invoke_cc_api
+        real_select_for_update = QuerySet.select_for_update
+        real_update = QuerySet.update
+        real_save = Model.save
+
+        def invoke_cc_api(**kwargs):
+            if kwargs.get("method_name") == "get":
+                events.append("get")
+            return real_invoke(**kwargs)
+
+        def select_for_update(queryset, *args, **kwargs):
+            events.append("write")
+            return real_select_for_update(queryset, *args, **kwargs)
+
+        def update(queryset, *args, **kwargs):
+            if queryset.model in (DoorCode, DoorCodeLockAssignment):
+                events.append("write")
+            return real_update(queryset, *args, **kwargs)
+
+        def save(instance, *args, **kwargs):
+            if isinstance(instance, (DoorCode, DoorCodeLockAssignment)):
+                events.append("write")
+            return real_save(instance, *args, **kwargs)
+
+        gateway.invoke_cc_api = invoke_cc_api
+        with (
+            patch.object(QuerySet, "select_for_update", select_for_update),
+            patch.object(QuerySet, "update", update),
+            patch.object(Model, "save", save),
+        ):
+            result = self._sync_for(gateway)
+
+        self.assertIn("slot_empty_repush", self._row(result, 1).warnings)
+        self.assertEqual(self._row(result, 2).action, "updated")
+        self.assertEqual(lock_push_uc.decrypt_pin_or_none(DoorCode.objects.get(id=synced.id)), "2222")
+        self.assertEqual(events.count("get"), 2)
+        last_get = len(events) - 1 - events[::-1].index("get")
+        self.assertIn("write", events)
+        self.assertLess(last_get, events.index("write"))
+        self.assertIsNone(self._assignment(code).slot_index)

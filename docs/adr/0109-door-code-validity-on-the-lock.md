@@ -30,8 +30,8 @@ after it (#144, #157, #167) already use.
 
 - **Shared predicates.** `locks/use_cases/code_lifecycle.py` has `is_started`,
   `is_expired`, `is_exhausted` and `validity`. They look at the dates (and the
-  use count) only, never at `code_type` or `source`, because lock sync can turn
-  a temporary manual code into a permanent synced one that keeps its dates.
+  use count) only, never at `code_type` or `source`, because lock syncs before
+  #166 turned temporary manual codes into permanent synced ones that kept their dates.
 - **Never push outside the window.** `push_door_code_to_assigned_locks` returns
   without pushing for a code that hasn't started or has expired, and
   `push_door_code_to_lock` raises `PushSuperseded` when it finds that under the
@@ -136,6 +136,6 @@ notifications and retiring used up codes is a separate change.
 
 ## Related ADRs
 
-- [ADR-0068](0068-zwavejs-lock-config-sync.md): lock config sync, which can turn manual codes into synced ones.
+- [ADR-0068](0068-zwavejs-lock-config-sync.md): lock config sync, which turned manual codes into synced ones before #166.
 - [ADR-0082](0082-zwavejs-lock-domain-and-synced-code-lifecycle.md): synced code lifecycle and CC 99 clear, its read-only rule amended here.
 - [ADR-0092](0092-zwavejs-lock-push-sync.md): push sync, amended here.
