@@ -1168,6 +1168,25 @@ def _sync_lock_config_atomically(
             timeout_seconds=10.0,
         )
 
+        # An untracked slot the cache says is Available doesn't disprove an
+        # unconfirmed attempt there on its own, so those slots are read back
+        # live, and an empty one gets its slot_empty marker (issue #194).
+        from locks.use_cases.lock_push import check_attempt_slots_sync_saw_empty
+
+        tracked_slots = set(
+            DoorCodeLockAssignment.objects.filter(lock_entity_id=lock_entity_id, slot_index__isnull=False).values_list(
+                "slot_index", flat=True
+            )
+        )
+        touched_code_ids.update(
+            check_attempt_slots_sync_saw_empty(
+                lock_entity_id=lock_entity_id,
+                node_id=node_id,
+                empty_slots=confirmed_empty_slots - tracked_slots,
+                zwavejs=zwavejs,
+            )
+        )
+
         # Read before anything below changes the assignments.
         outstanding_cleanup_by_slot = _slots_with_outstanding_cleanup(lock_entity_id=lock_entity_id)
         # Rows and events per slot, for the duplicate PIN flags added at the end.

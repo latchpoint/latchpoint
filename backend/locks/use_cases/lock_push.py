@@ -850,18 +850,23 @@ def _slot_read_back_empty_since_last_push(*, door_code: DoorCode, lock_entity_id
     code's own ``set`` went into the slot after them; the ones after it are
     checked when the attempt is honoured (:func:`_masked_trust_dropped`).
     """
-    last_pushed_id = (
+    last_pushed_id = _last_pushed_event_id(door_code=door_code, lock_entity_id=lock_entity_id)
+    return bool(
+        _slot_empty_markers(
+            lock_entity_id=lock_entity_id, slot_index=slot_index, door_code=door_code, after_id=last_pushed_id
+        )
+    )
+
+
+def _last_pushed_event_id(*, door_code: DoorCode, lock_entity_id: str) -> int | None:
+    """Id of the code's newest ``code_synced`` event on this lock, ie its last successful push or sync there."""
+    return (
         DoorCodeEvent.objects.filter(
             door_code=door_code, lock_entity_id=lock_entity_id, event_type=DoorCodeEvent.EventType.CODE_SYNCED
         )
         .order_by("-id")
         .values_list("id", flat=True)
         .first()
-    )
-    return bool(
-        _slot_empty_markers(
-            lock_entity_id=lock_entity_id, slot_index=slot_index, door_code=door_code, after_id=last_pushed_id
-        )
     )
 
 
@@ -2342,7 +2347,9 @@ def _tracked_slot_may_hold_pin(
     the slot. ``False`` when it holds a different readable code (ie one typed in
     on the keypad since) or reads back empty. A code whose own PIN can't be read
     has nothing to compare against, so its slot counts as its own.
-    :class:`LockCodeUnverified` and gateway errors propagate.
+    :class:`LockCodeUnverified` and gateway errors propagate. For one that
+    answered empty once the callers stop trusting the slot
+    (:func:`_demote_tracked_slot_seen_empty`, issue #194).
     """
     if not pin:
         return True
@@ -2363,6 +2370,38 @@ def _tracked_slot_may_hold_pin(
     return True
 
 
+def _demote_tracked_slot_seen_empty(
+    *, door_code: DoorCode, lock_entity_id: str, slot_index: int, pin: str | None, exc: Exception
+) -> bool:
+    """Stop trusting a tracked slot whose readback answered empty once and then got no answer (issue #194).
+
+    That's no verdict, so the slot may still hold the PIN, but the slot was
+    seen empty, so a masked code there later may be a keypad code typed in
+    since. :func:`_tracked_slot_may_hold_pin` counts a masked tracked slot as
+    this code's, so the slot is recorded as an untagged ``push_unconfirmed``
+    attempt with the PIN, plus a ``slot_read_back_empty`` marker, and the code
+    stops tracking it. From then on the unconfirmed cleanups read it back with
+    #193's rule: a readable PIN of ours is cleared, an empty slot settles it,
+    and a masked one isn't counted as ours. The attempt is recorded before the
+    slot is forgotten, so the slot is on record the whole time. Returns whether
+    it did that, which is only for that readback and a PIN to compare against.
+    """
+    if not (pin and isinstance(exc, LockCodeUnverified) and exc.read_back_empty):
+        return False
+    _record_slot_read_back_empty(door_code=door_code, lock_entity_id=lock_entity_id, slot_index=slot_index)
+    _record_unconfirmed_slot_attempt(
+        door_code=door_code,
+        lock_entity_id=lock_entity_id,
+        slot_index=slot_index,
+        reason=f"Tracked slot {slot_index} read back empty once, then didn't answer",
+        pin=pin,
+    )
+    DoorCodeLockAssignment.objects.filter(
+        door_code=door_code, lock_entity_id=lock_entity_id, slot_index=slot_index
+    ).update(slot_index=None, push_state=DoorCode.PushState.PENDING, schedule_pending=False)
+    return True
+
+
 def _clear_inactive_slots_on_lock(
     *,
     door_code: DoorCode,
@@ -2380,6 +2419,7 @@ def _clear_inactive_slots_on_lock(
         door_code=door_code, lock_entity_id=lock_entity_id, slot_index__isnull=False
     ).first()
     holds_pin: bool | None = None
+    demoted: set[int] = set()
     if assignment is not None and assignment.slot_index not in failing:
         slot_index = int(assignment.slot_index)
         try:
@@ -2397,6 +2437,11 @@ def _clear_inactive_slots_on_lock(
                 door_code=door_code, lock_entity_id=lock_entity_id, slot_index=slot_index, exc=exc
             )
             failed.append(failure)
+            if _demote_tracked_slot_seen_empty(
+                door_code=door_code, lock_entity_id=lock_entity_id, slot_index=slot_index, pin=pin, exc=exc
+            ):
+                # Read back on the next try, not again right away below.
+                demoted.add(slot_index)
             if failure.permanent:
                 forget_cleared_slot(
                     door_code=door_code, lock_entity_id=lock_entity_id, slot_index=slot_index, outcome="lock_missing"
@@ -2438,7 +2483,7 @@ def _clear_inactive_slots_on_lock(
         lock_entity_id=lock_entity_id,
         zwavejs=zwavejs,
         timeout_seconds=timeout_seconds,
-        skip_slots=failing,
+        skip_slots=failing | demoted,
     )
     failed.extend(unconfirmed_failed)
     return failed
@@ -2552,6 +2597,7 @@ def withdraw_slots_before_start(
     assignments = DoorCodeLockAssignment.objects.filter(door_code=door_code).order_by("lock_entity_id")
     for lock_entity_id, tracked_slot in assignments.values_list("lock_entity_id", "slot_index"):
         holds_pin: bool | None = None
+        demoted: set[int] = set()
         if tracked_slot is not None and (lock_entity_id, int(tracked_slot)) not in failing:
             slot_index = int(tracked_slot)
             try:
@@ -2570,6 +2616,11 @@ def withdraw_slots_before_start(
                     door_code=door_code, lock_entity_id=lock_entity_id, slot_index=slot_index, exc=exc
                 )
                 failed.append(failure)
+                if _demote_tracked_slot_seen_empty(
+                    door_code=door_code, lock_entity_id=lock_entity_id, slot_index=slot_index, pin=pin, exc=exc
+                ):
+                    # Read back on the next try, not again right away below.
+                    demoted.add(slot_index)
                 if failure.permanent:
                     forget_cleared_slot(
                         door_code=door_code,
@@ -2621,51 +2672,388 @@ def withdraw_slots_before_start(
             lock_entity_id=lock_entity_id,
             zwavejs=zwavejs,
             timeout_seconds=timeout_seconds,
-            skip_slots={slot for lock, slot in failing if lock == lock_entity_id},
+            skip_slots={slot for lock, slot in failing if lock == lock_entity_id} | demoted,
         )
         cleared.extend(lock_cleared)
         failed.extend(lock_failed)
     return cleared, failed
 
 
+def synced_attempt_slots_to_check(*, door_code: DoorCode) -> list[tuple[str, int]]:
+    """``(lock_entity_id, slot_index)`` of a synced code's unsettled attempts on its locks (issue #180).
+
+    The attempts lock sync's ``clear_outstanding`` skip counts
+    (``_has_outstanding_slot_cleanup``): unsettled, in their window, not in a
+    slot another code holds, and with a PIN to compare against. While one is
+    left, the sync skips the code on that lock, and nothing else settles it,
+    since the clears and the #167 inactive clear leave synced codes alone and
+    a lock that holds its slot isn't pushed. Empty for a manual code.
+    """
+    if door_code.source != DoorCode.Source.SYNCED:
+        return []
+    pin = decrypt_pin_or_none(door_code)
+    slots: list[tuple[str, int]] = []
+    for lock_entity_id in (
+        DoorCodeLockAssignment.objects.filter(door_code=door_code)
+        .order_by("lock_entity_id")
+        .values_list("lock_entity_id", flat=True)
+    ):
+        attempts = _unconfirmed_attempts(
+            door_code=door_code,
+            lock_entity_id=lock_entity_id,
+            claimed_slots=_claimed_slots(lock_entity_id=lock_entity_id, door_code=door_code),
+        )
+        slots.extend((lock_entity_id, slot_index) for slot_index, attempted in attempts.items() if attempted or pin)
+    return slots
+
+
+def check_synced_attempt_slots(
+    *,
+    door_code: DoorCode,
+    zwavejs: ZwavejsGateway,
+    timeout_seconds: float = 5.0,
+) -> int:
+    """Read back what :func:`synced_attempt_slots_to_check` finds, read only, and settle what isn't ours (issue #180).
+
+    Never clears or sets anything, since a synced code's slots are the lock's
+    own. Each attempt slot is read back with CC 99 ``get`` and the #193 rule
+    (:func:`_read_back_attempt_slot`): it's ours when it holds the PIN that
+    attempt sent, or a masked code for a ``slot_verified`` or ``slot_available``
+    attempt whose trust wasn't dropped (a disabled masked one for
+    ``slot_verified`` only). Anything else, ie a readable different code, a
+    messaging or passage mode slot, an empty slot or a masked one without the
+    tag, is settled as ``not_holding_pin``, with ``slot_empty`` when it read
+    back empty, so the next lock sync reconciles the code. One that's ours
+    stays unsettled and the sync keeps skipping the code, which fails safe. An
+    attempt in the slot the code tracks on that lock is settled as ``tracked``
+    without a readback, since lock sync reconciles that slot. A readback that
+    answered empty once and then got no answer leaves a ``slot_read_back_empty``
+    marker, and one with no answer leaves nothing, so the next tick reads it
+    again. A lock latchpoint can't resolve any more is settled as
+    ``lock_missing``.
+
+    Each lock is checked while holding its ``lock_sync:`` lock (one deadline
+    shared across them), with the code read again once it's held. A lock still
+    busy is skipped until the next tick. Returns how many slots it settled.
+    """
+    settled = 0
+    deadline = sync_lock_deadline()
+    for lock_entity_id in sorted({lock for lock, _slot in synced_attempt_slots_to_check(door_code=door_code)}):
+        try:
+            with hold_lock_sync([lock_entity_id], deadline=deadline):
+                try:
+                    door_code.refresh_from_db(fields=["source", "encrypted_pin"])
+                except DoorCode.DoesNotExist:
+                    return settled
+                if door_code.source != DoorCode.Source.SYNCED:
+                    return settled
+                settled += _check_synced_attempt_slots_on_lock(
+                    door_code=door_code, lock_entity_id=lock_entity_id, zwavejs=zwavejs, timeout_seconds=timeout_seconds
+                )
+        except LockBusy as exc:
+            logger.info(
+                "Skipping the attempt slot check on %s for synced door code id=%s: %s",
+                lock_entity_id,
+                door_code.id,
+                exc,
+            )
+    return settled
+
+
+def _check_synced_attempt_slots_on_lock(
+    *, door_code: DoorCode, lock_entity_id: str, zwavejs: ZwavejsGateway, timeout_seconds: float
+) -> int:
+    """One lock's part of :func:`check_synced_attempt_slots`; the caller holds its lock."""
+    pin = decrypt_pin_or_none(door_code)
+    attempts = {
+        slot_index: attempted_pin
+        for slot_index, attempted_pin in _unconfirmed_attempts(
+            door_code=door_code,
+            lock_entity_id=lock_entity_id,
+            claimed_slots=_claimed_slots(lock_entity_id=lock_entity_id, door_code=door_code),
+        ).items()
+        if attempted_pin or pin
+    }
+    if not attempts:
+        return 0
+    tracked = set(
+        DoorCodeLockAssignment.objects.filter(
+            door_code=door_code, lock_entity_id=lock_entity_id, slot_index__isnull=False
+        ).values_list("slot_index", flat=True)
+    )
+    verified = _verified_attempt_slots(door_code=door_code, lock_entity_id=lock_entity_id)
+    available = _available_attempt_slots(door_code=door_code, lock_entity_id=lock_entity_id)
+    settled = 0
+    node_id: int | None = None
+    for slot_index, attempted_pin in attempts.items():
+        if slot_index in tracked:
+            _settle_unconfirmed_slot(
+                door_code=door_code, lock_entity_id=lock_entity_id, slot_index=slot_index, outcome="tracked"
+            )
+            settled += 1
+            continue
+        if node_id is None:
+            try:
+                node_id = _resolve_lock_node_id(lock_entity_id=lock_entity_id)
+            except (LockSyncNotFound, LockSyncInvalidRequest):
+                logger.warning("Can't resolve %s to check synced door code id=%s's slots", lock_entity_id, door_code.id)
+                for missing_slot in attempts:
+                    if missing_slot not in tracked:
+                        _settle_unconfirmed_slot(
+                            door_code=door_code,
+                            lock_entity_id=lock_entity_id,
+                            slot_index=missing_slot,
+                            outcome="lock_missing",
+                        )
+                        settled += 1
+                return settled
+        try:
+            verdict = _read_back_attempt_slot(
+                zwavejs=zwavejs,
+                node_id=node_id,
+                slot_index=slot_index,
+                pin=attempted_pin or pin,
+                timeout_seconds=timeout_seconds,
+                masked_counts=slot_index in verified or slot_index in available,
+                disabled_masked_counts=slot_index in verified,
+            )
+        except Exception as exc:
+            if isinstance(exc, LockCodeUnverified) and exc.read_back_empty:
+                # No verdict, but a masked code there isn't counted as ours any more (PR #193 review).
+                _record_slot_read_back_empty(door_code=door_code, lock_entity_id=lock_entity_id, slot_index=slot_index)
+            logger.warning(
+                "Couldn't read back slot %d on %s for synced door code id=%s; trying again next tick",
+                slot_index,
+                lock_entity_id,
+                door_code.id,
+                exc_info=True,
+            )
+            continue
+        if verdict == _HOLDS_OURS:
+            # May hold its PIN in a second slot. Left for the sync to keep skipping.
+            continue
+        _settle_unconfirmed_slot(
+            door_code=door_code,
+            lock_entity_id=lock_entity_id,
+            slot_index=slot_index,
+            outcome="not_holding_pin",
+            slot_empty=verdict == _READ_BACK_EMPTY,
+        )
+        settled += 1
+    return settled
+
+
+def check_attempt_slots_sync_saw_empty(
+    *,
+    lock_entity_id: str,
+    node_id: int,
+    empty_slots: set[int],
+    zwavejs: ZwavejsGateway,
+    timeout_seconds: float = 5.0,
+) -> set[int]:
+    """For lock sync: read back the untracked slots it saw Available that have an unconfirmed record (issue #194).
+
+    ``empty_slots`` are the slots no code tracks whose cached status was
+    Available. The cache alone isn't trusted, since a ``set`` whose readbacks
+    timed out can leave it at Available while the PIN is in the slot, so each
+    slot some code still has an unsettled attempt or an open unconfirmed clear
+    failure on is read back with CC 99 ``get``, read only. Empty twice settles
+    those as ``not_holding_pin`` with ``slot_empty``, the way adoption and the
+    clear retry do (a failure through :func:`forget_cleared_slot`, so a lock
+    being dropped goes). Empty once and then no answer leaves a
+    ``slot_read_back_empty`` marker for each of those codes (unless it has one
+    newer than its record already), so their masked-slot trust drops and a new
+    attempt there isn't tagged ``slot_available``. Anything else (occupied, no
+    answer, an error) records nothing, and the sync's ``clear_outstanding``
+    skips stay as they were. The caller holds the lock's ``lock_sync:`` lock and
+    is in a transaction. Returns the ids of the codes it settled something of.
+    """
+    settled_code_ids: set[int] = set()
+    marked = {
+        slot_index
+        for slot_index in (
+            _coerce_int(value)
+            for value in DoorCodeEvent.objects.filter(
+                lock_entity_id=lock_entity_id,
+                door_code__isnull=False,
+                event_type=DoorCodeEvent.EventType.CODE_FAILED,
+                metadata__action__in=[_CLEAR_FAILED_ACTION, _UNCONFIRMED_PUSH_ACTION],
+            ).values_list("metadata__slot_index", flat=True)
+        )
+        if slot_index is not None
+    }
+    for slot_index in sorted(set(empty_slots) & marked):
+        records = _unconfirmed_records_on_slot(lock_entity_id=lock_entity_id, slot_index=slot_index)
+        if not records:
+            continue
+        try:
+            # Only an empty answer matters here, so there's no PIN to compare against.
+            _verify_user_code_slot(
+                zwavejs=zwavejs, node_id=node_id, slot_index=slot_index, pin="", timeout_seconds=timeout_seconds
+            )
+        except LockRejectedCode as exc:
+            if exc.clear_slot and not exc.holds_pin:
+                for door_code, _newest_id in records:
+                    # The code row before its assignment rows, like every writer of both.
+                    _lock_code_row(door_code.id)
+                    if _unresolved_clear_failure(
+                        door_code=door_code, lock_entity_id=lock_entity_id, slot_index=slot_index
+                    ):
+                        # Its clear_resolved with slot_empty settles the attempts too.
+                        forget_cleared_slot(
+                            door_code=door_code,
+                            lock_entity_id=lock_entity_id,
+                            slot_index=slot_index,
+                            outcome="not_holding_pin",
+                            slot_empty=True,
+                        )
+                    else:
+                        _settle_unconfirmed_slot(
+                            door_code=door_code,
+                            lock_entity_id=lock_entity_id,
+                            slot_index=slot_index,
+                            outcome="not_holding_pin",
+                            slot_empty=True,
+                        )
+                    settled_code_ids.add(door_code.id)
+        except LockCodeUnverified as exc:
+            if exc.read_back_empty:
+                for door_code, newest_id in records:
+                    if not _slot_empty_markers(
+                        lock_entity_id=lock_entity_id, slot_index=slot_index, door_code=door_code, after_id=newest_id
+                    ):
+                        _record_slot_read_back_empty(
+                            door_code=door_code, lock_entity_id=lock_entity_id, slot_index=slot_index
+                        )
+        except Exception:
+            logger.warning(
+                "Couldn't read back slot %d on %s for its unconfirmed attempt",
+                slot_index,
+                lock_entity_id,
+                exc_info=True,
+            )
+    return settled_code_ids
+
+
+def _unconfirmed_records_on_slot(*, lock_entity_id: str, slot_index: int) -> list[tuple[DoorCode, int]]:
+    """``(code, newest record id)`` for each code with an unsettled attempt or open unconfirmed clear failure here."""
+    code_ids = set(
+        DoorCodeEvent.objects.filter(
+            lock_entity_id=lock_entity_id,
+            door_code__isnull=False,
+            event_type=DoorCodeEvent.EventType.CODE_FAILED,
+            metadata__action__in=[_CLEAR_FAILED_ACTION, _UNCONFIRMED_PUSH_ACTION],
+            metadata__slot_index=int(slot_index),
+        ).values_list("door_code_id", flat=True)
+    )
+    records: list[tuple[DoorCode, int]] = []
+    for door_code in DoorCode.objects.filter(id__in=code_ids).order_by("id"):
+        record_ids: list[int] = []
+        attempt = _unsettled_unconfirmed_attempts(door_code=door_code, lock_entity_id=lock_entity_id).get(slot_index)
+        if attempt is not None:
+            record_ids.append(attempt[0])
+        failure = _unresolved_clear_failure(door_code=door_code, lock_entity_id=lock_entity_id, slot_index=slot_index)
+        if failure is not None and failure.unconfirmed and failure.event_id is not None:
+            record_ids.append(failure.event_id)
+        if record_ids:
+            records.append((door_code, max(record_ids)))
+    return records
+
+
 def retained_marker_event_ids(*, older_than: datetime) -> set[int]:
     """Ids of events older than ``older_than`` that event retention must keep (issue #139).
 
-    Those are a code's unresolved ``clear_failed`` events (the newest per slot,
-    which carries its flags and expected PIN) and its unsettled
+    Those are a code's unresolved ``clear_failed`` events and its unsettled
     ``push_unconfirmed`` events (the newest per slot still in the window since
     its last successful push to that lock). Pruning either would forget a slot
     that may still hold a PIN. Settled markers, including attempts a cleanup has
     checked or cleared (issue #161), and markers whose code is gone, aren't kept.
 
+    Every ``clear_failed`` of a failure that's still open is kept, not just the
+    newest one. The newest carries its flags and expected PIN, and the first is
+    where :func:`_unsettled_unconfirmed_attempts` starts the failure, so a
+    non-emptied ``clear_resolved`` only settles the attempts before it. Pruning
+    the first after a re-record would move that start past an attempt nobody
+    checked (issue #175).
+
     Also kept is every ``slot_empty`` marker, from any code, newer than a kept
     ``slot_verified`` or ``slot_available`` attempt or failure on the same lock
     and slot, since pruning it would bring back that record's masked-slot trust
-    (PR #193 review, :func:`_masked_trust_dropped`).
+    (PR #193 review, :func:`_masked_trust_dropped`). And a code's own
+    ``slot_empty`` markers for a slot since its last push to that lock, while it
+    still has an unsettled attempt or an open unconfirmed clear failure there,
+    since those are what keep a new attempt on that slot from being tagged
+    ``slot_available`` (issue #194, :func:`_slot_read_back_empty_since_last_push`).
     """
-    old_markers = DoorCodeEvent.objects.filter(
-        created_at__lt=older_than,
-        door_code__isnull=False,
+    old = DoorCodeEvent.objects.filter(created_at__lt=older_than, door_code__isnull=False)
+    old_markers = old.filter(
         event_type=DoorCodeEvent.EventType.CODE_FAILED,
         metadata__action__in=[_CLEAR_FAILED_ACTION, _UNCONFIRMED_PUSH_ACTION],
     )
+    old_empty_markers = old.filter(
+        metadata__action__in=[_UNCONFIRMED_RESOLVED_ACTION, _CLEAR_RESOLVED_ACTION, _SLOT_SEEN_EMPTY_ACTION],
+        metadata__slot_empty=True,
+    )
     keep: set[int] = set()
-    for door_code in DoorCode.objects.filter(id__in=old_markers.values("door_code_id")):
-        keep.update(f.event_id for f in unresolved_clear_failures(door_code=door_code) if f.event_id is not None)
-        lock_entity_ids = (
-            old_markers.filter(door_code=door_code, metadata__action=_UNCONFIRMED_PUSH_ACTION)
-            .values_list("lock_entity_id", flat=True)
-            .distinct()
-        )
-        for lock_entity_id in lock_entity_ids:
-            keep.update(
-                event_id
-                for event_id, _metadata in _unsettled_unconfirmed_attempts(
-                    door_code=door_code, lock_entity_id=lock_entity_id
-                ).values()
+    codes = DoorCode.objects.filter(
+        Q(id__in=old_markers.values("door_code_id")) | Q(id__in=old_empty_markers.values("door_code_id"))
+    )
+    for door_code in codes:
+        open_failures = _open_clear_failure_event_ids(door_code=door_code)
+        keep.update(event_id for event_ids in open_failures.values() for event_id in event_ids)
+        unconfirmed_failures = {
+            (f.lock_entity_id, f.slot_index) for f in unresolved_clear_failures(door_code=door_code) if f.unconfirmed
+        }
+        lock_entity_ids = set(
+            DoorCodeEvent.objects.filter(door_code=door_code, metadata__action=_UNCONFIRMED_PUSH_ACTION).values_list(
+                "lock_entity_id", flat=True
             )
+        ) | {lock_entity_id for lock_entity_id, _slot in unconfirmed_failures}
+        for lock_entity_id in sorted(lock_entity_ids):
+            attempts = _unsettled_unconfirmed_attempts(door_code=door_code, lock_entity_id=lock_entity_id)
+            keep.update(event_id for event_id, _metadata in attempts.values())
+            slots = set(attempts) | {slot for lock, slot in unconfirmed_failures if lock == lock_entity_id}
+            if not slots:
+                continue
+            last_pushed_id = _last_pushed_event_id(door_code=door_code, lock_entity_id=lock_entity_id)
+            for slot_index in slots:
+                keep.update(
+                    _slot_empty_markers(
+                        lock_entity_id=lock_entity_id,
+                        slot_index=slot_index,
+                        door_code=door_code,
+                        after_id=last_pushed_id,
+                    )
+                )
     keep.update(_slot_empty_markers_disarming(kept_ids=keep, older_than=older_than))
     return keep
+
+
+def _open_clear_failure_event_ids(*, door_code: DoorCode) -> dict[tuple[str, int], list[int]]:
+    """Every ``clear_failed`` event of each of the code's failures still open, by lock and slot, oldest first.
+
+    The same newest-event-wins rule as :func:`unresolved_clear_failures`: a
+    ``clear_resolved`` for the lock and slot ends the failure, and the
+    ``clear_failed`` events after it start a new one (issue #175).
+    """
+    open_failures: dict[tuple[str, int], list[int]] = {}
+    events = (
+        DoorCodeEvent.objects.filter(
+            door_code=door_code, metadata__action__in=[_CLEAR_FAILED_ACTION, _CLEAR_RESOLVED_ACTION]
+        )
+        .order_by("id")
+        .values_list("id", "lock_entity_id", "metadata")
+    )
+    for event_id, lock_entity_id, metadata in events:
+        slot_index = _coerce_int(metadata.get("slot_index")) if isinstance(metadata, dict) else None
+        if not slot_index or slot_index <= 0:
+            continue
+        key = (lock_entity_id, slot_index)
+        if metadata.get("action") == _CLEAR_FAILED_ACTION:
+            open_failures.setdefault(key, []).append(event_id)
+        else:
+            open_failures.pop(key, None)
+    return open_failures
 
 
 def _slot_empty_markers_disarming(*, kept_ids: set[int], older_than: datetime) -> set[int]:
