@@ -1001,7 +1001,7 @@ def _tracked_slot_reads_back_empty(*, zwavejs: ZwavejsGateway, node_id: int, slo
         return False
     try:
         # Only an empty answer matters, so there's no PIN to compare against.
-        _verify_user_code_slot(zwavejs=zwavejs, node_id=node_id, slot_index=slot_index, pin="", timeout_seconds=5.0)
+        _verify_user_code_slot(zwavejs=zwavejs, node_id=node_id, slot_index=slot_index, pin="")
     except LockRejectedCode as exc:
         return bool(exc.clear_slot and not exc.holds_pin)
     except Exception:
