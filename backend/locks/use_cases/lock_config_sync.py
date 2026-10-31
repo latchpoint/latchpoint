@@ -110,8 +110,12 @@ _in_flight_keys: set[str] = set()
 _held_by_thread = threading.local()
 
 # How long door code update / delete and the slot clears wait for another
-# operation on the same lock (a push, a config sync) before giving up.
-SYNC_LOCK_WAIT_SECONDS = 30.0
+# operation on the same lock (a push, a config sync) before giving up. Longer
+# than a queued push can hold the lock: its 30s budget (PUSH_LOCK_BUDGET_SECONDS
+# in lock_push), a readback sleep of up to 2s that started before the budget ran
+# out and its DB writes. So an edit or delete right after a create waits for that
+# push instead of answering 409 (issue #203).
+SYNC_LOCK_WAIT_SECONDS = 45.0
 _SYNC_LOCK_POLL_SECONDS = (0.05, 1.0)  # first delay, cap
 
 

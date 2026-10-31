@@ -3462,6 +3462,7 @@ class LockSlotAssignmentsSerializerTests(EncryptionTestMixin, TestCase):
                     "push_attempt_count": 0,
                     "schedule_pending": False,
                     "push_requested_at": None,
+                    "push_queued": False,
                 }
             ],
         )
@@ -3494,6 +3495,7 @@ class LockSlotAssignmentsSerializerTests(EncryptionTestMixin, TestCase):
                     "push_attempt_count": 0,
                     "schedule_pending": False,
                     "push_requested_at": None,
+                    "push_queued": False,
                 }
             ],
         )
@@ -4734,7 +4736,7 @@ class TerminalPushErrorRecordingTests(EncryptionTestMixin, TestCase):
         self._assert_terminal_failure_recorded(code, "Stored PIN could not be decrypted.")
 
     def _terminal_error_after_the_set(self, *, during: str) -> tuple[DoorCode, FakeGateway]:
-        from integrations_zwavejs.manager import ZwavejsClientUnavailable, ZwavejsCommandValidationError
+        from integrations_zwavejs.manager import ZwavejsCommandValidationError
 
         if during == "readback":
             # What reaches this path in prod: invoke_cc_api's own argument checks.
@@ -4742,13 +4744,14 @@ class TerminalPushErrorRecordingTests(EncryptionTestMixin, TestCase):
             gateway = FakeGateway(usersNumber=3, get_responses=[ZwavejsCommandValidationError(message)])
             code = self._make_code()
         else:
-            message = "Z-Wave JS client library not installed."
-            unavailable = ZwavejsClientUnavailable(message)
+            # Not ZwavejsClientUnavailable, which is transient since issue #191.
+            message = "Z-Wave JS ws_url not set."
+            not_configured = ZwavejsNotConfigured(message)
 
             class ScheduleFailsGateway(FakeGateway):
                 def invoke_cc_api(self, *, node_id, command_class, method_name, args=None, timeout_seconds=10.0):
                     if command_class == 78:
-                        raise unavailable
+                        raise not_configured
                     return super().invoke_cc_api(
                         node_id=node_id,
                         command_class=command_class,
@@ -4808,7 +4811,7 @@ class TerminalPushErrorRecordingTests(EncryptionTestMixin, TestCase):
         self.assertEqual(self._set_slots(gateway), [1])
         self.assertEqual(gateway._lock_codes, {(7, 1): "1234"})
 
-    def test_client_unavailable_during_the_schedule_push_keeps_the_slot_failed_with_its_schedule_pending(self):
+    def test_not_configured_during_the_schedule_push_keeps_the_slot_failed_with_its_schedule_pending(self):
         # Issue #123: the slot is tracked before the schedule goes out, so no
         # marker is needed and the lock is failed with the slot kept.
         code, _gateway = self._terminal_error_after_the_set(during="schedule")
@@ -4821,7 +4824,7 @@ class TerminalPushErrorRecordingTests(EncryptionTestMixin, TestCase):
         )
         self.assertIn("Schedule not applied", assignment.last_push_error)
 
-    def test_delete_after_client_unavailable_during_the_schedule_push_clears_the_slot(self):
+    def test_delete_after_not_configured_during_the_schedule_push_clears_the_slot(self):
         for masked in (False, True):
             with self.subTest(masked=masked):
                 code, gateway = self._terminal_error_after_the_set(during="schedule")

@@ -567,7 +567,9 @@ def _verify_user_code_slot(
     (``holds_other``), which every caller leaves alone; 0xfe is still no answer.
     Raises :class:`LockCodeUnverified`
     (transient) when no attempt gets a usable answer, including a single empty
-    answer followed only by silence. Terminal config errors propagate unchanged.
+    answer followed only by silence. ``ZwavejsClientUnavailable`` is no answer
+    like any other gateway error (issue #191). ``ZwavejsNotConfigured``
+    propagates unchanged, so it stays terminal for the push.
     """
     attempts = len(_READBACK_RETRY_DELAYS_SECONDS) + 1
     last_reason = "no response"
@@ -582,7 +584,7 @@ def _verify_user_code_slot(
                 slot_index=slot_index,
                 timeout_seconds=timeout_seconds,
             )
-        except (ZwavejsNotConfigured, ZwavejsClientUnavailable):
+        except ZwavejsNotConfigured:
             raise
         except TimeBudgetExceeded as exc:
             # Out of time is no answer either, and asking again would only sleep
@@ -2530,9 +2532,14 @@ def withdraw_slots_before_start(
 ) -> tuple[list[dict[str, object]], list[ClearFailure]]:
     """Clear what :func:`slots_to_withdraw` finds; the caller holds every lock's ``lock_sync:`` lock.
 
-    A tracked slot is cleared as is and forgotten, the way a schedule change
-    clears it before the re-push. An unconfirmed slot is read back and only
-    cleared when it holds the PIN that attempt sent, then settled
+    A tracked slot is read back first like the #167 inactive clear does, since
+    someone may have typed a keypad code into it since (issue #186): it's
+    cleared when it holds this code's PIN or a code that can't be read, which
+    counts as ours since the code tracks the slot, and forgotten without a clear
+    when it holds a different readable code or reads back empty
+    (:func:`_tracked_slot_may_hold_pin`). A readback that gets no answer isn't
+    recorded, so the next try reads it back again. An unconfirmed slot is read
+    back and only cleared when it holds the PIN that attempt sent, then settled
     (:func:`_clear_unconfirmed_slots_on_lock`). A clear that fails is recorded
     with :func:`record_clear_failure` so :func:`retry_failed_slot_clears` takes
     over, and a lock latchpoint can't resolve any more is forgotten as
@@ -2544,7 +2551,41 @@ def withdraw_slots_before_start(
     failed: list[ClearFailure] = []
     assignments = DoorCodeLockAssignment.objects.filter(door_code=door_code).order_by("lock_entity_id")
     for lock_entity_id, tracked_slot in assignments.values_list("lock_entity_id", "slot_index"):
+        holds_pin: bool | None = None
         if tracked_slot is not None and (lock_entity_id, int(tracked_slot)) not in failing:
+            slot_index = int(tracked_slot)
+            try:
+                holds_pin = _tracked_slot_may_hold_pin(
+                    zwavejs=zwavejs,
+                    lock_entity_id=lock_entity_id,
+                    slot_index=slot_index,
+                    pin=pin,
+                    timeout_seconds=timeout_seconds,
+                )
+            except Exception as exc:
+                # Not recorded, like the #167 inactive clear: a recorded failure on
+                # a tracked slot is retried as a clear with no readback, so this
+                # one stays a slot to read back first.
+                failure = describe_clear_failure(
+                    door_code=door_code, lock_entity_id=lock_entity_id, slot_index=slot_index, exc=exc
+                )
+                failed.append(failure)
+                if failure.permanent:
+                    forget_cleared_slot(
+                        door_code=door_code,
+                        lock_entity_id=lock_entity_id,
+                        slot_index=slot_index,
+                        outcome="lock_missing",
+                    )
+            if holds_pin is False:
+                # A keypad code typed in since, or empty: nothing of ours to clear.
+                forget_cleared_slot(
+                    door_code=door_code,
+                    lock_entity_id=lock_entity_id,
+                    slot_index=slot_index,
+                    outcome="not_holding_pin",
+                )
+        if holds_pin:
             slot_index = int(tracked_slot)
             try:
                 clear_lock_user_code_slot(
@@ -3058,7 +3099,12 @@ def push_door_code_to_lock(
                     value_ids=get_value_ids(),
                     claimed_slots=claimed_slots,
                 )
-        except (ZwavejsNotConfigured, ZwavejsClientUnavailable, ZwavejsCommandValidationError) as exc:
+        except (ZwavejsNotConfigured, ZwavejsCommandValidationError) as exc:
+            # ZwavejsClientUnavailable takes the transient path below, so the
+            # scheduler retries the lock under its cap (issue #191). The manager
+            # only raises it when zwave-js-server-python is missing, and inside a
+            # command _run_coro wraps it as ZwavejsCommandError, which was
+            # already transient, like a Z-Wave JS that's down (ZwavejsNotConnected).
             _record_lock_push_failure(
                 door_code=door_code, error_message=str(exc), terminal=True, lock_entity_id=lock_entity_id
             )
@@ -3154,7 +3200,7 @@ def push_door_code_to_lock(
                 )
                 slot_accepted = True
             # The schedule goes out once the slot is on record (issue #123), below.
-        except (ZwavejsNotConfigured, ZwavejsClientUnavailable, ZwavejsCommandValidationError) as exc:
+        except (ZwavejsNotConfigured, ZwavejsCommandValidationError) as exc:
             if set_returned:
                 # The PIN may be in the slot, so keep it on record like a transient
                 # failure does, or nothing would clear it on a delete (PR #192).
@@ -3236,8 +3282,11 @@ def push_door_code_to_lock(
             raise
         except GatewayError as exc:
             error_message = f"{exc.__class__.__name__}: {exc}"
-            if isinstance(exc, TimeBudgetExceeded) and not set_returned:
-                # The budget refused the set itself, so nothing went to the slot (issue #124).
+            if isinstance(exc, (TimeBudgetExceeded, ZwavejsClientUnavailable)) and not set_returned:
+                # The budget refused the set itself, so nothing went to the slot
+                # (issue #124). Same for ZwavejsClientUnavailable, which used to
+                # be terminal and recorded nothing for the set itself (PR #192,
+                # issue #191).
                 pin_sent_to_slot = False
             if (
                 isinstance(exc, LockCodeUnverified)
@@ -3453,7 +3502,8 @@ def _push_schedule_to_slot(
             door_code=door_code, lock_entity_id=lock_entity_id, error_message=str(exc), terminal=True
         )
         raise
-    except (ZwavejsNotConfigured, ZwavejsClientUnavailable, ZwavejsCommandValidationError) as exc:
+    except (ZwavejsNotConfigured, ZwavejsCommandValidationError) as exc:
+        # ZwavejsClientUnavailable is transient, below (issue #191).
         _record_lock_push_failure(
             door_code=door_code,
             lock_entity_id=lock_entity_id,
@@ -3773,3 +3823,42 @@ def queued_push_assignments(*, now: datetime, max_attempts: int):
     if max_attempts > 0:
         queued = queued.filter(push_attempt_count__lt=max_attempts)
     return queued
+
+
+def push_queued(
+    assignment: DoorCodeLockAssignment,
+    *,
+    code: DoorCode,
+    now: datetime,
+    max_attempts: int,
+    failures: list[ClearFailure],
+) -> bool:
+    """Whether :data:`PUSH_REQUESTED_TASK` would push this lock at ``now``, for the API (issue #205).
+
+    The same rule as :func:`queued_push_assignments` plus :func:`locks_to_push`
+    on top, the two the task uses, worked out on an assignment that's already
+    loaded and the code's :func:`unresolved_clear_failures`, so it runs no
+    query. A ``push_requested_at`` inside :data:`PUSH_REQUEST_TTL` that no push
+    attempt on the lock came after (compared as datetimes, so the schedule
+    re-queue's 1µs counts), the lock ``pending`` and still needing its ``set``
+    or schedule, under the cap when there is one, not being dropped, not on a
+    slot with a clear outstanding, and the code active, started and not expired.
+    """
+    requested = assignment.push_requested_at
+    if requested is None or requested <= now - PUSH_REQUEST_TTL:
+        return False
+    if assignment.last_push_attempt_at is not None and assignment.last_push_attempt_at >= requested:
+        return False
+    if assignment.push_state != DoorCode.PushState.PENDING or not _lock_needs_push(assignment):
+        return False
+    if max_attempts > 0 and assignment.push_attempt_count >= max_attempts:
+        return False
+    if not code.is_active or not belongs_on_lock(code, now=now):
+        return False
+    # locks_to_push's rule, from the same failures it would load.
+    if any(f.removing and f.lock_entity_id == assignment.lock_entity_id for f in failures):
+        return False
+    slot = assignment.slot_index
+    return slot is None or not any(
+        (f.lock_entity_id, f.slot_index) == (assignment.lock_entity_id, int(slot)) for f in failures
+    )

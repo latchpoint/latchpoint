@@ -90,10 +90,15 @@ The request saves and returns, and a fast scheduler task makes the push.
   included, and a clear that doesn't fit keeps its `clear_failed` event for the
   scheduler. An inactive code's Retry, the not-started and expired branches,
   delete, retire and withdraw are unchanged.
-- **API.** Each `lock_slot_assignments` entry gets `push_requested_at`. A lock
-  is queued while that's after its `last_push_attempt_at` (or that's null) and
-  it's `pending`. The save response is always `pending` and the page polls for
-  the outcome.
+- **API.** Each `lock_slot_assignments` entry gets `push_requested_at` and
+  `push_queued` (issue #205). `push_queued` is the source of truth for whether
+  the lock is queued. The server works it out with the task's own rule
+  (`lock_push.push_queued`, ie `queued_push_assignments` plus `locks_to_push`)
+  on the prefetched assignments, so it has the TTL, the cap and microsecond
+  timestamps, none of which the browser can see. The frontend only falls back
+  to comparing `push_requested_at` with `last_push_attempt_at` for an API that
+  doesn't send it. The save response is always `pending` and the page polls
+  for the outcome, fast only when the response has a lock with `push_queued`.
 
 ## Alternatives Considered
 
