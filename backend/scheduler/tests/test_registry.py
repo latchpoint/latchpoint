@@ -17,12 +17,14 @@ from scheduler.schedules import DailyAt, Every
 
 class RegistryTests(TestCase):
     def setUp(self):
-        """Clear the task registry before each test."""
+        """Start each test with an empty task registry."""
+        self._saved_tasks = dict(_tasks)
         _tasks.clear()
 
     def tearDown(self):
-        """Clear the task registry after each test."""
+        """Put the real tasks back, so later tests (ie in locks) still find theirs."""
         _tasks.clear()
+        _tasks.update(self._saved_tasks)
 
     def test_register_decorator_adds_task(self):
         """@register decorator adds task to registry."""

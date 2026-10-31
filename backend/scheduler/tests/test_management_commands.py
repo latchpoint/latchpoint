@@ -14,12 +14,14 @@ from scheduler.schedules import DailyAt, Every
 
 class ListTasksCommandTests(TestCase):
     def setUp(self):
-        """Clear the task registry before each test."""
+        """Start each test with an empty task registry."""
+        self._saved_tasks = dict(_tasks)
         _tasks.clear()
 
     def tearDown(self):
-        """Clear the task registry after each test."""
+        """Put the real tasks back, so later tests (ie in locks) still find theirs."""
         _tasks.clear()
+        _tasks.update(self._saved_tasks)
 
     def test_list_tasks_empty(self):
         """Shows message when no tasks registered."""
@@ -73,12 +75,14 @@ class ListTasksCommandTests(TestCase):
 
 class RunTaskCommandTests(TestCase):
     def setUp(self):
-        """Clear the task registry before each test."""
+        """Start each test with an empty task registry."""
+        self._saved_tasks = dict(_tasks)
         _tasks.clear()
 
     def tearDown(self):
-        """Clear the task registry after each test."""
+        """Put the real tasks back, so later tests (ie in locks) still find theirs."""
         _tasks.clear()
+        _tasks.update(self._saved_tasks)
 
     def test_run_task_not_found(self):
         """Raises error for unknown task."""
@@ -118,12 +122,14 @@ class RunTaskCommandTests(TestCase):
 
 class TaskScheduleCommandTests(TestCase):
     def setUp(self):
-        """Clear the task registry before each test."""
+        """Start each test with an empty task registry."""
+        self._saved_tasks = dict(_tasks)
         _tasks.clear()
 
     def tearDown(self):
-        """Clear the task registry after each test."""
+        """Put the real tasks back, so later tests (ie in locks) still find theirs."""
         _tasks.clear()
+        _tasks.update(self._saved_tasks)
 
     def test_task_schedule_empty(self):
         """Shows message when no tasks registered."""

@@ -223,7 +223,7 @@
 
 ## Tech stack
 
-**Backend** — Python 3.12 · Django 6 · Django REST Framework · Django Channels · PostgreSQL 15 · paho-mqtt · zwave-js-server-python · homeassistant-api · httpx · Argon2 · Gunicorn + Uvicorn
+**Backend** — Python 3.12 · Django 6 · Django REST Framework · Django Channels · PostgreSQL 15 · paho-mqtt · zwave-js-server-python · homeassistant-api · httpx · Argon2 · Daphne (one process, under supervisord)
 
 **Frontend** — React 19 · TypeScript · Vite · TanStack Query 5 · Zustand 5 · React Router 7 · Tailwind 4 · Radix UI · React Hook Form + Zod · React QueryBuilder 8 · MSW (test mocks)
 
@@ -283,6 +283,22 @@ docker run -d -p 80:80 --env-file .env ghcr.io/latchpoint/latchpoint:latest
 Tags include `latest` (default branch), `sha-...` (commit), and git tag
 versions. See [`.env.example`](.env.example) for environment variables and
 inline notes on generating `SETTINGS_ENCRYPTION_KEY`.
+
+### One process per database
+
+Run one container (one daphne process) per database. Don't scale the app
+service past 1 replica or put gunicorn workers in front of it. The MQTT,
+Z-Wave JS and Home Assistant connections, control panels and scheduler run in
+that one process, and its cache, websocket broadcasts and settings signals are
+process local.
+
+On Postgres this is enforced with an advisory lock. A second process against
+the same database starts as a standby that serves HTTP but runs no
+integrations, and logs an ERROR naming the process that holds the lock every
+5 minutes. Once the lock is free it exits so supervisord restarts it and it
+takes the lock. The app won't start while the database is unreachable, it
+exits and supervisord retries. `RUNTIME_LOCK=off` turns the check off. See
+[ADR-0112](docs/adr/0112-one-runtime-process-per-database.md).
 
 ### Timezone
 

@@ -27,6 +27,7 @@ from alarm.signals import (
     settings_profile_changed,
 )
 from alarm.state_machine.settings import get_active_settings_profile, get_setting_json
+from config import runtime_lock
 
 logger = logging.getLogger(__name__)
 
@@ -233,6 +234,8 @@ def _compute_system_status_payload(*, include_home_assistant: bool) -> dict[str,
         "zwavejs": zwavejs,
         "zigbee2mqtt": zigbee2mqtt,
         "frigate": frigate,
+        # `held_elsewhere` means this process is a standby and none of the integrations above run here (ADR-0112).
+        "runtime": runtime_lock.get_status(),
     }
 
 
