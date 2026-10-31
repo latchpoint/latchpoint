@@ -326,6 +326,18 @@ class ZwavejsConnectionManager:
                 # Ring Keypad v2 Entry Control PIN can appear as args.eventData.
                 if "eventData" in args_out:
                     args_out["eventData"] = "***"
+                # A Notification CC (113) keypad event can carry the typed PIN as
+                # args.parameters.userCode. Parameters zwave-js couldn't parse come
+                # through raw (a buffer, JSON'd as {"type": "Buffer", "data": [...]}),
+                # so those are hidden whole.
+                parameters = args_out.get("parameters")
+                if isinstance(parameters, dict) and parameters.get("type") == "Buffer":
+                    args_out["parameters"] = "***"
+                elif isinstance(parameters, dict):
+                    if "userCode" in parameters:
+                        args_out["parameters"] = {**parameters, "userCode": "***"}
+                elif parameters is not None and not isinstance(parameters, int | float):
+                    args_out["parameters"] = "***"
                 out["args"] = args_out
             return out
         except Exception:

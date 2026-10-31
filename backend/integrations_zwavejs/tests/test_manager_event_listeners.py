@@ -134,3 +134,95 @@ class ZwavejsManagerEventListenerTests(SimpleTestCase):
             notify.assert_not_called()
 
         manager.apply_settings(settings_obj={"enabled": False})
+
+
+# What zwave-js-server-python's Node emits for a Yale keypad unlock: the server's
+# "notification" event data, plus the model objects the library adds to it.
+class _FakeNotificationModel:
+    def __repr__(self) -> str:
+        return "NotificationNotification(userCode='4321')"
+
+
+def _keypad_unlock_event_data(*, parameters: dict | None = None) -> dict:
+    return {
+        "source": "node",
+        "event": "notification",
+        "nodeId": 12,
+        "endpointIndex": 0,
+        "ccId": 113,
+        "args": {
+            "type": 6,
+            "label": "Access Control",
+            "event": 6,
+            "eventLabel": "Keypad unlock operation",
+            "parameters": parameters if parameters is not None else {"userId": 3, "userCode": "4321"},
+        },
+        "node": object(),
+        "notification": _FakeNotificationModel(),
+    }
+
+
+class ZwavejsManagerKeypadUnlockBridgeTests(SimpleTestCase):
+    """A CC 113 keypad unlock reaches the locks listener in the shape its parser reads (issue #145)."""
+
+    @override_settings(ALLOW_ZWAVEJS_IN_TESTS=True)
+    def test_keypad_unlock_reaches_the_locks_listener_and_logs_no_pin(self):
+        from locks.keypad_events import KeypadUnlock
+        from locks.runtime import make_event_listener
+
+        manager = ZwavejsConnectionManager()
+        submitted: list = []
+        got_unlock = threading.Event()
+
+        class _Worker:
+            def submit(self, unlock):
+                submitted.append(unlock)
+                got_unlock.set()
+                return True
+
+        manager.register_event_listener(make_event_listener(worker=_Worker(), sanitize=manager._sanitize_event_for_log))
+
+        with (
+            patch(
+                "integrations_zwavejs.manager._import_zwavejs_client",
+                return_value=_fake_imports(emitted_event=_keypad_unlock_event_data()),
+            ),
+            self.assertLogs("locks.runtime", level="INFO") as locks_logs,
+            self.assertLogs("integrations_zwavejs.manager", level="DEBUG") as manager_logs,
+        ):
+            manager.apply_settings(
+                settings_obj={"enabled": True, "ws_url": "ws://example.test:3000", "connect_timeout_seconds": 0.2}
+            )
+            manager.ensure_connected(timeout_seconds=1.0)
+            self.assertTrue(got_unlock.wait(timeout=1.0))
+            manager.apply_settings(settings_obj={"enabled": False})
+
+        self.assertEqual(submitted, [KeypadUnlock(node_id=12, slot=3, event=6)])
+        keypad_lines = [line for line in locks_logs.output if "zwavejs keypad event" in line]
+        self.assertEqual(len(keypad_lines), 1)
+        self.assertIn("'userId': 3", keypad_lines[0])
+        for line in [*locks_logs.output, *manager_logs.output]:
+            self.assertNotIn("4321", line)
+
+
+class ZwavejsManagerSanitizeEventTests(SimpleTestCase):
+    def _sanitize(self, event_data: dict) -> dict:
+        return ZwavejsConnectionManager()._sanitize_event_for_log({"event": event_data})
+
+    def test_notification_user_code_is_redacted(self):
+        out = self._sanitize(_keypad_unlock_event_data())
+        self.assertEqual(out["args"]["parameters"], {"userId": 3, "userCode": "***"})
+        self.assertEqual(out["notification"], "<_FakeNotificationModel>")
+        self.assertNotIn("4321", repr(out))
+
+    def test_raw_buffer_parameters_are_hidden(self):
+        out = self._sanitize(_keypad_unlock_event_data(parameters={"type": "Buffer", "data": [52, 51, 50, 49]}))
+        self.assertEqual(out["args"]["parameters"], "***")
+
+    def test_parameters_without_a_pin_are_kept(self):
+        out = self._sanitize(_keypad_unlock_event_data(parameters={"userId": 3}))
+        self.assertEqual(out["args"]["parameters"], {"userId": 3})
+
+    def test_entry_control_event_data_is_still_redacted(self):
+        out = self._sanitize({"nodeId": 12, "ccId": 111, "args": {"eventType": 5, "eventData": "1996"}})
+        self.assertEqual(out["args"]["eventData"], "***")

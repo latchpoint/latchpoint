@@ -44,14 +44,21 @@ def is_expired(code: DoorCode, *, now: datetime | None = None) -> bool:
     return ended_by(code.end_at, now=now)
 
 
-def is_exhausted(code: DoorCode) -> bool:
-    """Whether ``code`` has used up its uses: ``max_uses`` when set, one for a one-time code.
-
-    Nothing counts door code uses yet, so this stays false until that lands.
-    """
+def use_limit(code: DoorCode) -> int | None:
+    """How many uses ``code`` gets: ``max_uses`` when set, one for a one-time code, else no limit."""
     limit = code.max_uses
     if limit is None and code.code_type == DoorCode.CodeType.ONE_TIME:
         limit = 1
+    return limit
+
+
+def is_exhausted(code: DoorCode) -> bool:
+    """Whether ``code`` has used up its uses (:func:`use_limit`).
+
+    Keypad uses are counted (``locks.use_cases.code_usage``, ADR-0114), but
+    nothing retires an exhausted code yet, so it stays on its locks.
+    """
+    limit = use_limit(code)
     return limit is not None and (code.uses_count or 0) >= limit
 
 
