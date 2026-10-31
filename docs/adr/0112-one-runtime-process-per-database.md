@@ -63,28 +63,47 @@ with a Postgres advisory lock.
   `connections["default"].get_new_connection(...)`, never Django's thread-local
   connection, so `close_old_connections()`, a request finishing or a thread
   exiting can't drop it. It runs in autocommit, with
-  `application_name=latchpoint-runtime:<hostname>:<pid>`, client keepalives and
-  server keepalives (`tcp_keepalives_idle=10`, `tcp_keepalives_interval=5`,
-  `tcp_keepalives_count=3`), so Postgres drops the session and frees the lock
-  about 25s after the holder's host goes away.
+  `application_name=latchpoint-runtime:<hostname>:<pid>:<boot token>`, client
+  keepalives and server keepalives (`tcp_keepalives_idle=10`,
+  `tcp_keepalives_interval=5`, `tcp_keepalives_count=3`), so Postgres drops the
+  session and frees the lock about 25s after the holder's host goes away. The
+  boot token is random per process, so 2 containers with the same hostname and
+  pid still get different names, and the hostname is cut down to printable
+  ASCII, which is all Postgres keeps.
+- **Sessions are told apart by backend pid and start time.** The name is for
+  people reading logs and for spotting a holder from this same host, never for
+  deciding a session is ours.
+- **Startup.** Nothing is ever terminated at startup. If the holder's name has
+  this host in it, it's most likely this container's daphne from before
+  supervisord restarted it, whose session Postgres hasn't dropped yet (the close
+  never got there). The process tries the lock every second for up to 35s, past
+  the 25s the keepalives take, before it settles for being a standby. A holder
+  from another host means standby right away.
 - **Heartbeat.** A thread runs `SELECT 1` on it every 30s. If the connection is
-  gone it reconnects and takes the lock again. If someone else has it by then the
-  process logs CRITICAL and calls `os._exit(1)`, and supervisord starts it again
-  as a standby. If the holder is this process's own old session (same
-  `application_name`, ie a session Postgres hasn't noticed is dead yet) it's
-  terminated with `pg_terminate_backend()` and the lock is retried, for up to
-  60s.
+  gone it reconnects and takes the lock again. If the holder by then is the exact
+  session it just lost (same backend pid and start time, ie Postgres hasn't
+  noticed it's dead yet), that one session is terminated with
+  `pg_terminate_backend()` and the lock is retried, for up to 60s. If anyone
+  else has it the process logs CRITICAL and calls `os._exit(1)`, and supervisord
+  starts it again as a standby.
 - **Standby.** A process that doesn't get the lock starts no runtimes (MQTT,
   Z-Wave JS, the HA stream, control panels, the scheduler, the log broadcast
   worker). It still serves HTTP and websockets. It logs an ERROR naming the
-  holder at startup and every 5 minutes after. There's no automatic takeover,
-  a standby stays a standby until it's restarted.
+  holder at startup and every 5 minutes after. Its heartbeat checks the holder
+  every 30s, and once the lock is free it logs CRITICAL and exits so supervisord
+  restarts it and it takes the lock. The runtimes only start from `ready()`, so
+  a restart is the only way in. That's what gets a process that went standby
+  behind a slow-to-drop session of its own running again, within about 30s of
+  Postgres dropping it.
 - **Door code pushes.** In a standby `push_task_running()` is true, so a door
   code save only queues the push (ADR-0111) and the active process's 5s tick
   sends it. A standby never makes a Z-Wave JS call from a request.
 - **Startup errors.** If the database can't be reached when the lock is
-  checked, it retries for about 10s and then raises, so the server fails to
-  start and supervisord restarts it.
+  checked, it tries 5 times about 2s apart (each connect can take up to its 10s
+  `connect_timeout`) and then raises `RuntimeLockUnavailable` from `ready()`, so
+  daphne exits instead of serving without the lock, and supervisord restarts it
+  until the database is back. That's a change from before, when daphne came up
+  and the runtimes logged their own errors.
 - **Forks.** `os.register_at_fork(after_in_child=...)` logs CRITICAL in a child
   forked from a process that has the connection, and the child keeps the
   inherited connection object referenced and never uses or closes it. Closing
@@ -161,7 +180,14 @@ so there's still no new container.
   process, and its throttles are its own. It's a misconfiguration made safe,
   not a supported setup.
 - A lost lock that someone else picks up restarts the process, so its open
-  websockets drop and reconnect.
+  websockets drop and reconnect. So does a standby whose holder goes away, which
+  means with 2 processes running, the standby takes over within about 30s of the
+  active one dying. That's a side effect of the recovery above, not a supported
+  hot spare.
+- A daphne restart can take up to 35s longer to start the runtimes when its old
+  session is still in Postgres.
+- daphne won't start while the database is unreachable, it exits and
+  supervisord keeps restarting it.
 - The lock costs one extra Postgres connection per process and a `SELECT 1`
   every 30s.
 - The gunicorn and uvicorn dependencies stay in `pyproject.toml`, but prod

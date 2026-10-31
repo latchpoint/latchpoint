@@ -27,9 +27,11 @@ from config.runtime_lock import (
 )
 from config.runtimes import should_start_runtimes
 
-NAME_A = "latchpoint-runtime:host-a:101"
-NAME_B = "latchpoint-runtime:host-b:202"
-NAME_C = "latchpoint-runtime:host-c:303"
+NAME_A = "latchpoint-runtime:host-a:101:aaaaaa"
+NAME_B = "latchpoint-runtime:host-b:202:bbbbbb"
+NAME_C = "latchpoint-runtime:host-c:303:cccccc"
+# Another process on host-a: a sibling container with the same hostname, or this container's daphne before a restart.
+SIBLING = {"pid": 88, "application_name": "latchpoint-runtime:host-a:999:dddddd", "client_addr": None}
 OTHER_HOLDER = {"pid": 77, "application_name": "latchpoint-runtime:other:9", "client_addr": "10.0.0.5"}
 SERVER = ["daphne", "config.asgi:application"]
 
@@ -62,6 +64,7 @@ class _FakeConnection:
     def __init__(self, server: _FakeServer, *, backend_pid: int, application_name: str) -> None:
         self.server = server
         self.backend_pid = backend_pid
+        self.backend_start = f"2026-10-30 12:00:{backend_pid % 60:02d}+00"
         self.application_name = application_name
         self.autocommit = False
         self.closed = False
@@ -72,19 +75,21 @@ class _FakeConnection:
         return _FakeCursor(self)
 
     def answer(self, sql: str, params: list[Any] | None) -> Any:
+        if "pg_terminate_backend" in sql:
+            return (self.server.terminate(params[0]),)
         if "pg_backend_pid" in sql:
-            return (self.backend_pid,)
+            return (self.backend_pid, self.backend_start)
         if "pg_try_advisory_lock" in sql:
             return (self.server.try_lock(self),)
         if "pg_locks" in sql:
             return self.server.holder_row()
-        if "pg_terminate_backend" in sql:
-            return (self.server.terminate(params[0]),)
         return (1,)
 
     def close(self) -> None:
         self.closed = True
-        self.server.release(self)
+        # A close on a broken connection never reaches the server, so the session (and lock) stay there.
+        if not self.broken:
+            self.server.release(self)
 
 
 class _FakeServer:
@@ -97,6 +102,9 @@ class _FakeServer:
         self.connections: list[_FakeConnection] = []
         self.params: list[dict[str, Any]] = []
         self.fail_connects = 0
+        # When set, a dict holder goes away after this many more failed tries, ie Postgres dropping a dead session.
+        self.holder_gone_after_tries: int | None = None
+        self.terminated: list[int] = []
 
     def get_connection_params(self) -> dict[str, Any]:
         params: dict[str, Any] = {"dbname": "latchpoint"}
@@ -118,6 +126,12 @@ class _FakeServer:
     def try_lock(self, conn: _FakeConnection) -> bool:
         if self.holder is None:
             self.holder = conn
+        elif self.holder is not conn and self.holder_gone_after_tries is not None:
+            if self.holder_gone_after_tries <= 0:
+                self.holder = conn
+                self.holder_gone_after_tries = None
+            else:
+                self.holder_gone_after_tries -= 1
         return self.holder is conn
 
     def holder_row(self) -> tuple[Any, ...] | None:
@@ -125,8 +139,8 @@ class _FakeServer:
         if holder is None:
             return None
         if isinstance(holder, _FakeConnection):
-            return (holder.backend_pid, holder.application_name, None)
-        return (holder["pid"], holder["application_name"], holder["client_addr"])
+            return (holder.backend_pid, holder.application_name, None, holder.backend_start)
+        return (holder["pid"], holder["application_name"], holder["client_addr"], holder.get("backend_start"))
 
     def release(self, conn: _FakeConnection) -> None:
         if self.holder is conn:
@@ -137,7 +151,12 @@ class _FakeServer:
         conn.broken = True
         self.release(conn)
 
+    def lose(self, conn: _FakeConnection) -> None:
+        """The client loses the connection but Postgres still has the session, lock and all (ie a lost FIN)."""
+        conn.broken = True
+
     def terminate(self, pid: int) -> bool:
+        self.terminated.append(pid)
         holder = self.holder
         if isinstance(holder, dict) and holder["pid"] == pid:
             self.holder = None
@@ -159,6 +178,8 @@ class _FakeServerTestCase(SimpleTestCase):
         self._patch(patch.object(runtime_lock, "STALE_SESSION_RETRY_SECONDS", 0))
         self._patch(patch.object(runtime_lock, "STALE_SESSION_WAIT_SECONDS", 1))
         self._patch(patch.object(runtime_lock, "RECONNECT_RETRY_SECONDS", 0))
+        self._patch(patch.object(runtime_lock, "PREVIOUS_RUN_POLL_SECONDS", 0.001))
+        self._patch(patch.object(runtime_lock, "PREVIOUS_RUN_WAIT_SECONDS", 0.05))
         # So a stray one in the env can't add a deprecation warning to every test.
         self._patch(patch.dict(os.environ))
         for name in ("SCHEDULER_LEADER_LOCK_ENABLED", "SCHEDULER_LEADER_LOCK_ID"):
@@ -215,13 +236,41 @@ class RuntimeLockTests(_FakeServerTestCase):
 
         self.assertTrue(self.server.params[0]["options"].startswith("-c search_path=latchpoint -c tcp_keepalives"))
 
-    def test_default_application_name_has_the_host_and_pid(self):
+    def test_default_application_name_has_the_host_pid_and_a_boot_token(self):
         with patch.object(runtime_lock.socket, "gethostname", return_value="x" * 100):
             name = runtime_lock.default_application_name()
+            again = runtime_lock.default_application_name()
 
-        self.assertTrue(name.startswith("latchpoint-runtime:xxx"))
-        self.assertTrue(name.endswith(f":{os.getpid()}"))
+        prefix, host, pid, token = name.split(":")
+        self.assertEqual(prefix, "latchpoint-runtime")
+        self.assertTrue(host.startswith("xxx"))
+        self.assertEqual(pid, str(os.getpid()))
+        self.assertRegex(token, r"^[0-9a-f]{6}$")
         self.assertLessEqual(len(name), 63)
+        # Stable within the process.
+        self.assertEqual(again, name)
+
+    def test_boot_token_differs_per_process(self):
+        # Same pid, but a fresh process each time (an empty `_boot_tokens`), ie 2 sibling containers.
+        with (
+            patch.object(runtime_lock.os, "getpid", return_value=1),
+            patch.object(runtime_lock.secrets, "token_hex", side_effect=["aaaaaa", "ffffff"]),
+        ):
+            with patch.object(runtime_lock, "_boot_tokens", {}):
+                first = runtime_lock._boot_token()
+                self.assertEqual(runtime_lock._boot_token(), first)
+            with patch.object(runtime_lock, "_boot_tokens", {}):
+                second = runtime_lock._boot_token()
+
+        self.assertEqual((first, second), ("aaaaaa", "ffffff"))
+
+    def test_non_ascii_hostname_becomes_what_postgres_would_report(self):
+        # Postgres keeps only printable ASCII in an application_name, so the name is built that way already.
+        with patch.object(runtime_lock.socket, "gethostname", return_value="küche:1"):
+            name = runtime_lock.default_application_name()
+
+        self.assertTrue(name.startswith("latchpoint-runtime:k?che?1:"))
+        self.assertTrue(name.isascii())
 
     def test_held_elsewhere_starts_nothing_and_names_the_holder(self):
         self.server.holder = dict(OTHER_HOLDER)
@@ -287,22 +336,70 @@ class RuntimeLockTests(_FakeServerTestCase):
             self.make().get_status(), {"state": "disabled", "reason": "runtimes aren't started in this process"}
         )
 
-    def test_own_stale_session_is_terminated_and_the_lock_taken(self):
-        # Same application_name, ie this pid before a container restart, and Postgres hasn't noticed it's gone.
-        stale = {"pid": 55, "application_name": NAME_A, "client_addr": None}
-        self.server.holder = dict(stale)
-        lock = self.make()
-
-        with self.assertLogs("config.runtime_lock", "WARNING"):
-            self.assertTrue(lock.acquire_for_process())
-
-        self.assertIn(("SELECT pg_terminate_backend(%s)", [55]), self.server.connections[0].executed)
-
     def test_another_process_is_never_terminated(self):
         lock = self.lock_held_elsewhere()
 
-        self.assertFalse(any("pg_terminate_backend" in sql for sql, _ in self.server.connections[0].executed))
+        self.assertEqual(self.server.terminated, [])
         self.assertTrue(lock.is_held_elsewhere())
+
+    def test_holder_from_another_host_means_standby_right_away(self):
+        self.lock_held_elsewhere()
+
+        tries = [sql for sql, _ in self.server.connections[0].executed if "pg_try_advisory_lock" in sql]
+        self.assertEqual(len(tries), 1)
+
+
+class StartupHolderFromThisHostTests(_FakeServerTestCase):
+    """
+    A holder from this same host is most likely this container's daphne before supervisord restarted it, whose
+    session Postgres hasn't dropped yet. It's waited out for PREVIOUS_RUN_WAIT_SECONDS, never terminated.
+    """
+
+    def test_takes_the_lock_once_the_previous_run_goes_away(self):
+        self.server.holder = dict(SIBLING)
+        self.server.holder_gone_after_tries = 3
+        lock = self.make()
+
+        with self.assertLogs("config.runtime_lock", "WARNING") as logs:
+            self.assertTrue(lock.acquire_for_process())
+
+        self.assertEqual(lock.get_status()["state"], "active")
+        self.assertIn("latchpoint-runtime:host-a:999:dddddd", logs.output[0])
+        self.assertEqual(self.server.terminated, [])
+
+    def test_a_holder_that_stays_means_standby_and_is_never_terminated(self):
+        # ie a live sibling container with the same hostname.
+        self.server.holder = dict(SIBLING)
+        lock = self.make()
+
+        with self.assertLogs("config.runtime_lock", "WARNING") as logs:
+            self.assertFalse(lock.acquire_for_process())
+
+        self.assertEqual(lock.get_status(), {"state": "held_elsewhere", "holder": SIBLING})
+        self.assertEqual(self.server.terminated, [])
+        self.assertTrue(any("standby" in line for line in logs.output))
+
+    def test_same_host_and_pid_but_another_process(self):
+        # 2 containers whose hostname and pid match. Only the boot token tells their names apart, and neither ever
+        # terminates the other.
+        twin = {"pid": 66, "application_name": "latchpoint-runtime:host-a:101:eeeeee", "client_addr": None}
+        self.server.holder = dict(twin)
+        lock = self.make()
+
+        with self.assertLogs("config.runtime_lock", "WARNING"):
+            self.assertFalse(lock.acquire_for_process())
+
+        self.assertEqual(lock.get_status()["holder"], twin)
+        self.assertEqual(self.server.terminated, [])
+
+    def test_even_an_identical_name_is_never_terminated(self):
+        self.server.holder = {"pid": 66, "application_name": NAME_A, "client_addr": None}
+        lock = self.make()
+
+        with self.assertLogs("config.runtime_lock", "WARNING"):
+            self.assertFalse(lock.acquire_for_process())
+
+        self.assertEqual(self.server.terminated, [])
 
     def test_unreachable_database_at_startup_retries_then_raises(self):
         self.server.fail_connects = 99
@@ -330,6 +427,16 @@ class RuntimeLockTests(_FakeServerTestCase):
         lock.close()
 
         self.assertIsNone(self.server.holder)
+
+
+class TimingTests(SimpleTestCase):
+    def test_startup_waits_out_the_server_keepalives(self):
+        ka = runtime_lock.SERVER_KEEPALIVES
+        dropped_after = ka["tcp_keepalives_idle"] + ka["tcp_keepalives_interval"] * ka["tcp_keepalives_count"]
+
+        self.assertEqual(dropped_after, 25)
+        self.assertGreater(runtime_lock.PREVIOUS_RUN_WAIT_SECONDS, dropped_after)
+        self.assertLessEqual(runtime_lock.PREVIOUS_RUN_WAIT_SECONDS, 40)
 
 
 class HeartbeatTests(_FakeServerTestCase):
@@ -395,17 +502,142 @@ class HeartbeatTests(_FakeServerTestCase):
         self.assertIn("latchpoint-runtime:other:9", logs.output[0])
         self.exit.assert_not_called()
 
-    def test_standby_never_takes_the_lock(self):
+    def test_standby_checks_every_tick_and_exits_once_the_lock_is_free(self):
+        # Right after startup, well inside the 5 minutes between ERROR lines, so this is the check, not the log.
         lock = self.lock_held_elsewhere()
+        with self.assertNoLogs("config.runtime_lock", "ERROR"):
+            lock.heartbeat_once()
+        self.exit.assert_not_called()
         self.server.holder = None
-        lock._last_holder_log = time.monotonic() - runtime_lock.HOLDER_LOG_SECONDS - 1
 
-        with self.assertLogs("config.runtime_lock", "ERROR") as logs:
+        with self.assertLogs("config.runtime_lock", "CRITICAL") as logs:
             lock.heartbeat_once()
 
+        self.exit.assert_called_once_with(1)
         self.assertIn("free now", logs.output[0])
+        # It exits to take the lock when it comes back, it doesn't take it here.
         self.assertIsNone(self.server.holder)
+
+    def test_false_standby_behind_a_lingering_session_recovers(self):
+        # Startup found this container's previous daphne still holding the lock and it outlasted the wait, ie
+        # Postgres was slower than usual dropping it. Once it's gone the standby exits and comes back to take it.
+        self.server.holder = dict(SIBLING)
+        lock = self.make()
+        with self.assertLogs("config.runtime_lock", "WARNING"):
+            self.assertFalse(lock.acquire_for_process())
+        self.server.holder = None
+
+        with self.assertLogs("config.runtime_lock", "CRITICAL"):
+            lock.heartbeat_once()
+
+        self.exit.assert_called_once_with(1)
+        self.assertEqual(self.server.terminated, [])
+
+    def test_standby_reconnects_when_its_connection_is_gone(self):
+        lock = self.lock_held_elsewhere()
+        self.server.kill(self.server.connections[0])
+
+        lock.heartbeat_once()
+        lock.heartbeat_once()
+
+        self.assertEqual(len(self.server.params), 2)
+        self.exit.assert_not_called()
         self.assertTrue(lock.is_held_elsewhere())
+
+
+class HeartbeatTerminatesOnlyItsOwnLostSessionTests(_FakeServerTestCase):
+    """The only session the heartbeat ever terminates is the exact one it lost, matched on backend pid and start."""
+
+    def test_lost_session_postgres_still_has_is_terminated(self):
+        lock = self.make()
+        lock.acquire_for_process()
+        old = self.server.connections[0]
+        self.server.lose(old)
+
+        with self.assertLogs("config.runtime_lock", "WARNING") as logs:
+            lock.heartbeat_once()
+
+        self.assertEqual(self.server.terminated, [old.backend_pid])
+        self.assertTrue(any("just lost" in line for line in logs.output))
+        self.assertEqual(lock.get_status()["state"], "active")
+        self.assertIs(self.server.holder, self.server.connections[1])
+        self.exit.assert_not_called()
+
+    def test_matched_by_session_even_if_postgres_rewrote_the_name(self):
+        lock = self.make()
+        lock.acquire_for_process()
+        old = self.server.connections[0]
+        old.application_name = "latchpoint-runtime:k\\xc3\\xbcche:101:aaaaaa"
+        self.server.lose(old)
+
+        with self.assertLogs("config.runtime_lock", "WARNING"):
+            lock.heartbeat_once()
+
+        self.assertEqual(self.server.terminated, [old.backend_pid])
+        self.assertEqual(lock.get_status()["state"], "active")
+
+    def test_sibling_on_the_same_host_is_never_terminated(self):
+        lock = self.make()
+        lock.acquire_for_process()
+        self.server.kill(self.server.connections[0])
+        self.server.holder = dict(SIBLING)
+
+        with self.assertLogs("config.runtime_lock", "CRITICAL"):
+            lock.heartbeat_once()
+
+        self.assertEqual(self.server.terminated, [])
+        self.exit.assert_called_once_with(1)
+
+    def test_holder_with_our_name_but_another_session_is_never_terminated(self):
+        # A twin with the same hostname and pid that somehow has our exact name too.
+        lock = self.make()
+        lock.acquire_for_process()
+        self.server.kill(self.server.connections[0])
+        self.server.holder = {"pid": 66, "application_name": NAME_A, "client_addr": None}
+
+        with self.assertLogs("config.runtime_lock", "CRITICAL"):
+            lock.heartbeat_once()
+
+        self.assertEqual(self.server.terminated, [])
+        self.exit.assert_called_once_with(1)
+
+    def test_same_backend_pid_but_a_later_session_is_never_terminated(self):
+        lock = self.make()
+        lock.acquire_for_process()
+        old = self.server.connections[0]
+        self.server.kill(old)
+        self.server.holder = {
+            "pid": old.backend_pid,
+            "application_name": SIBLING["application_name"],
+            "client_addr": None,
+            "backend_start": "2026-10-30 12:05:00+00",
+        }
+
+        with self.assertLogs("config.runtime_lock", "CRITICAL"):
+            lock.heartbeat_once()
+
+        self.assertEqual(self.server.terminated, [])
+
+    def test_twins_stay_apart_and_only_one_ends_up_active(self):
+        # Same hostname and pid, ie 2 containers started the same way. Before the fix each one terminated the
+        # other's session as its own and both stayed active.
+        a = self.make("latchpoint-runtime:host-a:101:aaaaaa")
+        b = self.make("latchpoint-runtime:host-a:101:bbbbbb")
+        self.assertTrue(a.acquire_for_process())
+        with self.assertLogs("config.runtime_lock", "WARNING"):
+            self.assertFalse(b.acquire_for_process())
+
+        # a's connection drops but Postgres keeps the session, so a gets it back by terminating only that.
+        self.server.lose(self.server.connections[0])
+        with self.assertLogs("config.runtime_lock", "WARNING"):
+            a.heartbeat_once()
+        b.heartbeat_once()
+
+        self.assertEqual(a.get_status()["state"], "active")
+        self.assertEqual(b.get_status()["state"], "held_elsewhere")
+        self.assertEqual(b.get_status()["holder"]["application_name"], "latchpoint-runtime:host-a:101:aaaaaa")
+        self.assertEqual(self.server.terminated, [self.server.connections[0].backend_pid])
+        self.exit.assert_not_called()
 
     def test_heartbeat_thread_runs_the_ticks(self):
         lock = RuntimeLock(application_name=NAME_A)
@@ -671,6 +903,8 @@ class PostgresRuntimeLockTests(SimpleTestCase):
             patch.object(runtime_lock.os, "register_at_fork"),
             patch.object(runtime_lock, "STALE_SESSION_RETRY_SECONDS", 0.1),
             patch.object(runtime_lock, "RECONNECT_RETRY_SECONDS", 0.1),
+            patch.object(runtime_lock, "PREVIOUS_RUN_WAIT_SECONDS", 5),
+            patch.object(runtime_lock, "PREVIOUS_RUN_POLL_SECONDS", 0.1),
         ):
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -771,9 +1005,65 @@ class PostgresRuntimeLockTests(SimpleTestCase):
             a.heartbeat_once()
 
         exit_.assert_not_called()
-        self.assertTrue(any("old session of this process" in line for line in logs.output))
+        self.assertTrue(any("just lost" in line for line in logs.output))
         self.assertEqual(a.get_status()["state"], "active")
         self._wait_gone(old_pid)
+
+    def test_startup_waits_out_a_previous_run_from_this_host(self):
+        previous = self.make("latchpoint-runtime:pg-host:1111111:zzzzzz")
+        self.assertTrue(previous.acquire_for_process())
+        # Postgres drops it a moment later, the way the server keepalives would.
+        threading.Timer(0.5, previous.close).start()
+        restarted = self.make("latchpoint-runtime:pg-host:2222222:yyyyyy")
+
+        with self.assertLogs("config.runtime_lock", "WARNING"):
+            self.assertTrue(restarted.acquire_for_process())
+
+        self.assertEqual(restarted.get_status()["state"], "active")
+
+    def test_startup_never_terminates_a_holder_from_this_host(self):
+        sibling = self.make("latchpoint-runtime:pg-host:1111111:zzzzzz")
+        sibling.acquire_for_process()
+        sibling_pid = sibling._backend_pid
+
+        with patch.object(runtime_lock, "PREVIOUS_RUN_WAIT_SECONDS", 0.5), self.assertLogs("config.runtime_lock"):
+            self.assertFalse(self.make("latchpoint-runtime:pg-host:2222222:yyyyyy").acquire_for_process())
+
+        sibling._ping()
+        self.assertEqual(sibling._backend_pid, sibling_pid)
+
+    def test_standby_exits_once_the_holder_is_gone(self):
+        holder = self.make(NAME_A)
+        holder.acquire_for_process()
+        standby = self.make(NAME_B)
+        with self.assertLogs("config.runtime_lock", "ERROR"):
+            standby.acquire_for_process()
+
+        with patch.object(runtime_lock.os, "_exit") as exit_:
+            standby.heartbeat_once()
+            exit_.assert_not_called()
+            holder.close()
+            with self.assertLogs("config.runtime_lock", "CRITICAL"):
+                standby.heartbeat_once()
+
+        exit_.assert_called_once_with(1)
+
+    def test_twins_with_the_same_host_and_pid_stay_apart(self):
+        a = self.make("latchpoint-runtime:pg-host:101:aaaaaa")
+        b = self.make("latchpoint-runtime:pg-host:101:bbbbbb")
+        self.assertTrue(a.acquire_for_process())
+        with patch.object(runtime_lock, "PREVIOUS_RUN_WAIT_SECONDS", 0.5), self.assertLogs("config.runtime_lock"):
+            self.assertFalse(b.acquire_for_process())
+        a_pid = a._backend_pid
+
+        with patch.object(runtime_lock.os, "_exit") as exit_:
+            a.heartbeat_once()
+            b.heartbeat_once()
+
+        exit_.assert_not_called()
+        a._ping()
+        self.assertEqual(a._backend_pid, a_pid)
+        self.assertEqual(b.get_status()["holder"]["pid"], a_pid)
 
     @unittest.skipUnless(hasattr(os, "fork"), "needs fork")
     def test_forked_child_leaves_the_parents_lock_alone(self):

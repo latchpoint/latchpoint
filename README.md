@@ -295,7 +295,9 @@ process local.
 On Postgres this is enforced with an advisory lock. A second process against
 the same database starts as a standby that serves HTTP but runs no
 integrations, and logs an ERROR naming the process that holds the lock every
-5 minutes. `RUNTIME_LOCK=off` turns the check off. See
+5 minutes. Once the lock is free it exits so supervisord restarts it and it
+takes the lock. The app won't start while the database is unreachable, it
+exits and supervisord retries. `RUNTIME_LOCK=off` turns the check off. See
 [ADR-0112](docs/adr/0112-one-runtime-process-per-database.md).
 
 ### Timezone
