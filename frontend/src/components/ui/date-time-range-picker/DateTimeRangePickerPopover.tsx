@@ -27,6 +27,8 @@ type Props = {
   startDate: Date | null
   endDate: Date | null
   onClose: () => void
+  /** Whether Clear is offered. Off for a range that has to keep its end. */
+  clearable?: boolean
 }
 
 export function DateTimeRangePickerPopover({
@@ -39,6 +41,7 @@ export function DateTimeRangePickerPopover({
   startDate,
   endDate,
   onClose,
+  clearable = true,
 }: Props) {
   const calendarDays = (() => {
     const start = startOfWeek(startOfMonth(month))
@@ -132,7 +135,7 @@ export function DateTimeRangePickerPopover({
       </div>
 
       <div className="mt-3 flex items-center justify-between gap-2">
-        <Button type="button" variant="secondary" onClick={clear} disabled={disabled}>
+        <Button type="button" variant="secondary" onClick={clear} disabled={disabled || !clearable}>
           Clear
         </Button>
         <Button type="button" onClick={onClose} disabled={disabled}>

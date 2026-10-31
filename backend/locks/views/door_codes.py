@@ -16,6 +16,7 @@ from locks.serializers import (
     DoorCodeUpdateSerializer,
 )
 from locks.use_cases import door_codes as door_codes_uc
+from locks.use_cases.lock_push import PendingClearsPrefetch
 
 
 class DoorCodesView(APIView):
@@ -29,10 +30,11 @@ class DoorCodesView(APIView):
         """List door codes for the current user (or another user when admin + user_id)."""
         user_id = request.query_params.get("user_id")
         target_user = door_codes_uc.resolve_list_target_user(actor_user=request.user, requested_user_id=user_id)
-        codes = door_codes_uc.list_door_codes_for_user(user=target_user)
-        return Response(
-            DoorCodeSerializer(codes, many=True, context={"request": request}).data, status=status.HTTP_200_OK
-        )
+        codes = list(door_codes_uc.list_door_codes_for_user(user=target_user))
+        # The clear and unconfirmed-attempt events for the whole page in a few
+        # queries, instead of a few per code (issue #170).
+        context = {"request": request, "pending_clears_prefetch": PendingClearsPrefetch(codes)}
+        return Response(DoorCodeSerializer(codes, many=True, context=context).data, status=status.HTTP_200_OK)
 
     def post(self, request):
         """Create a door code for a target user (admin-only, requires re-auth)."""
@@ -67,7 +69,8 @@ class DoorCodesView(APIView):
             actor_user=request.user,
             zwavejs=default_zwavejs_gateway,
         )
-        code = DoorCode.objects.select_related("user").prefetch_related("lock_assignments").get(id=code.id)
+        # A 404 rather than a 500 if it was deleted meanwhile (issue #189).
+        code = door_codes_uc.get_door_code_for_read(code_id=code.id)
         return Response(DoorCodeSerializer(code, context={"request": request}).data, status=status.HTTP_201_CREATED)
 
 
@@ -107,7 +110,8 @@ class DoorCodeDetailView(ObjectPermissionMixin, APIView):
             actor_user=request.user,
             zwavejs=default_zwavejs_gateway,
         )
-        code = DoorCode.objects.select_related("user").prefetch_related("lock_assignments").get(id=code.id)
+        # A 404 rather than a 500 if it was deleted meanwhile (issue #189).
+        code = door_codes_uc.get_door_code_for_read(code_id=code.id)
         return Response(DoorCodeSerializer(code, context={"request": request}).data, status=status.HTTP_200_OK)
 
     def delete(self, request, code_id: int):

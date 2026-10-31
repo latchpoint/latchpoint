@@ -408,15 +408,15 @@ describe('DoorCodePushStatusBadge', () => {
     expect(screen.queryByRole('button', { name: /Retry/ })).toBeNull()
   })
 
-  it('shows Pending sync with no Retry or clear hint for an inactive synced pending code', () => {
-    // Lock sync leaves synced codes at the default pending, so this isn't a clear,
-    // even with a clear on record.
+  it('shows Pending sync with no Retry or clear hint for an inactive synced pending code with nothing to clear', () => {
+    // Lock sync leaves synced codes at the default pending, and with no clear on
+    // record there's nothing for Retry to do.
     const code = makeCode({
       source: 'synced',
       isActive: false,
       pushState: 'pending',
       lockSlotAssignments: [{ lockEntityId: 'lock.front_door', slotIndex: 3, pendingRemoval: false }],
-      pendingSlotClears: [clearOf(3)],
+      pendingSlotClears: [],
     })
 
     renderWithProviders(
@@ -435,8 +435,68 @@ describe('DoorCodePushStatusBadge', () => {
     expect(screen.queryByRole('button', { name: /Retry/ })).toBeNull()
   })
 
-  it('shows Push failed with no Retry or clear hint for an inactive synced failed code', () => {
-    const code = makeCode({ source: 'synced', isActive: false, pushState: 'failed', lastPushError: 'boom' })
+  it('shows Pending clear with Retry for a synced code turned off whose clear failed', () => {
+    // #189: a synced code with an end date can be turned off from latchpoint now,
+    // and a clear that fails there is retried like a manual code's.
+    const code = makeCode({
+      source: 'synced',
+      isActive: false,
+      pushState: 'pending',
+      lastPushError: 'Slot 3 on lock.front_door may still hold the PIN',
+      lockSlotAssignments: [{ lockEntityId: 'lock.front_door', slotIndex: 3, pendingRemoval: false }],
+      pendingSlotClears: [clearOf(3)],
+    })
+
+    renderWithProviders(
+      <DoorCodePushStatusBadge
+        code={code}
+        lockNameByEntityId={lockNames}
+        canRetry
+        isRetrying={false}
+        onRetry={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByText('Pending clear')).toBeTruthy()
+    expect(screen.queryByText('Pending sync')).toBeNull()
+    expect(screen.getByText(/the PIN may still be on a lock, retried automatically/)).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Retry now' })).toBeTruthy()
+  })
+
+  it('shows Clear failed with Retry for a synced code whose clear hit the attempt cap', () => {
+    // Past the cap only Retry clears it, so it has to be offered.
+    const code = makeCode({
+      source: 'synced',
+      isActive: false,
+      pushState: 'failed',
+      lastPushError: 'Push gave up after 24 attempts',
+      lockSlotAssignments: [{ lockEntityId: 'lock.front_door', slotIndex: 3, pendingRemoval: false }],
+      pendingSlotClears: [clearOf(3)],
+    })
+
+    renderWithProviders(
+      <DoorCodePushStatusBadge
+        code={code}
+        lockNameByEntityId={lockNames}
+        canRetry
+        isRetrying={false}
+        onRetry={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByText(/^Clear failed/)).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeTruthy()
+    expect(screen.getByText(/Retry tries the clear again/)).toBeTruthy()
+  })
+
+  it('shows Push failed with no Retry or clear hint for an inactive synced failed code with nothing to clear', () => {
+    const code = makeCode({
+      source: 'synced',
+      isActive: false,
+      pushState: 'failed',
+      lastPushError: 'boom',
+      pendingSlotClears: [],
+    })
 
     renderWithProviders(
       <DoorCodePushStatusBadge
@@ -502,6 +562,30 @@ describe('DoorCodePushStatusBadge', () => {
 
     expect(screen.getByText('Push failed: boom')).toBeTruthy()
     expect(screen.getByRole('button', { name: /^Retry$/ })).toBeTruthy()
+  })
+
+  it('keeps the badge for a code whose only lock is being removed', () => {
+    // #171: that lock isn't in lockEntityIds any more, only in lockSlotAssignments.
+    const code = makeCode({
+      pushState: 'pending',
+      lastPushError: 'Slot 1 on lock.front_door may still hold the PIN',
+      lockEntityIds: [],
+      lockSlotAssignments: [{ lockEntityId: 'lock.front_door', slotIndex: 1, pendingRemoval: true }],
+      pendingSlotClears: [{ lockEntityId: 'lock.front_door', slotIndex: 1, removing: true }],
+    })
+
+    const { container } = renderWithProviders(
+      <DoorCodePushStatusBadge
+        code={code}
+        lockNameByEntityId={lockNames}
+        canRetry
+        isRetrying={false}
+        onRetry={vi.fn()}
+      />,
+    )
+
+    expect(container.firstChild).not.toBeNull()
+    expect(screen.getByText(/Pending/)).toBeTruthy()
   })
 
   it('renders nothing when the code has no lock assignments', () => {

@@ -299,12 +299,33 @@ describe('DoorCodeEditContainer', () => {
       expect(lockCheckbox('lock.d')).toBeChecked()
       expect(notice()).toBeEmptyDOMElement()
 
+      // Only the user's change goes out (#159).
       const req = await savedRequest(onUpdate)
-      expect([...(req.lockEntityIds ?? [])].sort()).toEqual(['lock.a', 'lock.d'])
+      expect(req).toEqual({ reauthPassword: 'pw', addLockEntityIds: ['lock.d'] })
+    })
+
+    it("sends only the user's lock changes, not the locks this tab last fetched", async () => {
+      // #159: another tab removed lock B and this tab never refetched, so it
+      // still shows A and B. Sending its whole set would put B back.
+      const onUpdate = vi.fn().mockResolvedValue(undefined)
+      renderForm(withLocks(['lock.a', 'lock.b']), { onUpdate, locks: LOCKS })
+      expect(await screen.findByDisplayValue('Front')).toBeTruthy()
+
+      fireEvent.click(lockCheckbox('lock.d'))
+      fireEvent.click(lockCheckbox('lock.a'))
+
+      const req = await savedRequest(onUpdate)
+      expect(req).toEqual({
+        reauthPassword: 'pw',
+        addLockEntityIds: ['lock.d'],
+        removeLockEntityIds: ['lock.a'],
+      })
+      expect(req).not.toHaveProperty('lockEntityIds')
     })
 
     // #151: Lock B was unticked and saved, but its slot clear failed, so it's still
-    // listed until the clear works.
+    // on the code with pendingRemoval until the clear works. Older APIs also
+    // listed it in lockEntityIds, which the form has to handle the same (#171).
     const withBRemoving = () =>
       makeCode({
         lockEntityIds: ['lock.a', 'lock.b'],
@@ -330,7 +351,20 @@ describe('DoorCodeEditContainer', () => {
 
       // Sending lock B again would keep it on the code.
       const req = await savedRequest(onUpdate)
-      expect([...(req.lockEntityIds ?? [])].sort()).toEqual(['lock.a', 'lock.d'])
+      expect(req).toEqual({ reauthPassword: 'pw', addLockEntityIds: ['lock.d'] })
+    })
+
+    it('treats a lock being removed the same when the API leaves it out of lockEntityIds (#171)', async () => {
+      const onUpdate = vi.fn().mockResolvedValue(undefined)
+      renderForm({ ...withBRemoving(), lockEntityIds: ['lock.a'] }, { onUpdate, locks: LOCKS })
+      expect(await screen.findByDisplayValue('Front')).toBeTruthy()
+      expect(lockCheckbox('lock.a')).toBeChecked()
+      expect(lockCheckbox('lock.b')).not.toBeChecked()
+
+      fireEvent.click(lockCheckbox('lock.b'))
+
+      const req = await savedRequest(onUpdate)
+      expect(req).toEqual({ reauthPassword: 'pw', addLockEntityIds: ['lock.b'] })
     })
 
     it("doesn't send the locks at all when only another field was edited", async () => {
@@ -351,7 +385,7 @@ describe('DoorCodeEditContainer', () => {
       fireEvent.click(lockCheckbox('lock.b'))
 
       const req = await savedRequest(onUpdate)
-      expect([...(req.lockEntityIds ?? [])].sort()).toEqual(['lock.a', 'lock.b'])
+      expect(req).toEqual({ reauthPassword: 'pw', addLockEntityIds: ['lock.b'] })
     })
 
     it('leaves the removed lock off once its clear works', async () => {
@@ -366,7 +400,7 @@ describe('DoorCodeEditContainer', () => {
       expect(lockCheckbox('lock.b')).not.toBeChecked()
       expect(notice()).toBeEmptyDOMElement()
       const req = await savedRequest(onUpdate)
-      expect([...(req.lockEntityIds ?? [])].sort()).toEqual(['lock.a', 'lock.d'])
+      expect(req).toEqual({ reauthPassword: 'pw', addLockEntityIds: ['lock.d'] })
     })
 
     it('keeps a lock the user removed off when the server adds a different one', async () => {
@@ -381,8 +415,9 @@ describe('DoorCodeEditContainer', () => {
       expect(lockCheckbox('lock.a')).not.toBeChecked()
       expect(lockCheckbox('lock.b')).toBeChecked()
 
+      // The server's new lock D isn't sent back, only the user's removal of A.
       const req = await savedRequest(onUpdate)
-      expect([...(req.lockEntityIds ?? [])].sort()).toEqual(['lock.b', 'lock.d'])
+      expect(req).toEqual({ reauthPassword: 'pw', removeLockEntityIds: ['lock.a'] })
     })
   })
 
@@ -548,10 +583,10 @@ describe('DoorCodeEditContainer', () => {
     await waitFor(() => expect(notice()).toHaveTextContent(`Label changed on the server. ${KEPT}`))
 
     const req = await savedRequest(onUpdate)
-    expect({ ...req, lockEntityIds: [...(req.lockEntityIds ?? [])].sort() }).toEqual({
+    expect(req).toEqual({
       reauthPassword: 'pw',
       label: 'Back door',
-      lockEntityIds: ['lock.a', 'lock.d'],
+      addLockEntityIds: ['lock.d'],
     })
   })
 })

@@ -2,6 +2,7 @@ import type { DoorCode } from '@/types'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { isLockAwaitingPush, isLockQueued } from '@/hooks/useDoorCodesQueries'
+import { codeLockEntityIds } from '@/features/doorCodes/utils/codeLocks'
 
 type Props = {
   code: DoorCode
@@ -60,21 +61,26 @@ function otherLockErrors(
 // The backend never pushes an inactive code. pendingSlotClears lists the slots
 // it still has to clear for one (#151): a clear that failed, a slot the code
 // still holds, or an unconfirmed slot left to check. The scheduler and Retry
-// clear those, so an inactive manual code with any shows Pending clear (Clear
+// clear those, so an inactive code with any shows Pending clear (Clear
 // failed once the clear hit the attempt cap), whatever its push state. An
 // inactive code without any gets no Retry, since Retry would only come back
 // with a 409.
 export function DoorCodePushStatusBadge({ code, lockNameByEntityId, canRetry, isRetrying, onRetry }: Props) {
-  // Synced codes don't count. Their slots are the lock's own and lock sync turns
-  // them off without touching push_state (#149), so Retry would only 409.
-  const clearing = !code.isActive && code.source !== 'synced' && (code.pendingSlotClears?.length ?? 0) > 0
-  if (!code.lockEntityIds?.length && !clearing) return null
+  // Synced codes count too. The backend only lists a synced code's clears that
+  // really failed (a lock sync turning one off leaves none, #149), which happens
+  // once one with an end date is turned off from here (#189). Those get retried
+  // and capped like a manual code's, and past the cap only Retry clears them.
+  const clearing = !code.isActive && (code.pendingSlotClears?.length ?? 0) > 0
+  // A lock still being removed counts, so a code whose only lock is mid-removal
+  // keeps its badge (#171).
+  const lockCount = codeLockEntityIds(code).length
+  if (!lockCount && !clearing) return null
 
   // An active code is only on its locks from its start to its end (#145). The
   // scheduler pushes it at the start and turns it off at the end, so neither
   // gets a Retry, except a scheduled code whose clear hit the attempt cap: only
   // Retry clears that. Once it's off the states below take over.
-  const multiLock = (code.lockEntityIds?.length ?? 0) > 1
+  const multiLock = lockCount > 1
   if (code.isActive && code.validity === 'scheduled') {
     const pendingClears = (code.pendingSlotClears?.length ?? 0) > 0
     if (code.pushState === 'failed' && pendingClears) {

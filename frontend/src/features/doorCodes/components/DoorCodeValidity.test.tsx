@@ -298,6 +298,40 @@ describe('edit form', () => {
     expect(activeSwitch()).not.toBeDisabled()
     expect(screen.queryByText(/Expired/)).toBeNull()
   })
+
+  // #184: the API takes dates on one-time codes, so one retired at its end
+  // needs its active window on the form to come back on.
+  const expiredOneTime = () =>
+    makeCode({
+      ...expiredOff(),
+      codeType: 'one_time',
+      daysOfWeek: null,
+    })
+
+  it('shows the active window for a one-time code, without the schedule', () => {
+    renderEditForm(expiredOneTime())
+
+    expect(screen.getByText('Active date range (optional)')).toBeTruthy()
+    expect(screen.getByRole('button', { name: /→/ })).not.toBeDisabled()
+    expect(screen.queryByText('Days of week')).toBeNull()
+    expect(activeSwitch()).toBeDisabled()
+  })
+
+  it('lets an expired one-time code be turned back on by changing its window', async () => {
+    const onUpdate = renderEditForm(expiredOneTime())
+
+    fireEvent.click(screen.getByRole('button', { name: /→/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Clear' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Done' }))
+
+    expect(activeSwitch()).not.toBeDisabled()
+    fireEvent.click(activeSwitch())
+    fireEvent.change(screen.getByLabelText(/Re-authenticate/), { target: { value: 'pw' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => expect(onUpdate).toHaveBeenCalledTimes(1))
+    expect(onUpdate.mock.calls[0][1]).toEqual({ reauthPassword: 'pw', isActive: true, startAt: null, endAt: null })
+  })
 })
 
 describe('edit form for a synced code', () => {
@@ -312,27 +346,80 @@ describe('edit form for a synced code', () => {
       startAt: '2026-10-01T12:00:00Z',
       endAt: '2026-10-02T12:00:00Z',
     })
+  const expiredManual = () =>
+    makeCode({
+      validity: 'expired',
+      isActive: false,
+      pushState: 'pushed',
+      startAt: '2026-10-01T12:00:00Z',
+      endAt: '2026-10-02T12:00:00Z',
+    })
 
   it('shows the active window and lets a retired synced code be turned back on', async () => {
+    // Its stored end is in the past. The clock is put before it so moving the
+    // end's time counts as a later end, without picking a day in the calendar.
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date('2026-09-01T12:00:00Z'))
+    try {
+      const onUpdate = renderEditForm(retiredSynced())
+
+      expect(screen.getByText(/Its active window can be changed \(but not cleared\) and it can be turned on or off/)).toBeTruthy()
+      // Its schedule is still the lock's.
+      expect(screen.queryByText('Days of week')).toBeNull()
+      expect(activeSwitch()).toBeDisabled()
+      expect(screen.getByText('(Expired, set a later end for the active window to turn it on)')).toBeTruthy()
+
+      fireEvent.click(screen.getByRole('button', { name: /→/ }))
+      const untilInput = screen.getByText('Until').parentElement!.querySelector('input')!
+      fireEvent.change(untilInput, { target: { value: untilInput.value === '01:00' ? '02:00' : '01:00' } })
+      fireEvent.click(screen.getByRole('button', { name: 'Done' }))
+
+      expect(activeSwitch()).not.toBeDisabled()
+      fireEvent.click(activeSwitch())
+      fireEvent.change(screen.getByLabelText(/Re-authenticate/), { target: { value: 'pw' } })
+      fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+
+      await waitFor(() => expect(onUpdate).toHaveBeenCalledTimes(1))
+      const req = onUpdate.mock.calls[0][1]
+      expect(req).toEqual({ reauthPassword: 'pw', isActive: true, startAt: expect.any(String), endAt: expect.any(String) })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("doesn't offer clearing a synced code's window or call it optional", () => {
+    // #189: without an end date it would be stuck however it was left.
+    renderEditForm(retiredSynced())
+
+    expect(screen.getByText('Active date range')).toBeTruthy()
+    expect(screen.queryByText('Active date range (optional)')).toBeNull()
+    expect(screen.getByText('Active window')).toBeTruthy()
+    expect(screen.queryByText('Active window (optional)')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: /→/ }))
+    expect(screen.getByRole('button', { name: 'Clear' })).toBeDisabled()
+  })
+
+  it('keeps the window optional and clearable for a manual code', () => {
+    renderEditForm(expiredManual())
+
+    expect(screen.getByText('Active date range (optional)')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: /→/ }))
+    expect(screen.getByRole('button', { name: 'Clear' })).not.toBeDisabled()
+  })
+
+  it("won't save a synced code whose end date was dropped", async () => {
+    // Picking a new start day drops the end in the picker, so the form checks it too.
     const onUpdate = renderEditForm(retiredSynced())
 
-    expect(screen.getByText(/Its active window can be changed and it can be turned back on/)).toBeTruthy()
-    // Its schedule is still the lock's.
-    expect(screen.queryByText('Days of week')).toBeNull()
-    expect(activeSwitch()).toBeDisabled()
-    expect(screen.getByText('(Expired, set a later end for the active window to turn it on)')).toBeTruthy()
-
     fireEvent.click(screen.getByRole('button', { name: /→/ }))
-    fireEvent.click(screen.getByRole('button', { name: 'Clear' }))
+    fireEvent.click(screen.getByRole('button', { name: '15' }))
     fireEvent.click(screen.getByRole('button', { name: 'Done' }))
-
-    expect(activeSwitch()).not.toBeDisabled()
     fireEvent.click(activeSwitch())
     fireEvent.change(screen.getByLabelText(/Re-authenticate/), { target: { value: 'pw' } })
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
 
-    await waitFor(() => expect(onUpdate).toHaveBeenCalledTimes(1))
-    expect(onUpdate.mock.calls[0][1]).toEqual({ reauthPassword: 'pw', isActive: true, startAt: null, endAt: null })
+    expect(await screen.findByText("A synced code's active window needs an end.")).toBeTruthy()
+    expect(onUpdate).not.toHaveBeenCalled()
   })
 
   it('only sends the label for a retired synced code when nothing else changed', async () => {
@@ -345,11 +432,33 @@ describe('edit form for a synced code', () => {
     expect(onUpdate.mock.calls[0][1]).toEqual({ reauthPassword: 'pw' })
   })
 
-  it('keeps an active synced code, or one without an end date, controlled by lock sync', () => {
-    renderEditForm(makeCode({ source: 'synced', codeType: 'temporary', endAt: '2026-12-02T12:00:00Z' }))
+  it('lets an active synced code with an end date be turned off', async () => {
+    // #189: once it's back on it isn't stuck on, even while it waits on its start.
+    const onUpdate = renderEditForm(
+      makeCode({
+        source: 'synced',
+        codeType: 'temporary',
+        validity: 'scheduled',
+        startAt: '2026-12-01T12:00:00Z',
+        endAt: '2026-12-02T12:00:00Z',
+      }),
+    )
+    expect(activeSwitch()).not.toBeDisabled()
+    expect(screen.queryByText('(Controlled by lock sync)')).toBeNull()
+    expect(screen.getByRole('button', { name: /→/ })).not.toBeDisabled()
+
+    fireEvent.click(activeSwitch())
+    fireEvent.change(screen.getByLabelText(/Re-authenticate/), { target: { value: 'pw' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => expect(onUpdate).toHaveBeenCalledTimes(1))
+    expect(onUpdate.mock.calls[0][1]).toEqual({ reauthPassword: 'pw', isActive: false })
+  })
+
+  it('keeps a synced code without an end date controlled by lock sync', () => {
+    renderEditForm(makeCode({ source: 'synced', codeType: 'temporary' }))
     expect(activeSwitch()).toBeDisabled()
     expect(screen.getByText('(Controlled by lock sync)')).toBeTruthy()
-    expect(screen.getByRole('button', { name: /→/ })).toBeDisabled()
     cleanup()
 
     renderEditForm(makeCode({ source: 'synced', codeType: 'permanent', isActive: false, pushState: 'pushed' }))
@@ -398,5 +507,21 @@ describe('isDoorCodeSettling', () => {
     expect(
       isDoorCodeSettling(makeCode({ validity: 'expired', isActive: false, pushState: 'pushed', lockSlotAssignments: noSlot })),
     ).toBe(false)
+  })
+})
+
+describe('card active window', () => {
+  it('shows the active window of a one-time code with dates, without the days', () => {
+    // #184: the API can give one-time codes dates.
+    renderCard(makeCode({ codeType: 'one_time', daysOfWeek: null, startAt: START, endAt: '2026-11-02T12:00:00Z' }))
+
+    expect(screen.getByText(/Active window:/)).toBeTruthy()
+    expect(screen.queryByText(/Days:/)).toBeNull()
+  })
+
+  it("doesn't show an active window for a code without dates", () => {
+    renderCard(makeCode({ codeType: 'one_time', daysOfWeek: null }))
+
+    expect(screen.queryByText(/Active window:/)).toBeNull()
   })
 })

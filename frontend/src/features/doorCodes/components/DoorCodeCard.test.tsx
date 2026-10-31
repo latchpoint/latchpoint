@@ -183,6 +183,45 @@ describe('DoorCodeCard', () => {
     expect(screen.getByText('lock.back_door')).toBeTruthy()
   })
 
+  it('still shows a lock being removed when the API leaves it out of lockEntityIds', () => {
+    // #171: lockEntityIds doesn't list it, lockSlotAssignments does.
+    const code = makeCode({
+      lockEntityIds: ['lock.back_door'],
+      lockSlotAssignments: [
+        { lockEntityId: 'lock.back_door', slotIndex: 2, pendingRemoval: false },
+        { lockEntityId: 'lock.front_door', slotIndex: 1, pendingRemoval: true },
+      ],
+      pendingSlotClears: [{ lockEntityId: 'lock.front_door', slotIndex: 1, removing: true }],
+    })
+
+    renderWithProviders(<CardWithRetry code={code} />)
+
+    expect(screen.getByText('Front Door (removing)')).toBeTruthy()
+    expect(screen.getByText('lock.back_door')).toBeTruthy()
+    expect(screen.queryByText('No locks')).toBeNull()
+  })
+
+  it('shows clearing and Retry for a synced code turned off whose clear failed', () => {
+    // #189: a synced code with an end date turned off from latchpoint whose
+    // clear timed out. The scheduler retries it and only Retry clears it past
+    // the cap, so it can't look like a plain Pending sync.
+    const code = makeCode({
+      source: 'synced',
+      isActive: false,
+      endAt: '2026-12-02T12:00:00Z',
+      pushState: 'pending',
+      lockEntityIds: ['lock.front_door'],
+      lockSlotAssignments: [{ lockEntityId: 'lock.front_door', slotIndex: 3, pendingRemoval: false }],
+      pendingSlotClears: [{ lockEntityId: 'lock.front_door', slotIndex: 3, removing: false }],
+    })
+
+    renderWithProviders(<CardWithRetry code={code} />)
+
+    expect(screen.getByText('Front Door (clearing)')).toBeTruthy()
+    expect(screen.getByText('Pending clear')).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Retry now' })).toBeTruthy()
+  })
+
   it('shows a refused delete turning the code off and keeps its error', async () => {
     const refusal =
       "Couldn't clear slot 3 on lock.front_door, it may still hold the PIN. The door code wasn't deleted and is now off, try again when the lock responds."

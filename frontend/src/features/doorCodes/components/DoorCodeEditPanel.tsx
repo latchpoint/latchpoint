@@ -16,7 +16,7 @@ function SyncedFieldsWarning({ validityEditable }: { validityEditable: boolean }
     <Alert variant="warning" layout="inline">
       <AlertDescription>
         {validityEditable
-          ? "This code is synced from the lock and is off. Its active window can be changed and it can be turned back on, which puts it back on its locks. The PIN, schedule, max uses, and lock assignments are controlled by the lock and will be overwritten on the next sync."
+          ? "This code is synced from the lock and has an end date. Its active window can be changed (but not cleared) and it can be turned on or off, which puts it on or takes it off its locks. The PIN, schedule, max uses, and lock assignments are controlled by the lock and will be overwritten on the next sync."
           : 'This code is synced from the lock. The PIN, active status, schedule, max uses, and lock assignments are controlled by the lock and will be overwritten on the next sync. Only the label can be edited here.'}
       </AlertDescription>
     </Alert>
@@ -112,8 +112,8 @@ export function DoorCodeEditPanel({
 }: Props) {
   const isBusy = isSaving || isDeleting
   const isSynced = code.source === 'synced'
-  // A synced code that's off with an end date, eg retired at its end, can
-  // change its active window and come back on (#145). The rest stays the lock's.
+  // A synced code with an end date, eg retired at its end, can change its
+  // active window and be turned on or off (#145, #189). The rest stays the lock's.
   const syncedValidityEditable = isSyncedValidityEditable(code)
   const activeLocked = isSynced && !syncedValidityEditable
   // The backend won't turn on an expired code, and moving its end later doesn't
@@ -121,6 +121,9 @@ export function DoorCodeEditPanel({
   // and back again, since that only undoes the edit.
   const blockTurningOn = isExpired && !code.isActive && !editIsActive
   const isTemporary = code.codeType === 'temporary'
+  // A one-time code's dates come from the API, and once it's past its end only
+  // a later end turns it back on, so the window is on the form for it too (#184).
+  const hasActiveWindow = isTemporary || code.codeType === 'one_time'
 
   return (
     <div className="mt-4 space-y-4 border-t border-input pt-4">
@@ -138,11 +141,12 @@ export function DoorCodeEditPanel({
         isSynced={isSynced}
       />
 
-      {(isTemporary || syncedValidityEditable) && (
+      {(hasActiveWindow || syncedValidityEditable) && (
         <DoorCodeTemporaryRestrictionsFields
           disabled={isBusy || isSynced}
           activeWindowDisabled={isBusy || activeLocked}
           showSchedule={isTemporary}
+          activeWindowRequired={syncedValidityEditable}
           activeWindow={{ start: editStartAtLocal, end: editEndAtLocal }}
           onActiveWindowChange={onActiveWindowChange}
           days={editDays}

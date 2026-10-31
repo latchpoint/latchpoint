@@ -9,6 +9,7 @@ import { Button } from '@/components/ui/button'
 import { formatDaysMask } from '@/features/codes/utils/daysOfWeek'
 import { DoorCodeEditContainer } from '@/features/doorCodes/components/DoorCodeEditContainer'
 import { DoorCodePushStatusBadge } from '@/features/doorCodes/components/DoorCodePushStatusBadge'
+import { codeLockEntityIds } from '@/features/doorCodes/utils/codeLocks'
 import { MAX_USES_ENFORCED } from '@/features/doorCodes/utils/maxUses'
 
 type Props = {
@@ -99,12 +100,11 @@ function lockChipOf(code: DoorCode, lockEntityId: string): LockChip {
     }
   }
 
-  // Synced codes don't count once off, like the code-level badge: lock sync
-  // turns them off and their slots are the lock's own (#149).
-  const clearSlots =
-    code.isActive || code.source !== 'synced'
-      ? (code.pendingSlotClears ?? []).filter((c) => c.lockEntityId === lockEntityId).map((c) => c.slotIndex)
-      : []
+  // Synced codes count too, like the code-level badge. The backend only lists a
+  // synced code's clears that really failed (#149, #189).
+  const clearSlots = (code.pendingSlotClears ?? [])
+    .filter((c) => c.lockEntityId === lockEntityId)
+    .map((c) => c.slotIndex)
   if (clearSlots.length) {
     // A failed code with no failed lock is failed by the clear-retry cap. An
     // API without per-lock state can't say which, so it stays "clearing".
@@ -144,7 +144,8 @@ function lockChipOf(code: DoorCode, lockEntityId: string): LockChip {
 }
 
 function LockBadges({ code, lockNameByEntityId }: { code: DoorCode; lockNameByEntityId: Map<string, string> }) {
-  const lockEntityIds = code.lockEntityIds || []
+  // With the locks still being removed, which show as "(removing)" (#171).
+  const lockEntityIds = codeLockEntityIds(code)
   if (!lockEntityIds.length) return <span className="text-sm text-muted-foreground">No locks</span>
   return (
     <div className="mt-2 flex flex-wrap gap-2">
@@ -261,18 +262,18 @@ export function DoorCodeCard({
             <div className="text-xs text-muted-foreground">Max uses isn't enforced yet</div>
           ) : null}
           {code.codeType === 'temporary' ? (
-            <>
-              <div className="text-sm text-muted-foreground">
-                Days: {formatDaysMask(code.daysOfWeek ?? 127)}
-                {code.windowStart && code.windowEnd ? ` • Time: ${code.windowStart}–${code.windowEnd}` : ''}
-              </div>
-              {(code.startAt || code.endAt) ? (
-                <div className="text-sm text-muted-foreground">
-                  Active window: {code.startAt ? new Date(code.startAt).toLocaleString() : '—'} →{' '}
-                  {code.endAt ? new Date(code.endAt).toLocaleString() : '—'}
-                </div>
-              ) : null}
-            </>
+            <div className="text-sm text-muted-foreground">
+              Days: {formatDaysMask(code.daysOfWeek ?? 127)}
+              {code.windowStart && code.windowEnd ? ` • Time: ${code.windowStart}–${code.windowEnd}` : ''}
+            </div>
+          ) : null}
+          {/* Any code with dates, ie a one-time code given them through the API
+              (#184) or a synced code that kept a manual code's dates (#189). */}
+          {code.startAt || code.endAt ? (
+            <div className="text-sm text-muted-foreground">
+              Active window: {code.startAt ? new Date(code.startAt).toLocaleString() : '—'} →{' '}
+              {code.endAt ? new Date(code.endAt).toLocaleString() : '—'}
+            </div>
           ) : null}
           <div className="text-sm text-muted-foreground">
             Uses: {code.usesCount}

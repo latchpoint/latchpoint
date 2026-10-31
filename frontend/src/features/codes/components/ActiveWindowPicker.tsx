@@ -9,6 +9,8 @@ type Props = {
   helpTipContent?: string
   caption?: string
   showHelper?: boolean
+  /** Whether the picker offers Clear. Off for a window that has to keep its end. */
+  clearable?: boolean
 }
 
 export function ActiveWindowPicker({
@@ -19,10 +21,11 @@ export function ActiveWindowPicker({
   helpTipContent = "If set, the code only works between these timestamps (in the user's local timezone). Leave blank for no overall date range.",
   caption = 'Optional overall validity window.',
   showHelper = true,
+  clearable = true,
 }: Props) {
   return (
     <div>
-      <DateTimeRangePicker label={label} value={value} onChange={onChange} disabled={disabled} />
+      <DateTimeRangePicker label={label} value={value} onChange={onChange} disabled={disabled} clearable={clearable} />
       {showHelper && (
         <div className="mt-1 flex items-center gap-2 text-xs text-muted-foreground">
           <HelpTip content={helpTipContent} />

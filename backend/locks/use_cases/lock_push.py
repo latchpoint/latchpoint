@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING
 
 from django.conf import settings
 from django.db import IntegrityError, connection, transaction
-from django.db.models import Exists, F, OuterRef, Q, Subquery
+from django.db.models import Exists, F, Max, OuterRef, Q, Subquery
 from django.utils import timezone as django_timezone
 from integrations_zwavejs.manager import (
     ZwavejsClientUnavailable,
@@ -975,17 +975,33 @@ def _unsettled_unconfirmed_attempts(*, door_code: DoorCode, lock_entity_id: str)
     attempt recorded after it was never checked and may hold a newer PIN (PR
     #167 review). A later attempt on a settled slot counts again.
     """
-    settled_up_to: dict[int, int] = {}
-    open_failure_since: dict[int, int] = {}
     markers = (
         DoorCodeEvent.objects.filter(
             door_code=door_code,
             lock_entity_id=lock_entity_id,
-            metadata__action__in=[_UNCONFIRMED_RESOLVED_ACTION, _CLEAR_FAILED_ACTION, _CLEAR_RESOLVED_ACTION],
+            metadata__action__in=list(_ATTEMPT_SETTLING_ACTIONS),
         )
         .order_by("id")
         .values_list("id", "metadata")
     )
+    attempts = _unconfirmed_attempt_window(door_code=door_code, lock_entity_id=lock_entity_id)
+    return _fold_unsettled_attempts(
+        markers=markers, attempts_newest_first=attempts.order_by("-id").values_list("id", "metadata")
+    )
+
+
+def _fold_unsettled_attempts(*, markers, attempts_newest_first) -> dict[int, tuple[int, dict]]:
+    """The rule of :func:`_unsettled_unconfirmed_attempts`, on rows that are already loaded.
+
+    ``markers`` are ``(id, metadata)`` of the code's events on the lock with an
+    action in :data:`_ATTEMPT_SETTLING_ACTIONS`, oldest first, and
+    ``attempts_newest_first`` the ``(id, metadata)`` of its ``push_unconfirmed``
+    events on the lock since its last successful push there. The door codes
+    list builds both for a whole page at once (issue #170), so the rule lives
+    here once.
+    """
+    settled_up_to: dict[int, int] = {}
+    open_failure_since: dict[int, int] = {}
     for event_id, metadata in markers:
         slot_index = _coerce_int(metadata.get("slot_index")) if isinstance(metadata, dict) else None
         if not slot_index:
@@ -1004,8 +1020,7 @@ def _unsettled_unconfirmed_attempts(*, door_code: DoorCode, lock_entity_id: str)
         settled_up_to[slot_index] = max(settled_up_to.get(slot_index, 0), settles)
 
     newest: dict[int, tuple[int, dict]] = {}
-    attempts = _unconfirmed_attempt_window(door_code=door_code, lock_entity_id=lock_entity_id)
-    for event_id, metadata in attempts.order_by("-id").values_list("id", "metadata"):
+    for event_id, metadata in attempts_newest_first:
         if not isinstance(metadata, dict):
             continue
         slot_index = _coerce_int(metadata.get("slot_index"))
@@ -1194,6 +1209,8 @@ def has_unconfirmed_attempt_slots(*, door_code: DoorCode) -> bool:
 # ``_CLEAR_RESOLVED_ACTION`` for the same lock and slot settles it. No schema change.
 _CLEAR_FAILED_ACTION = "clear_failed"
 _CLEAR_RESOLVED_ACTION = "clear_resolved"
+# The marker actions :func:`_fold_unsettled_attempts` reads for a code's lock.
+_ATTEMPT_SETTLING_ACTIONS = frozenset({_UNCONFIRMED_RESOLVED_ACTION, _CLEAR_FAILED_ACTION, _CLEAR_RESOLVED_ACTION})
 
 
 @dataclass(frozen=True)
@@ -1247,7 +1264,6 @@ def _clear_error_reason(exc: Exception) -> str:
 
 def unresolved_clear_failures(*, door_code: DoorCode) -> list[ClearFailure]:
     """Clear failures recorded for ``door_code`` that no later clear has settled, oldest first."""
-    pending: dict[tuple[str, int], ClearFailure] = {}
     events = (
         DoorCodeEvent.objects.filter(
             door_code=door_code, metadata__action__in=[_CLEAR_FAILED_ACTION, _CLEAR_RESOLVED_ACTION]
@@ -1255,6 +1271,17 @@ def unresolved_clear_failures(*, door_code: DoorCode) -> list[ClearFailure]:
         .order_by("id")
         .values_list("id", "lock_entity_id", "metadata")
     )
+    return [_without_dropped_trust(failure) for failure in _fold_clear_events(events)]
+
+
+def _fold_clear_events(events) -> list[ClearFailure]:
+    """The clear failures left open by ``events``, ``(id, lock_entity_id, metadata)`` oldest first.
+
+    The rule of :func:`unresolved_clear_failures` before its masked-slot trust
+    check, on rows that are already loaded, so the door codes list can build it
+    for a whole page at once (issue #170).
+    """
+    pending: dict[tuple[str, int], ClearFailure] = {}
     for event_id, lock_entity_id, metadata in events:
         slot_index = _coerce_int(metadata.get("slot_index")) if isinstance(metadata, dict) else None
         if not slot_index or slot_index <= 0:
@@ -1274,7 +1301,7 @@ def unresolved_clear_failures(*, door_code: DoorCode) -> list[ClearFailure]:
             )
         else:
             pending.pop(key, None)
-    return [_without_dropped_trust(failure) for failure in pending.values()]
+    return list(pending.values())
 
 
 def _stored_failure(failure: ClearFailure | None) -> ClearFailure | None:
@@ -1985,6 +2012,17 @@ def _retry_failed_slot_clear(
     return None
 
 
+def _count_clear_attempt(door_code: DoorCode) -> None:
+    """One more attempt on the code's clear-retry count, unless the code was deleted meanwhile (issue #189)."""
+    try:
+        door_code.refresh_from_db(fields=["push_attempt_count"])
+    except DoorCode.DoesNotExist:
+        return
+    door_code.push_attempt_count = (door_code.push_attempt_count or 0) + 1
+    door_code.last_push_attempt_at = django_timezone.now()
+    door_code.save(update_fields=["push_attempt_count", "last_push_attempt_at", "updated_at"])
+
+
 def retry_failed_slot_clears(
     *,
     door_code: DoorCode,
@@ -2058,10 +2096,7 @@ def retry_failed_slot_clears(
             )
 
     if attempted_and_failed:
-        door_code.refresh_from_db(fields=["push_attempt_count"])
-        door_code.push_attempt_count = (door_code.push_attempt_count or 0) + 1
-        door_code.last_push_attempt_at = django_timezone.now()
-        door_code.save(update_fields=["push_attempt_count", "last_push_attempt_at", "updated_at"])
+        _count_clear_attempt(door_code)
     return still_failing
 
 
@@ -2292,21 +2327,37 @@ def _slots_that_may_hold_pin(
     """The tracked and unconfirmed slots :func:`inactive_slots_to_clear` describes, for any code."""
     if failures is None:
         failures = unresolved_clear_failures(door_code=door_code)
-    failing = {(f.lock_entity_id, f.slot_index) for f in failures}
-    pin = decrypt_pin_or_none(door_code)
-    slots: list[tuple[str, int]] = []
     assignments = (
         DoorCodeLockAssignment.objects.filter(door_code=door_code)
         .order_by("lock_entity_id")
         .values_list("lock_entity_id", "slot_index")
     )
-    for lock_entity_id, tracked_slot in assignments:
-        found = [int(tracked_slot)] if tracked_slot is not None else []
-        attempts = _unconfirmed_attempts(
+    return _slots_that_may_hold_pin_from(
+        assignments=assignments,
+        failures=failures,
+        pin=decrypt_pin_or_none(door_code),
+        attempts_on=lambda lock_entity_id: _unconfirmed_attempts(
             door_code=door_code,
             lock_entity_id=lock_entity_id,
             claimed_slots=_claimed_slots(lock_entity_id=lock_entity_id, door_code=door_code),
-        )
+        ),
+    )
+
+
+def _slots_that_may_hold_pin_from(
+    *, assignments, failures: list[ClearFailure], pin: str | None, attempts_on
+) -> list[tuple[str, int]]:
+    """The rule of :func:`_slots_that_may_hold_pin` on loaded rows (issue #170).
+
+    ``assignments`` are the code's ``(lock_entity_id, slot_index)`` sorted by
+    lock, and ``attempts_on(lock_entity_id)`` gives the unsettled unconfirmed
+    attempt slots there that no other code holds, mapped to the PIN each sent.
+    """
+    failing = {(f.lock_entity_id, f.slot_index) for f in failures}
+    slots: list[tuple[str, int]] = []
+    for lock_entity_id, tracked_slot in assignments:
+        found = [int(tracked_slot)] if tracked_slot is not None else []
+        attempts = attempts_on(lock_entity_id)
         found.extend(slot_index for slot_index, attempted_pin in attempts.items() if attempted_pin or pin)
         slots.extend(
             (lock_entity_id, slot_index)
@@ -2316,15 +2367,23 @@ def _slots_that_may_hold_pin(
     return slots
 
 
-def pending_slot_clears(*, door_code: DoorCode, failures: list[ClearFailure] | None = None) -> list[dict[str, object]]:
+def pending_slot_clears(
+    *,
+    door_code: DoorCode,
+    failures: list[ClearFailure] | None = None,
+    inactive_slots: list[tuple[str, int]] | None = None,
+) -> list[dict[str, object]]:
     """The slot clears still outstanding for ``door_code``, for the API (issue #151). Never includes a PIN.
 
     Its unresolved clear failures, plus for an inactive manual code the slots
     :func:`inactive_slots_to_clear` finds, which the scheduler and Retry will
-    clear. Sorted by lock and slot.
+    clear. Sorted by lock and slot. Pass ``failures`` and ``inactive_slots``
+    when they're already worked out (:class:`PendingClearsPrefetch`).
     """
     if failures is None:
         failures = unresolved_clear_failures(door_code=door_code)
+    if inactive_slots is None:
+        inactive_slots = inactive_slots_to_clear(door_code=door_code, failures=failures)
     entries = {
         (f.lock_entity_id, f.slot_index): {
             "lock_entity_id": f.lock_entity_id,
@@ -2333,12 +2392,126 @@ def pending_slot_clears(*, door_code: DoorCode, failures: list[ClearFailure] | N
         }
         for f in failures
     }
-    for lock_entity_id, slot_index in inactive_slots_to_clear(door_code=door_code, failures=failures):
+    for lock_entity_id, slot_index in inactive_slots:
         entries.setdefault(
             (lock_entity_id, slot_index),
             {"lock_entity_id": lock_entity_id, "slot_index": slot_index, "removing": False},
         )
     return [entries[key] for key in sorted(entries)]
+
+
+class PendingClearsPrefetch:
+    """What the door code fields need from the events, loaded once for a page of codes (issue #170).
+
+    The door codes list used to work out ``pending_slot_clears``,
+    ``pending_removal``, ``push_queued`` and ``lock_entity_ids`` per code, which
+    is a few queries per code and more for an inactive code, per lock. This
+    loads the codes' clear and unconfirmed-attempt events, and when the page
+    has an inactive manual code the last successful push per lock and the
+    slots other codes hold on those locks, in 1 to 3 queries, and runs the same
+    rules on them (:func:`_fold_clear_events`,
+    :func:`_fold_unsettled_attempts`, :func:`_slots_that_may_hold_pin_from`).
+
+    The clear failures here skip :func:`_without_dropped_trust`, which only
+    changes their ``slot_verified`` / ``slot_available`` tags. Nothing in the
+    API shows those, so they're not for a readback or a clear.
+    """
+
+    def __init__(self, codes) -> None:
+        self._codes = {code.pk: code for code in codes}
+        self._clear_events: dict[int, list[tuple[int, str, dict]]] = {}
+        self._markers: dict[tuple[int, str], list[tuple[int, dict]]] = {}
+        self._attempts: dict[tuple[int, str], list[tuple[int, dict]]] = {}
+        self._last_pushed: dict[tuple[int, str], int] = {}
+        self._slot_holders: dict[str, dict[int, set[int]]] = {}
+        self._failures: dict[int, list[ClearFailure]] = {}
+        if not self._codes:
+            return
+        code_ids = list(self._codes)
+        actions = sorted(_ATTEMPT_SETTLING_ACTIONS | {_UNCONFIRMED_PUSH_ACTION})
+        events = (
+            DoorCodeEvent.objects.filter(door_code_id__in=code_ids, metadata__action__in=actions)
+            .order_by("id")
+            .values_list("id", "door_code_id", "lock_entity_id", "event_type", "metadata")
+        )
+        for event_id, code_id, lock_entity_id, event_type, metadata in events:
+            action = metadata.get("action") if isinstance(metadata, dict) else None
+            if action in (_CLEAR_FAILED_ACTION, _CLEAR_RESOLVED_ACTION):
+                self._clear_events.setdefault(code_id, []).append((event_id, lock_entity_id, metadata))
+            if action in _ATTEMPT_SETTLING_ACTIONS:
+                self._markers.setdefault((code_id, lock_entity_id), []).append((event_id, metadata))
+            if action == _UNCONFIRMED_PUSH_ACTION and event_type == DoorCodeEvent.EventType.CODE_FAILED:
+                self._attempts.setdefault((code_id, lock_entity_id), []).append((event_id, metadata))
+        # The rest is only for the inactive manual codes' slots to clear.
+        if not any(not c.is_active and c.source != DoorCode.Source.SYNCED for c in self._codes.values()):
+            return
+        last_pushed = (
+            DoorCodeEvent.objects.filter(door_code_id__in=code_ids, event_type=DoorCodeEvent.EventType.CODE_SYNCED)
+            .order_by()
+            .values("door_code_id", "lock_entity_id")
+            .annotate(last_id=Max("id"))
+            .values_list("door_code_id", "lock_entity_id", "last_id")
+        )
+        self._last_pushed = {(code_id, lock): last_id for code_id, lock, last_id in last_pushed}
+        lock_entity_ids = {a.lock_entity_id for code in self._codes.values() for a in code.lock_assignments.all()}
+        holders = DoorCodeLockAssignment.objects.filter(
+            lock_entity_id__in=sorted(lock_entity_ids), slot_index__isnull=False
+        ).values_list("lock_entity_id", "slot_index", "door_code_id")
+        for lock_entity_id, slot_index, code_id in holders:
+            self._slot_holders.setdefault(lock_entity_id, {}).setdefault(int(slot_index), set()).add(code_id)
+
+    def covers(self, door_code: DoorCode) -> bool:
+        return door_code.pk in self._codes
+
+    def clear_failures(self, door_code: DoorCode) -> list[ClearFailure]:
+        """:func:`unresolved_clear_failures` without the trust check (see the class docstring)."""
+        if door_code.pk not in self._failures:
+            self._failures[door_code.pk] = _fold_clear_events(self._clear_events.get(door_code.pk, []))
+        return self._failures[door_code.pk]
+
+    def pending_slot_clears(self, door_code: DoorCode) -> list[dict[str, object]]:
+        """:func:`pending_slot_clears` from the loaded rows."""
+        failures = self.clear_failures(door_code)
+        return pending_slot_clears(
+            door_code=door_code, failures=failures, inactive_slots=self._inactive_slots(door_code, failures)
+        )
+
+    def _inactive_slots(self, door_code: DoorCode, failures: list[ClearFailure]) -> list[tuple[str, int]]:
+        """:func:`inactive_slots_to_clear` from the loaded rows."""
+        if door_code.is_active or door_code.source == DoorCode.Source.SYNCED:
+            return []
+        assignments = sorted(
+            ((a.lock_entity_id, a.slot_index) for a in door_code.lock_assignments.all()), key=lambda row: row[0]
+        )
+        return _slots_that_may_hold_pin_from(
+            assignments=assignments,
+            failures=failures,
+            pin=decrypt_pin_or_none(door_code),
+            attempts_on=lambda lock_entity_id: self._unconfirmed_attempts(door_code, lock_entity_id),
+        )
+
+    def _unconfirmed_attempts(self, door_code: DoorCode, lock_entity_id: str) -> dict[int, str | None]:
+        """:func:`_unconfirmed_attempts` with the slots other codes hold left out, from the loaded rows."""
+        key = (door_code.pk, lock_entity_id)
+        last_pushed_id = self._last_pushed.get(key)
+        in_window = [
+            (event_id, metadata)
+            for event_id, metadata in self._attempts.get(key, [])
+            if last_pushed_id is None or event_id > last_pushed_id
+        ]
+        unsettled = _fold_unsettled_attempts(
+            markers=self._markers.get(key, []), attempts_newest_first=list(reversed(in_window))
+        )
+        claimed = {
+            slot_index
+            for slot_index, code_ids in self._slot_holders.get(lock_entity_id, {}).items()
+            if code_ids - {door_code.pk}
+        }
+        return {
+            slot_index: _decrypt_expected_pin(metadata)
+            for slot_index, (_event_id, metadata) in unsettled.items()
+            if slot_index not in claimed
+        }
 
 
 def _tracked_slot_may_hold_pin(
@@ -2554,10 +2727,7 @@ def clear_inactive_code_slots(
         attempted_and_failed = attempted_and_failed or bool(transient)
 
     if attempted_and_failed:
-        door_code.refresh_from_db(fields=["push_attempt_count"])
-        door_code.push_attempt_count = (door_code.push_attempt_count or 0) + 1
-        door_code.last_push_attempt_at = django_timezone.now()
-        door_code.save(update_fields=["push_attempt_count", "last_push_attempt_at", "updated_at"])
+        _count_clear_attempt(door_code)
     return still_failing
 
 
@@ -4213,9 +4383,14 @@ def push_door_code_to_assigned_locks(
     successes: list[PushResult] = []
     failures: list[tuple[str, str]] = []
 
-    door_code.refresh_from_db(
-        fields=["is_active", "push_state", "last_push_attempt_at", "last_push_error", *_VALIDITY_FIELDS]
-    )
+    try:
+        door_code.refresh_from_db(
+            fields=["is_active", "push_state", "last_push_attempt_at", "last_push_error", *_VALIDITY_FIELDS]
+        )
+    except DoorCode.DoesNotExist:
+        # Deleted meanwhile, ie during a Retry: nothing to push (issue #189).
+        logger.info("Not pushing door code id=%s, it was deleted", door_code.id)
+        return successes, failures
     if not door_code.is_active:
         logger.info("Not pushing inactive door code id=%s", door_code.id)
         return successes, failures
@@ -4269,9 +4444,12 @@ def push_or_settle_after_clear_retry(
     those still outstanding come back as the failures. It's ``pushed`` once
     nothing is left to clear, the same as a deactivate, since its locks then
     hold nothing. ``include_failed`` and ``lock_budget_seconds`` go to
-    :func:`push_door_code_to_assigned_locks`.
+    :func:`push_door_code_to_assigned_locks`. A code deleted meanwhile has
+    nothing left to push or clear, so that's ``([], [])`` (issue #189).
     """
-    door_code = DoorCode.objects.prefetch_related("lock_assignments").get(id=door_code.id)
+    door_code = DoorCode.objects.prefetch_related("lock_assignments").filter(id=door_code.id).first()
+    if door_code is None:
+        return [], []
     if not door_code.is_active:
         still_failing = clear_inactive_code_slots(door_code=door_code, zwavejs=zwavejs)
         failures = [(f.lock_entity_id, f.reason) for f in still_failing]

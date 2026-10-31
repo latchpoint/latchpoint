@@ -19,6 +19,8 @@ type DateTimeRangePickerProps = {
   value: DateTimeRangeValue
   onChange: (value: DateTimeRangeValue) => void
   disabled?: boolean
+  /** Whether the popover offers Clear. */
+  clearable?: boolean
 }
 
 export function DateTimeRangePicker({
@@ -26,6 +28,7 @@ export function DateTimeRangePicker({
   value,
   onChange,
   disabled = false,
+  clearable = true,
 }: DateTimeRangePickerProps) {
   const [open, setOpen] = useState(false)
   const popoverRef = useRef<HTMLDivElement | null>(null)
@@ -113,6 +116,7 @@ export function DateTimeRangePicker({
             startDate={startDate}
             endDate={endDate}
             onClose={() => setOpen(false)}
+            clearable={clearable}
           />
         )}
       </div>
