@@ -326,19 +326,32 @@ def retire_door_code(
     goes in the ``code_updated`` event. Returns the code, or ``None`` when it
     was left alone. Raises :class:`LockBusy` like an update.
 
-    Synced copies of its PIN on its locks are retired with it (issue #185):
-    :func:`_synced_copies_of_pin` finds them and each goes through the same
-    locked deactivate, still under these locks, so its slot is cleared (and a
-    clear that fails is retried) and its ``code_updated`` event says which code
-    it was a copy of. Otherwise a "Slot N" copy stranded by #133 keeps opening
-    the door after the original's ``end_at``.
+    Synced copies of its PIN on its locks (issue #185) are found first, while
+    the code still tracks its slots (:func:`_synced_copies_of_pin`). One that's
+    a stranded copy of this code (:func:`_is_stranded_copy`) goes through the
+    same locked deactivate once this code is off, still under these locks, so
+    its slot is cleared (and a clear that fails is retried) and its
+    ``code_updated`` event says which code it was a copy of. If that raises, a
+    ``duplicate_retire_pending`` event on this code has the validity task try
+    it again each tick (:func:`retry_pending_copy_retires`). Any other copy is
+    left alone and only flagged, with a ``duplicate_pin_survives_retire`` event
+    on this code and a warning, since it may be someone's own keypad code that
+    happens to share the PIN (PR #211 review).
     """
     try:
         with _hold_door_code_locks(code=code):
             check_at = now if now is not None else django_timezone.now()
             if not code.is_active or not is_expired(code, now=check_at):
                 return None
-            copy_ids = _synced_copies_of_pin(code=code)
+            copies = [
+                (
+                    copy_id,
+                    lock_entity_id,
+                    slot_index,
+                    _is_stranded_copy(original=code, copy_id=copy_id, lock_entity_id=lock_entity_id),
+                )
+                for copy_id, lock_entity_id, slot_index in _synced_copies_of_pin(code=code)
+            ]
             # A deactivate, so there's never a push to make afterwards.
             code, _push_inline = _update_door_code_locked(
                 code=code,
@@ -347,21 +360,38 @@ def retire_door_code(
                 zwavejs=zwavejs,
                 event_metadata={"reason": reason},
             )
-            for copy_id in copy_ids:
-                _retire_synced_copy(copy_id=copy_id, original=code, zwavejs=zwavejs)
+            for copy_id, lock_entity_id, slot_index, stranded in copies:
+                if not stranded:
+                    _flag_surviving_duplicate(
+                        original=code, copy_id=copy_id, lock_entity_id=lock_entity_id, slot_index=slot_index
+                    )
+                elif not _retire_synced_copy(copy_id=copy_id, original=code, zwavejs=zwavejs):
+                    _record_copy_event(
+                        original=code,
+                        action=_COPY_RETIRE_PENDING,
+                        copy_id=copy_id,
+                        lock_entity_id=lock_entity_id,
+                        slot_index=slot_index,
+                    )
             return code
     except NotFound:
         return None
 
 
-def _synced_copies_of_pin(*, code: DoorCode) -> list[int]:
-    """Ids of synced codes that hold ``code``'s PIN in a slot on one of its locks, active and with no ``end_at``.
+# DoorCodeEvent metadata ``action`` values on the retired code for its synced copies (issue #185, PR #211 review).
+_COPY_SURVIVES_RETIRE = "duplicate_pin_survives_retire"
+_COPY_RETIRE_PENDING = "duplicate_retire_pending"
+_COPY_RETIRE_DONE = "duplicate_retire_done"
 
-    The duplicates lock sync flags ``duplicate_pin`` (issue #140), ie copies
-    #133 stranded that an older sync imported as "Slot N". Only synced codes,
-    since a manual code's dates and state are someone's own choice, and only
-    ones without an ``end_at``, since a copy with its own dates is retired by
-    them. The PIN has to match exactly, so a masked slot never counts.
+
+def _synced_copies_of_pin(*, code: DoorCode) -> list[tuple[int, str, int]]:
+    """``(copy id, lock, slot)`` of synced codes that hold ``code``'s PIN in a slot on one of its locks.
+
+    The duplicates lock sync flags ``duplicate_pin`` (issue #140). Only active
+    synced codes, since a manual code's dates and state are someone's own
+    choice, and only ones without an ``end_at``, since a copy with its own
+    dates is retired by them. The PIN has to match exactly, so a masked slot
+    never counts.
     """
     from locks.use_cases.lock_push import decrypt_pin_or_none
 
@@ -370,34 +400,110 @@ def _synced_copies_of_pin(*, code: DoorCode) -> list[int]:
         return []
     lock_entity_ids = DoorCodeLockAssignment.objects.filter(door_code=code).values_list("lock_entity_id", flat=True)
     candidates = (
-        DoorCode.objects.filter(
-            source=DoorCode.Source.SYNCED,
-            is_active=True,
-            end_at__isnull=True,
-            lock_assignments__lock_entity_id__in=list(lock_entity_ids),
-            lock_assignments__slot_index__isnull=False,
+        DoorCodeLockAssignment.objects.select_related("door_code")
+        .filter(
+            lock_entity_id__in=list(lock_entity_ids),
+            slot_index__isnull=False,
+            door_code__source=DoorCode.Source.SYNCED,
+            door_code__is_active=True,
+            door_code__end_at__isnull=True,
         )
-        .exclude(id=code.id)
-        .distinct()
-        .order_by("id")
+        .exclude(door_code=code)
+        .order_by("door_code_id", "lock_entity_id")
     )
-    return [other.id for other in candidates if decrypt_pin_or_none(other) == pin]
+    return [
+        (a.door_code_id, a.lock_entity_id, int(a.slot_index))
+        for a in candidates
+        if decrypt_pin_or_none(a.door_code) == pin
+    ]
 
 
-def _retire_synced_copy(*, copy_id: int, original: DoorCode, zwavejs: ZwavejsGateway) -> None:
-    """Turn off a synced copy of ``original``'s PIN and clear its slot (issue #185). The caller holds the locks.
+def _is_stranded_copy(*, original: DoorCode, copy_id: int, lock_entity_id: str) -> bool:
+    """Whether the synced copy on this lock is a copy of ``original``'s own push there, ie safe to retire with it.
 
-    The copy is read again under its own locks (the original's already cover
-    its slot, so this only waits for a lock it has a clear or attempt on
-    elsewhere) and left alone if it's gone, off, given an ``end_at`` or holds a
-    different PIN by then. A failure is logged and doesn't stop the original's
-    retire, which has already happened.
+    Both of these, with the PIN match :func:`_synced_copies_of_pin` already did
+
+    - ``original`` tracks a slot on the lock, or a push of it landed there (a
+      ``code_synced`` event with ``action=pushed``), so its PIN went onto this
+      lock through latchpoint
+    - the copy's row was created after the first of those pushes, or, when no
+      push event is left (event retention), a lock sync recorded the copy as a
+      duplicate of ``original`` (``duplicate_pin_door_code_ids``)
+
+    A copy whose row is older than ``original``'s first push on the lock isn't
+    one, whatever lock sync recorded, since sync records any two codes with the
+    same PIN on a lock against each other. That covers a family member's keypad
+    code whose PIN a guest code was given later (PR #211 review).
+    """
+    first_push_at = (
+        DoorCodeEvent.objects.filter(
+            door_code=original,
+            lock_entity_id=lock_entity_id,
+            event_type=DoorCodeEvent.EventType.CODE_SYNCED,
+            metadata__action="pushed",
+        )
+        .order_by("created_at", "id")
+        .values_list("created_at", flat=True)
+        .first()
+    )
+    tracks_slot = DoorCodeLockAssignment.objects.filter(
+        door_code=original, lock_entity_id=lock_entity_id, slot_index__isnull=False
+    ).exists()
+    if first_push_at is None and not tracks_slot:
+        return False
+    if first_push_at is not None:
+        copy_created_at = DoorCode.objects.filter(id=copy_id).values_list("created_at", flat=True).first()
+        return copy_created_at is not None and copy_created_at > first_push_at
+    recorded = DoorCodeEvent.objects.filter(
+        door_code_id=copy_id, lock_entity_id=lock_entity_id, metadata__has_key="duplicate_pin_door_code_ids"
+    ).values_list("metadata", flat=True)
+    return any(original.id in (metadata.get("duplicate_pin_door_code_ids") or []) for metadata in recorded)
+
+
+def _record_copy_event(*, original: DoorCode, action: str, copy_id: int, lock_entity_id: str, slot_index: int) -> None:
+    """A ``code_failed`` event on ``original`` about a synced copy of its PIN. Never the PIN."""
+    DoorCodeEvent.objects.create(
+        door_code=original,
+        user=None,
+        lock_entity_id=lock_entity_id,
+        event_type=DoorCodeEvent.EventType.CODE_FAILED,
+        metadata={"action": action, "slot_index": int(slot_index), "duplicate_door_code_id": int(copy_id)},
+    )
+
+
+def _flag_surviving_duplicate(*, original: DoorCode, copy_id: int, lock_entity_id: str, slot_index: int) -> None:
+    """Record that a synced code with ``original``'s PIN keeps working on this lock after its retire (issue #185)."""
+    logger.warning(
+        "Retired door code id=%d, but synced door code id=%d in slot %d on %s holds the same PIN and wasn't touched",
+        original.id,
+        copy_id,
+        slot_index,
+        lock_entity_id,
+    )
+    _record_copy_event(
+        original=original,
+        action=_COPY_SURVIVES_RETIRE,
+        copy_id=copy_id,
+        lock_entity_id=lock_entity_id,
+        slot_index=slot_index,
+    )
+
+
+def _retire_synced_copy(*, copy_id: int, original: DoorCode, zwavejs: ZwavejsGateway) -> bool:
+    """Turn off a stranded synced copy of ``original``'s PIN and clear its slot (issue #185).
+
+    The copy is read again under its own locks (when called from
+    :func:`retire_door_code` the original's already cover its slot, so this only
+    waits for a lock it has a clear or attempt on elsewhere) and left alone if
+    it's gone, off, given an ``end_at`` or holds a different PIN by then.
+    Returns ``False`` only when the retire raised (logged), so the caller can
+    have it tried again, and ``True`` once there's nothing left to do.
     """
     from locks.use_cases.lock_push import decrypt_pin_or_none
 
     copy = DoorCode.objects.filter(id=copy_id).first()
     if copy is None:
-        return
+        return True
     try:
         with _hold_door_code_locks(code=copy):
             if (
@@ -406,7 +512,7 @@ def _retire_synced_copy(*, copy_id: int, original: DoorCode, zwavejs: ZwavejsGat
                 or copy.end_at is not None
                 or decrypt_pin_or_none(copy) != decrypt_pin_or_none(original)
             ):
-                return
+                return True
             _update_door_code_locked(
                 code=copy,
                 changes={"is_active": False},
@@ -414,15 +520,61 @@ def _retire_synced_copy(*, copy_id: int, original: DoorCode, zwavejs: ZwavejsGat
                 zwavejs=zwavejs,
                 event_metadata={"reason": "duplicate_of_retired_code", "duplicate_of_door_code_id": original.id},
             )
+            return True
     except NotFound:
-        return
+        return True
     except Exception:
         logger.warning(
-            "Couldn't retire synced door code id=%d, a copy of retired door code id=%d's PIN",
+            "Couldn't retire synced door code id=%d, a copy of retired door code id=%d's PIN; trying again next tick",
             copy_id,
             original.id,
             exc_info=True,
         )
+        return False
+
+
+def retry_pending_copy_retires(*, zwavejs: ZwavejsGateway) -> int:
+    """Try the copy retires :func:`retire_door_code` couldn't finish again, for the validity task (PR #211 review).
+
+    A ``duplicate_retire_pending`` event with no later ``duplicate_retire_done``
+    for the same copy on that retired code is tried again, and a
+    ``duplicate_retire_done`` is written once it's retired or there's nothing
+    left to do (the copy is gone, off, dated or holds another PIN). The
+    pending event goes with the retired code if that's deleted, and ages out
+    with event retention. Returns how many it finished.
+    """
+    finished = 0
+    pending = (
+        DoorCodeEvent.objects.filter(metadata__action=_COPY_RETIRE_PENDING, door_code__isnull=False)
+        .select_related("door_code")
+        .order_by("id")
+    )
+    for event in pending:
+        copy_id = _coerce_copy_id(event.metadata)
+        if copy_id is None:
+            continue
+        done = DoorCodeEvent.objects.filter(
+            door_code_id=event.door_code_id,
+            metadata__action=_COPY_RETIRE_DONE,
+            metadata__duplicate_door_code_id=copy_id,
+            id__gt=event.id,
+        ).exists()
+        if done or not _retire_synced_copy(copy_id=copy_id, original=event.door_code, zwavejs=zwavejs):
+            continue
+        _record_copy_event(
+            original=event.door_code,
+            action=_COPY_RETIRE_DONE,
+            copy_id=copy_id,
+            lock_entity_id=event.lock_entity_id,
+            slot_index=int(event.metadata.get("slot_index") or 0),
+        )
+        finished += 1
+    return finished
+
+
+def _coerce_copy_id(metadata: object) -> int | None:
+    value = metadata.get("duplicate_door_code_id") if isinstance(metadata, dict) else None
+    return value if isinstance(value, int) else None
 
 
 def withdraw_door_code(*, code: DoorCode, zwavejs: ZwavejsGateway, now=None) -> bool:

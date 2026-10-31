@@ -159,6 +159,10 @@ class TimeBudgetExceeded(GatewayError):
 # A slow lock that answers runs out of it and is left pending, uncounted, for the next retry.
 PUSH_LOCK_BUDGET_SECONDS = 30.0
 
+# How long lock sync's live readbacks of untracked attempt slots may take together
+# (issue #194). They run in the request and in the sync's transaction (PR #211 review).
+SYNC_READBACK_BUDGET_SECONDS = 30.0
+
 
 class BudgetedGateway:
     """Wraps a Z-Wave JS gateway so the calls made through it end by one deadline (issue #124).
@@ -2679,32 +2683,122 @@ def withdraw_slots_before_start(
     return cleared, failed
 
 
-def synced_attempt_slots_to_check(*, door_code: DoorCode) -> list[tuple[str, int]]:
-    """``(lock_entity_id, slot_index)`` of a synced code's unsettled attempts on its locks (issue #180).
+# DoorCodeEvent metadata ``action`` (on a ``code_failed`` event) for a #180
+# readback of a synced code's attempt slot that got no answer. They count toward
+# ``door_codes.push_max_attempts`` per attempt, so a lock that never answers
+# isn't read back every tick for good (PR #211 review).
+_SYNCED_CHECK_UNANSWERED_ACTION = "synced_check_unanswered"
 
-    The attempts lock sync's ``clear_outstanding`` skip counts
-    (``_has_outstanding_slot_cleanup``): unsettled, in their window, not in a
-    slot another code holds, and with a PIN to compare against. While one is
-    left, the sync skips the code on that lock, and nothing else settles it,
-    since the clears and the #167 inactive clear leave synced codes alone and
-    a lock that holds its slot isn't pushed. Empty for a manual code.
+
+def synced_attempt_slots_to_check(*, door_code: DoorCode) -> list[tuple[str, int]]:
+    """``(lock_entity_id, slot_index)`` of a synced code's attempts that :func:`check_synced_attempt_slots` reads back.
+
+    On each lock the code tracks a slot on, the attempts lock sync's
+    ``clear_outstanding`` skip counts (``_has_outstanding_slot_cleanup``):
+    unsettled, in their window, not in a slot another code holds, and with a
+    PIN to compare against. While one is left the sync skips the code on that
+    lock, and nothing else settles it, since the clears and the #167 inactive
+    clear leave synced codes alone and a lock that holds its slot isn't pushed
+    (issue #180). A lock the code has no slot on isn't here, since its push
+    adopts or settles the attempt there. Left out too are a slot with a clear
+    failure still open, which the clear retries own (a settle there would
+    resolve that failure without clearing it), and an attempt whose readbacks
+    went unanswered ``door_codes.push_max_attempts`` times (PR #211 review).
+    Empty for a manual code.
     """
     if door_code.source != DoorCode.Source.SYNCED:
         return []
     pin = decrypt_pin_or_none(door_code)
+    max_attempts = _push_max_attempts()
     slots: list[tuple[str, int]] = []
     for lock_entity_id in (
-        DoorCodeLockAssignment.objects.filter(door_code=door_code)
+        DoorCodeLockAssignment.objects.filter(door_code=door_code, slot_index__isnull=False)
         .order_by("lock_entity_id")
         .values_list("lock_entity_id", flat=True)
     ):
-        attempts = _unconfirmed_attempts(
-            door_code=door_code,
-            lock_entity_id=lock_entity_id,
-            claimed_slots=_claimed_slots(lock_entity_id=lock_entity_id, door_code=door_code),
+        attempts = _synced_attempts_to_check_on_lock(
+            door_code=door_code, lock_entity_id=lock_entity_id, pin=pin, max_attempts=max_attempts
         )
-        slots.extend((lock_entity_id, slot_index) for slot_index, attempted in attempts.items() if attempted or pin)
+        slots.extend((lock_entity_id, slot_index) for slot_index in attempts)
     return slots
+
+
+def _synced_attempts_to_check_on_lock(
+    *, door_code: DoorCode, lock_entity_id: str, pin: str | None, max_attempts: int
+) -> dict[int, tuple[int, str | None]]:
+    """Slot -> ``(attempt id, PIN it sent)`` for :func:`synced_attempt_slots_to_check`'s rule on one lock."""
+    failing = {
+        f.slot_index for f in unresolved_clear_failures(door_code=door_code) if f.lock_entity_id == lock_entity_id
+    }
+    claimed = _claimed_slots(lock_entity_id=lock_entity_id, door_code=door_code)
+    attempts: dict[int, tuple[int, str | None]] = {}
+    for slot_index, (event_id, metadata) in _unsettled_unconfirmed_attempts(
+        door_code=door_code, lock_entity_id=lock_entity_id
+    ).items():
+        attempted_pin = _decrypt_expected_pin(metadata)
+        if slot_index in claimed or slot_index in failing or not (attempted_pin or pin):
+            continue
+        if max_attempts > 0 and (
+            _unanswered_synced_checks(
+                door_code=door_code, lock_entity_id=lock_entity_id, slot_index=slot_index, since_id=event_id
+            )
+            >= max_attempts
+        ):
+            continue
+        attempts[slot_index] = (event_id, attempted_pin)
+    return attempts
+
+
+def _unanswered_synced_checks(*, door_code: DoorCode, lock_entity_id: str, slot_index: int, since_id: int) -> int:
+    return DoorCodeEvent.objects.filter(
+        door_code=door_code,
+        lock_entity_id=lock_entity_id,
+        metadata__action=_SYNCED_CHECK_UNANSWERED_ACTION,
+        metadata__slot_index=int(slot_index),
+        id__gt=since_id,
+    ).count()
+
+
+def _record_unanswered_synced_check(
+    *, door_code: DoorCode, lock_entity_id: str, slot_index: int, attempt_id: int, reason: str
+) -> None:
+    """Count a #180 readback with no answer, and write one ``max_attempts_exceeded`` event at the cap."""
+    DoorCodeEvent.objects.create(
+        door_code=door_code,
+        user=door_code.user,
+        lock_entity_id=lock_entity_id,
+        event_type=DoorCodeEvent.EventType.CODE_FAILED,
+        metadata={
+            "action": _SYNCED_CHECK_UNANSWERED_ACTION,
+            "slot_index": int(slot_index),
+            "reason": sanitize_push_error_for_storage(reason)[:200],
+        },
+    )
+    max_attempts = _push_max_attempts()
+    unanswered = _unanswered_synced_checks(
+        door_code=door_code, lock_entity_id=lock_entity_id, slot_index=slot_index, since_id=attempt_id
+    )
+    if max_attempts > 0 and unanswered == max_attempts:
+        logger.warning(
+            "Giving up reading back slot %d on %s for synced door code id=%s after %d attempts",
+            slot_index,
+            lock_entity_id,
+            door_code.id,
+            unanswered,
+        )
+        DoorCodeEvent.objects.create(
+            door_code=door_code,
+            user=door_code.user,
+            lock_entity_id=lock_entity_id,
+            event_type=DoorCodeEvent.EventType.CODE_FAILED,
+            metadata={
+                "action": "synced_attempt_check",
+                "reason": "max_attempts_exceeded",
+                "slot_index": int(slot_index),
+                "attempts": unanswered,
+                "last_error": sanitize_push_error_for_storage(reason)[:200],
+            },
+        )
 
 
 def check_synced_attempt_slots(
@@ -2723,14 +2817,17 @@ def check_synced_attempt_slots(
     ``slot_verified`` only). Anything else, ie a readable different code, a
     messaging or passage mode slot, an empty slot or a masked one without the
     tag, is settled as ``not_holding_pin``, with ``slot_empty`` when it read
-    back empty, so the next lock sync reconciles the code. One that's ours
-    stays unsettled and the sync keeps skipping the code, which fails safe. An
-    attempt in the slot the code tracks on that lock is settled as ``tracked``
-    without a readback, since lock sync reconciles that slot. A readback that
-    answered empty once and then got no answer leaves a ``slot_read_back_empty``
-    marker, and one with no answer leaves nothing, so the next tick reads it
-    again. A lock latchpoint can't resolve any more is settled as
-    ``lock_missing``.
+    back empty, so the next lock sync reconciles the code. One that's ours is a
+    second copy of the code's PIN next to the slot it tracks, and is settled as
+    ``left_to_lock_sync``: the next sync imports it as its own synced code
+    (flagged ``duplicate_pin`` when it's readable), so it's tracked by a row and
+    isn't read back every tick for good (PR #211 review). An attempt in the slot
+    the code tracks on that lock is settled as ``tracked`` without a readback,
+    since lock sync reconciles that slot. A readback with no answer is counted
+    (``synced_check_unanswered``) and the attempt is left for the next tick
+    until those reach ``door_codes.push_max_attempts``, and one that answered
+    empty once before that leaves a ``slot_read_back_empty`` marker too. A
+    lock latchpoint can't resolve any more is settled as ``lock_missing``.
 
     Each lock is checked while holding its ``lock_sync:`` lock (one deadline
     shared across them), with the code read again once it's held. A lock still
@@ -2764,28 +2861,25 @@ def _check_synced_attempt_slots_on_lock(
     *, door_code: DoorCode, lock_entity_id: str, zwavejs: ZwavejsGateway, timeout_seconds: float
 ) -> int:
     """One lock's part of :func:`check_synced_attempt_slots`; the caller holds its lock."""
-    pin = decrypt_pin_or_none(door_code)
-    attempts = {
-        slot_index: attempted_pin
-        for slot_index, attempted_pin in _unconfirmed_attempts(
-            door_code=door_code,
-            lock_entity_id=lock_entity_id,
-            claimed_slots=_claimed_slots(lock_entity_id=lock_entity_id, door_code=door_code),
-        ).items()
-        if attempted_pin or pin
-    }
-    if not attempts:
-        return 0
     tracked = set(
         DoorCodeLockAssignment.objects.filter(
             door_code=door_code, lock_entity_id=lock_entity_id, slot_index__isnull=False
         ).values_list("slot_index", flat=True)
     )
+    if not tracked:
+        # Its push adopts or settles the attempts on a lock it has no slot on.
+        return 0
+    pin = decrypt_pin_or_none(door_code)
+    attempts = _synced_attempts_to_check_on_lock(
+        door_code=door_code, lock_entity_id=lock_entity_id, pin=pin, max_attempts=_push_max_attempts()
+    )
+    if not attempts:
+        return 0
     verified = _verified_attempt_slots(door_code=door_code, lock_entity_id=lock_entity_id)
     available = _available_attempt_slots(door_code=door_code, lock_entity_id=lock_entity_id)
     settled = 0
     node_id: int | None = None
-    for slot_index, attempted_pin in attempts.items():
+    for slot_index, (attempt_id, attempted_pin) in attempts.items():
         if slot_index in tracked:
             _settle_unconfirmed_slot(
                 door_code=door_code, lock_entity_id=lock_entity_id, slot_index=slot_index, outcome="tracked"
@@ -2828,9 +2922,21 @@ def _check_synced_attempt_slots_on_lock(
                 door_code.id,
                 exc_info=True,
             )
+            _record_unanswered_synced_check(
+                door_code=door_code,
+                lock_entity_id=lock_entity_id,
+                slot_index=slot_index,
+                attempt_id=attempt_id,
+                reason=f"{exc.__class__.__name__}: {exc}",
+            )
             continue
         if verdict == _HOLDS_OURS:
-            # May hold its PIN in a second slot. Left for the sync to keep skipping.
+            # A second copy of its PIN on this lock. Lock sync imports it as its
+            # own synced code once this attempt stops making it skip the slot.
+            _settle_unconfirmed_slot(
+                door_code=door_code, lock_entity_id=lock_entity_id, slot_index=slot_index, outcome="left_to_lock_sync"
+            )
+            settled += 1
             continue
         _settle_unconfirmed_slot(
             door_code=door_code,
@@ -2865,8 +2971,11 @@ def check_attempt_slots_sync_saw_empty(
     newer than its record already), so their masked-slot trust drops and a new
     attempt there isn't tagged ``slot_available``. Anything else (occupied, no
     answer, an error) records nothing, and the sync's ``clear_outstanding``
-    skips stay as they were. The caller holds the lock's ``lock_sync:`` lock and
-    is in a transaction. Returns the ids of the codes it settled something of.
+    skips stay as they were. The sync passes a :class:`BudgetedGateway`, so
+    once it runs out the slots left aren't read, and a readback cut short after
+    an empty answer still counts as empty once (``read_back_empty``). The caller
+    holds the lock's ``lock_sync:`` lock and is in a transaction. Returns the ids
+    of the codes it settled something of.
     """
     settled_code_ids: set[int] = set()
     marked = {
@@ -2883,6 +2992,10 @@ def check_attempt_slots_sync_saw_empty(
         if slot_index is not None
     }
     for slot_index in sorted(set(empty_slots) & marked):
+        if _out_of_budget(zwavejs):
+            # The rest wait for the next sync; nothing is recorded for them.
+            logger.info("Out of time reading back unconfirmed attempt slots on %s", lock_entity_id)
+            break
         records = _unconfirmed_records_on_slot(lock_entity_id=lock_entity_id, slot_index=slot_index)
         if not records:
             continue

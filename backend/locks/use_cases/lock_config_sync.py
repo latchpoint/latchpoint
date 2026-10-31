@@ -1170,22 +1170,29 @@ def _sync_lock_config_atomically(
 
         # An untracked slot the cache says is Available doesn't disprove an
         # unconfirmed attempt there on its own, so those slots are read back
-        # live, and an empty one gets its slot_empty marker (issue #194).
-        from locks.use_cases.lock_push import check_attempt_slots_sync_saw_empty
+        # live, and an empty one gets its slot_empty marker (issue #194). All
+        # of them share one budget, since this is the request and the sync's
+        # transaction, and a dry run doesn't read anything back (PR #211 review).
+        if not dry_run:
+            from locks.use_cases.lock_push import (
+                SYNC_READBACK_BUDGET_SECONDS,
+                BudgetedGateway,
+                check_attempt_slots_sync_saw_empty,
+            )
 
-        tracked_slots = set(
-            DoorCodeLockAssignment.objects.filter(lock_entity_id=lock_entity_id, slot_index__isnull=False).values_list(
-                "slot_index", flat=True
+            tracked_slots = set(
+                DoorCodeLockAssignment.objects.filter(
+                    lock_entity_id=lock_entity_id, slot_index__isnull=False
+                ).values_list("slot_index", flat=True)
             )
-        )
-        touched_code_ids.update(
-            check_attempt_slots_sync_saw_empty(
-                lock_entity_id=lock_entity_id,
-                node_id=node_id,
-                empty_slots=confirmed_empty_slots - tracked_slots,
-                zwavejs=zwavejs,
+            touched_code_ids.update(
+                check_attempt_slots_sync_saw_empty(
+                    lock_entity_id=lock_entity_id,
+                    node_id=node_id,
+                    empty_slots=confirmed_empty_slots - tracked_slots,
+                    zwavejs=BudgetedGateway(zwavejs, seconds=SYNC_READBACK_BUDGET_SECONDS),
+                )
             )
-        )
 
         # Read before anything below changes the assignments.
         outstanding_cleanup_by_slot = _slots_with_outstanding_cleanup(lock_entity_id=lock_entity_id)

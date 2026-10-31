@@ -34,6 +34,35 @@ def _holding(pin: str) -> dict:
     return {"userIdStatus": 1, "userCode": pin}
 
 
+class _Clock:
+    """Stands in for ``lock_push._time`` so a ``BudgetedGateway`` runs out on cue."""
+
+    def __init__(self):
+        self.now = 1000.0
+
+    def monotonic(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.now += seconds
+
+
+class _SlowGateway(ClearFailingGateway):
+    """Every CC 99 ``get`` takes 31s of ``clock``, so a 30s budget is gone after one."""
+
+    def __init__(self, clock: _Clock, **kwargs):
+        kwargs.setdefault("usersNumber", 5)
+        super().__init__(**kwargs)
+        self.clock = clock
+
+    def invoke_cc_api(self, **kwargs):
+        try:
+            return super().invoke_cc_api(**kwargs)
+        finally:
+            if kwargs.get("method_name") == "get":
+                self.clock.now += 31
+
+
 class _TrackingTestBase(_LifecycleTestBase):
     def _code(
         self,
@@ -229,7 +258,7 @@ class SyncedAttemptReconcileTests(_TrackingTestBase):
                 self.assertEqual(row.action, "updated")
                 self.assertNotIn("clear_outstanding", row.warnings)
 
-    def test_an_attempt_slot_that_may_hold_the_pin_is_left_alone(self):
+    def test_an_attempt_slot_holding_its_pin_is_left_to_lock_sync_and_not_read_again(self):
         for name, slot_two, tags in (
             ("its pin", _holding(self.PIN), {}),
             ("masked, slot_available", MASKED, {"slot_available": True}),
@@ -241,9 +270,78 @@ class SyncedAttemptReconcileTests(_TrackingTestBase):
 
                 self._push_pending(gateway)
 
-                self.assertEqual(self._unsettled_slots(code), [2])
+                self.assertEqual(self._unsettled_slots(code), [])
                 self.assertEqual(self._calls(gateway, "clear"), [])
                 self.assertEqual(self._calls(gateway, "set"), [])
+                marker = DoorCodeEvent.objects.filter(door_code=code, metadata__action="unconfirmed_resolved").get()
+                self.assertEqual(marker.metadata["outcome"], "left_to_lock_sync")
+                # Nothing left to read back on the next tick (PR #211 review).
+                gateway.invoke_calls.clear()
+                self._push_pending(gateway)
+                self.assertEqual(gateway.invoke_calls, [])
+
+    def test_the_second_copy_is_imported_by_the_next_lock_sync(self):
+        code, gateway = self._synced_code_with_attempt(_holding(self.PIN))
+        gateway._lock_codes[(12, 2)] = self.PIN
+        self._push_pending(gateway)
+        gateway._cache_codes[(12, 2)] = self.PIN
+
+        result = self._sync(gateway)
+
+        rows = {row.slot_index: row for row in result.slots}
+        self.assertEqual(rows[1].door_code_id, code.id)
+        self.assertNotIn("clear_outstanding", rows[1].warnings)
+        self.assertEqual(rows[2].action, "created")
+        self.assertIn("duplicate_pin", rows[2].warnings)
+        self.assertEqual(rows[2].duplicate_pin_door_code_ids, [code.id])
+
+    def test_a_lock_that_never_answers_is_read_back_up_to_the_cap(self):
+        code, gateway = self._synced_code_with_attempt(None)
+        gateway._get_scripts = {None: _timeouts(30)}
+
+        with patch("locks.tasks._get_push_max_attempts", return_value=2):
+            for _tick in range(4):
+                self._push_pending(gateway)
+
+        # 3 tries per readback, 2 readbacks, then it stops.
+        self.assertEqual(len(self._calls(gateway, "get")), 6)
+        self.assertEqual(self._unsettled_slots(code), [2])
+        gave_up = DoorCodeEvent.objects.filter(door_code=code, metadata__reason="max_attempts_exceeded").get()
+        self.assertEqual(gave_up.metadata["action"], "synced_attempt_check")
+        self.assertEqual(gave_up.metadata["attempts"], 2)
+
+    def test_an_attempt_slot_with_an_open_clear_failure_is_left_to_the_clear_retry(self):
+        # PR #211 review: a synced code with dates expires while the clear of its
+        # tracked slot fails, and that slot also has an unsettled attempt.
+        code = self._code(
+            source=DoorCode.Source.SYNCED,
+            slots={self.BACK: 1},
+            code_type=DoorCode.CodeType.TEMPORARY,
+            end_at=self._from_now(days=1),
+        )
+        self._attempt(code, 1)
+        gateway = self._gateway({1: self.PIN}, cache={1: self.PIN})
+        gateway.clear_fails_on = {12}
+        self._move(code, end_at=self._ago(minutes=1))
+        self._enforce(gateway)
+        code.refresh_from_db()
+        self.assertFalse(code.is_active)
+        self.assertEqual(
+            [(f.lock_entity_id, f.slot_index) for f in lock_push_uc.unresolved_clear_failures(door_code=code)],
+            [(self.BACK, 1)],
+        )
+
+        # The clear still fails, and the #180 check mustn't settle it.
+        self._push_pending(gateway)
+        self.assertEqual(
+            [(f.lock_entity_id, f.slot_index) for f in lock_push_uc.unresolved_clear_failures(door_code=code)],
+            [(self.BACK, 1)],
+        )
+
+        gateway.clear_fails_on = set()
+        self._push_pending(gateway)
+        self.assertEqual(self._lock_codes(gateway, 12), {})
+        self.assertEqual(lock_push_uc.unresolved_clear_failures(door_code=code), [])
 
     def test_an_attempt_in_the_slot_the_synced_code_tracks_is_settled_without_a_readback(self):
         code = self._code(source=DoorCode.Source.SYNCED, slots={self.BACK: 1})
@@ -302,6 +400,31 @@ class SlotEmptyMarkerTests(_TrackingTestBase):
                 self.assertEqual(available, set() if seen_empty or settled else {3})
                 markers = lock_push_uc._slot_empty_markers(lock_entity_id=self.BACK, slot_index=3)
                 self.assertEqual(bool(markers), seen_empty)
+
+    def test_lock_sync_readbacks_share_a_budget_and_a_dry_run_reads_nothing(self):
+        clock = _Clock()
+        code = self._code(push_state=DoorCode.PushState.PENDING)
+        self._attempt(code, 3, slot_available=True)
+        self._attempt(code, 4, slot_available=True)
+        gateway = _SlowGateway(clock)
+        gateway._lock_codes.update({(12, 3): self.PIN, (12, 4): self.PIN})
+        gateway._get_scripts = {None: [EMPTY, EMPTY, EMPTY, EMPTY]}
+
+        lock_config_sync_uc.sync_lock_config(
+            lock_entity_id=self.BACK, target_user=self.user, actor_user=self.user, zwavejs=gateway, dry_run=True
+        )
+        self.assertEqual(self._calls(gateway, "get"), [])
+
+        # The first answer is empty and takes the whole budget.
+        with patch.object(lock_push_uc, "_time", clock):
+            self._sync(gateway)
+
+        self.assertEqual(self._calls(gateway, "get"), [(12, [3])])
+        # The empty answer still counts as one, and slot 4 isn't read or marked.
+        self.assertTrue(lock_push_uc._slot_empty_markers(lock_entity_id=self.BACK, slot_index=3))
+        self.assertFalse(lock_push_uc._slot_empty_markers(lock_entity_id=self.BACK, slot_index=4))
+        self.assertEqual(sorted(self._unsettled_slots(code)), [3, 4])
+        self.assertEqual(lock_push_uc._available_attempt_slots(door_code=code, lock_entity_id=self.BACK), {4})
 
     def test_a_tracked_slot_seen_empty_once_is_no_longer_trusted_when_it_reads_back_masked(self):
         code = self._code(is_active=False, slots={self.BACK: 1})
@@ -385,6 +508,20 @@ class DuplicatePinTurnOnTests(_TrackingTestBase, APITestCase):
 
         self.assertTrue(self._update(retired, gateway, {"is_active": True}).is_active)
 
+    def test_turning_a_code_back_on_while_it_still_tracks_its_own_slot_is_not_refused(self):
+        # Turned off while the lock didn't answer, so it still tracks slot 1 with a clear open.
+        code = self._code(is_active=False, slots={self.BACK: 1})
+        lock_push_uc.record_clear_failure(
+            door_code=code,
+            lock_entity_id=self.BACK,
+            slot_index=1,
+            exc=ZwavejsCommandError("driver TimeoutError after 5.0s"),
+            expected_pin=self.PIN,
+        )
+        gateway = self._gateway({1: self.PIN}, cache={1: self.PIN})
+
+        self.assertTrue(self._update(code, gateway, {"is_active": True}).is_active)
+
 
 class RetireSyncedCopiesTests(_TrackingTestBase):
     """Issue #185: a synced copy of an expiring code's PIN comes off its lock with it."""
@@ -413,6 +550,71 @@ class RetireSyncedCopiesTests(_TrackingTestBase):
         for untouched in (other_pin, manual_copy, dated_copy):
             untouched.refresh_from_db()
             self.assertTrue(untouched.is_active)
+        self.assertFalse(DoorCodeEvent.objects.filter(metadata__action="duplicate_pin_survives_retire").exists())
+
+    def test_a_keypad_code_that_was_there_first_is_left_alone_and_flagged(self):
+        # PR #211 review: a family member's code is in slot 1, then a guest code is
+        # given the same PIN. The Yale drops the duplicate, so the guest never lands.
+        family = self._code(source=DoorCode.Source.SYNCED, slots={self.BACK: 1}, label="Slot 1")
+        gateway = self._gateway({1: self.PIN}, cache={1: self.PIN})
+        guest = door_codes_uc.create_door_code(
+            user=self.user,
+            raw_code=self.PIN,
+            code_type=DoorCode.CodeType.TEMPORARY,
+            end_at=self._from_now(days=1),
+            lock_entity_ids=[self.BACK],
+            actor_user=self.user,
+            zwavejs=gateway,
+        )
+        self.assertEqual(self._slots(guest), {self.BACK: None})
+        # Lock sync records the two against each other.
+        rows = {row.slot_index: row for row in self._sync(gateway).slots}
+        self.assertEqual(rows[1].duplicate_pin_door_code_ids, [guest.id])
+        gateway.invoke_calls.clear()
+
+        self._move(guest, end_at=self._ago(minutes=1))
+        with self.assertLogs("locks.use_cases.door_codes", level="WARNING"):
+            self._enforce(gateway)
+
+        guest.refresh_from_db()
+        family.refresh_from_db()
+        self.assertFalse(guest.is_active)
+        self.assertTrue(family.is_active)
+        self.assertEqual(self._slots(family), {self.BACK: 1})
+        self.assertEqual(self._lock_codes(gateway, 12), {1: self.PIN})
+        self.assertEqual(self._calls(gateway, "clear"), [])
+        flag = DoorCodeEvent.objects.get(door_code=guest, metadata__action="duplicate_pin_survives_retire")
+        self.assertEqual(flag.lock_entity_id, self.BACK)
+        self.assertEqual(
+            flag.metadata,
+            {"action": "duplicate_pin_survives_retire", "slot_index": 1, "duplicate_door_code_id": family.id},
+        )
+
+    def test_a_copy_whose_retire_raises_is_tried_again_on_a_later_tick(self):
+        original, gateway = self._temporary_code([self.BACK])
+        copy = self._code(source=DoorCode.Source.SYNCED, slots={self.BACK: 2}, label="Slot 2")
+        gateway._lock_codes[(12, 2)] = self.PIN
+        self._move(original, end_at=self._ago(minutes=1))
+
+        with patch.object(door_codes_uc, "_retire_synced_copy", return_value=False):
+            self._enforce(gateway)
+        copy.refresh_from_db()
+        self.assertTrue(copy.is_active)
+        self.assertTrue(
+            DoorCodeEvent.objects.filter(door_code=original, metadata__action="duplicate_retire_pending").exists()
+        )
+
+        self._enforce(gateway)
+
+        copy.refresh_from_db()
+        self.assertFalse(copy.is_active)
+        self.assertEqual(self._lock_codes(gateway, 12), {})
+        self.assertTrue(
+            DoorCodeEvent.objects.filter(door_code=original, metadata__action="duplicate_retire_done").exists()
+        )
+        gateway.invoke_calls.clear()
+        self._enforce(gateway)
+        self.assertEqual(gateway.invoke_calls, [])
 
 
 class WithdrawCapLeftoverTests(_TrackingTestBase):
@@ -445,6 +647,32 @@ class WithdrawCapLeftoverTests(_TrackingTestBase):
         self.assertEqual(code.last_push_error, "")
         self.assertEqual(code.push_attempt_count, 0)
         self.assertEqual(self._lock_codes(gateway, 12), {1: self.PIN})
+
+    def test_a_code_kept_failed_by_an_open_clear_failure_is_not_refreshed_every_tick(self):
+        code = self._code(
+            slots={self.BACK: 1},
+            code_type=DoorCode.CodeType.TEMPORARY,
+            start_at=self._ago(minutes=1),
+            push_state=DoorCode.PushState.FAILED,
+            last_push_attempt_at=self._ago(minutes=2),
+            push_attempt_count=24,
+        )
+        lock_push_uc.record_clear_failure(
+            door_code=code,
+            lock_entity_id=self.BACK,
+            slot_index=2,
+            exc=ZwavejsCommandError("driver TimeoutError after 5.0s"),
+            expected_pin=self.PIN,
+            unconfirmed=True,
+        )
+        gateway = self._gateway({1: self.PIN})
+
+        with patch.object(lock_push_uc, "refresh_push_state", wraps=lock_push_uc.refresh_push_state) as refresh:
+            self._enforce(gateway)
+
+        self.assertEqual([c for c in refresh.call_args_list if c.kwargs["door_code"].id == code.id], [])
+        code.refresh_from_db()
+        self.assertEqual(code.push_state, DoorCode.PushState.FAILED)
 
     def test_a_withdraw_that_reaches_the_cap_writes_one_event(self):
         code, gateway = self._scheduled_pushed_code()
