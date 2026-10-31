@@ -87,6 +87,44 @@ describe('LockConfigSyncCard', () => {
     expect(screen.getByText('Slot claimed during the sync')).toBeTruthy()
   })
 
+  it('labels the reasons a manual code is left alone or pushed again', async () => {
+    await syncWith([
+      slotOf({ slotIndex: 1, warnings: ['slot_not_confirmed_empty'] }),
+      slotOf({ slotIndex: 2, action: 'unchanged', warnings: ['disabled_on_lock'] }),
+      slotOf({ slotIndex: 3, action: 'updated', pinKnown: null, warnings: ['slot_empty_repush'] }),
+    ])
+
+    expect(screen.getByText("Lock didn't confirm the slot is empty")).toHaveAttribute(
+      'title',
+      'slot_not_confirmed_empty',
+    )
+    expect(screen.getByText('Disabled at the lock')).toBeTruthy()
+    expect(screen.getByText('PIN missing from the lock, sending it again')).toBeTruthy()
+  })
+
+  it('names the door codes a duplicate PIN points at', async () => {
+    await syncWith([
+      slotOf({ slotIndex: 1, action: 'created', warnings: ['duplicate_pin'], duplicatePinDoorCodeIds: [12] }),
+      slotOf({ slotIndex: 2, action: 'unchanged', warnings: ['duplicate_pin'], duplicatePinDoorCodeIds: [7, 9] }),
+    ])
+
+    expect(screen.getByText('Same PIN as door code #12')).toBeTruthy()
+    expect(screen.getByText('Same PIN as door codes #7, #9')).toBeTruthy()
+  })
+
+  it('only says PIN saved on a slot that was saved', async () => {
+    await syncWith([
+      slotOf({ slotIndex: 1, action: 'skipped', pinKnown: true, warnings: ['pin_mismatch'] }),
+      slotOf({ slotIndex: 2, action: 'updated', pinKnown: true }),
+      slotOf({ slotIndex: 3, action: 'skipped', pinKnown: false, warnings: ['clear_outstanding'] }),
+    ])
+
+    expect(screen.getAllByText('PIN saved')).toHaveLength(1)
+    expect(screen.getByText('Slot 2: updated').parentElement).toHaveTextContent('PIN saved')
+    expect(screen.getByText('Slot 1: skipped').parentElement).not.toHaveTextContent('PIN saved')
+    expect(screen.getByText('PIN unknown')).toBeTruthy()
+  })
+
   it('shows a reason it has no label for as it came', async () => {
     await syncWith([slotOf({ warnings: ['something_new'] })])
 

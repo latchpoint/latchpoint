@@ -533,10 +533,17 @@ class LockConfigSyncApiTests(EncryptionTestMixin, APITestCase):
 class SlotGateway(FakeZwavejsGateway):
     """A lock whose slots are given as ``{slot: (userIdStatus, userCode)}``.
 
-    ``failing_status_slots`` raise on the status read and CC 99 clears are recorded.
+    ``failing_status_slots`` raise on the status read, ``failing_code_slots`` on
+    the PIN read, and CC 99 clears are recorded.
     """
 
-    def __init__(self, slots: dict[int, tuple[object, object]], *, failing_status_slots: set[int] = frozenset()):
+    def __init__(
+        self,
+        slots: dict[int, tuple[object, object]],
+        *,
+        failing_status_slots: set[int] = frozenset(),
+        failing_code_slots: set[int] = frozenset(),
+    ):
         value_ids = [{"commandClass": 99, "property": "usersNumber"}]
         values: dict[tuple[int, str], object] = {
             (5, _value_id_key({"commandClass": 99, "property": "usersNumber"})): max(slots),
@@ -548,10 +555,13 @@ class SlotGateway(FakeZwavejsGateway):
                 values[(5, _value_id_key(value_id))] = value
         super().__init__(value_ids=value_ids, values=values)
         self.failing_status_slots = set(failing_status_slots)
+        self.failing_code_slots = set(failing_code_slots)
         self.clears: list[int] = []
 
     def node_get_value(self, *, node_id, value_id, timeout_seconds=5.0):
         if value_id.get("property") == "userIdStatus" and value_id.get("propertyKey") in self.failing_status_slots:
+            raise TimeoutError("lock asleep")
+        if value_id.get("property") == "userCode" and value_id.get("propertyKey") in self.failing_code_slots:
             raise TimeoutError("lock asleep")
         return super().node_get_value(node_id=node_id, value_id=value_id, timeout_seconds=timeout_seconds)
 
@@ -770,17 +780,21 @@ class LockConfigSyncReconcileTests(EncryptionTestMixin, APITestCase):
             ).exists()
         )
 
-    def test_conversion_with_matching_or_masked_pin_keeps_code_pin(self):
+    def test_matching_or_masked_pin_leaves_manual_code_manual_with_its_pin(self):
+        # Issue #166: the sync used to convert these to synced, which made them read-only.
         matching = self._manual_code(pin="1234", slot_index=1)
         masked = self._manual_code(pin="5678", slot_index=2)
 
-        self._sync(SlotGateway({1: (1, "1234"), 2: (1, "****")}))
+        body = self._sync(SlotGateway({1: (1, "1234"), 2: (1, "****")}))
 
         for code, pin in ((matching, "1234"), (masked, "5678")):
             code.refresh_from_db()
-            self.assertEqual(code.source, DoorCode.Source.SYNCED)
+            self.assertEqual(code.source, DoorCode.Source.MANUAL)
             self.assertEqual(lock_push_uc.decrypt_pin_or_none(code), pin)
             self.assertEqual(code.pin_length, 4)
+            self.assertEqual(code.user_id, self.user.id)
+        self.assertEqual(body["skipped"], 0)
+        self.assertEqual(body["created"], 0)
 
     def test_untracked_slot_with_unconfirmed_push_is_not_imported(self):
         # A push wrote 4321 to slot 2 but never got it confirmed (#111).
@@ -894,10 +908,7 @@ class LockConfigSyncReconcileTests(EncryptionTestMixin, APITestCase):
         self.assertEqual(lock_push_uc.decrypt_pin_or_none(imported), "9999")
 
     def test_masked_read_keeps_synced_code_pin(self):
-        code = self._manual_code(pin="1234", slot_index=1)
-        self._sync(SlotGateway({1: (1, "1234")}))  # converts it
-        code.refresh_from_db()
-        self.assertEqual(code.source, DoorCode.Source.SYNCED)
+        code = self._synced_code_at(1, "1234")
 
         for unreadable in ("****", None):
             self._sync(SlotGateway({1: (1, unreadable)}))
@@ -910,6 +921,21 @@ class LockConfigSyncReconcileTests(EncryptionTestMixin, APITestCase):
         code.refresh_from_db()
         self.assertEqual(lock_push_uc.decrypt_pin_or_none(code), "987654")
         self.assertEqual(code.pin_length, 6)
+
+    def test_failed_pin_read_keeps_synced_code_pin_when_the_status_read_worked(self):
+        # Issue #166: the slot's status read works, only the PIN read fails.
+        code = self._synced_code_at(1, "1234")
+
+        body = self._sync(SlotGateway({1: (1, "1234")}, failing_code_slots={1}))
+
+        slot = self._slot(body, 1)
+        self.assertEqual(slot["action"], "unchanged")
+        self.assertFalse(slot["pin_known"])
+        code.refresh_from_db()
+        self.assertEqual(lock_push_uc.decrypt_pin_or_none(code), "1234")
+        self.assertEqual(code.pin_length, 4)
+        self.assertTrue(code.is_active)
+        self.assertEqual(DoorCodeLockAssignment.objects.get(door_code=code).slot_index, 1)
 
     def test_slot_release_skipped_while_unconfirmed_push_outstanding(self):
         code = self._synced_code_at(1, "1234")
@@ -950,9 +976,12 @@ class LockConfigSyncReconcileTests(EncryptionTestMixin, APITestCase):
     def test_release_only_touches_synced_codes(self):
         code = self._manual_code(pin="1234", slot_index=1)
 
-        body = self._sync(SlotGateway({1: (0, None)}))
+        # The cache says Available, but the lock gives no answer to a live read (#166).
+        with patch.object(lock_push_uc, "_READBACK_RETRY_DELAYS_SECONDS", (0.0, 0.0)):
+            body = self._sync(SlotGateway({1: (0, None)}))
 
         self.assertEqual(body["deactivated"], 0)
+        self.assertIn("slot_not_confirmed_empty", self._slot(body, 1)["warnings"])
         code.refresh_from_db()
         self.assertTrue(code.is_active)
         self.assertEqual(DoorCodeLockAssignment.objects.get(door_code=code).slot_index, 1)
@@ -1032,7 +1061,7 @@ class LockConfigSyncReconcileTests(EncryptionTestMixin, APITestCase):
             door_code=code, lock_entity_id=lock_entity_id or self.LOCK, slot_index=slot_index, outcome="cleared"
         )
 
-    def test_settled_unconfirmed_attempt_does_not_block_conversion(self):
+    def test_settled_unconfirmed_attempt_does_not_block_reconciling(self):
         code = self._manual_code(pin="1234", slot_index=1)
         self._unconfirmed(code, 3, "1234")
         self._settle(code, 3)
@@ -1040,8 +1069,9 @@ class LockConfigSyncReconcileTests(EncryptionTestMixin, APITestCase):
         body = self._sync(SlotGateway({1: (1, "1234"), 3: (0, None)}))
 
         self.assertNotIn("clear_outstanding", self._slot(body, 1)["warnings"])
+        self.assertNotEqual(self._slot(body, 1)["action"], "skipped")
         code.refresh_from_db()
-        self.assertEqual(code.source, DoorCode.Source.SYNCED)
+        self.assertEqual(code.source, DoorCode.Source.MANUAL)
 
     def test_settled_unconfirmed_attempt_does_not_block_import(self):
         code = self._manual_code(pin="4321", slot_index=None)
@@ -1101,8 +1131,7 @@ class LockConfigSyncReconcileTests(EncryptionTestMixin, APITestCase):
         body = self._sync(SlotGateway({1: (1, "1234"), 2: (1, "5678")}))
 
         self.assertNotIn("clear_outstanding", self._slot(body, 1)["warnings"])
-        code.refresh_from_db()
-        self.assertEqual(code.source, DoorCode.Source.SYNCED)
+        self.assertNotEqual(self._slot(body, 1)["action"], "skipped")
 
     def test_untracked_slot_uses_the_clear_failures_expected_pin(self):
         # The clear failed before a PIN change, so slot 3 may still hold the old 4321.

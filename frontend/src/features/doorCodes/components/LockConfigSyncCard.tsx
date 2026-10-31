@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import type { Entity, LockConfigSyncResult } from '@/types'
+import type { Entity, LockConfigSyncResult, LockConfigSyncSlotResult } from '@/types'
 import { getErrorMessage } from '@/types/errors'
 import { useSyncLockConfigMutation } from '@/hooks/useDoorCodesQueries'
 import { Alert, AlertDescription } from '@/components/ui/alert'
@@ -38,10 +38,25 @@ const SLOT_WARNING_LABELS: Record<string, string> = {
   owner_changed: 'Moved to this user',
   integrity_race: 'Slot claimed during the sync',
   schedule_unsupported: 'Schedule not supported',
+  slot_not_confirmed_empty: "Lock didn't confirm the slot is empty",
+  disabled_on_lock: 'Disabled at the lock',
+  slot_empty_repush: 'PIN missing from the lock, sending it again',
 }
 
 function slotWarningLabel(warning: string): string {
   return Object.hasOwn(SLOT_WARNING_LABELS, warning) ? SLOT_WARNING_LABELS[warning] : warning
+}
+
+// A skipped slot saved nothing, so its PIN is only ever "unknown" or not mentioned.
+function slotPinText(slot: LockConfigSyncSlotResult): string {
+  if (slot.pinKnown === false) return 'PIN unknown'
+  if (slot.pinKnown === true && slot.action !== 'skipped') return 'PIN saved'
+  return ''
+}
+
+function duplicatePinText(ids: number[]): string {
+  const list = ids.map((id) => `#${id}`).join(', ')
+  return ids.length === 1 ? `Same PIN as door code ${list}` : `Same PIN as door codes ${list}`
 }
 
 function formatTimeAgo(isoString: string): string {
@@ -215,9 +230,7 @@ export function LockConfigSyncCard({ userId, locks, locksIsLoading, locksError }
                       <div className="font-medium">
                         Slot {slot.slotIndex}: {slot.action}
                       </div>
-                      <div className="text-muted-foreground">
-                        {slot.pinKnown === false ? 'PIN unknown' : slot.pinKnown === true ? 'PIN saved' : ''}
-                      </div>
+                      <div className="text-muted-foreground">{slotPinText(slot)}</div>
                     </div>
                     {slot.scheduleApplied && slot.schedule ? (
                       <div className="mt-1 text-muted-foreground">
@@ -239,6 +252,9 @@ export function LockConfigSyncCard({ userId, locks, locksIsLoading, locksError }
                           </span>
                         ))}
                       </div>
+                    ) : null}
+                    {slot.duplicatePinDoorCodeIds && slot.duplicatePinDoorCodeIds.length > 0 ? (
+                      <div className="mt-1 text-warning-foreground">{duplicatePinText(slot.duplicatePinDoorCodeIds)}</div>
                     ) : null}
                     {slot.error ? <div className="mt-1 text-destructive">{slot.error}</div> : null}
                   </div>

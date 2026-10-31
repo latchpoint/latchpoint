@@ -762,7 +762,16 @@ _SKIP_CLEAR_OUTSTANDING = "clear_outstanding"
 _SKIP_INACTIVE_MANUAL_CODE = "inactive_code_on_lock"
 _SKIP_PIN_MISMATCH = "pin_mismatch"
 _SKIP_SCHEDULE_PENDING = "schedule_pending"
+# An active manual code's tracked slot the cache called Available, but a live
+# readback didn't answer Available twice, so the code keeps the slot (issue #166).
+_SKIP_SLOT_NOT_CONFIRMED_EMPTY = "slot_not_confirmed_empty"
 _WARN_DUPLICATE_PIN = "duplicate_pin"
+# An active manual code whose slot holds its PIN but reads Occupied/Disabled.
+# Latchpoint owns a manual code, so the sync doesn't turn it off (issue #166).
+_WARN_DISABLED_ON_LOCK = "disabled_on_lock"
+# An active manual code whose tracked slot read back empty: the slot is let go
+# and the code goes pending so the scheduler pushes it again (issue #166).
+_WARN_SLOT_EMPTY_REPUSH = "slot_empty_repush"
 
 
 def _has_outstanding_slot_cleanup(*, door_code: DoorCode, lock_entity_id: str) -> bool:
@@ -973,6 +982,100 @@ def _apply_slot_pin(*, code: DoorCode, raw_pin: str | None) -> list[str]:
     return fields
 
 
+def _tracked_slot_reads_back_empty(*, zwavejs: ZwavejsGateway, node_id: int, slot_index: int) -> bool:
+    """Whether a live CC 99 ``get`` of a tracked slot answers Available twice (issue #166).
+
+    The sync's status read comes from the Z-Wave JS value cache, which can say
+    Available while the slot holds a PIN (#194), so the cache alone never lets
+    a manual code go. ``userIdStatus`` isn't masked, so a lock that hides its
+    codes still answers Occupied for a slot holding one. Read only. ``False``
+    for anything else: occupied, empty once then no answer, no answer, out of
+    the sync's readback budget or an error.
+    """
+    from locks.use_cases.lock_push import LockRejectedCode, _out_of_budget, _verify_user_code_slot
+
+    if _out_of_budget(zwavejs):
+        return False
+    try:
+        # Only an empty answer matters, so there's no PIN to compare against.
+        _verify_user_code_slot(zwavejs=zwavejs, node_id=node_id, slot_index=slot_index, pin="", timeout_seconds=5.0)
+    except LockRejectedCode as exc:
+        return bool(exc.clear_slot and not exc.holds_pin)
+    except Exception:
+        logger.warning("Couldn't read back tracked slot %d on node %d", slot_index, node_id, exc_info=True)
+    return False
+
+
+def _release_empty_manual_slot(
+    *,
+    code: DoorCode,
+    assignment: DoorCodeLockAssignment,
+    lock_entity_id: str,
+    node_id: int,
+    zwavejs: ZwavejsGateway,
+    actor_user: User,
+) -> str | None:
+    """Let an active manual code's tracked slot go once it reads back empty, so it's pushed again (issue #166).
+
+    The caller only passes a slot whose cached status was Available. That isn't
+    enough on its own (:func:`_tracked_slot_reads_back_empty`), and forgetting a
+    slot that still holds the PIN would leave it on the lock with nothing
+    tracking it while the push writes a second copy, or fails on a lock that
+    drops duplicates. So the slot is only let go when a live readback answers
+    Available twice. A code with a clear or unconfirmed push outstanding is left
+    to that cleanup, like every other skip. Returns the skip reason when the
+    code keeps its slot, ``None`` once it's let go.
+
+    A let-go slot gets a ``slot_empty`` marker, so a masked code there later
+    isn't counted as another code's older tagged attempt (#193), then a
+    ``code_synced`` ``slot_released`` event after it, so this code's own
+    re-push into the same slot is tagged like any push into an Available slot.
+    The lock goes ``pending`` with no slot and a fresh attempt count, which is
+    what the scheduler's push arm picks up.
+    """
+    from locks.use_cases.lock_push import _settle_unconfirmed_slot
+
+    if _has_outstanding_slot_cleanup(door_code=code, lock_entity_id=lock_entity_id):
+        return _SKIP_CLEAR_OUTSTANDING
+    slot_index = int(assignment.slot_index)
+    if not _tracked_slot_reads_back_empty(zwavejs=zwavejs, node_id=node_id, slot_index=slot_index):
+        return _SKIP_SLOT_NOT_CONFIRMED_EMPTY
+    logger.info(
+        "Slot %d on %s (manual code_id=%d) reads back empty: releasing it to push the code again",
+        slot_index,
+        lock_entity_id,
+        code.id,
+    )
+    # The code row before its assignment row, like every writer of both.
+    DoorCode.objects.select_for_update().filter(id=code.id).first()
+    _settle_unconfirmed_slot(
+        door_code=code, lock_entity_id=lock_entity_id, slot_index=slot_index, outcome="not_holding_pin", slot_empty=True
+    )
+    assignment.slot_index = None
+    assignment.push_state = DoorCode.PushState.PENDING
+    assignment.schedule_pending = False
+    assignment.push_attempt_count = 0
+    assignment.last_push_error = f"Slot {slot_index} read back empty during a lock sync."
+    assignment.save(
+        update_fields=[
+            "slot_index",
+            "push_state",
+            "schedule_pending",
+            "push_attempt_count",
+            "last_push_error",
+            "updated_at",
+        ]
+    )
+    DoorCodeEvent.objects.create(
+        door_code=code,
+        user=actor_user,
+        lock_entity_id=lock_entity_id,
+        event_type=DoorCodeEvent.EventType.CODE_SYNCED,
+        metadata={"slot_index": slot_index, "action": "slot_released", "reason": _WARN_SLOT_EMPTY_REPUSH},
+    )
+    return None
+
+
 def _record_sync_skip(
     *, code: DoorCode, actor_user: User, lock_entity_id: str, slot_index: int, reason: str, pin_known: bool
 ) -> DoorCodeEvent:
@@ -1173,12 +1276,12 @@ def _sync_lock_config_atomically(
         # live, and an empty one gets its slot_empty marker (issue #194). All
         # of them share one budget, since this is the request and the sync's
         # transaction, and a dry run doesn't read anything back (PR #211 review).
+        # The tracked slots of manual codes below share that budget (issue #166).
+        from locks.use_cases.lock_push import SYNC_READBACK_BUDGET_SECONDS, BudgetedGateway
+
+        readback_gateway = BudgetedGateway(zwavejs, seconds=SYNC_READBACK_BUDGET_SECONDS)
         if not dry_run:
-            from locks.use_cases.lock_push import (
-                SYNC_READBACK_BUDGET_SECONDS,
-                BudgetedGateway,
-                check_attempt_slots_sync_saw_empty,
-            )
+            from locks.use_cases.lock_push import check_attempt_slots_sync_saw_empty
 
             tracked_slots = set(
                 DoorCodeLockAssignment.objects.filter(
@@ -1190,7 +1293,7 @@ def _sync_lock_config_atomically(
                     lock_entity_id=lock_entity_id,
                     node_id=node_id,
                     empty_slots=confirmed_empty_slots - tracked_slots,
-                    zwavejs=BudgetedGateway(zwavejs, seconds=SYNC_READBACK_BUDGET_SECONDS),
+                    zwavejs=readback_gateway,
                 )
             )
 
@@ -1273,6 +1376,62 @@ def _sync_lock_config_atomically(
                 )
                 continue
 
+            if existing and existing.door_code.source != DoorCode.Source.SYNCED:
+                # An active manual code whose slot holds its PIN or a masked one
+                # (the skips above catch the rest). Latchpoint owns it, so it
+                # stays manual and editable, and its PIN, schedule, owner and
+                # active flag are left alone (issue #166). Codes an older sync
+                # already converted stay synced.
+                code = existing.door_code
+                action = "unchanged"
+                if is_active is False:
+                    warnings.append(_WARN_DISABLED_ON_LOCK)
+                elif (
+                    existing.push_state != DoorCode.PushState.PUSHED
+                    or existing.push_attempt_count
+                    or existing.last_push_error
+                ):
+                    # The lock holds it in the slot it tracks, so per lock it's pushed,
+                    # like the old conversion did (issue #126). After the code row,
+                    # like every writer of both.
+                    DoorCode.objects.select_for_update().filter(id=code.id).first()
+                    DoorCodeLockAssignment.objects.filter(id=existing.id).update(
+                        push_state=DoorCode.PushState.PUSHED, push_attempt_count=0, last_push_error=""
+                    )
+                    touched_code_ids.add(code.id)
+                    action = "updated"
+                if action == "updated":
+                    result.updated += 1
+                else:
+                    result.unchanged += 1
+                logger.debug("Slot %d on %s: manual code %d matches (%s)", slot_index, lock_entity_id, code.id, action)
+                event = DoorCodeEvent.objects.create(
+                    door_code=code,
+                    user=actor_user,
+                    lock_entity_id=lock_entity_id,
+                    event_type=DoorCodeEvent.EventType.CODE_SYNCED,
+                    metadata={
+                        "slot_index": slot_index,
+                        "action": action,
+                        "pin_known": pin_known,
+                        "schedule_applied": False,
+                        "schedule_unsupported": bool(schedule_unsupported_reason),
+                    },
+                )
+                add_slot_result(
+                    SlotSyncResult(
+                        slot_index=slot_index,
+                        action=action,
+                        door_code_id=code.id,
+                        pin_known=pin_known,
+                        is_active=bool(is_active) if is_active is not None else None,
+                        schedule_unsupported=bool(schedule_unsupported_reason),
+                        warnings=warnings,
+                    ),
+                    event,
+                )
+                continue
+
             if existing:
                 code = existing.door_code
                 updated_fields: list[str] = []
@@ -1282,13 +1441,6 @@ def _sync_lock_config_atomically(
                     updated_fields.append("user")
                     warnings.append("owner_changed")
 
-                converted_to_synced = code.source != DoorCode.Source.SYNCED
-                if converted_to_synced:
-                    code.source = DoorCode.Source.SYNCED
-                    updated_fields.append("source")
-
-                # A manual code only gets this far when the slot holds its PIN or
-                # a masked one, so its own PIN stays either way.
                 updated_fields.extend(_apply_slot_pin(code=code, raw_pin=raw_pin))
                 if is_active is not None and code.is_active != bool(is_active):
                     code.is_active = bool(is_active)
@@ -1342,15 +1494,6 @@ def _sync_lock_config_atomically(
                     action = "updated"
                     result.updated += 1
                     logger.info("Slot %d on %s: updated (fields: %s)", slot_index, lock_entity_id, updated_fields)
-                    if converted_to_synced:
-                        # The lock holds it in this tracked slot now, so per lock it's
-                        # pushed (issue #126). After the code row, like every writer of both.
-                        DoorCodeLockAssignment.objects.filter(id=existing.id).update(
-                            push_state=DoorCode.PushState.PUSHED,
-                            push_attempt_count=0,
-                            last_push_error="",
-                            schedule_pending=False,
-                        )
                 else:
                     result.unchanged += 1
                     logger.debug("Slot %d on %s: unchanged", slot_index, lock_entity_id)
@@ -1458,7 +1601,12 @@ def _sync_lock_config_atomically(
                         )
                         continue
                     race_fields = _apply_slot_pin(code=existing_code, raw_pin=raw_pin)
-                    if is_active is not None and existing_code.is_active != bool(is_active):
+                    # A manual code's active flag is latchpoint's, not the lock's (issue #166).
+                    if (
+                        existing_code.source == DoorCode.Source.SYNCED
+                        and is_active is not None
+                        and existing_code.is_active != bool(is_active)
+                    ):
                         existing_code.is_active = bool(is_active)
                         race_fields.append("is_active")
                     if race_fields:
@@ -1531,7 +1679,40 @@ def _sync_lock_config_atomically(
             if slot_index not in confirmed_empty_slots:
                 continue
             code = assignment.door_code
-            if not code or code.source != DoorCode.Source.SYNCED:
+            if not code:
+                continue
+            if code.source != DoorCode.Source.SYNCED:
+                # An inactive manual code is the #167 scheduler's to clear or forget.
+                # A dry run reads nothing back, so it can't tell (PR #211 review).
+                if code.is_active and not dry_run:
+                    manual_skip_reason = _release_empty_manual_slot(
+                        code=code,
+                        assignment=assignment,
+                        lock_entity_id=lock_entity_id,
+                        node_id=node_id,
+                        zwavejs=readback_gateway,
+                        actor_user=actor_user,
+                    )
+                    if manual_skip_reason:
+                        skip_slot(
+                            code=code,
+                            slot_index=slot_index,
+                            reason=manual_skip_reason,
+                            pin_known=None,
+                            is_active=None,
+                            warnings=[],
+                        )
+                    else:
+                        touched_code_ids.add(code.id)
+                        result.updated += 1
+                        add_slot_result(
+                            SlotSyncResult(
+                                slot_index=slot_index,
+                                action="updated",
+                                door_code_id=code.id,
+                                warnings=[_WARN_SLOT_EMPTY_REPUSH],
+                            )
+                        )
                 continue
             if _has_outstanding_slot_cleanup(door_code=code, lock_entity_id=lock_entity_id):
                 skip_slot(
