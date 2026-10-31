@@ -127,6 +127,7 @@ This document tracks all Architecture Decision Records (ADRs) and their implemen
 | [0110](0110-door-code-push-state-per-lock.md) | Door Code Push State Is Tracked Per Lock | **Accepted** |
 | [0111](0111-door-code-push-off-the-request-path.md) | Door Code Pushes Are Queued for the Scheduler Instead of Made in the Request | **Accepted** |
 | [0112](0112-one-runtime-process-per-database.md) | One Runtime Process per Database | **Accepted** |
+| [0113](0113-readback-get-not-asked-again-after-a-timeout.md) | A Readback Get That Times Out Isn't Asked Again | **Accepted** |
 
 ---
 
@@ -136,13 +137,13 @@ This document tracks all Architecture Decision Records (ADRs) and their implemen
 |--------|-------|
 | **Implemented** | 69 |
 | **Partially Implemented** | 0 |
-| **Accepted** | 7 |
+| **Accepted** | 8 |
 | **Proposed** | 16 |
 | **Superseded** | 17 |
-| **Total** | 109 |
+| **Total** | 110 |
 
 Note: **Superseded** includes entries marked as "Superseded by …" in the table above.
 
 ---
 
-*Last updated: 2026-10-30* (added ADR 0112)
+*Last updated: 2026-10-31* (added ADR 0113)

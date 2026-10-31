@@ -49,6 +49,17 @@ class ZwavejsCommandError(ZwavejsGatewayError):
     pass
 
 
+class ZwavejsCommandTimeout(ZwavejsCommandError):
+    """Our wait for a command's answer ran out (issue #199).
+
+    Only :meth:`ZwavejsConnectionManager._run_coro` raises it, when its own
+    wait timed out and it cancelled the future. The command may still be
+    running in the Z-Wave JS driver, so asking the node again right away
+    queues behind it. A ``TimeoutError`` the command raised itself stays a
+    plain :class:`ZwavejsCommandError`.
+    """
+
+
 # Z-Wave command classes that identify lock devices.
 CC_DOOR_LOCK = 98  # 0x62
 CC_USER_CODE = 99  # 0x63
@@ -786,7 +797,9 @@ class ZwavejsConnectionManager:
         for an answer (issue #124). That doesn't stop the command itself once
         its task has run its first step, since the websocket send happens in
         that step, so a command that timed out may still be carried out by the
-        node. Only one whose task never got to run is dropped.
+        node. Only one whose task never got to run is dropped. That timeout is
+        raised as :class:`ZwavejsCommandTimeout`, so a caller can tell it from
+        an answer that came back as an error (issue #199).
         """
         loop = None
         with self._lock:
@@ -802,7 +815,7 @@ class ZwavejsConnectionManager:
                 # The coroutine raised the TimeoutError itself, the wait didn't run out.
                 raise ZwavejsCommandError(str(exc) or "Z-Wave JS command timed out") from exc
             fut.cancel()
-            raise ZwavejsCommandError(f"Z-Wave JS command timed out after {timeout_seconds}s") from exc
+            raise ZwavejsCommandTimeout(f"Z-Wave JS command timed out after {timeout_seconds}s") from exc
         except Exception as exc:
             raise ZwavejsCommandError(str(exc)) from exc
 

@@ -7,7 +7,7 @@ import threading
 
 from django.test import SimpleTestCase
 
-from integrations_zwavejs.manager import ZwavejsCommandError, ZwavejsConnectionManager
+from integrations_zwavejs.manager import ZwavejsCommandError, ZwavejsCommandTimeout, ZwavejsConnectionManager
 
 
 class RunCoroTimeoutTests(SimpleTestCase):
@@ -40,6 +40,14 @@ class RunCoroTimeoutTests(SimpleTestCase):
         self.assertEqual(str(ctx.exception), "Z-Wave JS command timed out after 0.05s")
         self.assertTrue(cancelled.wait(timeout=2), "the command never saw CancelledError")
 
+    def test_a_wait_that_runs_out_raises_the_timeout_subclass(self):
+        # Issue #199: the readback tells our own timeout from an answer that came back as an error.
+        async def slow_command():
+            await asyncio.sleep(5)
+
+        with self.assertRaises(ZwavejsCommandTimeout):
+            self.manager._run_coro(slow_command(), timeout_seconds=0.05)
+
     def test_a_timeout_error_from_the_command_itself_keeps_its_message(self):
         async def failing_command():
             raise TimeoutError("driver gave up")
@@ -48,6 +56,8 @@ class RunCoroTimeoutTests(SimpleTestCase):
             self.manager._run_coro(failing_command(), timeout_seconds=2)
 
         self.assertEqual(str(ctx.exception), "driver gave up")
+        # The command answered, so it's not our wait running out (issue #199).
+        self.assertNotIsInstance(ctx.exception, ZwavejsCommandTimeout)
 
     def test_an_empty_timeout_error_from_the_command_still_says_it_timed_out(self):
         async def failing_command():

@@ -28,6 +28,7 @@ from django.db.models import Exists, F, Max, OuterRef, Q, Subquery
 from django.utils import timezone as django_timezone
 from integrations_zwavejs.manager import (
     ZwavejsClientUnavailable,
+    ZwavejsCommandTimeout,
     ZwavejsCommandValidationError,
     ZwavejsNotConfigured,
 )
@@ -540,8 +541,17 @@ def _int_status(status: object) -> int | None:
 
 
 # Delays between CC 99 ``get`` readback attempts after a ``set``. Battery locks
-# can be slow to answer right after a write, so one timeout is not a verdict.
+# can be slow to answer right after a write, so an answer that's no verdict
+# (empty once, 0xfe, no report, a fast error) is asked again (issue #107). A
+# timeout is still no verdict, but it isn't asked again, since the driver may
+# still be working on that ``get`` and a second one would queue behind it and
+# hold up the other nodes too (issue #199). The one ``get`` waits longer instead.
 _READBACK_RETRY_DELAYS_SECONDS: tuple[float, ...] = (1.0, 2.0)
+# How long one readback ``get`` waits for its answer, at most (issue #199).
+_READBACK_GET_TIMEOUT_SECONDS = 15.0
+# How long a whole readback may take, every ``get`` and delay included. The
+# 18s that 3 ``get``s at 5s and the delays took before (issue #199).
+_READBACK_DEADLINE_SECONDS = 18.0
 
 # CC 99 userIdStatus "Available": the slot is definitively empty.
 _USER_ID_STATUS_AVAILABLE = 0
@@ -555,7 +565,6 @@ def _verify_user_code_slot(
     node_id: int,
     slot_index: int,
     pin: str,
-    timeout_seconds: float,
 ) -> bool:
     """Read ``slot_index`` back with CC 99 ``get`` and confirm it holds ``pin``.
 
@@ -574,19 +583,40 @@ def _verify_user_code_slot(
     answer followed only by silence. ``ZwavejsClientUnavailable`` is no answer
     like any other gateway error (issue #191). ``ZwavejsNotConfigured``
     propagates unchanged, so it stays terminal for the push.
+
+    Each ``get`` waits up to :data:`_READBACK_GET_TIMEOUT_SECONDS` and the
+    whole readback ends by :data:`_READBACK_DEADLINE_SECONDS` (issue #199). A
+    ``get`` whose wait ran out (:class:`ZwavejsCommandTimeout`) isn't asked
+    again, since the driver may still be working on it, so the readback stops
+    there with :class:`LockCodeUnverified`. An answer that's no verdict, or an
+    error that came back before the wait ran out, is asked again after its
+    delay, unless the delay doesn't fit before the deadline. A
+    :class:`BudgetedGateway` running out of budget raises
+    :class:`TimeBudgetExceeded` like before, or :class:`LockCodeUnverified`
+    with ``read_back_empty`` once an answer was empty.
     """
+    deadline = _time.monotonic() + _READBACK_DEADLINE_SECONDS
     attempts = len(_READBACK_RETRY_DELAYS_SECONDS) + 1
+    asks = 0
     last_reason = "no response"
     empty_answers = 0
     for attempt in range(attempts):
         if attempt:
-            _time.sleep(_READBACK_RETRY_DELAYS_SECONDS[attempt - 1])
+            delay = _READBACK_RETRY_DELAYS_SECONDS[attempt - 1]
+            if delay >= deadline - _time.monotonic():
+                # Asking again wouldn't fit before the deadline (issue #199).
+                break
+            _time.sleep(delay)
+        get_timeout = min(_READBACK_GET_TIMEOUT_SECONDS, deadline - _time.monotonic())
+        if get_timeout <= 0:
+            break
+        asks += 1
         try:
             response = _refresh_user_code_slot(
                 zwavejs=zwavejs,
                 node_id=node_id,
                 slot_index=slot_index,
-                timeout_seconds=timeout_seconds,
+                timeout_seconds=get_timeout,
             )
         except ZwavejsNotConfigured:
             raise
@@ -601,6 +631,28 @@ def _verify_user_code_slot(
                     read_back_empty=True,
                 ) from exc
             raise
+        except ZwavejsCommandTimeout as exc:
+            if _out_of_budget(zwavejs):
+                # The budget cut this wait short, so it's out of time like the
+                # branch above and the push doesn't count it (issue #124).
+                if empty_answers:
+                    raise LockCodeUnverified(
+                        f"Could not read back slot {slot_index} before running out of time "
+                        "(slot read back empty once).",
+                        read_back_empty=True,
+                    ) from exc
+                raise TimeBudgetExceeded(
+                    f"Ran out of its {zwavejs.seconds:g}s time budget reading back slot {slot_index}; will retry."
+                ) from exc
+            # Still no verdict, but the driver may still be working on this get,
+            # so another one would only queue behind it (issue #199).
+            reason = f"{exc.__class__.__name__}: {exc}"
+            if empty_answers:
+                reason += ", slot read back empty once"
+            raise LockCodeUnverified(
+                f"Could not read back slot {slot_index} after {asks} attempt{'' if asks == 1 else 's'} ({reason}).",
+                read_back_empty=empty_answers > 0,
+            ) from exc
         except GatewayError as exc:
             last_reason = f"{exc.__class__.__name__}: {exc}"
             continue
@@ -664,7 +716,7 @@ def _verify_user_code_slot(
         return True
 
     raise LockCodeUnverified(
-        f"Could not read back slot {slot_index} after {attempts} attempts ({last_reason}).",
+        f"Could not read back slot {slot_index} after {asks} attempt{'' if asks == 1 else 's'} ({last_reason}).",
         read_back_empty=empty_answers > 0,
     )
 
@@ -886,7 +938,6 @@ def _read_back_attempt_slot(
     node_id: int,
     slot_index: int,
     pin: str,
-    timeout_seconds: float,
     masked_counts: bool,
     disabled_masked_counts: bool = False,
 ) -> str:
@@ -907,9 +958,7 @@ def _read_back_attempt_slot(
     :class:`LockCodeUnverified` and gateway errors propagate.
     """
     try:
-        confirmed = _verify_user_code_slot(
-            zwavejs=zwavejs, node_id=node_id, slot_index=slot_index, pin=pin, timeout_seconds=timeout_seconds
-        )
+        confirmed = _verify_user_code_slot(zwavejs=zwavejs, node_id=node_id, slot_index=slot_index, pin=pin)
     except LockRejectedCode as exc:
         if exc.holds_pin:
             return _HOLDS_OURS
@@ -1058,7 +1107,6 @@ def _find_adoptable_attempted_slot(
     door_code: DoorCode,
     lock_entity_id: str,
     pin: str,
-    timeout_seconds: float,
     claimed_slots: set[int] | frozenset[int] = frozenset(),
 ) -> tuple[int, bool] | None:
     """Return ``(slot, resend)`` for a slot an earlier unconfirmed push of this code wrote on this lock, if it's ours.
@@ -1108,7 +1156,6 @@ def _find_adoptable_attempted_slot(
                 node_id=node_id,
                 slot_index=slot_index,
                 pin=pin,
-                timeout_seconds=timeout_seconds,
             )
         except LockCodeUnverified as exc:
             if exc.read_back_empty:
@@ -1890,7 +1937,6 @@ def _read_back_failed_slot(
     lock_entity_id: str,
     slot_index: int,
     pin: str | None,
-    timeout_seconds: float,
     masked_counts: bool = False,
     disabled_masked_counts: bool = False,
 ) -> str:
@@ -1909,7 +1955,6 @@ def _read_back_failed_slot(
         node_id=_resolve_lock_node_id(lock_entity_id=lock_entity_id),
         slot_index=slot_index,
         pin=pin,
-        timeout_seconds=timeout_seconds,
         masked_counts=masked_counts,
         disabled_masked_counts=disabled_masked_counts,
     )
@@ -1949,7 +1994,6 @@ def _retry_failed_slot_clear(
                 lock_entity_id=lock_entity_id,
                 slot_index=slot_index,
                 pin=failure.expected_pin or decrypt_pin_or_none(door_code),
-                timeout_seconds=timeout_seconds,
                 # Carried on the failure, since a later push to this lock closes the
                 # attempt's window. Only an unconfirmed slot's tags count (issues #128, #152).
                 masked_counts=failure.unconfirmed and (failure.slot_verified or failure.slot_available),
@@ -2246,7 +2290,6 @@ def _clear_unconfirmed_slots_on_lock(
                 node_id=node_id,
                 slot_index=slot_index,
                 pin=expected_pin,
-                timeout_seconds=timeout_seconds,
                 masked_counts=slot_index in verified or slot_index in available,
                 disabled_masked_counts=slot_index in verified,
             )
@@ -2515,7 +2558,7 @@ class PendingClearsPrefetch:
 
 
 def _tracked_slot_may_hold_pin(
-    *, zwavejs: ZwavejsGateway, lock_entity_id: str, slot_index: int, pin: str | None, timeout_seconds: float
+    *, zwavejs: ZwavejsGateway, lock_entity_id: str, slot_index: int, pin: str | None
 ) -> bool:
     """Read a slot an inactive code tracks back before clearing it (PR #167 review).
 
@@ -2536,7 +2579,6 @@ def _tracked_slot_may_hold_pin(
             node_id=_resolve_lock_node_id(lock_entity_id=lock_entity_id),
             slot_index=slot_index,
             pin=pin,
-            timeout_seconds=timeout_seconds,
         )
     except LockRejectedCode as exc:
         if exc.holds_pin:
@@ -2605,7 +2647,6 @@ def _clear_inactive_slots_on_lock(
                 lock_entity_id=lock_entity_id,
                 slot_index=slot_index,
                 pin=pin,
-                timeout_seconds=timeout_seconds,
             )
         except Exception as exc:
             # Not recorded: a recorded failure on a tracked slot is retried as a
@@ -2780,7 +2821,6 @@ def withdraw_slots_before_start(
                     lock_entity_id=lock_entity_id,
                     slot_index=slot_index,
                     pin=pin,
-                    timeout_seconds=timeout_seconds,
                 )
             except Exception as exc:
                 # Not recorded, like the #167 inactive clear: a recorded failure on
@@ -3001,7 +3041,6 @@ def check_synced_attempt_slots(
     *,
     door_code: DoorCode,
     zwavejs: ZwavejsGateway,
-    timeout_seconds: float = 5.0,
 ) -> int:
     """Read back what :func:`synced_attempt_slots_to_check` finds, read only, and settle what isn't ours (issue #180).
 
@@ -3045,7 +3084,7 @@ def check_synced_attempt_slots(
                 if door_code.source != DoorCode.Source.SYNCED:
                     return settled
                 settled += _check_synced_attempt_slots_on_lock(
-                    door_code=door_code, lock_entity_id=lock_entity_id, zwavejs=zwavejs, timeout_seconds=timeout_seconds
+                    door_code=door_code, lock_entity_id=lock_entity_id, zwavejs=zwavejs
                 )
         except LockBusy as exc:
             logger.info(
@@ -3057,9 +3096,7 @@ def check_synced_attempt_slots(
     return settled
 
 
-def _check_synced_attempt_slots_on_lock(
-    *, door_code: DoorCode, lock_entity_id: str, zwavejs: ZwavejsGateway, timeout_seconds: float
-) -> int:
+def _check_synced_attempt_slots_on_lock(*, door_code: DoorCode, lock_entity_id: str, zwavejs: ZwavejsGateway) -> int:
     """One lock's part of :func:`check_synced_attempt_slots`; the caller holds its lock."""
     tracked = set(
         DoorCodeLockAssignment.objects.filter(
@@ -3107,7 +3144,6 @@ def _check_synced_attempt_slots_on_lock(
                 node_id=node_id,
                 slot_index=slot_index,
                 pin=attempted_pin or pin,
-                timeout_seconds=timeout_seconds,
                 masked_counts=slot_index in verified or slot_index in available,
                 disabled_masked_counts=slot_index in verified,
             )
@@ -3168,7 +3204,6 @@ def check_attempt_slots_sync_saw_empty(
     node_id: int,
     empty_slots: set[int],
     zwavejs: ZwavejsGateway,
-    timeout_seconds: float = 5.0,
 ) -> set[int]:
     """For lock sync: read back the untracked slots it saw Available that have an unconfirmed record (issue #194).
 
@@ -3214,9 +3249,7 @@ def check_attempt_slots_sync_saw_empty(
             continue
         try:
             # Only an empty answer matters here, so there's no PIN to compare against.
-            _verify_user_code_slot(
-                zwavejs=zwavejs, node_id=node_id, slot_index=slot_index, pin="", timeout_seconds=timeout_seconds
-            )
+            _verify_user_code_slot(zwavejs=zwavejs, node_id=node_id, slot_index=slot_index, pin="")
         except LockRejectedCode as exc:
             if exc.clear_slot and not exc.holds_pin:
                 for door_code, _newest_id in records:
@@ -3820,7 +3853,6 @@ def push_door_code_to_lock(
                 door_code=door_code,
                 lock_entity_id=lock_entity_id,
                 pin=pin,
-                timeout_seconds=timeout_seconds,
                 claimed_slots=claimed_slots,
             )
             slot_index, resend_to_attempted_slot = adoptable if adoptable is not None else (None, False)
@@ -3931,7 +3963,6 @@ def push_door_code_to_lock(
                     node_id=node_id,
                     slot_index=slot_index,
                     pin=pin,
-                    timeout_seconds=timeout_seconds,
                 )
                 slot_accepted = True
             # The schedule goes out once the slot is on record (issue #123), below.
