@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from datetime import timedelta
 
+from django.db import Error as DbError
 from django.db.models import Exists, F, OuterRef, Q
 from django.utils import timezone
 
@@ -364,6 +365,20 @@ def push_requested_door_codes() -> int:
     return attempted
 
 
+def _load_validity_pass(codes) -> list[DoorCode] | None:
+    """Run one of ``enforce_door_code_validity``'s querysets, or log a DB error and give ``None`` (issue #186).
+
+    Building a queryset doesn't touch the DB, so this is where one fails.
+    ``django.db.Error`` rather than ``DatabaseError``, since a dropped
+    connection can come back as ``InterfaceError``, which isn't one.
+    """
+    try:
+        return list(codes)
+    except DbError:
+        logger.warning("Couldn't load door codes to enforce their validity this tick", exc_info=True)
+        return None
+
+
 @register(
     "enforce_door_code_validity",
     schedule=Every(seconds=60),
@@ -389,7 +404,9 @@ def enforce_door_code_validity() -> int:
       to ``push_pending_door_codes`` instead of being tried every minute
 
     Errors are caught per code (a busy lock included) and the task never
-    raises. Returns the number of codes it acted on.
+    raises. A DB error while loading a pass's codes is logged and the tick
+    ends there, the next tick starting over (issue #186). Returns the number
+    of codes it acted on.
     """
     from locks.use_cases.door_codes import retire_door_code, withdraw_door_code
     from locks.use_cases.lock_push import push_door_code_to_assigned_locks, rearm_failed_locks
@@ -397,7 +414,10 @@ def enforce_door_code_validity() -> int:
     now = timezone.now()
     acted = 0
 
-    for code in DoorCode.objects.filter(is_active=True).filter(expired_q(now)).order_by("id"):
+    expired = _load_validity_pass(DoorCode.objects.filter(is_active=True).filter(expired_q(now)).order_by("id"))
+    if expired is None:
+        return acted
+    for code in expired:
         try:
             if retire_door_code(code=code, reason="expired", zwavejs=default_zwavejs_gateway, now=now) is not None:
                 acted += 1
@@ -440,12 +460,14 @@ def enforce_door_code_validity() -> int:
         .filter(Exists(still_on_lock))
         .exclude(Exists(settled_since))
     )
-    not_started = (
+    not_started = _load_validity_pass(
         DoorCode.objects.filter(is_active=True)
         .exclude(started_q(now))
         .filter(Exists(holds_slot) | Exists(unconfirmed))
         .order_by("id")
     )
+    if not_started is None:
+        return acted
     for code in not_started:
         try:
             if withdraw_door_code(code=code, zwavejs=default_zwavejs_gateway):
@@ -461,7 +483,7 @@ def enforce_door_code_validity() -> int:
         Q(push_state=DoorCode.PushState.PENDING) | Q(push_state=DoorCode.PushState.FAILED),
         Q(slot_index__isnull=True) | Q(schedule_pending=True),
     )
-    just_started = (
+    just_started = _load_validity_pass(
         DoorCode.objects.filter(is_active=True, start_at__isnull=False, start_at__lte=now)
         .exclude(expired_q(now))
         .filter(Exists(waiting))
@@ -469,6 +491,8 @@ def enforce_door_code_validity() -> int:
         .prefetch_related("lock_assignments")
         .order_by("id")
     )
+    if just_started is None:
+        return acted
     for code in just_started:
         try:
             if rearm_failed_locks(door_code=code):
