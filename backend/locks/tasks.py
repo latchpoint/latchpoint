@@ -90,6 +90,10 @@ def push_pending_door_codes() -> int:
     - it's an inactive manual code that still holds a slot or has an
       unconfirmed attempt slot left to check, ``pending`` or ``pushed`` (issue
       #158), and those slots get cleared
+    - it's a synced code with an unsettled unconfirmed attempt on one of its
+      locks (issue #180). Lock sync skips it there while that's on record, so
+      the attempt slots are read back, read only, and settled when they don't
+      hold the PIN (``check_synced_attempt_slots``)
 
     Failed clears are retried before the push. The use cases record each
     lock's outcome and the code's rollup; this task is the safety net for
@@ -97,6 +101,7 @@ def push_pending_door_codes() -> int:
     """
     from locks.use_cases.lock_push import (
         being_removed_q,
+        check_synced_attempt_slots,
         inactive_slots_to_clear,
         locks_to_push,
         normalize_assignment_push_state,
@@ -104,6 +109,7 @@ def push_pending_door_codes() -> int:
         retry_failed_slot_clears,
         sanitize_push_error_for_storage,
         sweep_push_cap,
+        synced_attempt_slots_to_check,
         unresolved_clear_failures,
     )
 
@@ -146,6 +152,8 @@ def push_pending_door_codes() -> int:
         source=DoorCode.Source.MANUAL,
         push_state__in=[DoorCode.PushState.PENDING, DoorCode.PushState.PUSHED],
     ) & (Q(_holds_slot=True) | Q(_has_unconfirmed=True))
+    # A rough cut too; synced_attempt_slots_to_check has the exact rules (issue #180).
+    synced_with_attempts = Q(source=DoorCode.Source.SYNCED, _has_unconfirmed=True)
     # Only codes between their start_at and end_at get pushed (issue #145).
     to_push = Q(_needs_push=True, is_active=True) & started_q(now) & ~expired_q(now)
     clears_to_retry = Q(_has_clear_failures=True)
@@ -159,7 +167,7 @@ def push_pending_door_codes() -> int:
             _holds_slot=Exists(holds_slot_subquery),
             _has_unconfirmed=Exists(unconfirmed_subquery),
         )
-        .filter(to_push | clears_to_retry | inactive_with_slots)
+        .filter(to_push | clears_to_retry | inactive_with_slots | synced_with_attempts)
         .prefetch_related("lock_assignments")
         .order_by("id")
     )
@@ -181,7 +189,13 @@ def push_pending_door_codes() -> int:
         clears_due = bool(unresolved_clear_failures(door_code=code)) and (
             max_attempts <= 0 or (code.push_attempt_count or 0) < max_attempts
         )
-        if not picked_to_push and not clears_due and not inactive_slots_to_clear(door_code=code):
+        synced_checks_due = bool(synced_attempt_slots_to_check(door_code=code))
+        if (
+            not picked_to_push
+            and not clears_due
+            and not synced_checks_due
+            and not inactive_slots_to_clear(door_code=code)
+        ):
             # Only picked up by a rough cut (a settled clear failure, a slot of an
             # inactive code with nothing left to clear): nothing to do on its locks.
             continue
@@ -190,6 +204,8 @@ def push_pending_door_codes() -> int:
             clear_failures = (
                 retry_failed_slot_clears(door_code=code, zwavejs=default_zwavejs_gateway) if clears_due else []
             )
+            if synced_checks_due:
+                check_synced_attempt_slots(door_code=code, zwavejs=default_zwavejs_gateway)
             _successes, failures = push_or_settle_after_clear_retry(
                 door_code=code,
                 zwavejs=default_zwavejs_gateway,
@@ -365,6 +381,24 @@ def push_requested_door_codes() -> int:
     return attempted
 
 
+def _open_clear_failure_events():
+    """A code's ``clear_failed`` events no later ``clear_failed`` or ``clear_resolved`` for the slot replaced.
+
+    For an ``Exists`` on ``DoorCode``, the same newest-event-wins rule as
+    ``unresolved_clear_failures`` (and ``being_removed_q``).
+    """
+    replaced = DoorCodeEvent.objects.filter(
+        door_code=OuterRef("door_code"),
+        lock_entity_id=OuterRef("lock_entity_id"),
+        metadata__action__in=["clear_failed", "clear_resolved"],
+        metadata__slot_index=OuterRef("metadata__slot_index"),
+        id__gt=OuterRef("id"),
+    )
+    return DoorCodeEvent.objects.filter(door_code=OuterRef("pk"), metadata__action="clear_failed").exclude(
+        Exists(replaced)
+    )
+
+
 def _load_validity_pass(codes) -> list[DoorCode] | None:
     """Run one of ``enforce_door_code_validity``'s querysets, or log a DB error and give ``None`` (issue #186).
 
@@ -388,11 +422,13 @@ def _load_validity_pass(codes) -> list[DoorCode] | None:
 def enforce_door_code_validity() -> int:
     """Keep each door code's PIN on its locks only between its ``start_at`` and ``end_at`` (issue #145).
 
-    Three passes against one ``now``, for codes of any source or type:
+    Four passes against one ``now``, for codes of any source or type:
 
     - an active code at or past its ``end_at`` is retired: turned off through
       the same locked update a user's deactivate uses, so a clear that fails is
-      left to ``push_pending_door_codes``'s retries
+      left to ``push_pending_door_codes``'s retries. Stranded synced copies of
+      its PIN go with it, and one whose retire raised is tried again on later
+      ticks (``retry_pending_copy_retires``)
     - an active code whose ``start_at`` is still ahead but that may hold a slot
       (pushed before this was enforced, or its start moved later) has those
       slots cleared and stays active
@@ -402,14 +438,18 @@ def enforce_door_code_validity() -> int:
       first, since only the 0010 backfill fails a lock before its code starts.
       The attempt is stamped either way, so a push that doesn't land is left
       to ``push_pending_door_codes`` instead of being tried every minute
+    - an active started code that's ``failed`` with no ``failed`` lock, no
+      clear failure still open and no push attempt since its start, ie one the
+      withdraw failed at the cap, gets its rollup refreshed (once, since that
+      takes it out of ``failed``)
 
     Errors are caught per code (a busy lock included) and the task never
     raises. A DB error while loading a pass's codes is logged and the tick
     ends there, the next tick starting over (issue #186). Returns the number
     of codes it acted on.
     """
-    from locks.use_cases.door_codes import retire_door_code, withdraw_door_code
-    from locks.use_cases.lock_push import push_door_code_to_assigned_locks, rearm_failed_locks
+    from locks.use_cases.door_codes import retire_door_code, retry_pending_copy_retires, withdraw_door_code
+    from locks.use_cases.lock_push import push_door_code_to_assigned_locks, rearm_failed_locks, refresh_push_state
 
     now = timezone.now()
     acted = 0
@@ -423,6 +463,12 @@ def enforce_door_code_validity() -> int:
                 acted += 1
         except Exception:
             logger.warning("Couldn't retire expired door code id=%d this tick", code.id, exc_info=True)
+
+    # Stranded synced copies a retire couldn't take off last time (PR #211 review).
+    try:
+        acted += retry_pending_copy_retires(zwavejs=default_zwavejs_gateway)
+    except Exception:
+        logger.warning("Couldn't retry the pending retires of synced copies this tick", exc_info=True)
 
     holds_slot = DoorCodeLockAssignment.objects.filter(door_code=OuterRef("pk"), slot_index__isnull=False)
     # Unconfirmed attempts nothing has settled since: no later push landed on that
@@ -507,5 +553,33 @@ def enforce_door_code_validity() -> int:
             ).update(last_push_attempt_at=now)
         except Exception:
             logger.warning("Couldn't stamp the push attempt for door code id=%d", code.id, exc_info=True)
+
+    # A code the withdraw failed at the clear-retry cap before its start, whose
+    # locks all kept their slots (a readback that never answered), has nothing
+    # waiting for a push at its start, so nothing worked its rollup out again
+    # and it stayed failed with the stale "may still hold the PIN" error (PR
+    # #207 review). Its rollup is refreshed once it starts. Only codes the
+    # rollup would take out of failed are looked at, so each is refreshed once
+    # (PR #211 review): a failed lock is left to Retry, and so is a clear failure
+    # still open, which keeps the code failed at the cap.
+    failed_lock = DoorCodeLockAssignment.objects.filter(door_code=OuterRef("pk"), push_state=DoorCode.PushState.FAILED)
+    capped_before_start = _load_validity_pass(
+        DoorCode.objects.filter(
+            is_active=True, push_state=DoorCode.PushState.FAILED, start_at__isnull=False, start_at__lte=now
+        )
+        .exclude(expired_q(now))
+        .exclude(Exists(failed_lock))
+        .exclude(Exists(_open_clear_failure_events()))
+        .filter(Q(last_push_attempt_at__isnull=True) | Q(last_push_attempt_at__lt=F("start_at")))
+        .order_by("id")
+    )
+    if capped_before_start is None:
+        return acted
+    for code in capped_before_start:
+        try:
+            if refresh_push_state(door_code=code) not in (None, DoorCode.PushState.FAILED):
+                acted += 1
+        except Exception:
+            logger.warning("Couldn't refresh door code id=%d at its start", code.id, exc_info=True)
 
     return acted

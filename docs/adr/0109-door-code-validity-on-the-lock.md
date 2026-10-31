@@ -113,7 +113,23 @@ notifications and retiring used up codes is a separate change.
   counting lands in PR2, so a used up code stays on its locks.
 - Latchpoint has to be running for codes to start and expire on time.
 - Synced codes with dates are retired too, which clears their slot on the
-  lock. A synced code without dates is never touched.
+  lock. A synced code without dates is only touched when it's a stranded copy
+  of a code being retired (issue #185, PR #211 review). That's an active
+  synced code with no `end_at` holding the retiring code's exact PIN in a slot
+  on one of its locks, where a push of the retiring code landed in that exact
+  slot (a `code_synced` event with `action=pushed` and that `slot_index`) and
+  the copy's row was created after the first of those pushes. A lock sync
+  having recorded the two as duplicates of each other doesn't count, and with
+  no push event left for the slot (event retention) the copy is only flagged.
+  Such a copy is turned off through the same locked deactivate, which clears
+  its slot, and if that raises it's tried again on each later validity tick
+  (`duplicate_retire_pending` until `duplicate_retire_done`), up to
+  `door_codes.push_max_attempts` tries, then one `max_attempts_exceeded`
+  event. Event retention keeps the pending event while it's pending. Every other
+  synced code with the PIN is left alone and flagged with a
+  `duplicate_pin_survives_retire` event on the retiring code (the copy's id,
+  lock and slot, never the PIN) and a warning, since it may be someone's own
+  keypad code that happens to share the PIN.
 - A synced code with an `end_at` that lock sync turned off (its slot read
   empty) can be turned back on from latchpoint too, since the row looks the
   same as a retired one. That puts its PIN back on the lock.
