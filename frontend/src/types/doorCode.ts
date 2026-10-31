@@ -109,7 +109,12 @@ export interface UpdateDoorCodeRequest {
   windowStart?: string | null
   windowEnd?: string | null
   maxUses?: number | null
+  /** The whole lock list. The edit form sends addLockEntityIds / removeLockEntityIds instead (#159). */
   lockEntityIds?: string[]
+  /** Locks to add to the ones the code has when the save runs, so a stale tab can't put back a removed lock (#159). */
+  addLockEntityIds?: string[]
+  /** Locks to take off the code, applied the same way. */
+  removeLockEntityIds?: string[]
   reauthPassword: string
 }
 

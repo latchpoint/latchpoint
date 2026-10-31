@@ -183,6 +183,24 @@ describe('DoorCodeCard', () => {
     expect(screen.getByText('lock.back_door')).toBeTruthy()
   })
 
+  it('still shows a lock being removed when the API leaves it out of lockEntityIds', () => {
+    // #171: lockEntityIds doesn't list it, lockSlotAssignments does.
+    const code = makeCode({
+      lockEntityIds: ['lock.back_door'],
+      lockSlotAssignments: [
+        { lockEntityId: 'lock.back_door', slotIndex: 2, pendingRemoval: false },
+        { lockEntityId: 'lock.front_door', slotIndex: 1, pendingRemoval: true },
+      ],
+      pendingSlotClears: [{ lockEntityId: 'lock.front_door', slotIndex: 1, removing: true }],
+    })
+
+    renderWithProviders(<CardWithRetry code={code} />)
+
+    expect(screen.getByText('Front Door (removing)')).toBeTruthy()
+    expect(screen.getByText('lock.back_door')).toBeTruthy()
+    expect(screen.queryByText('No locks')).toBeNull()
+  })
+
   it('shows a refused delete turning the code off and keeps its error', async () => {
     const refusal =
       "Couldn't clear slot 3 on lock.front_door, it may still hold the PIN. The door code wasn't deleted and is now off, try again when the lock responds."

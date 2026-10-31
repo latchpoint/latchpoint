@@ -9,6 +9,7 @@ import { Button } from '@/components/ui/button'
 import { formatDaysMask } from '@/features/codes/utils/daysOfWeek'
 import { DoorCodeEditContainer } from '@/features/doorCodes/components/DoorCodeEditContainer'
 import { DoorCodePushStatusBadge } from '@/features/doorCodes/components/DoorCodePushStatusBadge'
+import { codeLockEntityIds } from '@/features/doorCodes/utils/codeLocks'
 import { MAX_USES_ENFORCED } from '@/features/doorCodes/utils/maxUses'
 
 type Props = {
@@ -139,7 +140,8 @@ function lockChipOf(code: DoorCode, lockEntityId: string): LockChip {
 }
 
 function LockBadges({ code, lockNameByEntityId }: { code: DoorCode; lockNameByEntityId: Map<string, string> }) {
-  const lockEntityIds = code.lockEntityIds || []
+  // With the locks still being removed, which show as "(removing)" (#171).
+  const lockEntityIds = codeLockEntityIds(code)
   if (!lockEntityIds.length) return <span className="text-sm text-muted-foreground">No locks</span>
   return (
     <div className="mt-2 flex flex-wrap gap-2">

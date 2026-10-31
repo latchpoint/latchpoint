@@ -504,6 +504,30 @@ describe('DoorCodePushStatusBadge', () => {
     expect(screen.getByRole('button', { name: /^Retry$/ })).toBeTruthy()
   })
 
+  it('keeps the badge for a code whose only lock is being removed', () => {
+    // #171: that lock isn't in lockEntityIds any more, only in lockSlotAssignments.
+    const code = makeCode({
+      pushState: 'pending',
+      lastPushError: 'Slot 1 on lock.front_door may still hold the PIN',
+      lockEntityIds: [],
+      lockSlotAssignments: [{ lockEntityId: 'lock.front_door', slotIndex: 1, pendingRemoval: true }],
+      pendingSlotClears: [{ lockEntityId: 'lock.front_door', slotIndex: 1, removing: true }],
+    })
+
+    const { container } = renderWithProviders(
+      <DoorCodePushStatusBadge
+        code={code}
+        lockNameByEntityId={lockNames}
+        canRetry
+        isRetrying={false}
+        onRetry={vi.fn()}
+      />,
+    )
+
+    expect(container.firstChild).not.toBeNull()
+    expect(screen.getByText(/Pending/)).toBeTruthy()
+  })
+
   it('renders nothing when the code has no lock assignments', () => {
     const code = makeCode({ lockEntityIds: [], lockAssignments: [], lockSlotAssignments: [] })
 

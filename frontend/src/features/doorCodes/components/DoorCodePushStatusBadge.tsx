@@ -2,6 +2,7 @@ import type { DoorCode } from '@/types'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { isLockAwaitingPush, isLockQueued } from '@/hooks/useDoorCodesQueries'
+import { codeLockEntityIds } from '@/features/doorCodes/utils/codeLocks'
 
 type Props = {
   code: DoorCode
@@ -68,13 +69,16 @@ export function DoorCodePushStatusBadge({ code, lockNameByEntityId, canRetry, is
   // Synced codes don't count. Their slots are the lock's own and lock sync turns
   // them off without touching push_state (#149), so Retry would only 409.
   const clearing = !code.isActive && code.source !== 'synced' && (code.pendingSlotClears?.length ?? 0) > 0
-  if (!code.lockEntityIds?.length && !clearing) return null
+  // A lock still being removed counts, so a code whose only lock is mid-removal
+  // keeps its badge (#171).
+  const lockCount = codeLockEntityIds(code).length
+  if (!lockCount && !clearing) return null
 
   // An active code is only on its locks from its start to its end (#145). The
   // scheduler pushes it at the start and turns it off at the end, so neither
   // gets a Retry, except a scheduled code whose clear hit the attempt cap: only
   // Retry clears that. Once it's off the states below take over.
-  const multiLock = (code.lockEntityIds?.length ?? 0) > 1
+  const multiLock = lockCount > 1
   if (code.isActive && code.validity === 'scheduled') {
     const pendingClears = (code.pendingSlotClears?.length ?? 0) > 0
     if (code.pushState === 'failed' && pendingClears) {

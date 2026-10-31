@@ -1163,13 +1163,69 @@ class SyncedCodeValidityTests(_LifecycleTestBase, APITestCase):
                 self.assertEqual(response.status_code, 400, response.content)
         self.assertEqual(self._calls(gateway, "set"), [])
 
-    def test_an_active_synced_code_or_one_without_an_end_at_stays_read_only(self):
+    def test_an_active_synced_code_with_an_end_at_can_be_turned_off_and_have_its_window_fixed(self):
+        # Issue #189: once a synced code with dates is on, it isn't stuck that way.
         active, gateway = self._synced_code()
-        for body in ({"is_active": False}, {"end_at": _iso(self._from_now(days=5))}):
-            with self.subTest(code="active", body=body):
+        self.assertTrue(active.is_active)
+        self.assertEqual(self._slots(active), {self.BACK: 1})
+
+        response = self._patch(active, gateway, {"end_at": _iso(self._from_now(days=5))})
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertTrue(DoorCode.objects.get(id=active.id).is_active)
+        self.assertEqual(self._calls(gateway, "clear"), [])
+
+        response = self._patch(active, gateway, {"is_active": False})
+        self.assertEqual(response.status_code, 200, response.content)
+        active.refresh_from_db()
+        self.assertFalse(active.is_active)
+        self.assertEqual(self._calls(gateway, "clear"), [(12, [1])])
+        self.assertEqual(self._lock_codes(gateway, 12), {})
+
+        # The rest is still the lock's.
+        for body in ({"code": "8642"}, {"days_of_week": 3}, {"lock_entity_ids": [self.SIDE]}):
+            with self.subTest(body=body):
                 response = self._patch(active, gateway, body)
                 self.assertEqual(response.status_code, 400, response.content)
 
+    def test_a_turned_on_synced_code_waiting_on_its_start_can_be_turned_off(self):
+        # Issue #189: the dead end the issue names, a synced code turned back on
+        # with a start ahead that then couldn't be turned off.
+        code, gateway = self._retired_synced_code()
+        response = self._patch(
+            code,
+            gateway,
+            {
+                "is_active": True,
+                "start_at": _iso(self._from_now(days=1)),
+                "end_at": _iso(self._from_now(days=2)),
+            },
+        )
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(response.json()["data"]["validity"], "scheduled")
+
+        response = self._patch(code, gateway, {"start_at": _iso(self._from_now(hours=2))})
+        self.assertEqual(response.status_code, 200, response.content)
+        response = self._patch(code, gateway, {"is_active": False})
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertFalse(DoorCode.objects.get(id=code.id).is_active)
+        self.assertEqual(self._calls(gateway, "set"), [])
+
+    def test_a_synced_codes_end_at_cannot_be_cleared(self):
+        # Issue #189: clearing it would take the code out of the editable rule and strand it.
+        for make in (self._retired_synced_code, self._synced_code):
+            with self.subTest(make=make.__name__):
+                DoorCode.objects.all().delete()
+                code, gateway = make()
+                response = self._patch(code, gateway, {"end_at": None})
+                self.assertEqual(response.status_code, 400, response.content)
+                self.assertEqual(
+                    response.json()["error"]["details"]["end_at"],
+                    ["A synced code's end_at can be moved but not cleared."],
+                )
+                self.assertIsNotNone(DoorCode.objects.get(id=code.id).end_at)
+
+    def test_a_synced_code_without_an_end_at_stays_read_only(self):
+        _code, gateway = self._synced_code()
         undated = DoorCode.objects.create(
             user=self.user,
             source=DoorCode.Source.SYNCED,
@@ -1231,3 +1287,84 @@ class DateComparisonTests(_LifecycleTestBase, APITestCase):
         response = self._patch(code, gateway, {"start_at": _iso(at + timedelta(hours=1))})
         self.assertEqual(response.status_code, 400, response.content)
         self.assertIn("end_at", response.json()["error"]["details"])
+
+
+class SubMinuteDateTests(_LifecycleTestBase, APITestCase):
+    """Issue #189: dates an API client sends with seconds are taken as sent, and the form's cut ones as unchanged."""
+
+    def setUp(self):
+        super().setUp()
+        self.client.force_authenticate(self.user)
+        self.base = self._from_now(days=1).replace(second=0, microsecond=0)
+
+    def _patch(self, code: DoorCode, gateway: FakeGateway, body: dict):
+        url = reverse("door-code-detail", args=[code.id])
+        with patch("locks.views.door_codes.default_zwavejs_gateway", gateway):
+            return self.client.patch(url, {**body, "reauth_password": "pass"}, format="json")
+
+    def _at(self, seconds: int):
+        return self.base + timedelta(seconds=seconds)
+
+    def test_a_same_minute_end_at_with_seconds_is_a_change_so_start_never_lands_after_it(self):
+        # The issue's example: stored end 10:00:30, sent start 10:00:45 and end 10:00:59.
+        code, gateway = self._temporary_code([self.BACK], end_at=self._at(30))
+
+        response = self._patch(code, gateway, {"start_at": _iso(self._at(45)), "end_at": _iso(self._at(59))})
+
+        self.assertEqual(response.status_code, 200, response.content)
+        code.refresh_from_db()
+        self.assertEqual((code.start_at, code.end_at), (self._at(45), self._at(59)))
+        self.assertLess(code.start_at, code.end_at)
+
+    def test_the_order_check_also_compares_the_dates_that_get_stored(self):
+        # The start comes back cut to the minute, so it keeps its stored 45s, and
+        # the new end at 30s would land before it.
+        code, gateway = self._temporary_code([self.BACK], start_at=self._at(45), end_at=self._at(600))
+
+        response = self._patch(code, gateway, {"start_at": _iso(self.base), "end_at": _iso(self._at(30))})
+
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertEqual(response.json()["error"]["details"]["end_at"], ["end_at must be after start_at."])
+        code.refresh_from_db()
+        self.assertEqual((code.start_at, code.end_at), (self._at(45), self._at(600)))
+
+    def test_a_sub_minute_end_at_change_is_written(self):
+        code, gateway = self._temporary_code([self.BACK], end_at=self._at(10))
+
+        response = self._patch(code, gateway, {"end_at": _iso(self._at(50))})
+
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(DoorCode.objects.get(id=code.id).end_at, self._at(50))
+
+    def test_turning_on_with_a_later_end_at_in_the_same_minute_is_allowed(self):
+        code, _gateway = self._temporary_code([self.BACK])
+        code = self._move(code, is_active=False, end_at=self._at(10))
+
+        serializer = DoorCodeUpdateSerializer(
+            instance=code,
+            data={"is_active": True, "end_at": _iso(self._at(50)), "reauth_password": "pass"},
+            partial=True,
+            context={"now": self._at(20)},
+        )
+
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        self.assertEqual(serializer.validated_data["end_at"], self._at(50))
+
+    def test_a_start_at_sent_back_cut_to_the_minute_keeps_its_seconds(self):
+        # The form sends both dates when the end changes, the start without its seconds.
+        code, gateway = self._temporary_code([self.BACK], start_at=self._at(45), end_at=self._at(600))
+
+        response = self._patch(code, gateway, {"start_at": _iso(self.base), "end_at": _iso(self._at(1200))})
+
+        self.assertEqual(response.status_code, 200, response.content)
+        code.refresh_from_db()
+        self.assertEqual(code.start_at, self._at(45))
+        self.assertEqual(code.end_at, self._at(1200))
+
+    def test_a_start_at_with_different_seconds_is_a_change(self):
+        code, gateway = self._temporary_code([self.BACK], start_at=self._at(45), end_at=self._at(600))
+
+        response = self._patch(code, gateway, {"start_at": _iso(self._at(15))})
+
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(DoorCode.objects.get(id=code.id).start_at, self._at(15))

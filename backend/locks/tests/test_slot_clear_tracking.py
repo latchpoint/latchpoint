@@ -389,7 +389,9 @@ class PendingSlotClearsSerializerTests(_SlotClearTestBase, APITestCase):
         self.assertEqual(
             data["pending_slot_clears"], [{"lock_entity_id": self.SIDE, "slot_index": 1, "removing": True}]
         )
-        self.assertEqual(data["lock_entity_ids"], [self.BACK, self.SIDE])
+        # The lock being removed is left out of lock_entity_ids (issue #171), and
+        # lock_slot_assignments still has it with pending_removal.
+        self.assertEqual(data["lock_entity_ids"], [self.BACK])
         # The per-lock push fields (issue #126) are covered in test_assignment_push_state.
         self.assertCountEqual(
             [_slot_fields(entry) for entry in data["lock_slot_assignments"]],

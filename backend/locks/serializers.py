@@ -15,6 +15,11 @@ _END_AT_IN_PAST = "end_at must be in the future."
 _ACTIVE_WHEN_EXPIRED = "This code has expired. Set a later end_at to turn it back on."
 # end_at is exclusive, so a code that ends when it starts is never valid (issue #145).
 _END_AT_NOT_AFTER_START = "end_at must be after start_at."
+# A synced code's dates are only editable while it has an end_at, so clearing it
+# would leave the code stuck the way it is (issue #189).
+_SYNCED_END_AT_REQUIRED = "A synced code's end_at can be moved but not cleared."
+_LOCK_CHANGES_WITH_FULL_LIST = "Send lock_entity_ids or add_lock_entity_ids/remove_lock_entity_ids, not both."
+_LOCK_ADDED_AND_REMOVED = "A lock can't be added and removed in the same save."
 
 
 def _same_minute(a, b) -> bool:
@@ -24,6 +29,21 @@ def _same_minute(a, b) -> bool:
     return a.astimezone(dt_timezone.utc).replace(second=0, microsecond=0) == b.astimezone(dt_timezone.utc).replace(
         second=0, microsecond=0
     )
+
+
+def _is_stored_date_sent_back(sent, stored) -> bool:
+    """Whether a sent ``start_at`` or ``end_at`` is the stored one coming back unchanged (issue #189).
+
+    That's the exact stored value, or the stored value cut to the minute, which
+    is what the edit form sends since its input has no seconds. A value with
+    seconds that isn't exactly the stored one is a real change from an API
+    client, even inside the same minute.
+    """
+    if sent is None or stored is None:
+        return sent is stored
+    if sent == stored:
+        return True
+    return sent.second == 0 and sent.microsecond == 0 and _same_minute(sent, stored)
 
 
 def _validation_now(serializer: serializers.Serializer):
@@ -136,19 +156,31 @@ class DoorCodeSerializer(serializers.ModelSerializer):
         ]
 
     def get_lock_entity_ids(self, obj: DoorCode) -> list[str]:
-        """Return sorted lock entity ids, requiring `lock_assignments` to be prefetched."""
+        """The code's locks, sorted, without the ones whose removal is still waiting on its clear (issue #171).
+
+        Those keep their assignment until the clear works, and only listing the
+        lock again on an update cancels the removal, so a client that sends this
+        list back unchanged must not have them in it. They're still in
+        ``lock_slot_assignments`` with ``pending_removal``, which is what the card
+        and badge read. Requires ``lock_assignments`` to be prefetched.
+        """
         prefetched = getattr(obj, "_prefetched_objects_cache", {}) or {}
         if "lock_assignments" not in prefetched:
             raise RuntimeError("DoorCode.lock_assignments must be prefetched for serialization.")
-        return sorted({assignment.lock_entity_id for assignment in obj.lock_assignments.all()})
+        removing = {f.lock_entity_id for f in self._clear_failures(obj) if f.removing}
+        return sorted(
+            {assignment.lock_entity_id for assignment in obj.lock_assignments.all()} - removing,
+        )
 
     def get_lock_slot_assignments(self, obj: DoorCode) -> list[dict]:
         """Return per-lock slot programming state for the UI push-status badge (ADR 0092).
 
         ``pending_removal`` is set for a lock the code is being dropped from whose
         slot clear hasn't worked yet. Its assignment stays until it does (issue
-        #139), and only listing it again in ``lock_entity_ids`` on an update keeps
-        it on the code (issue #151).
+        #139), and only listing it again in ``lock_entity_ids`` (or
+        ``add_lock_entity_ids``) on an update keeps it on the code (issue #151).
+        It's left out of ``lock_entity_ids`` (issue #171), so this is the list of
+        every lock the code is on, being removed or not.
 
         Each lock also has its own ``push_state``, ``last_push_error``,
         ``last_push_attempt_at``, ``push_attempt_count`` and
@@ -204,16 +236,31 @@ class DoorCodeSerializer(serializers.ModelSerializer):
         """Slot clears still outstanding, as ``{lock_entity_id, slot_index, removing}`` (issue #151). No PINs."""
         from locks.use_cases.lock_push import pending_slot_clears
 
+        prefetch = self._pending_clears_prefetch(obj)
+        if prefetch is not None:
+            return prefetch.pending_slot_clears(obj)
         return pending_slot_clears(door_code=obj, failures=self._clear_failures(obj))
 
     def get_validity(self, obj: DoorCode) -> str:
         """``scheduled``, ``valid``, ``expired`` or ``exhausted``, from the code's dates and uses (issue #145)."""
         return validity(obj, now=_validation_now(self))
 
+    def _pending_clears_prefetch(self, obj: DoorCode):
+        """The list view's :class:`PendingClearsPrefetch` when it covers ``obj``, else ``None`` (issue #170)."""
+        prefetch = self.context.get("pending_clears_prefetch")
+        return prefetch if prefetch is not None and prefetch.covers(obj) else None
+
     def _clear_failures(self, obj: DoorCode) -> list:
-        """``unresolved_clear_failures`` for ``obj``, loaded once per code for both fields above."""
+        """``unresolved_clear_failures`` for ``obj``, loaded once per code for the fields above.
+
+        From the list view's prefetch when there is one, so a page of codes
+        costs the same few queries whatever its size (issue #170).
+        """
         from locks.use_cases.lock_push import unresolved_clear_failures
 
+        prefetch = self._pending_clears_prefetch(obj)
+        if prefetch is not None:
+            return prefetch.clear_failures(obj)
         cache = self.__dict__.setdefault("_clear_failures_cache", {})
         if obj.pk not in cache:
             cache[obj.pk] = unresolved_clear_failures(door_code=obj)
@@ -335,6 +382,18 @@ class DoorCodeUpdateSerializer(serializers.Serializer):
         child=serializers.CharField(max_length=255),
         allow_empty=True,
     )
+    # Lock changes relative to what the code has when the save runs, so a tab
+    # that hasn't refetched can't put back a lock another tab removed (issue #159).
+    add_lock_entity_ids = serializers.ListField(
+        required=False,
+        child=serializers.CharField(max_length=255),
+        allow_empty=True,
+    )
+    remove_lock_entity_ids = serializers.ListField(
+        required=False,
+        child=serializers.CharField(max_length=255),
+        allow_empty=True,
+    )
 
     def validate_code(self, value: str) -> str:
         """Validate and normalize a numeric PIN-style code."""
@@ -356,25 +415,41 @@ class DoorCodeUpdateSerializer(serializers.Serializer):
             "window_end",
             "max_uses",
             "lock_entity_ids",
+            "add_lock_entity_ids",
+            "remove_lock_entity_ids",
         }
     )
-    # What an off synced code with an end_at can still edit (issue #145, N2).
+    # What a synced code with an end_at can still edit (issues #145, #189).
     _SYNCED_VALIDITY_FIELDS = frozenset({"is_active", "start_at", "end_at"})
 
     @staticmethod
     def synced_validity_editable(code: DoorCode) -> bool:
-        """Whether ``code`` is a synced code that's off and has an ``end_at``, ie one retiring can leave off.
+        """Whether ``code`` is a synced code with an ``end_at``, whose active window and Active are editable.
 
         The scheduler retires synced codes at ``end_at`` like manual ones, and
-        with every field read-only one could never come back on. Those can set
-        ``is_active``, ``start_at`` and ``end_at`` with the manual rules, and
-        turning one on goes through the normal push. It's keyed on the row, not
-        on the retire event, since event retention would delete that and leave
-        the code stuck. Synced codes without an ``end_at`` (the scheduler never
-        turns those off) and synced codes that are on keep every field but
-        ``label`` read-only (ADR 0082), so lock sync stays the say for them.
+        with every field read-only one could never come back on (issue #145).
+        Once one is back on it also has to be possible to turn it off again or
+        fix its window, ie while it's only waiting on its start (issue #189), so
+        this holds whether it's on or off. Those can set ``is_active``,
+        ``start_at`` and ``end_at`` with the manual rules, and their ``end_at``
+        can be moved but not cleared, so they never drop out of this. Turning
+        one on or off goes through the normal push and clear. It's keyed on the
+        row, not on the retire event, since event retention would delete that
+        and leave the code stuck. Synced codes without an ``end_at`` (the
+        scheduler never turns those off) keep every field but ``label``
+        read-only (ADR 0082), so lock sync stays the say for them.
         """
-        return code.source == DoorCode.Source.SYNCED and not code.is_active and code.end_at is not None
+        return code.source == DoorCode.Source.SYNCED and code.end_at is not None
+
+    @staticmethod
+    def _validate_lock_changes(attrs) -> None:
+        """Lock adds and removes don't go with ``lock_entity_ids`` or name the same lock (issue #159)."""
+        added = set(attrs.get("add_lock_entity_ids") or ())
+        removed = set(attrs.get("remove_lock_entity_ids") or ())
+        if "lock_entity_ids" in attrs and ("add_lock_entity_ids" in attrs or "remove_lock_entity_ids" in attrs):
+            raise serializers.ValidationError({"lock_entity_ids": _LOCK_CHANGES_WITH_FULL_LIST})
+        if added & removed:
+            raise serializers.ValidationError({"add_lock_entity_ids": _LOCK_ADDED_AND_REMOVED})
 
     def validate(self, attrs):
         """Validate updates, including time-range edits for eligible code types only."""
@@ -393,15 +468,23 @@ class DoorCodeUpdateSerializer(serializers.Serializer):
                 raise serializers.ValidationError(
                     {field: "This field cannot be modified on synced codes." for field in sorted(disallowed)}
                 )
+            if "end_at" in attrs and attrs["end_at"] is None:
+                raise serializers.ValidationError({"end_at": _SYNCED_END_AT_REQUIRED})
 
-        # The edit form sends both dates when either changes, without the seconds,
-        # so an end_at that matches the stored one to the minute is the unchanged
-        # one coming back. It's dropped, so the stored value keeps its seconds,
-        # but the order check below still compares the dates that were sent.
+        self._validate_lock_changes(attrs)
+
+        # The edit form sends both dates when either changes, without the
+        # seconds, so a date that's the stored one cut to the minute is the
+        # unchanged one coming back. It's dropped, so the stored value keeps its
+        # seconds (a start cut to the minute would push the PIN up to 59s early).
+        # Any other value is a change, a same-minute one with seconds included
+        # (issue #189).
+        sent_start_at = attrs.get("start_at", instance.start_at)
         sent_end_at = attrs.get("end_at", instance.end_at)
-        if "end_at" in attrs and _same_minute(attrs["end_at"], instance.end_at):
-            attrs.pop("end_at")
-        dates_changed = "end_at" in attrs or ("start_at" in attrs and attrs["start_at"] != instance.start_at)
+        for field in ("start_at", "end_at"):
+            if field in attrs and _is_stored_date_sent_back(attrs[field], getattr(instance, field)):
+                attrs.pop(field)
+        dates_changed = "end_at" in attrs or "start_at" in attrs
 
         # An expired code stays off until it's turned on with a later end_at, and
         # moving end_at later on its own doesn't turn it back on (issue #145).
@@ -426,11 +509,16 @@ class DoorCodeUpdateSerializer(serializers.Serializer):
             )
 
         # Only checked when a date changes, so editing the days or time window
-        # of an existing row whose dates are equal doesn't fail on them.
-        start_at = attrs.get("start_at", instance.start_at)
-        end_at = sent_end_at
-        if dates_changed and start_at and end_at and start_at >= end_at:
-            raise serializers.ValidationError({"end_at": _END_AT_NOT_AFTER_START})
+        # of an existing row whose dates are equal doesn't fail on them. Both the
+        # dates that were sent and the dates that get stored are checked, since
+        # a date sent back unchanged keeps its stored seconds, ie a start sent
+        # with seconds can land after a stored end in the same minute (issue #189).
+        if dates_changed:
+            stored_start_at = attrs.get("start_at", instance.start_at)
+            stored_end_at = attrs.get("end_at", instance.end_at)
+            for start_at, end_at in ((sent_start_at, sent_end_at), (stored_start_at, stored_end_at)):
+                if start_at and end_at and start_at >= end_at:
+                    raise serializers.ValidationError({"end_at": _END_AT_NOT_AFTER_START})
 
         days_of_week = attrs.get("days_of_week", instance.days_of_week)
         if days_of_week is not None:

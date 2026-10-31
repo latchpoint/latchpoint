@@ -192,9 +192,12 @@ def create_door_code(
             # Saved and returned pending; the scheduler pushes it in seconds (issue #124).
             _request_push_best_effort(code=code, actor_user=actor_user)
         else:
-            # Refresh so the freshly-created assignments are visible to push.
-            code = DoorCode.objects.prefetch_related("lock_assignments").get(id=code.id)
-            _push_to_assigned_locks_best_effort(code=code, zwavejs=zwavejs, actor_user=actor_user)
+            # Refresh so the freshly-created assignments are visible to push. One
+            # deleted meanwhile has nothing to push (issue #189).
+            fresh = DoorCode.objects.prefetch_related("lock_assignments").filter(id=code.id).first()
+            if fresh is not None:
+                code = fresh
+                _push_to_assigned_locks_best_effort(code=code, zwavejs=zwavejs, actor_user=actor_user)
 
     return code
 
@@ -298,7 +301,8 @@ def update_door_code(
     inline once they're let go, each lock's push still taking its own
     ``lock_sync:`` lock and reading the code again.
     """
-    with _hold_door_code_locks(code=code, extra_lock_entity_ids=changes.get("lock_entity_ids") or ()):
+    extra_lock_entity_ids = [*(changes.get("lock_entity_ids") or ()), *(changes.get("add_lock_entity_ids") or ())]
+    with _hold_door_code_locks(code=code, extra_lock_entity_ids=extra_lock_entity_ids):
         code, push_inline = _update_door_code_locked(code=code, changes=changes, actor_user=actor_user, zwavejs=zwavejs)
     if push_inline and zwavejs is not None:
         fresh = DoorCode.objects.prefetch_related("lock_assignments").filter(id=code.id).first()
@@ -765,6 +769,37 @@ def _refuse_duplicate_pin_when_turning_on(*, code: DoorCode, changes: dict) -> N
         )
 
 
+def _lock_changes_as_lock_entity_ids(*, code: DoorCode, changes: dict) -> dict:
+    """``changes`` with ``add_lock_entity_ids`` / ``remove_lock_entity_ids`` as ``lock_entity_ids`` (issue #159).
+
+    The edit form sends only the locks the user added or removed, and they're
+    applied to the locks the code has when the save runs (under the update's
+    ``lock_sync:`` hold), not the ones the form last fetched. So a tab that
+    hasn't refetched since another tab removed a lock can't put it back by
+    saving an unrelated lock change. A lock whose removal is still waiting on
+    its clear stays removed unless it's added again, which cancels the removal
+    like listing it in ``lock_entity_ids`` does (issues #151, #171). When that
+    leaves the locks as they are, ``lock_entity_ids`` is left out, so the save
+    doesn't touch them.
+    """
+    if "add_lock_entity_ids" not in changes and "remove_lock_entity_ids" not in changes:
+        return changes
+    from locks.use_cases.lock_push import unresolved_clear_failures
+
+    changes = dict(changes)
+    added = list(dict.fromkeys(changes.pop("add_lock_entity_ids", None) or []))
+    removed = set(changes.pop("remove_lock_entity_ids", None) or [])
+    current = list(
+        DoorCodeLockAssignment.objects.filter(door_code=code).order_by("pk").values_list("lock_entity_id", flat=True)
+    )
+    removing = {f.lock_entity_id for f in unresolved_clear_failures(door_code=code) if f.removing}
+    kept = [lock for lock in current if lock not in removing]
+    new = list(dict.fromkeys([*(lock for lock in kept if lock not in removed), *added]))
+    if set(new) != set(kept):
+        changes["lock_entity_ids"] = new
+    return changes
+
+
 def _record_withdraw_gave_up(*, code: DoorCode, failure: ClearFailure, max_attempts: int) -> None:
     """One ``max_attempts_exceeded`` event when the withdraw's count just reached the cap (PR #207 review).
 
@@ -814,7 +849,11 @@ def _update_door_code_locked(
     showing ``pushed``. A lock latchpoint can't resolve to a Z-Wave node any more
     is dropped or forgotten anyway, since no clear can reach it.
     ``event_metadata`` is added to the ``code_updated`` event.
+
+    ``add_lock_entity_ids`` / ``remove_lock_entity_ids`` are applied to the
+    locks the code has now (:func:`_lock_changes_as_lock_entity_ids`, issue #159).
     """
+    changes = _lock_changes_as_lock_entity_ids(code=code, changes=changes)
     _refuse_duplicate_pin_when_turning_on(code=code, changes=changes)
     updated_fields = []
     push_inline = False
@@ -1372,7 +1411,8 @@ def retry_push_door_code(
     )
 
     def fresh() -> DoorCode:
-        return DoorCode.objects.select_related("user").prefetch_related("lock_assignments").get(id=code.id)
+        # Deleted while the Retry ran is a 404, not a DoesNotExist 500 (issue #189).
+        return get_door_code_for_read(code_id=code.id)
 
     if code.is_active and is_expired(code):
         # Resetting a failed push to pending here would zero the attempt cap and

@@ -143,10 +143,11 @@ export function DoorCodeEditContainer({ code, locks, locksIsLoading, locksError,
     { isEqual: sameRange },
   )
   const maxUsesField = useServerField(code.maxUses == null ? '' : String(code.maxUses))
-  // A lock whose removal is still waiting on its slot clear stays in
-  // lockEntityIds until the clear works, but the user already took it off. It
+  // A lock whose removal is still waiting on its slot clear keeps its
+  // assignment until the clear works, but the user already took it off. It
   // starts unticked so a save only keeps it when the user ticks it again, which
-  // is what cancels the removal on the backend (#151).
+  // is what cancels the removal on the backend (#151). The API leaves it out of
+  // lockEntityIds now (#171); an older one listed it, hence the filter.
   const serverLockIds = useMemo(() => {
     const removing = new Set(
       (code.lockSlotAssignments || []).filter((a) => a.pendingRemoval).map((a) => a.lockEntityId),
@@ -255,7 +256,12 @@ export function DoorCodeEditContainer({ code, locks, locksIsLoading, locksError,
         if (dateRangeField.isEdited) {
           const syncedStartAt = toUtcIsoFromDatetimeLocal(editDateRange.start)
           const syncedEndAt = toUtcIsoFromDatetimeLocal(editDateRange.end)
-          if (syncedStartAt && syncedEndAt && syncedStartAt >= syncedEndAt) {
+          // Without an end it would be the lock's again and stuck as it is (#189).
+          if (!syncedEndAt) {
+            setEditError("A synced code's active window needs an end.")
+            return
+          }
+          if (syncedStartAt && syncedStartAt >= syncedEndAt) {
             setEditError('The active window must end after it starts.')
             return
           }
@@ -284,6 +290,9 @@ export function DoorCodeEditContainer({ code, locks, locksIsLoading, locksError,
       return
     }
     const isTemporary = code.codeType === 'temporary'
+    // A one-time code can have dates too, set through the API, and needs them
+    // here to come back on once it's past its end (#184). Its schedule stays off.
+    const hasActiveWindow = isTemporary || code.codeType === 'one_time'
     const daysOfWeek = isTemporary ? daysSetToMask(editDays) : null
     if (isTemporary && daysOfWeek === 0) {
       setEditError('Select at least one day.')
@@ -308,17 +317,23 @@ export function DoorCodeEditContainer({ code, locks, locksIsLoading, locksError,
     // turn a code back on.
     if (isActiveField.isEdited || !editIsActive) req.isActive = editIsActive
     if (maxUsesField.isEdited) req.maxUses = maxUses
-    // The manual ids stand in for the picker when it's empty, so compare what
-    // would be saved with the server's locks (without the ones being removed).
-    if (!sameSet(new Set(resolvedLockEntityIds), new Set(serverLockIds))) {
-      req.lockEntityIds = resolvedLockEntityIds
-    }
+    // Only what the user added or removed, compared with the server's locks
+    // (without the ones being removed). The backend applies it to the locks the
+    // code has when it saves, so a tab that missed another tab removing a lock
+    // can't put it back (#159). The manual ids stand in for the picker when it's
+    // empty, so they're compared the same way.
+    const serverLockSet = new Set(serverLockIds)
+    const savedLockSet = new Set(resolvedLockEntityIds)
+    const addedLocks = resolvedLockEntityIds.filter((id) => !serverLockSet.has(id))
+    const removedLocks = serverLockIds.filter((id) => !savedLockSet.has(id))
+    if (addedLocks.length) req.addLockEntityIds = addedLocks
+    if (removedLocks.length) req.removeLockEntityIds = removedLocks
     if (typedPin) req.code = typedPin
+    if (hasActiveWindow && dateRangeField.isEdited) {
+      req.startAt = startAt
+      req.endAt = endAt
+    }
     if (isTemporary) {
-      if (dateRangeField.isEdited) {
-        req.startAt = startAt
-        req.endAt = endAt
-      }
       if (daysField.isEdited) req.daysOfWeek = daysOfWeek
       if (timeWindowField.isEdited) {
         req.windowStart = windowStart
