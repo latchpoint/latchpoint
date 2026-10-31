@@ -11,6 +11,7 @@ import sys
 import threading
 import time
 import unittest
+from decimal import Decimal
 from typing import Any
 from unittest.mock import patch
 
@@ -64,7 +65,8 @@ class _FakeConnection:
     def __init__(self, server: _FakeServer, *, backend_pid: int, application_name: str) -> None:
         self.server = server
         self.backend_pid = backend_pid
-        self.backend_start = f"2026-10-30 12:00:{backend_pid % 60:02d}+00"
+        # extract(epoch FROM backend_start)
+        self.backend_start = Decimal("1793361600.123456") + backend_pid
         self.application_name = application_name
         self.autocommit = False
         self.closed = False
@@ -174,6 +176,8 @@ class _FakeServerTestCase(SimpleTestCase):
         self._patch(patch.object(runtime_lock, "connections", {"default": self.server}))
         self.register_at_fork = self._patch(patch.object(runtime_lock.os, "register_at_fork"))
         self.exit = self._patch(patch.object(runtime_lock.os, "_exit"))
+        # The test runner isn't a server. Most tests here stand in for one, NonServerProcessTests doesn't.
+        self.is_server = self._patch(patch.object(runtime_lock, "_is_server_process", return_value=True))
         self._patch(patch.object(runtime_lock, "STARTUP_RETRY_SECONDS", 0))
         self._patch(patch.object(runtime_lock, "STALE_SESSION_RETRY_SECONDS", 0))
         self._patch(patch.object(runtime_lock, "STALE_SESSION_WAIT_SECONDS", 1))
@@ -545,6 +549,66 @@ class HeartbeatTests(_FakeServerTestCase):
         self.assertTrue(lock.is_held_elsewhere())
 
 
+class NonServerProcessTests(_FakeServerTestCase):
+    """
+    A management command with START_RUNTIMES=true (ie `run_task`, `shell`) never exits from the heartbeat. Nothing
+    would bring it back and it'd die mid-task, so it logs instead.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.is_server.return_value = False
+
+    def test_standby_logs_instead_of_exiting_once_the_lock_is_free(self):
+        lock = self.lock_held_elsewhere()
+        self.server.holder = None
+        lock._last_holder_log = None
+
+        with self.assertLogs("config.runtime_lock", "ERROR") as logs:
+            lock.heartbeat_once()
+
+        self.exit.assert_not_called()
+        self.assertIn("isn't a server", logs.output[0])
+        self.assertTrue(lock.is_held_elsewhere())
+        # And it doesn't take the lock either, its runtimes never started.
+        self.assertIsNone(self.server.holder)
+
+    def test_standby_free_lock_log_is_rate_limited(self):
+        lock = self.lock_held_elsewhere()
+        self.server.holder = None
+
+        with self.assertNoLogs("config.runtime_lock", "ERROR"):
+            lock.heartbeat_once()
+
+        self.exit.assert_not_called()
+
+    def test_lost_lock_logs_instead_of_exiting(self):
+        lock = self.make()
+        lock.acquire_for_process()
+        self.server.kill(self.server.connections[0])
+        self.server.holder = dict(OTHER_HOLDER)
+
+        with self.assertLogs("config.runtime_lock", "CRITICAL") as logs:
+            lock.heartbeat_once()
+
+        self.exit.assert_not_called()
+        self.assertIn("isn't a server, so it doesn't exit", logs.output[-1])
+        self.assertTrue(lock.is_held_elsewhere())
+
+
+class IsServerProcessTests(SimpleTestCase):
+    def test_uses_the_server_argv_check(self):
+        cases = [
+            (["daphne", "-b", "127.0.0.1", "config.asgi:application"], True),
+            (["manage.py", "run_task", "push_requested_door_codes"], False),
+            (["manage.py", "shell"], False),
+            (["manage.py", "test"], False),
+        ]
+        for argv, expected in cases:
+            with self.subTest(argv=argv), patch.object(sys, "argv", argv):
+                self.assertIs(runtime_lock._is_server_process(), expected)
+
+
 class HeartbeatTerminatesOnlyItsOwnLostSessionTests(_FakeServerTestCase):
     """The only session the heartbeat ever terminates is the exact one it lost, matched on backend pid and start."""
 
@@ -610,7 +674,7 @@ class HeartbeatTerminatesOnlyItsOwnLostSessionTests(_FakeServerTestCase):
             "pid": old.backend_pid,
             "application_name": SIBLING["application_name"],
             "client_addr": None,
-            "backend_start": "2026-10-30 12:05:00+00",
+            "backend_start": old.backend_start + 300,
         }
 
         with self.assertLogs("config.runtime_lock", "CRITICAL"):
@@ -901,6 +965,7 @@ class PostgresRuntimeLockTests(SimpleTestCase):
     def setUp(self) -> None:
         for patcher in (
             patch.object(runtime_lock.os, "register_at_fork"),
+            patch.object(runtime_lock, "_is_server_process", return_value=True),
             patch.object(runtime_lock, "STALE_SESSION_RETRY_SECONDS", 0.1),
             patch.object(runtime_lock, "RECONNECT_RETRY_SECONDS", 0.1),
             patch.object(runtime_lock, "PREVIOUS_RUN_WAIT_SECONDS", 5),
@@ -1008,6 +1073,23 @@ class PostgresRuntimeLockTests(SimpleTestCase):
         self.assertTrue(any("just lost" in line for line in logs.output))
         self.assertEqual(a.get_status()["state"], "active")
         self._wait_gone(old_pid)
+
+    def test_session_start_matches_whatever_the_datestyle_and_timezone(self):
+        a = self.make(NAME_A)
+        a.acquire_for_process()
+        b = self.make(NAME_B)
+        with self.assertLogs("config.runtime_lock", "ERROR"):
+            b.acquire_for_process()
+        # The text form of backend_start would come out different in b's session after this.
+        with b._conn.cursor() as cursor:
+            cursor.execute("SET TimeZone = 'Asia/Tokyo'")
+            cursor.execute("SET DateStyle = 'German, DMY'")
+
+        holder = b._query_holder()
+
+        self.assertEqual(holder["pid"], a._backend_pid)
+        self.assertEqual(holder["backend_start"], a._session[1])
+        self.assertTrue(runtime_lock._is_session(holder, a._session))
 
     def test_startup_waits_out_a_previous_run_from_this_host(self):
         previous = self.make("latchpoint-runtime:pg-host:1111111:zzzzzz")

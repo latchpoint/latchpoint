@@ -79,11 +79,12 @@ _boot_tokens: dict[int, str] = {}
 
 _TRY_LOCK_SQL = "SELECT pg_try_advisory_lock(%s, %s)"
 # Which session this connection is. The pid alone could in theory be reused by a later backend, the start time
-# with it can't.
-_OWN_SESSION_SQL = "SELECT pid, backend_start::text FROM pg_stat_activity WHERE pid = pg_backend_pid()"
+# with it can't. The start time is compared as epoch seconds, which unlike its text form doesn't depend on the
+# session's DateStyle or TimeZone.
+_OWN_SESSION_SQL = "SELECT pid, extract(epoch FROM backend_start) FROM pg_stat_activity WHERE pid = pg_backend_pid()"
 # objsubid 2 is the two-int form.
 _HOLDER_SQL = """
-SELECT a.pid, a.application_name, host(a.client_addr), a.backend_start::text
+SELECT a.pid, a.application_name, host(a.client_addr), extract(epoch FROM a.backend_start)
 FROM pg_locks l
 JOIN pg_stat_activity a ON a.pid = l.pid
 WHERE l.locktype = 'advisory'
@@ -131,7 +132,7 @@ def _host_prefix(application_name: str | None) -> str | None:
     return f"{parts[0]}:{parts[1]}:"
 
 
-def _is_session(holder: dict[str, Any], session: tuple[int, str | None] | None) -> bool:
+def _is_session(holder: dict[str, Any], session: tuple[int, Any] | None) -> bool:
     """Whether `holder` is exactly `session`, matched on backend pid and start time."""
     return session is not None and holder.get("pid") == session[0] and holder.get("backend_start") == session[1]
 
@@ -177,8 +178,8 @@ class RuntimeLock:
         self._reason = _NOT_CHECKED
         self._holder: dict[str, Any] | None = None
         self._conn: Any = None
-        # (backend pid, backend_start) of the session on `_conn`.
-        self._session: tuple[int, str | None] | None = None
+        # (backend pid, backend_start as epoch seconds) of the session on `_conn`.
+        self._session: tuple[int, Any] | None = None
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._fork_hook_registered = False
@@ -323,7 +324,7 @@ class RuntimeLock:
     def _try_lock(self) -> bool:
         return bool(self._fetch_one(_TRY_LOCK_SQL, [LOCK_NAMESPACE, LOCK_KEY])[0])
 
-    def _take_lock(self, *, lost_session: tuple[int, str | None] | None = None) -> tuple[bool, dict[str, Any] | None]:
+    def _take_lock(self, *, lost_session: tuple[int, Any] | None = None) -> tuple[bool, dict[str, Any] | None]:
         """
         Try the lock on the open connection. Returns whether it was taken, and the holder when it wasn't.
 
@@ -436,6 +437,16 @@ class RuntimeLock:
                 return
             with self._mutex:
                 self._set_held_elsewhere(holder)
+            if not _is_server_process():
+                # ie a `run_task` or `shell` with START_RUNTIMES=true. Exiting could kill it mid-task, so it says so
+                # and carries on.
+                logger.critical(
+                    "Runtime lock: lost the lock while the connection was down and %s has it now. This process "
+                    "still runs the runtimes, so they're running twice. It isn't a server, so it doesn't exit. Stop "
+                    "it as soon as it's done (ADR-0112)",
+                    describe_holder(holder),
+                )
+                return
             logger.critical(
                 "Runtime lock: lost the lock while the connection was down and %s has it now. This process "
                 "still runs the runtimes, so it exits to restart as a standby (ADR-0112)",
@@ -449,7 +460,8 @@ class RuntimeLock:
         Every tick, see whether the lock is still held. Once it's free, exit so supervisord restarts this process
         and it takes the lock, since the runtimes can only start from `ready()`. That's what gets a process that
         went standby behind a session Postgres was slow to drop running again. The ERROR naming the holder only
-        goes out every HOLDER_LOG_SECONDS.
+        goes out every HOLDER_LOG_SECONDS. Only a server exits. Anything else (ie `run_task` or `shell` with
+        START_RUNTIMES=true) would die mid-task and nothing would bring it back, so it only logs.
         """
         now = time.monotonic()
         log_due = self._last_holder_log is None or now - self._last_holder_log >= HOLDER_LOG_SECONDS
@@ -468,6 +480,14 @@ class RuntimeLock:
                 )
             return
         if holder is None:
+            if not _is_server_process():
+                if log_due:
+                    self._last_holder_log = now
+                    logger.error(
+                        "Runtime lock: the lock is free now, but this process is a standby that isn't a server, so "
+                        "it doesn't exit and still runs no runtimes. Restart it to take the lock (ADR-0112)"
+                    )
+                return
             logger.critical(
                 "Runtime lock: the lock is free now and this process is a standby running no runtimes, so it exits "
                 "to restart and take the lock (ADR-0112)"
@@ -632,6 +652,14 @@ def _call_outside_event_loop(fn: Callable[[], _T]) -> _T:
     if "error" in outcome:
         raise outcome["error"]
     return outcome["result"]
+
+
+def _is_server_process() -> bool:
+    """Whether this process serves the app (daphne, uvicorn, gunicorn, runserver), the only kind the lock exits."""
+    # Here rather than at the top, since config.runtimes imports this module.
+    from config.runtimes import is_server_argv
+
+    return is_server_argv(sys.argv)
 
 
 def _exit_process() -> None:

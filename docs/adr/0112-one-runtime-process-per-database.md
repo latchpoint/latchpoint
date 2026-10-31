@@ -95,6 +95,10 @@ with a Postgres advisory lock.
   a restart is the only way in. That's what gets a process that went standby
   behind a slow-to-drop session of its own running again, within about 30s of
   Postgres dropping it.
+- **Only a server exits.** Both exits, on a lost lock and on a free one, only
+  happen in a server process (`is_server_argv`). A management command with
+  `START_RUNTIMES=true` (ie `run_task`, `shell`) would die mid-task with
+  nothing to restart it, so it logs instead.
 - **Door code pushes.** In a standby `push_task_running()` is true, so a door
   code save only queues the push (ADR-0111) and the active process's 5s tick
   sends it. A standby never makes a Z-Wave JS call from a request.
