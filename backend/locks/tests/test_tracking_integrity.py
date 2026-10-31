@@ -280,6 +280,45 @@ class SyncedAttemptReconcileTests(_TrackingTestBase):
                 self._push_pending(gateway)
                 self.assertEqual(gateway.invoke_calls, [])
 
+    def test_a_dated_codes_second_copy_stays_on_record_so_its_retire_clears_it(self):
+        # PR #211 re-review: settling it left the copy on the lock once the code expired.
+        for name, readback, tags in (
+            ("readable", _holding(self.PIN), {}),
+            ("masked", MASKED, {"slot_available": True}),
+        ):
+            with self.subTest(slot_two=name):
+                DoorCodeEvent.objects.all().delete()
+                DoorCode.objects.all().delete()
+                code = self._code(
+                    source=DoorCode.Source.SYNCED,
+                    slots={self.BACK: 1},
+                    code_type=DoorCode.CodeType.TEMPORARY,
+                    end_at=self._from_now(days=1),
+                )
+                self._attempt(code, 2, **tags)
+                gateway = self._gateway({1: self.PIN, 2: self.PIN}, cache={1: self.PIN, 2: self.PIN})
+                gateway._get_scripts = {None: [readback, readback]}
+
+                self._push_pending(gateway)
+
+                # Still on record, and the check doesn't read it again.
+                self.assertEqual(self._unsettled_slots(code), [2])
+                self.assertEqual(len(self._calls(gateway, "get")), 1)
+                self._push_pending(gateway)
+                self.assertEqual(len(self._calls(gateway, "get")), 1)
+                # Retention keeps the pause while the attempt is open.
+                self._run_retention(DoorCodeEvent.objects.filter(door_code=code))
+                self.assertTrue(DoorCodeEvent.objects.filter(metadata__action="synced_check_paused").exists())
+                self._push_pending(gateway)
+                self.assertEqual(len(self._calls(gateway, "get")), 1)
+
+                self._move(code, end_at=self._ago(minutes=1))
+                self._enforce(gateway)
+
+                code.refresh_from_db()
+                self.assertFalse(code.is_active)
+                self.assertEqual(self._lock_codes(gateway, 12), {})
+
     def test_the_second_copy_is_imported_by_the_next_lock_sync(self):
         code, gateway = self._synced_code_with_attempt(_holding(self.PIN))
         gateway._lock_codes[(12, 2)] = self.PIN
@@ -526,16 +565,43 @@ class DuplicatePinTurnOnTests(_TrackingTestBase, APITestCase):
 class RetireSyncedCopiesTests(_TrackingTestBase):
     """Issue #185: a synced copy of an expiring code's PIN comes off its lock with it."""
 
+    def _guest(self, gateway: ClearFailingGateway) -> DoorCode:
+        return door_codes_uc.create_door_code(
+            user=self.user,
+            raw_code=self.PIN,
+            code_type=DoorCode.CodeType.TEMPORARY,
+            end_at=self._from_now(days=1),
+            lock_entity_ids=[self.BACK],
+            actor_user=self.user,
+            zwavejs=gateway,
+        )
+
+    def _stranded_copy(self) -> tuple[DoorCode, DoorCode, ClearFailingGateway]:
+        """What #133 left: pushed into slot 1, the slot forgotten, pushed again into slot 2, then slot 1 imported."""
+        gateway = ClearFailingGateway(usersNumber=5, cache_updates_on_set=True, drops_duplicates=False)
+        original = self._guest(gateway)
+        self.assertEqual(self._slots(original), {self.BACK: 1})
+        DoorCodeLockAssignment.objects.filter(door_code=original).update(
+            slot_index=None, push_state=DoorCode.PushState.PENDING
+        )
+        lock_push_uc.push_door_code_to_assigned_locks(
+            door_code=DoorCode.objects.prefetch_related("lock_assignments").get(id=original.id), zwavejs=gateway
+        )
+        self.assertEqual(self._slots(original), {self.BACK: 2})
+        self._sync(gateway)
+        copy = DoorCode.objects.get(lock_assignments__lock_entity_id=self.BACK, lock_assignments__slot_index=1)
+        self.assertEqual((copy.source, copy.end_at), (DoorCode.Source.SYNCED, None))
+        self.assertEqual(self._lock_codes(gateway, 12), {1: self.PIN, 2: self.PIN})
+        gateway.invoke_calls.clear()
+        return original, copy, gateway
+
     def test_retiring_a_code_clears_synced_copies_of_its_pin_on_its_locks(self):
-        original, gateway = self._temporary_code([self.BACK])
-        self.assertEqual(self._lock_codes(gateway, 12), {1: self.PIN})
-        copy = self._code(source=DoorCode.Source.SYNCED, slots={self.BACK: 2}, label="Slot 2")
+        original, copy, gateway = self._stranded_copy()
         other_pin = self._code(pin="9999", source=DoorCode.Source.SYNCED, slots={self.BACK: 3}, label="Slot 3")
         manual_copy = self._code(slots={self.BACK: 4})
         dated_copy = self._code(source=DoorCode.Source.SYNCED, slots={self.BACK: 5}, end_at=self._from_now(days=3))
-        for slot, pin in ((2, self.PIN), (3, "9999"), (4, self.PIN), (5, self.PIN)):
+        for slot, pin in ((3, "9999"), (4, self.PIN), (5, self.PIN)):
             gateway._lock_codes[(12, slot)] = pin
-        gateway.invoke_calls.clear()
 
         self._move(original, end_at=self._ago(minutes=1))
         self._enforce(gateway)
@@ -590,10 +656,104 @@ class RetireSyncedCopiesTests(_TrackingTestBase):
             {"action": "duplicate_pin_survives_retire", "slot_index": 1, "duplicate_door_code_id": family.id},
         )
 
+    def _assert_left_alone_and_flagged(self, *, guest: DoorCode, family: DoorCode, gateway, slot: int) -> None:
+        guest.refresh_from_db()
+        family.refresh_from_db()
+        self.assertFalse(guest.is_active)
+        self.assertTrue(family.is_active)
+        self.assertEqual(self._slots(family), {self.BACK: slot})
+        self.assertEqual(self._lock_codes(gateway, 12).get(slot), self.PIN)
+        self.assertNotIn((12, [slot]), self._calls(gateway, "clear"))
+        flag = DoorCodeEvent.objects.get(door_code=guest, metadata__action="duplicate_pin_survives_retire")
+        self.assertEqual(flag.metadata["duplicate_door_code_id"], family.id)
+
+    def test_an_older_keypad_code_on_a_lock_that_takes_duplicates_is_left_alone(self):
+        # PR #211 re-review: the family's code is in slot 1, then a guest code is
+        # given the same PIN and the lock takes it into slot 2.
+        family = self._code(source=DoorCode.Source.SYNCED, slots={self.BACK: 1}, label="Slot 1")
+        gateway = ClearFailingGateway(usersNumber=5, cache_updates_on_set=True, drops_duplicates=False)
+        gateway._lock_codes[(12, 1)] = self.PIN
+        gateway._cache_codes[(12, 1)] = self.PIN
+        guest = self._guest(gateway)
+        self.assertEqual(self._slots(guest), {self.BACK: 2})
+        rows = {row.slot_index: row for row in self._sync(gateway).slots}
+        self.assertIn(guest.id, rows[1].duplicate_pin_door_code_ids)
+        gateway.invoke_calls.clear()
+
+        self._move(guest, end_at=self._ago(minutes=1))
+        with self.assertLogs("locks.use_cases.door_codes", level="WARNING"):
+            self._enforce(gateway)
+
+        self._assert_left_alone_and_flagged(guest=guest, family=family, gateway=gateway, slot=1)
+        self.assertEqual(self._lock_codes(gateway, 12), {1: self.PIN})
+
+    def test_a_copy_older_than_the_push_into_its_slot_is_left_alone(self):
+        # The created-after rule on its own: the guest was once pushed into slot 2
+        # (say before an edit moved it), but the code there now is older than that.
+        family = self._code(source=DoorCode.Source.SYNCED, slots={self.BACK: 2}, label="Slot 2")
+        guest = self._code(slots={self.BACK: 1}, code_type=DoorCode.CodeType.TEMPORARY, end_at=self._from_now(days=1))
+        DoorCodeEvent.objects.create(
+            door_code=guest,
+            user=self.user,
+            lock_entity_id=self.BACK,
+            event_type=DoorCodeEvent.EventType.CODE_SYNCED,
+            metadata={"action": "pushed", "slot_index": 2},
+        )
+        gateway = self._gateway({1: self.PIN, 2: self.PIN})
+
+        self._move(guest, end_at=self._ago(minutes=1))
+        with self.assertLogs("locks.use_cases.door_codes", level="WARNING"):
+            self._enforce(gateway)
+
+        self._assert_left_alone_and_flagged(guest=guest, family=family, gateway=gateway, slot=2)
+
+    def test_a_keypad_code_in_a_slot_the_guest_never_used_is_left_alone(self):
+        gateway = ClearFailingGateway(usersNumber=5, cache_updates_on_set=True, drops_duplicates=False)
+        guest = self._guest(gateway)
+        self.assertEqual(self._slots(guest), {self.BACK: 1})
+        # Typed in at the keypad after the guest's push, and imported by lock sync.
+        gateway._lock_codes[(12, 3)] = self.PIN
+        gateway._cache_codes[(12, 3)] = self.PIN
+        self._sync(gateway)
+        keypad = DoorCode.objects.get(lock_assignments__lock_entity_id=self.BACK, lock_assignments__slot_index=3)
+        self.assertGreater(keypad.created_at, guest.created_at)
+        gateway.invoke_calls.clear()
+
+        self._move(guest, end_at=self._ago(minutes=1))
+        with self.assertLogs("locks.use_cases.door_codes", level="WARNING"):
+            self._enforce(gateway)
+
+        self._assert_left_alone_and_flagged(guest=guest, family=keypad, gateway=gateway, slot=3)
+        self.assertEqual(self._lock_codes(gateway, 12), {3: self.PIN})
+
+    def test_a_copy_retire_that_keeps_raising_gives_up_at_the_cap(self):
+        original, copy, gateway = self._stranded_copy()
+        self._move(original, end_at=self._ago(minutes=1))
+
+        with (
+            patch("locks.tasks._get_push_max_attempts", return_value=3),
+            patch.object(door_codes_uc, "_retire_synced_copy", return_value=False) as retire,
+        ):
+            self._enforce(gateway)
+            # Event retention keeps it while it's pending.
+            self._run_retention(DoorCodeEvent.objects.filter(door_code=original))
+            self.assertTrue(
+                DoorCodeEvent.objects.filter(door_code=original, metadata__action="duplicate_retire_pending").exists()
+            )
+            for _tick in range(3):
+                self._enforce(gateway)
+
+        # The retire's own try, then 2 retries, the first in the same tick.
+        self.assertEqual(retire.call_count, 3)
+        gave_up = DoorCodeEvent.objects.get(door_code=original, metadata__reason="max_attempts_exceeded")
+        self.assertEqual((gave_up.metadata["action"], gave_up.metadata["attempts"]), ("duplicate_retire", 3))
+        done = DoorCodeEvent.objects.get(door_code=original, metadata__action="duplicate_retire_done")
+        self.assertEqual(done.metadata["outcome"], "gave_up")
+        copy.refresh_from_db()
+        self.assertTrue(copy.is_active)
+
     def test_a_copy_whose_retire_raises_is_tried_again_on_a_later_tick(self):
-        original, gateway = self._temporary_code([self.BACK])
-        copy = self._code(source=DoorCode.Source.SYNCED, slots={self.BACK: 2}, label="Slot 2")
-        gateway._lock_codes[(12, 2)] = self.PIN
+        original, copy, gateway = self._stranded_copy()
         self._move(original, end_at=self._ago(minutes=1))
 
         with patch.object(door_codes_uc, "_retire_synced_copy", return_value=False):

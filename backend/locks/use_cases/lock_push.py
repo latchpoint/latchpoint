@@ -2689,6 +2689,12 @@ def withdraw_slots_before_start(
 # isn't read back every tick for good (PR #211 review).
 _SYNCED_CHECK_UNANSWERED_ACTION = "synced_check_unanswered"
 
+# DoorCodeEvent metadata ``action`` (on a ``code_failed`` event) for a #180
+# readback that found a dated synced code's PIN in its attempt slot. It stops
+# that check for the attempt without settling it, so the deactivate or delete
+# cleanups still read the slot back and clear it (PR #211 re-review).
+_SYNCED_CHECK_PAUSED_ACTION = "synced_check_paused"
+
 
 def synced_attempt_slots_to_check(*, door_code: DoorCode) -> list[tuple[str, int]]:
     """``(lock_entity_id, slot_index)`` of a synced code's attempts that :func:`check_synced_attempt_slots` reads back.
@@ -2702,9 +2708,10 @@ def synced_attempt_slots_to_check(*, door_code: DoorCode) -> list[tuple[str, int
     (issue #180). A lock the code has no slot on isn't here, since its push
     adopts or settles the attempt there. Left out too are a slot with a clear
     failure still open, which the clear retries own (a settle there would
-    resolve that failure without clearing it), and an attempt whose readbacks
-    went unanswered ``door_codes.push_max_attempts`` times (PR #211 review).
-    Empty for a manual code.
+    resolve that failure without clearing it), an attempt whose readbacks
+    went unanswered ``door_codes.push_max_attempts`` times (PR #211 review),
+    and an attempt a readback already found holding a dated code's PIN
+    (``synced_check_paused``, PR #211 re-review). Empty for a manual code.
     """
     if door_code.source != DoorCode.Source.SYNCED:
         return []
@@ -2738,6 +2745,14 @@ def _synced_attempts_to_check_on_lock(
         attempted_pin = _decrypt_expected_pin(metadata)
         if slot_index in claimed or slot_index in failing or not (attempted_pin or pin):
             continue
+        if _synced_check_markers(
+            door_code=door_code,
+            lock_entity_id=lock_entity_id,
+            slot_index=slot_index,
+            since_id=event_id,
+            action=_SYNCED_CHECK_PAUSED_ACTION,
+        ).exists():
+            continue
         if max_attempts > 0 and (
             _unanswered_synced_checks(
                 door_code=door_code, lock_entity_id=lock_entity_id, slot_index=slot_index, since_id=event_id
@@ -2749,13 +2764,24 @@ def _synced_attempts_to_check_on_lock(
     return attempts
 
 
-def _unanswered_synced_checks(*, door_code: DoorCode, lock_entity_id: str, slot_index: int, since_id: int) -> int:
+def _synced_check_markers(*, door_code: DoorCode, lock_entity_id: str, slot_index: int, since_id: int, action: str):
+    """The code's #180 check markers of ``action`` for this lock and slot after event ``since_id`` (its attempt)."""
     return DoorCodeEvent.objects.filter(
         door_code=door_code,
         lock_entity_id=lock_entity_id,
-        metadata__action=_SYNCED_CHECK_UNANSWERED_ACTION,
+        metadata__action=action,
         metadata__slot_index=int(slot_index),
         id__gt=since_id,
+    )
+
+
+def _unanswered_synced_checks(*, door_code: DoorCode, lock_entity_id: str, slot_index: int, since_id: int) -> int:
+    return _synced_check_markers(
+        door_code=door_code,
+        lock_entity_id=lock_entity_id,
+        slot_index=slot_index,
+        since_id=since_id,
+        action=_SYNCED_CHECK_UNANSWERED_ACTION,
     ).count()
 
 
@@ -2818,10 +2844,14 @@ def check_synced_attempt_slots(
     messaging or passage mode slot, an empty slot or a masked one without the
     tag, is settled as ``not_holding_pin``, with ``slot_empty`` when it read
     back empty, so the next lock sync reconciles the code. One that's ours is a
-    second copy of the code's PIN next to the slot it tracks, and is settled as
-    ``left_to_lock_sync``: the next sync imports it as its own synced code
-    (flagged ``duplicate_pin`` when it's readable), so it's tracked by a row and
-    isn't read back every tick for good (PR #211 review). An attempt in the slot
+    second copy of the code's PIN next to the slot it tracks. For a code without
+    dates it's settled as ``left_to_lock_sync``: the next sync imports it as its
+    own synced code (flagged ``duplicate_pin`` when it's readable), so it's
+    tracked by a row and isn't read back every tick for good (PR #211 review).
+    For a code with a ``start_at`` or ``end_at`` it stays unsettled, so its
+    retire or withdraw still finds that slot through the attempt and clears it,
+    and a ``synced_check_paused`` marker stops this check from reading it again
+    (PR #211 re-review). An attempt in the slot
     the code tracks on that lock is settled as ``tracked`` without a readback,
     since lock sync reconciles that slot. A readback with no answer is counted
     (``synced_check_unanswered``) and the attempt is left for the next tick
@@ -2839,7 +2869,7 @@ def check_synced_attempt_slots(
         try:
             with hold_lock_sync([lock_entity_id], deadline=deadline):
                 try:
-                    door_code.refresh_from_db(fields=["source", "encrypted_pin"])
+                    door_code.refresh_from_db(fields=["source", "encrypted_pin", *_VALIDITY_FIELDS])
                 except DoorCode.DoesNotExist:
                     return settled
                 if door_code.source != DoorCode.Source.SYNCED:
@@ -2931,8 +2961,21 @@ def _check_synced_attempt_slots_on_lock(
             )
             continue
         if verdict == _HOLDS_OURS:
-            # A second copy of its PIN on this lock. Lock sync imports it as its
-            # own synced code once this attempt stops making it skip the slot.
+            if door_code.start_at is not None or door_code.end_at is not None:
+                # Its retire or withdraw has to clear this copy too, and the
+                # cleanups only find it through the unsettled attempt, so only
+                # this check stops (PR #211 re-review).
+                DoorCodeEvent.objects.create(
+                    door_code=door_code,
+                    user=door_code.user,
+                    lock_entity_id=lock_entity_id,
+                    event_type=DoorCodeEvent.EventType.CODE_FAILED,
+                    metadata={"action": _SYNCED_CHECK_PAUSED_ACTION, "slot_index": int(slot_index)},
+                )
+                continue
+            # A second copy of an undated code's PIN on this lock. Lock sync
+            # imports it as its own synced code once this attempt stops making
+            # it skip the slot.
             _settle_unconfirmed_slot(
                 door_code=door_code, lock_entity_id=lock_entity_id, slot_index=slot_index, outcome="left_to_lock_sync"
             )
@@ -3097,6 +3140,11 @@ def retained_marker_event_ids(*, older_than: datetime) -> set[int]:
     still has an unsettled attempt or an open unconfirmed clear failure there,
     since those are what keep a new attempt on that slot from being tagged
     ``slot_available`` (issue #194, :func:`_slot_read_back_empty_since_last_push`).
+
+    And while an attempt is unsettled, its #180 check markers
+    (``synced_check_paused``, ``synced_check_unanswered``), plus every
+    ``duplicate_retire_pending`` copy retire still pending and its failed tries
+    (PR #211 re-review, ``door_codes.pending_copy_retire_event_ids``).
     """
     old = DoorCodeEvent.objects.filter(created_at__lt=older_than, door_code__isnull=False)
     old_markers = old.filter(
@@ -3125,6 +3173,19 @@ def retained_marker_event_ids(*, older_than: datetime) -> set[int]:
         for lock_entity_id in sorted(lock_entity_ids):
             attempts = _unsettled_unconfirmed_attempts(door_code=door_code, lock_entity_id=lock_entity_id)
             keep.update(event_id for event_id, _metadata in attempts.values())
+            for slot_index, (attempt_id, _metadata) in attempts.items():
+                # The #180 check's pause and unanswered count for the attempt, so
+                # pruning them doesn't start the readbacks over (PR #211 re-review).
+                for action in (_SYNCED_CHECK_PAUSED_ACTION, _SYNCED_CHECK_UNANSWERED_ACTION):
+                    keep.update(
+                        _synced_check_markers(
+                            door_code=door_code,
+                            lock_entity_id=lock_entity_id,
+                            slot_index=slot_index,
+                            since_id=attempt_id,
+                            action=action,
+                        ).values_list("id", flat=True)
+                    )
             slots = set(attempts) | {slot for lock, slot in unconfirmed_failures if lock == lock_entity_id}
             if not slots:
                 continue
@@ -3139,6 +3200,9 @@ def retained_marker_event_ids(*, older_than: datetime) -> set[int]:
                     )
                 )
     keep.update(_slot_empty_markers_disarming(kept_ids=keep, older_than=older_than))
+    from locks.use_cases.door_codes import pending_copy_retire_event_ids
+
+    keep.update(pending_copy_retire_event_ids())
     return keep
 
 
