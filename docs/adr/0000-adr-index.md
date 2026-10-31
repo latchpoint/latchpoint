@@ -127,6 +127,7 @@ This document tracks all Architecture Decision Records (ADRs) and their implemen
 | [0110](0110-door-code-push-state-per-lock.md) | Door Code Push State Is Tracked Per Lock | **Accepted** |
 | [0111](0111-door-code-push-off-the-request-path.md) | Door Code Pushes Are Queued for the Scheduler Instead of Made in the Request | **Accepted** |
 | [0112](0112-one-runtime-process-per-database.md) | One Runtime Process per Database | **Accepted** |
+| [0114](0114-door-code-use-counting-from-keypad-unlocks.md) | Door Code Uses Are Counted from Z-Wave JS Keypad Unlocks | **Accepted** |
 
 ---
 
