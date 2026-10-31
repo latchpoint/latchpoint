@@ -54,6 +54,8 @@ The selected entity gets `domain="lock"` and a simplified name (just the node na
 
 This validation is applied at the serializer level, so the use-case layer doesn't need to know about source-based restrictions. The user can still rename a synced code's label for organizational purposes.
 
+**Manual codes stay latchpoint's (issue #166).** Latchpoint, not the lock, is the authority for a manual code, so lock config sync never turns one into a synced code. Only slots latchpoint doesn't know about are imported as synced. For a manual code in its own slot the sync leaves the PIN, schedule, owner and active flag alone and only marks that lock pushed, flags a slot the lock reports disabled, and lets go of a tracked slot only when a live readback answers it empty twice and the lock can't already have the PIN in another slot, so the scheduler pushes the code again. Codes an earlier sync converted stay synced.
+
 ### 3. Delete synced door code clears the physical lock slot via CC 99 API
 
 When a synced door code is deleted, the system now clears the user code slot on the physical lock before dismissing the record in the database.

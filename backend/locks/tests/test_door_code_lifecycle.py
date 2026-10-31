@@ -1069,12 +1069,12 @@ class SyncedCodeValidityTests(_LifecycleTestBase, APITestCase):
     def _synced_code(self) -> tuple[DoorCode, ClearFailingGateway]:
         """A dated code lock sync took over, the way the conversion leaves them: synced and permanent."""
         code, gateway = self._temporary_code([self.BACK])
-        self._sync(gateway)
-        code.refresh_from_db()
-        self.assertEqual(code.source, DoorCode.Source.SYNCED)
+        # Only syncs from before #166 converted manual codes, so the row is set up the way they left it.
+        # A sync that read no schedule off the slot made it permanent and kept its dates.
+        code = self._move(
+            code, source=DoorCode.Source.SYNCED, code_type=DoorCode.CodeType.PERMANENT, label=code.label or "Slot 1"
+        )
         self.assertIsNotNone(code.end_at)
-        # A sync that reads no schedule off the slot makes it permanent and keeps its dates.
-        code = self._move(code, code_type=DoorCode.CodeType.PERMANENT)
         gateway.invoke_calls.clear()
         return code, gateway
 

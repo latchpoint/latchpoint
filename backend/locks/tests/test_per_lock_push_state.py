@@ -1103,7 +1103,7 @@ class LockSyncPerLockTests(EncryptionTestMixin, APITestCase):
         self.assertEqual(len(schedules), 5)
         self.assertEqual(_lock_state(assignment), (1, PUSHED, 0, "", False))
 
-    def test_a_sync_refreshes_the_rollup_of_a_code_it_converts(self):
+    def test_a_sync_refreshes_the_rollup_of_a_manual_code_it_finds_in_its_slot(self):
         code = self._manual_code(pin="4321", slot_index=1)
         DoorCode.objects.filter(id=code.id).update(push_state=PENDING, last_push_error="LockUnreachable: timed out")
         DoorCodeLockAssignment.objects.filter(door_code=code).update(push_state=PENDING)
@@ -1111,7 +1111,8 @@ class LockSyncPerLockTests(EncryptionTestMixin, APITestCase):
         self._sync(sync_tests.SlotGateway({1: (1, "4321")}))
 
         code.refresh_from_db()
-        self.assertEqual(code.source, DoorCode.Source.SYNCED)
+        # It stays manual since #166.
+        self.assertEqual(code.source, DoorCode.Source.MANUAL)
         self.assertEqual((code.push_state, code.last_push_error), (PUSHED, ""))
 
     def test_releasing_an_inactive_synced_codes_slot_takes_the_code_row_first(self):
