@@ -1103,9 +1103,12 @@ class ImportLockChangeTests(_SyncedLocksTestBase):
         # Nothing is sent to the Back Door while the sync holds the Front Door.
         self.assertEqual([c for c in gateway.invoke_calls if c["node_id"] == 12 and c["method_name"] != "get"], [])
         self.assertEqual([f.slot_index for f in lock_push_uc.unresolved_clear_failures(door_code=master)], [2])
-        self.assertEqual(self.woken, ["push_pending_door_codes"])
+        self.assertEqual(set(self.woken), {"push_pending_door_codes"})
         master.refresh_from_db()
         self.assertEqual(master.push_state, DoorCode.PushState.PENDING)
+        # Only queued, so it reads as waiting, not as a failure, and no code_failed is logged.
+        self.assertEqual(master.last_push_error, f"Waiting to clear slot 2 on {self.BACK} before sending the new PIN")
+        self.assertFalse(self._clear_failed_events(master).exists())
         synced = DoorCodeEvent.objects.filter(door_code=master, lock_entity_id=self.FRONT).latest("id")
         self.assertEqual(synced.metadata["sent_to_lock_entity_ids"], [self.BACK])
 
@@ -1171,7 +1174,7 @@ class ImportLockChangeTests(_SyncedLocksTestBase):
                 self._sync_front(gateway, days=days)
 
                 self.assertEqual([f.slot_index for f in lock_push_uc.unresolved_clear_failures(door_code=master)], [2])
-                self.assertEqual(self.woken, ["push_pending_door_codes"])
+                self.assertEqual(set(self.woken), {"push_pending_door_codes"})
                 self._push_pending(gateway)
 
                 self.assertEqual(self._calls(gateway, "clear"), [(12, [2])])
@@ -1221,8 +1224,9 @@ class ImportLockChangeTests(_SyncedLocksTestBase):
         self.assertEqual(self._pin(master), self.PIN)
         self._assert_back_door_left_alone(master, gateway)
 
-    def test_a_new_pin_another_code_already_has_on_the_added_lock_isnt_sent_there(self):
+    def test_a_new_pin_another_code_already_has_on_the_added_lock_takes_the_code_off_that_lock(self):
         # The Back Door's slot 1 code has that PIN, so a push would put it in a second slot (#188).
+        # The old PIN was changed on purpose, so it still comes off.
         master, gateway = self._master_on_both()
         other = DoorCode.objects.get(lock_assignments__lock_entity_id=self.BACK, lock_assignments__slot_index=1)
         self._change_front_pin(gateway, OTHER_PIN)
@@ -1235,10 +1239,34 @@ class ImportLockChangeTests(_SyncedLocksTestBase):
         self.assertEqual(self._pin(master), OTHER_PIN)
         synced = DoorCodeEvent.objects.filter(door_code=master, lock_entity_id=self.FRONT).latest("id")
         self.assertEqual(synced.metadata["pin_held_on_lock_entity_ids"], [self.BACK])
-        self._assert_back_door_left_alone(master, gateway)
-        self.assertTrue(DoorCode.objects.filter(id=other.id).exists())
+        gateway.invoke_calls.clear()
 
-    def test_a_code_the_new_pin_turns_off_loses_the_old_pin_and_gets_the_new_one_when_its_back_on(self):
+        self._push_pending(gateway)
+        self._push_requested(gateway)
+
+        self.assertEqual(self._calls(gateway, "clear"), [(12, [2])])
+        self.assertEqual(self._calls(gateway, "set"), [])
+        self.assertEqual(self._lock_codes(gateway, 12), {1: OTHER_PIN})
+        back = self._back(master)
+        self.assertEqual((back.slot_index, back.push_state), (None, DoorCode.PushState.FAILED))
+        self.assertIn(f"{self.BACK} already has this PIN in slot 1 as door code {other.id}", back.last_push_error)
+        self.assertIn("Delete that code, then Retry", back.last_push_error)
+        self.assertEqual(DoorCode.objects.get(id=master.id).push_state, DoorCode.PushState.FAILED)
+
+        # Once the other code is deleted, Retry puts the code back on the Back Door.
+        with patch("locks.views.door_codes.default_zwavejs_gateway", gateway):
+            response = self.client.delete(
+                reverse("door-code-detail", args=[other.id]), {"reauth_password": "pass"}, format="json"
+            )
+        self.assertEqual(response.status_code, 204, response.content)
+        door_codes_uc.retry_push_door_code(
+            code=DoorCode.objects.get(id=master.id), actor_user=self.user, zwavejs=gateway
+        )
+        self.assertEqual(list(self._lock_codes(gateway, 12).values()), [OTHER_PIN])
+        self.assertIsNotNone(self._back(master).slot_index)
+
+    def test_an_off_code_keeps_its_old_pin_on_the_added_lock_until_its_back_on(self):
+        # ADR-0109: a code the Front Door turns off keeps its PIN on the added locks.
         master, gateway = self._master_on_both()
         disabled: set[tuple[int, int]] = {(14, 1)}
         self._disable_slots(gateway, disabled)
@@ -1251,18 +1279,39 @@ class ImportLockChangeTests(_SyncedLocksTestBase):
         self.assertEqual(self._pin(master), self.NEW_PIN)
         gateway.invoke_calls.clear()
         self._push_pending(gateway)
-        # The old PIN comes off the Back Door, and an off code isn't pushed.
-        self.assertEqual(self._calls(gateway, "clear"), [(12, [2])])
-        self.assertEqual(self._calls(gateway, "set"), [])
-        self.assertEqual(self._lock_codes(gateway, 12), {1: OTHER_PIN})
-        self.assertEqual(self._slots(master), {self.FRONT: 1, self.BACK: None})
+        self.assertEqual([c for c in gateway.invoke_calls if c["node_id"] == 12], [])
+        self.assertEqual(self._lock_codes(gateway, 12), {1: OTHER_PIN, 2: self.PIN})
+        self.assertEqual(self._slots(master), {self.FRONT: 1, self.BACK: 2})
 
         disabled.clear()
         self._sync_front(gateway)
         self.assertTrue(DoorCode.objects.get(id=master.id).is_active)
         self._push_pending(gateway)
+        self.assertEqual(self._calls(gateway, "clear"), [(12, [2])])
         self.assertEqual(self._lock_codes(gateway, 12), {1: OTHER_PIN, 2: self.NEW_PIN})
         self.assertEqual(self._slots(master), {self.FRONT: 1, self.BACK: 2})
+
+    def test_an_off_code_keeps_its_window_on_the_added_lock_until_its_back_on(self):
+        master, gateway = self._master_on_both()
+        self._sync_front(gateway, days=self.WEEKDAYS)
+        self._push_requested(gateway)
+        disabled: set[tuple[int, int]] = {(14, 1)}
+        self._disable_slots(gateway, disabled)
+
+        self._sync_front(gateway, days=self.MON_WED)
+
+        self.assertFalse(DoorCode.objects.get(id=master.id).is_active)
+        gateway.invoke_calls.clear()
+        self._push_pending(gateway)
+        self._push_requested(gateway)
+        self.assertEqual([c for c in gateway.invoke_calls if c["node_id"] == 12], [])
+
+        disabled.clear()
+        self._sync_front(gateway, days=self.MON_WED)
+        self._push_pending(gateway)
+        self.assertEqual(self._calls(gateway, "clear"), [(12, [2])])
+        self.assertEqual(sorted(w for _n, _u, w in self._schedule_calls(gateway)), [1, 3])
+        self.assertEqual(self._lock_codes(gateway, 12), {1: OTHER_PIN, 2: self.PIN})
 
     def test_an_unconfirmed_push_to_the_added_lock_has_its_old_pin_cleared(self):
         # Every readback on the Back Door times out, so the PIN is only on record as an attempt in slot 2.
@@ -1281,6 +1330,298 @@ class ImportLockChangeTests(_SyncedLocksTestBase):
         self.assertEqual(self._calls(gateway, "clear"), [(12, [2])])
         self.assertEqual(self._lock_codes(gateway, 12), {1: OTHER_PIN, 2: self.NEW_PIN})
         self.assertEqual(self._slots(master), {self.FRONT: 1, self.BACK: 2})
+
+    # Review of PR #223: races with a push in flight, checks before a clear, the
+    # import lock's say, schedule readbacks and the wording.
+
+    def _change_twice_during_the_re_push(self, *, after_marker: bool) -> None:
+        """The Front Door changes twice, the second sync landing while the first change's push runs.
+
+        That push has read the PIN and not committed the slot yet: before its
+        ``set``, or after its unconfirmed attempt marker (``after_marker``).
+        """
+        latest = "1357"
+        master, gateway = self._master_on_both()
+        self._change_front_pin(gateway, self.NEW_PIN)
+        self._sync_front(gateway)
+
+        def change_again():
+            self._change_front_pin(gateway, latest)
+            self._sync_front(gateway)
+
+        if after_marker:
+            original = lock_push_uc._record_unconfirmed_slot_attempt
+            fired: list[bool] = []
+
+            def record_then_change(**kwargs):
+                marker = original(**kwargs)
+                if kwargs.get("reason") == "PIN set on the lock, slot not saved yet" and not fired:
+                    fired.append(True)
+                    change_again()
+                return marker
+
+            with patch.object(lock_push_uc, "_record_unconfirmed_slot_attempt", record_then_change):
+                self._push_pending(gateway)
+        else:
+            self._before_call(gateway, node_id=12, command_class=99, method_name="set", hook=change_again)
+            self._push_pending(gateway)
+
+        self.assertEqual(self._pin(master), latest)
+        # The slot the stale push filled is kept on record and queued for a clear, not marked pushed.
+        self.assertEqual(self._lock_codes(gateway, 12), {1: OTHER_PIN, 2: self.NEW_PIN})
+        self.assertEqual([f.slot_index for f in lock_push_uc.unresolved_clear_failures(door_code=master)], [2])
+        self.assertNotEqual(self._back(master).push_state, DoorCode.PushState.PUSHED)
+
+        self._push_pending(gateway)
+
+        self.assertEqual(self._lock_codes(gateway, 12), {1: OTHER_PIN, 2: latest})
+        self.assertEqual(self._slots(master), {self.FRONT: 1, self.BACK: 2})
+        self.assertEqual(DoorCode.objects.get(id=master.id).push_state, DoorCode.PushState.PUSHED)
+
+    def test_a_pin_change_landing_before_the_re_push_writes_ends_with_the_newest_pin(self):
+        self._change_twice_during_the_re_push(after_marker=False)
+
+    def test_a_pin_change_landing_after_the_re_push_wrote_ends_with_the_newest_pin(self):
+        self._change_twice_during_the_re_push(after_marker=True)
+
+    def test_a_schedule_change_landing_while_the_last_one_goes_out_isnt_lost(self):
+        master, gateway = self._master_on_both()
+        self._sync_front(gateway, days=self.WEEKDAYS)
+        self._before_call(
+            gateway,
+            node_id=12,
+            command_class=78,
+            method_name="setDailyRepeatingSchedule",
+            hook=lambda: self._sync_front(gateway, days=self.WEEKDAYS, start="09:00:00"),
+        )
+
+        self._push_requested(gateway)
+
+        back = self._back(master)
+        self.assertEqual((back.schedule_pending, back.push_state), (True, DoorCode.PushState.PENDING))
+        gateway.invoke_calls.clear()
+        self._push_requested(gateway)
+        self.assertEqual({c["args"][1]["startHour"] for c in self._schedule_calls_raw(gateway)}, {9})
+        back = self._back(master)
+        self.assertEqual((back.slot_index, back.schedule_pending, back.push_state), (2, False, "pushed"))
+
+    def test_a_slot_holding_a_pin_latchpoint_never_set_is_let_go_not_cleared(self):
+        # Someone typed another PIN into the Back Door's slot 2 (the pin_mismatch case).
+        master, gateway = self._master_on_both()
+        gateway._lock_codes[(12, 2)] = "5555"
+        gateway._cache_codes[(12, 2)] = "5555"
+        self._change_front_pin(gateway, self.NEW_PIN)
+        self._sync_front(gateway)
+        gateway.invoke_calls.clear()
+
+        self._push_pending(gateway)
+
+        self.assertEqual(self._calls(gateway, "clear"), [])
+        self.assertEqual(self._lock_codes(gateway, 12), {1: OTHER_PIN, 2: "5555", 3: self.NEW_PIN})
+        self.assertEqual(self._slots(master), {self.FRONT: 1, self.BACK: 3})
+        self.assertEqual(lock_push_uc.unresolved_clear_failures(door_code=master), [])
+
+    def test_a_back_door_that_masks_its_codes_still_gets_the_old_pin_cleared(self):
+        master, gateway = self._master_on_both()
+        self._mask_reads(gateway, node=12)
+        self._change_front_pin(gateway, self.NEW_PIN)
+        self._sync_front(gateway)
+        gateway.invoke_calls.clear()
+
+        self._push_pending(gateway)
+
+        self.assertEqual(self._calls(gateway, "clear"), [(12, [2])])
+        self.assertEqual(self._lock_codes(gateway, 12), {1: OTHER_PIN, 2: self.NEW_PIN})
+
+    def test_a_clear_stuck_on_the_added_lock_doesnt_freeze_the_front_door(self):
+        master, gateway = self._master_on_both()
+        self._change_front_pin(gateway, self.NEW_PIN)
+        self._sync_front(gateway)
+        gateway.clear_fails_on.add(12)
+        self._push_pending(gateway)
+        # Now a real failure on record, and the code's clear retries are at the cap.
+        self.assertTrue(self._clear_failed_events(master).exists())
+        self.assertTrue(DoorCode.objects.get(id=master.id).last_push_error.startswith("Couldn't clear slot 2"))
+        DoorCode.objects.filter(id=master.id).update(push_attempt_count=lock_push_uc._push_max_attempts())
+
+        # The Front Door still decides the PIN...
+        self._change_front_pin(gateway, "1357")
+        row = self._slot_row(self._sync_front(gateway), 1)
+        self.assertNotEqual(row.action, "skipped")
+        self.assertEqual(self._pin(master), "1357")
+
+        # ...and a PIN deleted there still turns the code off.
+        del gateway._lock_codes[(14, 1)]
+        del gateway._cache_codes[(14, 1)]
+        self._sync_front(gateway)
+        self.assertFalse(DoorCode.objects.get(id=master.id).is_active)
+
+    def test_any_other_clear_on_another_lock_still_holds_the_front_door_back(self):
+        # PR #165: a code latchpoint is clearing somewhere isn't given a PIN or turned on by a stale read.
+        master, gateway = self._master_on_both()
+        lock_push_uc.record_clear_failure(
+            door_code=master,
+            lock_entity_id=self.BACK,
+            slot_index=2,
+            exc=ZwavejsCommandError("driver TimeoutError after 5.0s"),
+            expected_pin=self.PIN,
+        )
+        self._change_front_pin(gateway, self.NEW_PIN)
+
+        row = self._slot_row(self._sync_front(gateway), 1)
+
+        self.assertEqual((row.action, row.warnings[-1]), ("skipped", "clear_outstanding"))
+        self.assertEqual(self._pin(master), self.PIN)
+
+    def test_a_schedule_from_the_value_cache_only_goes_out_once_the_lock_confirms_it(self):
+        master, gateway = self._master_on_both()
+        live: list = [None]
+        self._front_schedule_from_cache(gateway, live)
+
+        # The cache says Mon-Fri, the lock has no schedule.
+        row = self._slot_row(self._sync_front(gateway, days=self.WEEKDAYS), 1)
+        self.assertIn("schedule_change_unconfirmed", row.warnings)
+        self.assertNotIn("sent_to_other_locks", row.warnings)
+        self.assertIsNone(DoorCode.objects.get(id=master.id).days_of_week)
+        self.assertFalse(self._back(master).schedule_pending)
+
+        live[0] = (self.WEEKDAYS, (8, 0), (18, 0))
+        row = self._slot_row(self._sync_front(gateway, days=self.WEEKDAYS), 1)
+        self.assertIn("sent_to_other_locks", row.warnings)
+        self.assertEqual(DoorCode.objects.get(id=master.id).days_of_week, self.WEEKDAYS)
+        self.assertTrue(self._back(master).schedule_pending)
+        self._push_requested(gateway)
+
+        # A schedule the cache alone says is gone is never sent on either.
+        row = self._slot_row(self._sync_front(gateway, days=None), 1)
+        self.assertIn("schedule_change_unconfirmed", row.warnings)
+        self.assertEqual(DoorCode.objects.get(id=master.id).days_of_week, self.WEEKDAYS)
+        self.assertEqual(lock_push_uc.unresolved_clear_failures(door_code=master), [])
+
+        live[0] = None
+        self._sync_front(gateway, days=None)
+        self.assertIsNone(DoorCode.objects.get(id=master.id).days_of_week)
+        self.assertEqual([f.slot_index for f in lock_push_uc.unresolved_clear_failures(door_code=master)], [2])
+
+    def test_the_scheduler_is_woken_once_the_sync_commits(self):
+        master, gateway = self._master_on_both()
+        self._change_front_pin(gateway, self.NEW_PIN)
+
+        with patch("scheduler.runner.wake_task") as wake, patch("alarm.dispatcher.notify_entities_changed"):
+            with self.captureOnCommitCallbacks() as callbacks:
+                self._sync(gateway, self.FRONT)
+                self.assertEqual(wake.call_count, 0)
+            self.assertEqual(wake.call_count, 0)
+            for callback in callbacks:
+                callback()
+        self.assertIn("push_pending_door_codes", [call.args[0] for call in wake.call_args_list])
+
+    def test_a_code_at_the_clear_retry_cap_gets_a_fresh_start_for_the_change(self):
+        master, gateway = self._master_on_both()
+        DoorCode.objects.filter(id=master.id).update(push_attempt_count=lock_push_uc._push_max_attempts())
+        self._change_front_pin(gateway, self.NEW_PIN)
+
+        self._sync_front(gateway)
+        self._push_pending(gateway)
+
+        self.assertEqual(self._calls(gateway, "clear"), [(12, [2])])
+        self.assertEqual(self._lock_codes(gateway, 12), {1: OTHER_PIN, 2: self.NEW_PIN})
+
+    def test_sent_to_other_locks_only_shows_when_something_was_queued(self):
+        master, gateway = self._master_on_both()
+        self._change_front_pin(gateway, self.NEW_PIN)
+        self.assertIn("sent_to_other_locks", self._slot_row(self._sync_front(gateway), 1).warnings)
+
+        # The Back Door's clear is still queued and pushes whatever the PIN is by then.
+        self._change_front_pin(gateway, "1357")
+        row = self._slot_row(self._sync_front(gateway), 1)
+        self.assertEqual(self._pin(master), "1357")
+        self.assertNotIn("sent_to_other_locks", row.warnings)
+        self._push_pending(gateway)
+        self.assertEqual(self._lock_codes(gateway, 12), {1: OTHER_PIN, 2: "1357"})
+
+    def _clear_failed_events(self, code: DoorCode):
+        return DoorCodeEvent.objects.filter(
+            door_code=code, event_type=DoorCodeEvent.EventType.CODE_FAILED, metadata__action="clear_failed"
+        )
+
+    @staticmethod
+    def _schedule_calls_raw(gateway: ClearFailingGateway) -> list[dict]:
+        return [
+            c
+            for c in gateway.invoke_calls
+            if c["command_class"] == 78 and c["method_name"] == "setDailyRepeatingSchedule"
+        ]
+
+    @staticmethod
+    def _before_call(gateway: ClearFailingGateway, *, node_id: int, command_class: int, method_name: str, hook) -> None:
+        """Run ``hook()`` once, right before the first matching ``invoke_cc_api`` call goes out."""
+        invoke = gateway.invoke_cc_api
+        fired: list[bool] = []
+
+        def invoke_cc_api(**kwargs):
+            if (kwargs["node_id"], kwargs["command_class"], kwargs["method_name"]) == (
+                node_id,
+                command_class,
+                method_name,
+            ) and not fired:
+                fired.append(True)
+                hook()
+            return invoke(**kwargs)
+
+        gateway.invoke_cc_api = invoke_cc_api
+
+    @staticmethod
+    def _mask_reads(gateway: ClearFailingGateway, *, node: int) -> None:
+        """Make ``node`` hide its codes, in the value cache and in a live ``get``."""
+        get_value, handle = gateway.node_get_value, gateway._handle_user_code_call
+
+        def node_get_value(*, node_id: int, value_id: dict, timeout_seconds: float = 5.0):
+            value = get_value(node_id=node_id, value_id=value_id, timeout_seconds=timeout_seconds)
+            return "**********" if node_id == node and value_id.get("property") == "userCode" and value else value
+
+        def handle_user_code_call(*, node_id: int, method_name: str, args: list):
+            response = handle(node_id=node_id, method_name=method_name, args=args)
+            if method_name == "get" and node_id == node and response.get("userCode"):
+                return {**response, "userCode": "**********"}
+            return response
+
+        gateway.node_get_value = node_get_value
+        gateway._handle_user_code_call = handle_user_code_call
+
+    @staticmethod
+    def _front_schedule_from_cache(gateway: ClearFailingGateway, live: list) -> None:
+        """The Front Door exposes CC 78 values, so a sync reads its schedules from the value cache.
+
+        A live CC 78 read of its slot 1 answers from ``live[0]``, ``(days, (h, m), (h, m))`` or ``None``.
+        """
+        value_ids, invoke = gateway.node_get_defined_value_ids, gateway.invoke_cc_api
+
+        def node_get_defined_value_ids(*, node_id: int, timeout_seconds: float = 5.0):
+            ids = value_ids(node_id=node_id, timeout_seconds=timeout_seconds)
+            return [*ids, {"commandClass": 78, "property": "numWeekDaySlots"}] if node_id == 14 else ids
+
+        def invoke_cc_api(**kwargs):
+            if (kwargs["node_id"], kwargs["command_class"]) != (14, 78):
+                return invoke(**kwargs)
+            if kwargs["method_name"] == "getNumSlots":
+                return {"numDailyRepeatingSlots": 7}
+            entry, schedule = kwargs["args"][0], live[0]
+            bit = int(entry["slotId"]) - 1
+            if entry["userId"] != 1 or schedule is None or not schedule[0] & (1 << bit):
+                return {}
+            days, (start_h, start_m), (end_h, end_m) = schedule
+            minutes = (end_h * 60 + end_m) - (start_h * 60 + start_m)
+            return {
+                "weekdays": [lock_push_uc._WEEKDAY_BIT_TO_ZWAVE[bit]],
+                "startHour": start_h,
+                "startMinute": start_m,
+                "durationHour": minutes // 60,
+                "durationMinute": minutes % 60,
+            }
+
+        gateway.node_get_defined_value_ids = node_get_defined_value_ids
+        gateway.invoke_cc_api = invoke_cc_api
 
     @staticmethod
     def _disable_slots(gateway: ClearFailingGateway, disabled: set[tuple[int, int]]) -> None:

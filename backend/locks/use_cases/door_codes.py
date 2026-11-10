@@ -1375,8 +1375,9 @@ def _delete_door_code_locked(
     if zwavejs is not None and manual:
         from locks.use_cases.lock_push import retry_failed_slot_clears
 
-        # Clears an earlier update couldn't finish, including a dropped lock's.
-        transient_failures.extend(retry_failed_slot_clears(door_code=code, zwavejs=zwavejs))
+        # Clears an earlier update couldn't finish, including a dropped lock's,
+        # and the ones lock sync queued for an off code (issue #220).
+        transient_failures.extend(retry_failed_slot_clears(door_code=code, zwavejs=zwavejs, include_waiting=True))
 
     cleared: list[dict[str, object]] = []
     has_pushed_slots = any(a.slot_index is not None for a in DoorCodeLockAssignment.objects.filter(door_code=code))

@@ -109,11 +109,17 @@ describe('LockConfigSyncCard', () => {
       slotOf({ slotIndex: 1, action: 'updated', warnings: ['sent_to_other_locks'] }),
       slotOf({ slotIndex: 2, action: 'unchanged', warnings: ['pin_change_unconfirmed'] }),
       slotOf({ slotIndex: 3, action: 'updated', warnings: ['pin_held_on_other_lock'] }),
+      slotOf({ slotIndex: 4, action: 'unchanged', warnings: ['schedule_change_unconfirmed'] }),
     ])
 
     expect(screen.getByText('Sending the change to the other locks')).toHaveAttribute('title', 'sent_to_other_locks')
     expect(screen.getByText("Lock didn't confirm the new PIN, keeping the old one")).toBeTruthy()
-    expect(screen.getByText('New PIN is already another code on another lock, not sent there')).toBeTruthy()
+    expect(
+      screen.getByText(
+        'New PIN is already another code on another lock, so this code is off that lock until that code is removed',
+      ),
+    ).toBeTruthy()
+    expect(screen.getByText("Lock didn't confirm the new schedule, keeping the old one")).toBeTruthy()
   })
 
   it('names the door codes a duplicate PIN points at', async () => {

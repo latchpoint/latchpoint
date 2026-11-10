@@ -102,13 +102,13 @@ def _clear_outstanding_on(*, door_code: DoorCode, lock_entity_id: str, slot_inde
 
 def _codes_with_clear_outstanding(*, lock_entity_ids: list[str], slot_index: int) -> list[_SlotMatch]:
     """Codes that no longer track this slot but whose clear of it hasn't gone through."""
-    from locks.use_cases.lock_push import _CLEAR_FAILED_ACTION
+    from locks.use_cases.lock_push import _CLEAR_FAILED_ACTION, CLEAR_MARKER_EVENT_TYPES
 
     candidates = (
         DoorCodeEvent.objects.filter(
             lock_entity_id__in=lock_entity_ids,
             door_code__isnull=False,
-            event_type=DoorCodeEvent.EventType.CODE_FAILED,
+            event_type__in=CLEAR_MARKER_EVENT_TYPES,
             metadata__action=_CLEAR_FAILED_ACTION,
         )
         .values_list("door_code_id", "lock_entity_id")

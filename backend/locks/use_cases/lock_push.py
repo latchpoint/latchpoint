@@ -1211,6 +1211,15 @@ _CLEAR_FAILED_ACTION = "clear_failed"
 _CLEAR_RESOLVED_ACTION = "clear_resolved"
 # The marker actions :func:`_fold_unsettled_attempts` reads for a code's lock.
 _ATTEMPT_SETTLING_ACTIONS = frozenset({_UNCONFIRMED_RESOLVED_ACTION, _CLEAR_FAILED_ACTION, _CLEAR_RESOLVED_ACTION})
+# Metadata flags on a ``clear_failed`` event (issue #220). ``planned``: a clear
+# queued for the scheduler that hasn't been tried yet, recorded as a
+# ``code_updated`` event rather than a ``code_failed`` one (its first failure
+# writes a ``code_failed`` without the flag). ``repush``: one queued so the code
+# is pushed again with a new PIN or schedule (:func:`queue_clear_and_repush`).
+_PLANNED_KEY = "planned"
+_REPUSH_KEY = "repush"
+# The event types a ``clear_failed`` or ``push_unconfirmed`` marker can have.
+CLEAR_MARKER_EVENT_TYPES = (DoorCodeEvent.EventType.CODE_FAILED, DoorCodeEvent.EventType.CODE_UPDATED)
 
 
 @dataclass(frozen=True)
@@ -1228,7 +1237,12 @@ class ClearFailure:
     still counts a masked readback as this code's after a later push to that lock
     has closed the attempt's window. Events from before it was stored read as
     ``False``. ``slot_available`` is carried over from a ``slot_available``
-    attempt the same way (issues #128, #152).
+    attempt the same way (issues #128, #152). ``planned`` is a clear queued for
+    the scheduler that hasn't been tried yet, and ``repush`` one queued so the
+    code is pushed there again with a new PIN or schedule (issue #220,
+    :func:`queue_clear_and_repush`). A ``repush`` slot is read back before it's
+    cleared even when the code tracks it, waits while the code is off, and
+    keeps the flag through failures.
     """
 
     lock_entity_id: str
@@ -1239,6 +1253,8 @@ class ClearFailure:
     permanent: bool = False
     slot_verified: bool = False
     slot_available: bool = False
+    planned: bool = False
+    repush: bool = False
     expected_pin: str | None = field(default=None, repr=False, compare=False)
     event_id: int | None = field(default=None, compare=False)
 
@@ -1296,6 +1312,8 @@ def _fold_clear_events(events) -> list[ClearFailure]:
                 unconfirmed=bool(metadata.get("unconfirmed")),
                 slot_verified=bool(metadata.get(_SLOT_VERIFIED_KEY)),
                 slot_available=bool(metadata.get(_SLOT_AVAILABLE_KEY)),
+                planned=bool(metadata.get(_PLANNED_KEY)),
+                repush=bool(metadata.get(_REPUSH_KEY)),
                 expected_pin=_decrypt_expected_pin(metadata),
                 event_id=event_id,
             )
@@ -1352,11 +1370,12 @@ def _unresolved_clear_failure(*, door_code: DoorCode, lock_entity_id: str, slot_
 
 
 def _create_clear_failed_event(*, door_code: DoorCode, failure: ClearFailure) -> None:
+    """Record ``failure``, a ``code_failed`` event unless it's only ``planned`` (``code_updated``, issue #220)."""
     DoorCodeEvent.objects.create(
         door_code=door_code,
         user=door_code.user,
         lock_entity_id=failure.lock_entity_id,
-        event_type=DoorCodeEvent.EventType.CODE_FAILED,
+        event_type=DoorCodeEvent.EventType.CODE_UPDATED if failure.planned else DoorCodeEvent.EventType.CODE_FAILED,
         metadata={
             "action": _CLEAR_FAILED_ACTION,
             "slot_index": int(failure.slot_index),
@@ -1365,6 +1384,8 @@ def _create_clear_failed_event(*, door_code: DoorCode, failure: ClearFailure) ->
             **({"unconfirmed": True} if failure.unconfirmed else {}),
             **({_SLOT_VERIFIED_KEY: True} if failure.slot_verified else {}),
             **({_SLOT_AVAILABLE_KEY: True} if failure.slot_available else {}),
+            **({_PLANNED_KEY: True} if failure.planned else {}),
+            **({_REPUSH_KEY: True} if failure.repush else {}),
             **_encrypt_expected_pin(failure.expected_pin),
         },
     )
@@ -1422,12 +1443,14 @@ def record_clear_failure(
 
     current = _unresolved_clear_failure(door_code=door_code, lock_entity_id=lock_entity_id, slot_index=slot_index)
     stored = _stored_failure(current)
+    repush = False
     if current is not None:
         removing = removing or current.removing
         unconfirmed = unconfirmed and current.unconfirmed
         expected_pin = current.expected_pin or expected_pin
         slot_verified = slot_verified or current.slot_verified
         slot_available = slot_available or current.slot_available
+        repush = current.repush
     slot_verified = unconfirmed and slot_verified
     slot_available = unconfirmed and slot_available
     failure = ClearFailure(
@@ -1438,19 +1461,23 @@ def record_clear_failure(
         unconfirmed=unconfirmed,
         slot_verified=slot_verified,
         slot_available=slot_available,
+        repush=repush,
         expected_pin=expected_pin,
     )
+    # A planned clear that's now failed always gets a code_failed event of its own (issue #220).
     if stored is None or (
         stored.removing,
         stored.unconfirmed,
         stored.slot_verified,
         stored.slot_available,
+        stored.planned,
         bool(stored.expected_pin),
     ) != (
         removing,
         unconfirmed,
         slot_verified,
         slot_available,
+        False,
         bool(expected_pin),
     ):
         _create_clear_failed_event(door_code=door_code, failure=failure)
@@ -1474,6 +1501,8 @@ def cancel_pending_removal(*, door_code: DoorCode, lock_entity_id: str) -> None:
                     unconfirmed=failure.unconfirmed,
                     slot_verified=failure.slot_verified,
                     slot_available=failure.slot_available,
+                    planned=failure.planned,
+                    repush=failure.repush,
                     expected_pin=failure.expected_pin,
                 ),
             )
@@ -1535,9 +1564,99 @@ def forget_cleared_slot(
 
 def clear_failures_message(failures: list[ClearFailure]) -> str:
     return "; ".join(
-        f"Couldn't clear slot {f.slot_index} on {f.lock_entity_id}, it may still hold the PIN ({f.reason})"
+        f"Waiting to clear slot {f.slot_index} on {f.lock_entity_id} before sending the {f.reason}"
+        if f.planned
+        else f"Couldn't clear slot {f.slot_index} on {f.lock_entity_id}, it may still hold the PIN ({f.reason})"
         for f in failures
     )
+
+
+# ``reason`` of a planned repush clear, read as "... before sending the <reason>" (issue #220).
+REPUSH_FOR_PIN = "new PIN"
+REPUSH_FOR_SCHEDULE = "new schedule"
+
+
+def schedule_only_grows(*, old_days: int | None, new_days: int | None) -> bool:
+    """Whether sending the ``new_days`` schedule over the ``old_days`` one leaves nothing of the old behind.
+
+    The schedule push writes one CC 78 entry per enabled weekday, in a slot of
+    its own per weekday (:func:`_push_daily_repeating_schedule`), so it
+    overwrites every day it keeps and adds new ones but never takes one away.
+    That's true when the new schedule has every day the old one had, including
+    going from no schedule to one, and false when it drops a day or goes away.
+    """
+    return new_days is not None and not (int(old_days or 0) & ~int(new_days))
+
+
+def pin_held_by_another_code(
+    *, door_code: DoorCode, lock_entity_id: str, pin: str | None = None
+) -> DoorCodeLockAssignment | None:
+    """Another code's assignment on this lock that has ``pin`` (``door_code``'s own by default), or ``None``.
+
+    That's a code holding it in a slot there, or one active there and waiting
+    for its push, the rule turning a code on and adding a lock use (issue #188).
+    """
+    pin = pin if pin is not None else decrypt_pin_or_none(door_code)
+    if not pin:
+        return None
+    others = (
+        DoorCodeLockAssignment.objects.select_related("door_code")
+        .filter(lock_entity_id=lock_entity_id)
+        .exclude(door_code=door_code)
+        .order_by("door_code_id")
+    )
+    for assignment in others:
+        if assignment.slot_index is None and not assignment.door_code.is_active:
+            continue
+        if decrypt_pin_or_none(assignment.door_code) == pin:
+            return assignment
+    return None
+
+
+def held_pin_error(assignment: DoorCodeLockAssignment) -> str:
+    """The lock error for a code kept off a lock because ``assignment``'s code has its PIN there. No PIN in it."""
+    other = assignment.door_code
+    name = f'door code {other.id} ("{other.label}")' if other.label else f"door code {other.id}"
+    where = f"in slot {assignment.slot_index}" if assignment.slot_index is not None else "waiting to be pushed"
+    return sanitize_push_error_for_storage(
+        f"{assignment.lock_entity_id} already has this PIN {where} as {name}, so this code is off that lock. "
+        "Delete that code, then Retry."
+    )
+
+
+def hold_push_for_held_pin(*, door_code: DoorCode, lock_entity_id: str) -> bool:
+    """Fail the code's slotless lock when another code has its PIN there, so nothing pushes a second copy (issue #220).
+
+    The lock needs a human: delete the other code, then Retry, which pushes it.
+    Returns whether it was held.
+    """
+    held = pin_held_by_another_code(door_code=door_code, lock_entity_id=lock_entity_id)
+    if held is None:
+        return False
+    with transaction.atomic():
+        _lock_code_row(door_code.id)
+        DoorCodeLockAssignment.objects.filter(
+            door_code=door_code, lock_entity_id=lock_entity_id, slot_index__isnull=True
+        ).update(push_state=DoorCode.PushState.FAILED, push_attempt_count=0, last_push_error=held_pin_error(held))
+    return True
+
+
+def _record_planned_repush(
+    *, door_code: DoorCode, lock_entity_id: str, slot_index: int, expected_pin: str | None, reason: str
+) -> None:
+    """Record a planned repush clear of a slot the code tracks, whatever's on record for it, and wake the task."""
+    _create_clear_failed_event(
+        door_code=door_code,
+        failure=ClearFailure(
+            lock_entity_id=lock_entity_id,
+            slot_index=slot_index,
+            reason=reason,
+            planned=True,
+            repush=True,
+            expected_pin=expected_pin,
+        ),
+    )
+    transaction.on_commit(_wake_pending_push_task, robust=True)
 
 
 def queue_clear_and_repush(
@@ -1549,27 +1668,38 @@ def queue_clear_and_repush(
     lock it was imported from while it holds only that lock's ``lock_sync:``
     lock, so it can't clear another lock's slot itself the way an edit does
     (:func:`locks.use_cases.door_codes._update_door_code_locked`). The slot the
-    code tracks here gets a ``clear_failed`` with ``reason`` and ``old_pin``,
-    the state an edit leaves when its clear doesn't go through. The slot isn't
-    pushed to meanwhile, and :data:`PUSH_PENDING_TASK`, woken once the
-    caller's transaction commits, clears it, forgets it and pushes the code's
-    current PIN and schedule (or nothing, for a code that's off). With
-    ``pin_changed`` the slots an unconfirmed push may have left ``old_pin`` in
-    are recorded too, as ``unconfirmed``, so they're read back before they're
-    cleared, like :func:`clear_unconfirmed_slots_holding_pin` does. A slot with
-    a clear already on record is left as it is. Returns whether anything was recorded.
+    code tracks here gets a ``planned`` ``repush`` clear with ``reason``
+    (:data:`REPUSH_FOR_PIN` or :data:`REPUSH_FOR_SCHEDULE`) and ``old_pin``.
+    The slot isn't pushed to meanwhile, and :data:`PUSH_PENDING_TASK`, woken
+    once the caller's transaction commits, reads it back, clears it when it
+    still holds ``old_pin`` (lets go of it when it holds another PIN), and
+    pushes the code's current PIN and schedule, all once the code is on
+    (:func:`_retry_failed_slot_clear`). With ``pin_changed`` the slots an
+    unconfirmed push may have left ``old_pin`` in are recorded too, as
+    ``unconfirmed``, so they're read back before they're cleared, like
+    :func:`clear_unconfirmed_slots_holding_pin` does. A slot with a clear
+    already on record is left as it is, except an unconfirmed one on the
+    tracked slot, which the retry would settle as tracked without a clear.
+    Returns whether anything was recorded.
     """
     tracked = (
         DoorCodeLockAssignment.objects.filter(door_code=door_code, lock_entity_id=lock_entity_id)
         .values_list("slot_index", flat=True)
         .first()
     )
-    reason = sanitize_push_error_for_storage(reason)[:200]
-    failures: list[ClearFailure] = []
+    recorded = False
     if tracked is not None:
-        failures.append(
-            ClearFailure(lock_entity_id=lock_entity_id, slot_index=int(tracked), reason=reason, expected_pin=old_pin)
-        )
+        current = _unresolved_clear_failure(door_code=door_code, lock_entity_id=lock_entity_id, slot_index=tracked)
+        if current is None or current.unconfirmed:
+            _record_planned_repush(
+                door_code=door_code,
+                lock_entity_id=lock_entity_id,
+                slot_index=int(tracked),
+                expected_pin=old_pin,
+                reason=reason,
+            )
+            recorded = True
+    failures: list[ClearFailure] = []
     if pin_changed:
         verified = _verified_attempt_slots(door_code=door_code, lock_entity_id=lock_entity_id)
         available = _available_attempt_slots(door_code=door_code, lock_entity_id=lock_entity_id)
@@ -1579,7 +1709,7 @@ def queue_clear_and_repush(
             claimed_slots=_claimed_slots(lock_entity_id=lock_entity_id, door_code=door_code),
         )
         for slot_index, attempted_pin in attempts.items():
-            # The tracked slot is cleared as is above; an unconfirmed failure there would be settled as tracked.
+            # The tracked slot is handled above; an unconfirmed failure there would be settled as tracked.
             if slot_index == tracked or not (attempted_pin or old_pin):
                 continue
             failures.append(
@@ -1590,17 +1720,17 @@ def queue_clear_and_repush(
                     unconfirmed=True,
                     slot_verified=slot_index in verified,
                     slot_available=slot_index in available,
+                    planned=True,
+                    repush=True,
                     expected_pin=attempted_pin or old_pin,
                 )
             )
-    recorded = False
     for failure in failures:
         if _unresolved_clear_failure(door_code=door_code, lock_entity_id=lock_entity_id, slot_index=failure.slot_index):
             continue
         _create_clear_failed_event(door_code=door_code, failure=failure)
-        recorded = True
-    if recorded:
         transaction.on_commit(_wake_pending_push_task, robust=True)
+        recorded = True
     return recorded
 
 
@@ -2026,7 +2156,15 @@ def _retry_failed_slot_clear(
     zwavejs: ZwavejsGateway,
     timeout_seconds: float,
 ) -> ClearFailure | None:
-    """One clear for :func:`retry_failed_slot_clears`; returns the failure if it's still failing."""
+    """One clear for :func:`retry_failed_slot_clears`; returns the failure if it's still failing.
+
+    A ``repush`` clear (issue #220) reads the slot back first even when the code
+    tracks it: it's only cleared when it still holds the PIN it was queued for
+    (or a masked one), and a slot holding another PIN or nothing is let go so
+    the code is pushed into a free slot. Either way, once the lock has no slot
+    for the code, a lock where another code has the code's PIN is failed
+    instead of pushed (:func:`hold_push_for_held_pin`).
+    """
     lock_entity_id, slot_index = failure.lock_entity_id, failure.slot_index
     tracked_here = DoorCodeLockAssignment.objects.filter(
         door_code=door_code, lock_entity_id=lock_entity_id, slot_index=slot_index
@@ -2038,8 +2176,36 @@ def _retry_failed_slot_clear(
             door_code=door_code, lock_entity_id=lock_entity_id, slot_index=slot_index, outcome="tracked"
         )
         return None
+
+    def let_go(*, outcome: str, slot_empty: bool = False) -> None:
+        deleted = forget_cleared_slot(
+            door_code=door_code,
+            lock_entity_id=lock_entity_id,
+            slot_index=slot_index,
+            outcome=outcome,
+            slot_empty=slot_empty,
+        )
+        if failure.repush and not deleted:
+            hold_push_for_held_pin(door_code=door_code, lock_entity_id=lock_entity_id)
+
     try:
-        if not tracked_here:
+        if failure.repush and tracked_here:
+            verdict = _read_back_failed_slot(
+                zwavejs=zwavejs,
+                lock_entity_id=lock_entity_id,
+                slot_index=slot_index,
+                pin=failure.expected_pin or decrypt_pin_or_none(door_code),
+                timeout_seconds=timeout_seconds,
+                # Latchpoint pushed this slot, so a code the lock won't show is the one it pushed.
+                masked_counts=True,
+                disabled_masked_counts=True,
+            )
+            if verdict != _HOLDS_OURS:
+                # Someone else's PIN (typed in at the keypad, say) or nothing: not
+                # this code's to clear. The slot is let go and the code pushed into a free one.
+                let_go(outcome="not_holding_pin", slot_empty=verdict == _READ_BACK_EMPTY)
+                return None
+        elif not tracked_here:
             verdict = _read_back_failed_slot(
                 zwavejs=zwavejs,
                 lock_entity_id=lock_entity_id,
@@ -2052,13 +2218,7 @@ def _retry_failed_slot_clear(
                 disabled_masked_counts=failure.unconfirmed and failure.slot_verified,
             )
             if verdict != _HOLDS_OURS:
-                forget_cleared_slot(
-                    door_code=door_code,
-                    lock_entity_id=lock_entity_id,
-                    slot_index=slot_index,
-                    outcome="not_holding_pin",
-                    slot_empty=verdict == _READ_BACK_EMPTY,
-                )
+                let_go(outcome="not_holding_pin", slot_empty=verdict == _READ_BACK_EMPTY)
                 return None
             # Checked again after the readback, right before the clear: a slot
             # another code took meanwhile holds its PIN now, not this one's.
@@ -2091,11 +2251,7 @@ def _retry_failed_slot_clear(
         if seen_empty:
             # Still retried, but the failure's masked-slot tags stop counting (PR #193 review).
             _record_slot_read_back_empty(door_code=door_code, lock_entity_id=lock_entity_id, slot_index=slot_index)
-            _strip_dropped_trust(
-                door_code=door_code,
-                failure=replace(failure, reason=_clear_error_reason(exc), slot_verified=False, slot_available=False),
-            )
-        return ClearFailure(
+        still = ClearFailure(
             lock_entity_id=lock_entity_id,
             slot_index=slot_index,
             reason=_clear_error_reason(exc),
@@ -2103,8 +2259,19 @@ def _retry_failed_slot_clear(
             unconfirmed=failure.unconfirmed,
             slot_verified=failure.slot_verified and not seen_empty,
             slot_available=failure.slot_available and not seen_empty,
+            repush=failure.repush,
+            expected_pin=failure.expected_pin,
         )
-    forget_cleared_slot(door_code=door_code, lock_entity_id=lock_entity_id, slot_index=slot_index, outcome="cleared")
+        if failure.planned:
+            # Its first try failed, so now it's a failure on record (issue #220).
+            _create_clear_failed_event(door_code=door_code, failure=still)
+        elif seen_empty:
+            _strip_dropped_trust(
+                door_code=door_code,
+                failure=replace(failure, reason=_clear_error_reason(exc), slot_verified=False, slot_available=False),
+            )
+        return still
+    let_go(outcome="cleared")
     return None
 
 
@@ -2125,8 +2292,14 @@ def retry_failed_slot_clears(
     zwavejs: ZwavejsGateway,
     timeout_seconds: float = 5.0,
     budget_seconds: float | None = None,
+    include_waiting: bool = False,
 ) -> list[ClearFailure]:
     """Retry the clears recorded by :func:`record_clear_failure`. Returns the ones still failing.
+
+    A ``repush`` clear (issue #220) waits while the code is off, since an off
+    synced code keeps its PIN on the locks added to it (ADR-0109), and it's
+    neither tried nor returned then. ``include_waiting`` tries those too, for
+    a delete, which has to clear everything.
 
     ``budget_seconds`` bounds the whole call, lock waits and Z-Wave JS calls
     together (:class:`BudgetedGateway`), for Retry's request (issue #124). A
@@ -2164,8 +2337,11 @@ def retry_failed_slot_clears(
     for lock_entity_id in sorted({f.lock_entity_id for f in failures}):
         try:
             with hold_lock_sync([lock_entity_id], deadline=deadline):
+                active = DoorCode.objects.filter(id=door_code.id).values_list("is_active", flat=True).first()
                 for failure in unresolved_clear_failures(door_code=door_code):
                     if failure.lock_entity_id != lock_entity_id:
+                        continue
+                    if failure.repush and not failure.removing and not active and not include_waiting:
                         continue
                     still = _retry_failed_slot_clear(
                         door_code=door_code, failure=failure, zwavejs=zwavejs, timeout_seconds=timeout_seconds
@@ -3294,7 +3470,7 @@ def check_attempt_slots_sync_saw_empty(
             for value in DoorCodeEvent.objects.filter(
                 lock_entity_id=lock_entity_id,
                 door_code__isnull=False,
-                event_type=DoorCodeEvent.EventType.CODE_FAILED,
+                event_type__in=CLEAR_MARKER_EVENT_TYPES,
                 metadata__action__in=[_CLEAR_FAILED_ACTION, _UNCONFIRMED_PUSH_ACTION],
             ).values_list("metadata__slot_index", flat=True)
         )
@@ -3363,7 +3539,7 @@ def _unconfirmed_records_on_slot(*, lock_entity_id: str, slot_index: int) -> lis
         DoorCodeEvent.objects.filter(
             lock_entity_id=lock_entity_id,
             door_code__isnull=False,
-            event_type=DoorCodeEvent.EventType.CODE_FAILED,
+            event_type__in=CLEAR_MARKER_EVENT_TYPES,
             metadata__action__in=[_CLEAR_FAILED_ACTION, _UNCONFIRMED_PUSH_ACTION],
             metadata__slot_index=int(slot_index),
         ).values_list("door_code_id", flat=True)
@@ -3414,7 +3590,7 @@ def retained_marker_event_ids(*, older_than: datetime) -> set[int]:
     """
     old = DoorCodeEvent.objects.filter(created_at__lt=older_than, door_code__isnull=False)
     old_markers = old.filter(
-        event_type=DoorCodeEvent.EventType.CODE_FAILED,
+        event_type__in=CLEAR_MARKER_EVENT_TYPES,
         metadata__action__in=[_CLEAR_FAILED_ACTION, _UNCONFIRMED_PUSH_ACTION],
     )
     old_empty_markers = old.filter(
@@ -4187,6 +4363,7 @@ def push_door_code_to_lock(
             slot_verified=True,
         )
         before_stamp = _snapshot_push_fields(door_code)
+        pin_moved_on = False
         try:
             # One transaction for the slot, the lock's state, its event and the
             # code's rollup (issue #130), so a process that dies between them
@@ -4197,13 +4374,31 @@ def push_door_code_to_lock(
                 # The code row before its assignment rows, the same order every
                 # other writer of both takes, so two of them can't deadlock.
                 _stamp_push_attempt(door_code=door_code, at=pushed_at)
+                # Read again under the code row. A lock sync of the lock a synced
+                # code was imported from holds only that lock, so it can give the
+                # code a new PIN or schedule while this push runs (issue #220).
+                current = (
+                    DoorCode.objects.filter(id=door_code.id)
+                    .values("encrypted_pin", "days_of_week", "window_start", "window_end")
+                    .first()
+                )
+                if current is not None:
+                    pin_moved_on = decrypt_pin_or_none(DoorCode(encrypted_pin=current["encrypted_pin"])) != pin
+                    if not pin_moved_on:
+                        # Nothing of the schedule is on the lock yet, so step 2 sends the current one.
+                        door_code.days_of_week = current["days_of_week"]
+                        door_code.window_start = current["window_start"]
+                        door_code.window_end = current["window_end"]
+                        has_schedule = bool(door_code.days_of_week)
                 DoorCodeLockAssignment.objects.filter(door_code=door_code, lock_entity_id=lock_entity_id).update(
                     slot_index=slot_index,
-                    push_state=DoorCode.PushState.PENDING if has_schedule else DoorCode.PushState.PUSHED,
+                    push_state=DoorCode.PushState.PENDING
+                    if has_schedule or pin_moved_on
+                    else DoorCode.PushState.PUSHED,
                     push_attempt_count=0,
                     last_push_attempt_at=pushed_at,
                     last_push_error="",
-                    schedule_pending=has_schedule,
+                    schedule_pending=has_schedule and not pin_moved_on,
                 )
                 DoorCodeEvent.objects.create(
                     door_code=door_code,
@@ -4214,11 +4409,23 @@ def push_door_code_to_lock(
                         "action": "pushed",
                         "slot_index": slot_index,
                         "schedule_applied": False,
-                        **({"schedule_pending": True} if has_schedule else {}),
+                        **({"schedule_pending": True} if has_schedule and not pin_moved_on else {}),
+                        **({"superseded": True} if pin_moved_on else {}),
                         **({"adopted_existing_slot": True} if adopted_existing_slot else {}),
                         **({"resent_to_attempted_slot": True} if resend_to_attempted_slot else {}),
                     },
                 )
+                if pin_moved_on:
+                    # The slot holds a PIN the code no longer has. It's kept on
+                    # record and queued for a clear, then the code is pushed again,
+                    # instead of being marked pushed with the old PIN.
+                    _record_planned_repush(
+                        door_code=door_code,
+                        lock_entity_id=lock_entity_id,
+                        slot_index=slot_index,
+                        expected_pin=pin,
+                        reason=REPUSH_FOR_PIN,
+                    )
                 pending_marker.delete()
                 refresh_push_state(door_code=door_code)
         except BaseException as exc:
@@ -4236,6 +4443,8 @@ def push_door_code_to_lock(
                 door_code=door_code, lock_entity_id=lock_entity_id, slot_index=slot_index
             ) from exc
 
+        if pin_moved_on:
+            raise LockUnreachable("The code's PIN changed while it was being pushed; it goes out again after a clear.")
         weekdays_pushed: list[int] = []
         if has_schedule:
             weekdays_pushed = _push_schedule_to_slot(
@@ -4364,20 +4573,63 @@ def _push_schedule_to_slot(
             ).update(push_requested_at=F("last_push_attempt_at") + timedelta(microseconds=1))
         raise LockUnreachable("Lock did not accept the schedule in time; will retry.") from exc
 
+    sent = (door_code.days_of_week, door_code.window_start, door_code.window_end)
     before_stamp = _snapshot_push_fields(door_code)
     try:
         with transaction.atomic():
             pushed_at = django_timezone.now()
             _stamp_push_attempt(door_code=door_code, at=pushed_at)
-            DoorCodeLockAssignment.objects.filter(
-                door_code=door_code, lock_entity_id=lock_entity_id, slot_index=slot_index
-            ).update(
-                push_state=DoorCode.PushState.PUSHED,
-                schedule_pending=False,
-                push_attempt_count=0,
-                last_push_attempt_at=pushed_at,
-                last_push_error="",
+            # Read again under the code row: a lock sync of the lock a synced code
+            # was imported from can give it a new schedule while this one goes out (issue #220).
+            current = (
+                DoorCode.objects.filter(id=door_code.id)
+                .values("encrypted_pin", "days_of_week", "window_start", "window_end")
+                .first()
             )
+            now_schedule = (
+                (current["days_of_week"], current["window_start"], current["window_end"]) if current else sent
+            )
+            superseded = now_schedule != sent
+            assignment = DoorCodeLockAssignment.objects.filter(
+                door_code=door_code, lock_entity_id=lock_entity_id, slot_index=slot_index
+            )
+            if not superseded:
+                assignment.update(
+                    push_state=DoorCode.PushState.PUSHED,
+                    schedule_pending=False,
+                    push_attempt_count=0,
+                    last_push_attempt_at=pushed_at,
+                    last_push_error="",
+                )
+            elif schedule_only_grows(old_days=sent[0], new_days=now_schedule[0]):
+                # The newer window goes into the same weekday entries, so it's
+                # owed as a schedule, queued again just after this attempt.
+                assignment.update(
+                    push_state=DoorCode.PushState.PENDING,
+                    schedule_pending=True,
+                    push_attempt_count=0,
+                    last_push_attempt_at=pushed_at,
+                    last_push_error="",
+                    push_requested_at=pushed_at + timedelta(microseconds=1),
+                )
+                transaction.on_commit(_wake_push_task, robust=True)
+            else:
+                # It drops a day or goes away, and the days just sent would stay
+                # on the lock, so the slot is cleared and the code pushed again.
+                assignment.update(
+                    push_state=DoorCode.PushState.PENDING,
+                    schedule_pending=False,
+                    push_attempt_count=0,
+                    last_push_attempt_at=pushed_at,
+                    last_push_error="",
+                )
+                _record_planned_repush(
+                    door_code=door_code,
+                    lock_entity_id=lock_entity_id,
+                    slot_index=slot_index,
+                    expected_pin=decrypt_pin_or_none(DoorCode(encrypted_pin=current["encrypted_pin"])),
+                    reason=REPUSH_FOR_SCHEDULE,
+                )
             DoorCodeEvent.objects.create(
                 door_code=door_code,
                 user=actor_user or door_code.user,
@@ -4388,6 +4640,7 @@ def _push_schedule_to_slot(
                     "slot_index": int(slot_index),
                     "schedule_applied": bool(weekdays_pushed),
                     "weekdays": weekdays_pushed,
+                    **({"superseded": True} if superseded else {}),
                 },
             )
             refresh_push_state(door_code=door_code)

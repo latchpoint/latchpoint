@@ -100,6 +100,7 @@ def push_pending_door_codes() -> int:
     transient gateway failures. Returns the number of codes attempted this tick.
     """
     from locks.use_cases.lock_push import (
+        CLEAR_MARKER_EVENT_TYPES,
         being_removed_q,
         check_synced_attempt_slots,
         inactive_slots_to_clear,
@@ -131,10 +132,11 @@ def push_pending_door_codes() -> int:
         # Belt and braces: the sweep above already failed every waiting lock at
         # the cap, but a push outside the scheduler can count one up since.
         needs_push_subquery = needs_push_subquery.filter(push_attempt_count__lt=max_attempts)
-    # Any recorded clear failure, settled or not; retry_failed_slot_clears skips settled ones.
+    # Any recorded clear failure, settled or not, and planned ones (issue #220);
+    # retry_failed_slot_clears skips settled ones.
     clear_failed_subquery = DoorCodeEvent.objects.filter(
         door_code=OuterRef("pk"),
-        event_type=DoorCodeEvent.EventType.CODE_FAILED,
+        event_type__in=CLEAR_MARKER_EVENT_TYPES,
         metadata__action="clear_failed",
     )
     # A rough cut for inactive codes; inactive_slots_to_clear has the exact rules.
