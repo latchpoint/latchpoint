@@ -70,7 +70,8 @@ class DoorCodeWouldHaveNoLocks(ValidationError):
 class DoorCodePinUnknown(ValidationError):
     """Adding a lock to a code whose PIN latchpoint doesn't have, so there's nothing to push.
 
-    A synced code imported from a lock that masks its codes has no stored PIN.
+    A synced code imported from a lock that masks its codes has no stored PIN,
+    and a stored PIN that can't be decrypted counts the same.
     """
 
 
@@ -456,15 +457,18 @@ def _is_stranded_copy(*, original: DoorCode, copy_id: int, lock_entity_id: str, 
     guest's push into a slot the guest never used. With no push event left for
     the slot (event retention) the copy is flagged instead of retired.
 
-    A slot latchpoint pushed the copy into itself isn't a stranded copy
-    either, ie a lock someone added to a synced code (ADR 0082): the slot had
-    to be free for that push, so whatever ``original`` left there was gone. Its
-    row's ``created_at`` is when it was imported from another lock and says
-    nothing about this slot. That's a ``code_synced`` ``pushed`` event of the
-    copy in this slot, or a push attempt on its assignment for this lock (lock
-    sync never stamps one) when retention has pruned the event.
+    A synced code latchpoint has pushed to any of its locks isn't one either,
+    whichever slot this is. Someone added a lock to it (ADR 0082), so it's a
+    code they use on purpose, and turning it off would take it off the locks
+    they added too. It's only flagged. Its row's ``created_at`` is when it was
+    imported from its first lock, so it says nothing about a slot latchpoint
+    pushed it into. That's a push attempt on any of its assignments
+    (:func:`~locks.use_cases.lock_push.has_lock_pushed_by_latchpoint`), which
+    lock sync never stamps and event retention never prunes.
     """
-    if _copy_pushed_by_latchpoint(copy_id=copy_id, lock_entity_id=lock_entity_id, slot_index=slot_index):
+    from locks.use_cases.lock_push import has_lock_pushed_by_latchpoint
+
+    if has_lock_pushed_by_latchpoint(door_code_id=copy_id):
         return False
     first_push_at = (
         DoorCodeEvent.objects.filter(
@@ -482,25 +486,6 @@ def _is_stranded_copy(*, original: DoorCode, copy_id: int, lock_entity_id: str, 
         return False
     copy_created_at = DoorCode.objects.filter(id=copy_id).values_list("created_at", flat=True).first()
     return copy_created_at is not None and copy_created_at > first_push_at
-
-
-def _copy_pushed_by_latchpoint(*, copy_id: int, lock_entity_id: str, slot_index: int) -> bool:
-    """Whether latchpoint pushed the code ``copy_id`` onto this lock itself, so its slot there is its own."""
-    pushed_event = DoorCodeEvent.objects.filter(
-        door_code_id=copy_id,
-        lock_entity_id=lock_entity_id,
-        event_type=DoorCodeEvent.EventType.CODE_SYNCED,
-        metadata__action="pushed",
-        metadata__slot_index=int(slot_index),
-    )
-    if pushed_event.exists():
-        return True
-    return DoorCodeLockAssignment.objects.filter(
-        door_code_id=copy_id,
-        lock_entity_id=lock_entity_id,
-        slot_index=slot_index,
-        last_push_attempt_at__isnull=False,
-    ).exists()
 
 
 def _record_copy_event(
@@ -623,7 +608,8 @@ def retry_pending_copy_retires(*, zwavejs: ZwavejsGateway) -> int:
     for the same copy on that retired code is tried again, and a
     ``duplicate_retire_done`` (``outcome=retired``) is written once it's
     retired or there's nothing left to do (the copy is gone, off, dated or
-    holds another PIN). Each try that raises leaves a ``duplicate_retire_failed``
+    holds another PIN). A copy someone has added a lock to since is flagged
+    instead and gets ``outcome=left_alone``. Each try that raises leaves a ``duplicate_retire_failed``
     event, and once the first try and those reach ``door_codes.push_max_attempts``
     it gives up with one ``max_attempts_exceeded`` event (``action=duplicate_retire``)
     and a ``duplicate_retire_done`` with ``outcome=gave_up`` (PR #211
@@ -631,7 +617,7 @@ def retry_pending_copy_retires(*, zwavejs: ZwavejsGateway) -> int:
     deleted, and event retention keeps it while it's pending
     (:func:`pending_copy_retire_event_ids`). Returns how many it retired.
     """
-    from locks.use_cases.lock_push import _push_max_attempts
+    from locks.use_cases.lock_push import _push_max_attempts, has_lock_pushed_by_latchpoint
 
     max_attempts = _push_max_attempts()
     finished = 0
@@ -642,6 +628,12 @@ def retry_pending_copy_retires(*, zwavejs: ZwavejsGateway) -> int:
             "lock_entity_id": event.lock_entity_id,
             "slot_index": int(event.metadata.get("slot_index") or 0),
         }
+        if has_lock_pushed_by_latchpoint(door_code_id=copy_id):
+            # Someone added a lock to it since, so it's not a stranded copy any
+            # more (:func:`_is_stranded_copy`) and is only flagged.
+            _flag_surviving_duplicate(**where)
+            _record_copy_event(action=_COPY_RETIRE_DONE, outcome="left_alone", **where)
+            continue
         if _retire_synced_copy(copy_id=copy_id, original=event.door_code, zwavejs=zwavejs):
             _record_copy_event(action=_COPY_RETIRE_DONE, outcome="retired", **where)
             finished += 1
@@ -791,15 +783,18 @@ def _refuse_duplicate_pin_when_turning_on(*, code: DoorCode, changes: dict) -> N
 
 
 def _refuse_duplicate_pin_on_added_locks(*, code: DoorCode, changes: dict) -> None:
-    """Raise :class:`DuplicatePinOnLock` when a lock added to an active code already has its PIN (issue #188).
+    """Raise :class:`DuplicatePinOnLock` when a lock added to a code already has its PIN (issue #188).
 
     The push to the added lock would put the PIN in a second slot there, the
     same as turning a code on, so it's the same check on the added locks only.
-    A code that's being turned on in this save is checked on all its locks by
-    :func:`_refuse_duplicate_pin_when_turning_on`, and an inactive one isn't
-    pushed anywhere.
+    A manual code that's being turned on in this save is checked on all its
+    locks by :func:`_refuse_duplicate_pin_when_turning_on`, and an inactive
+    one isn't pushed anywhere until that check runs. A synced code is checked
+    whether it's on or off: lock sync is what turns an undated one back on,
+    and lock sync never runs that check.
     """
-    if not code.is_active or ("is_active" in changes and not changes["is_active"]):
+    synced = code.source == DoorCode.Source.SYNCED
+    if not synced and (not code.is_active or ("is_active" in changes and not changes["is_active"])):
         return
     added = _added_locks(code=code, changes=changes)
     if not added:
@@ -921,12 +916,13 @@ def _added_locks(*, code: DoorCode, changes: dict) -> list[str]:
 
 
 def _refuse_adding_locks_without_pin(*, code: DoorCode, changes: dict) -> None:
-    """Raise :class:`DoorCodePinUnknown` when this save adds a lock to a code whose PIN latchpoint doesn't have.
+    """Raise :class:`DoorCodePinUnknown` when this save adds a lock to a synced code without a readable PIN.
 
     A synced code imported from a lock that masks its codes has no stored PIN,
-    so there's nothing to push to the new lock. Removing locks is still fine,
-    since a clear doesn't need the PIN. Manual codes always get a PIN when
-    they're made, so they're left as they were.
+    and one whose stored PIN can't be decrypted is no better, so there's
+    nothing to push to the new lock. Removing locks is still fine, since a
+    clear doesn't need the PIN. Manual codes always get a PIN when they're
+    made, so they're left as they were.
     """
     if code.source != DoorCode.Source.SYNCED or not _added_locks(code=code, changes=changes):
         return
@@ -934,8 +930,8 @@ def _refuse_adding_locks_without_pin(*, code: DoorCode, changes: dict) -> None:
 
     if decrypt_pin_or_none(code) is None:
         raise DoorCodePinUnknown(
-            "Latchpoint doesn't know this code's PIN, so it can't put it on another lock. "
-            "The lock it was synced from hides its codes."
+            "Latchpoint doesn't have a readable PIN for this code, so it can't put it on another lock. "
+            "Either the lock it was synced from hides its codes or the stored PIN can't be decrypted."
         )
 
 

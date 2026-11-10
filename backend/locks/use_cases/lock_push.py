@@ -1721,6 +1721,24 @@ def locks_to_push(
     ]
 
 
+def slot_pushed_by_latchpoint(assignment: DoorCodeLockAssignment) -> bool:
+    """Whether latchpoint put the slot this assignment tracks there itself, rather than lock sync importing it.
+
+    A push attempt is the only thing that stamps an assignment's
+    ``last_push_attempt_at``, and lock sync only ever sets ``slot_index`` on
+    an assignment it creates, without that stamp. A push only goes to a lock
+    with no slot, so once an assignment has the stamp, any slot it holds came
+    from a push. For a synced code that's a lock someone added to it (ADR
+    0082), which latchpoint owns the way it owns a manual code's slot.
+    """
+    return assignment.slot_index is not None and assignment.last_push_attempt_at is not None
+
+
+def has_lock_pushed_by_latchpoint(*, door_code_id: int) -> bool:
+    """Whether latchpoint has tried to push the code to any of its locks, ie a synced code someone added a lock to."""
+    return DoorCodeLockAssignment.objects.filter(door_code_id=door_code_id, last_push_attempt_at__isnull=False).exists()
+
+
 def being_removed_q() -> Exists:
     """:func:`_locks_being_removed` as a filter on ``DoorCodeLockAssignment`` rows (PR #196 review).
 

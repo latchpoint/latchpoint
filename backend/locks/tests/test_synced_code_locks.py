@@ -8,6 +8,7 @@ schedule and max uses stay the lock's.
 
 from __future__ import annotations
 
+from datetime import timedelta
 from unittest.mock import patch
 
 from django.urls import reverse
@@ -24,16 +25,25 @@ from locks.use_cases import lock_push as lock_push_uc
 # Node ids the base class gives the locks.
 NODE = {"lock.back_door": 12, "lock.side_door": 13, "lock.front_door": 14}
 OTHER_PIN = "9999"
+PIN_UNKNOWN = (
+    "Latchpoint doesn't have a readable PIN for this code, so it can't put it on another lock. "
+    "Either the lock it was synced from hides its codes or the stored PIN can't be decrypted."
+)
 
 
 class _SyncedLocksTestBase(_TrackingTestBase, APITestCase):
+    # Whether a set reaches the Z-Wave JS value cache right away. The Stale*
+    # subclasses run the same tests with the FakeGateway default, where it
+    # doesn't, ie the cache still calls a pushed slot Available.
+    CACHE_UPDATES_ON_SET = True
+
     def setUp(self):
         super().setUp()
         self.client.force_authenticate(self.user)
 
     def _gateway(self, **kwargs) -> ClearFailingGateway:
         """Front Door slot 1 holds the master PIN, Back Door slot 1 holds someone else's code."""
-        kwargs.setdefault("cache_updates_on_set", True)
+        kwargs.setdefault("cache_updates_on_set", self.CACHE_UPDATES_ON_SET)
         gateway = ClearFailingGateway(usersNumber=5, **kwargs)
         for key, pin in (((14, 1), self.PIN), ((12, 1), OTHER_PIN)):
             gateway._lock_codes[key] = pin
@@ -140,10 +150,11 @@ class AddLockTests(_SyncedLocksTestBase):
         self.assertEqual(self._slots(master), {self.FRONT: 1, self.BACK: None})
         self.assertEqual(lock_push_uc.unconfirmed_attempt_lock_entity_ids(door_code=master), [self.BACK])
 
-        # A sync meanwhile leaves the slot to the master code's own retry.
+        # A sync meanwhile leaves the slot to the master code's own retry. With a
+        # stale cache it doesn't even see the slot as occupied.
         result = self._sync(gateway, self.BACK)
-        row = self._slot_row(result, 2)
-        self.assertEqual((row.action, row.door_code_id), ("skipped", master.id))
+        rows = [(row.action, row.door_code_id) for row in result.slots if row.slot_index == 2]
+        self.assertEqual(rows, [("skipped", master.id)] if self.CACHE_UPDATES_ON_SET else [])
         self.assertEqual(result.created, 0)
 
         # The scheduler's retry adopts the slot instead of writing a second copy.
@@ -208,16 +219,39 @@ class AddLockTests(_SyncedLocksTestBase):
         self.assertIn("give this one a different PIN", response.json()["error"]["message"])
         self.assertEqual(gateway.invoke_calls, [])
 
-    def test_an_inactive_code_is_not_refused_since_nothing_is_pushed(self):
+    def test_an_off_synced_code_is_still_refused_but_an_off_manual_code_is_not(self):
+        # An undated synced code only comes back on through lock sync, which never
+        # runs the #188 check, so it's checked when the lock is added.
         gateway = self._gateway()
-        self._code(pin=self.PIN, source=DoorCode.Source.SYNCED, slots={self.BACK: 3}, label="Slot 3")
         master = self._master(gateway)
+        copy = self._code(pin=self.PIN, source=DoorCode.Source.SYNCED, slots={self.BACK: 3}, label="Slot 3")
         DoorCode.objects.filter(id=master.id).update(is_active=False)
+
+        response = self._patch_response(master, gateway, {"add_lock_entity_ids": [self.BACK]})
+
+        self.assertEqual(response.status_code, 409, response.content)
+        self.assertIn(f"as door code {copy.id}", response.json()["error"]["message"])
+        self.assertEqual(self._slots(master), {self.FRONT: 1})
+
+        # A manual code is checked when it's turned on, with every lock it's on then.
+        manual = self._code(pin=self.PIN, is_active=False, slots={self.SIDE: None})
+        self._patch(manual, gateway, {"add_lock_entity_ids": [self.BACK]})
+        self.assertEqual(self._slots(manual), {self.SIDE: None, self.BACK: None})
+        response = self._patch_response(manual, gateway, {"is_active": True})
+        self.assertEqual(response.status_code, 409, response.content)
+        self.assertEqual(self._calls(gateway, "set"), [])
+
+    def test_only_the_added_locks_are_checked(self):
+        # A copy of the master PIN on the Front Door itself (lock sync flags it)
+        # doesn't stop the Back Door from being added.
+        gateway = self._gateway()
+        master = self._master(gateway)
+        self._code(pin=self.PIN, source=DoorCode.Source.SYNCED, slots={self.FRONT: 3}, label="Slot 3")
 
         self._patch(master, gateway, {"add_lock_entity_ids": [self.BACK]})
 
-        self.assertEqual(self._calls(gateway, "set"), [])
-        self.assertEqual(self._slots(master), {self.FRONT: 1, self.BACK: None})
+        self.assertEqual(self._slots(master), {self.FRONT: 1, self.BACK: 2})
+        self.assertEqual(self._lock_codes(gateway, 12), {1: OTHER_PIN, 2: self.PIN})
 
 
 class UnknownPinTests(_SyncedLocksTestBase):
@@ -236,13 +270,19 @@ class UnknownPinTests(_SyncedLocksTestBase):
             with self.subTest(body=body):
                 response = self._patch_response(master, gateway, body)
                 self.assertEqual(response.status_code, 400, response.content)
-                self.assertEqual(
-                    response.json()["error"]["message"],
-                    "Latchpoint doesn't know this code's PIN, so it can't put it on another lock. "
-                    "The lock it was synced from hides its codes.",
-                )
+                self.assertEqual(response.json()["error"]["message"], PIN_UNKNOWN)
         self.assertEqual(gateway.invoke_calls, [])
         self.assertEqual(self._slots(master), {self.FRONT: 1})
+
+    def test_a_stored_pin_that_cant_be_decrypted_counts_the_same(self):
+        gateway = self._gateway()
+        master = self._master(gateway)
+        DoorCode.objects.filter(id=master.id).update(encrypted_pin="not-a-token")
+
+        response = self._patch_response(master, gateway, {"add_lock_entity_ids": [self.BACK]})
+
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertEqual(response.json()["error"]["message"], PIN_UNKNOWN)
 
     def test_removing_a_lock_still_works(self):
         master, gateway = self._masked_master()
@@ -355,10 +395,9 @@ class DatedSyncedCodeTests(_SyncedLocksTestBase):
 class StrandedCopyRuleTests(_SyncedLocksTestBase):
     """PR #211's stranded-copy rule must not take a slot latchpoint pushed a synced code into as a leftover."""
 
-    def test_a_synced_codes_own_pushed_slot_is_not_retired_as_a_stranded_copy(self):
-        master, gateway = self._master_on_both()
-        # A dated guest code with the same PIN that once got pushed into Back Door
-        # slot 2, before the master code's row was made, and is still on the Back Door.
+    def _expired_guest_once_pushed_into_back_slot_2(self, master: DoorCode) -> DoorCode:
+        """A dated guest code with the master PIN, still on the Back Door, that was
+        pushed into Back Door slot 2 before the master code's row was made."""
         guest = self._code(
             pin=self.PIN,
             slots={self.BACK: None},
@@ -372,10 +411,10 @@ class StrandedCopyRuleTests(_SyncedLocksTestBase):
             event_type=DoorCodeEvent.EventType.CODE_SYNCED,
             metadata={"action": "pushed", "slot_index": 2},
         )
-        DoorCodeEvent.objects.filter(id=pushed.id).update(created_at=master.created_at - self._one_minute())
+        DoorCodeEvent.objects.filter(id=pushed.id).update(created_at=master.created_at - timedelta(minutes=1))
+        return guest
 
-        self._enforce(gateway)
-
+    def _assert_master_kept_and_flagged(self, master: DoorCode, guest: DoorCode, gateway) -> None:
         master.refresh_from_db()
         self.assertTrue(master.is_active)
         self.assertEqual(self._slots(master), {self.FRONT: 1, self.BACK: 2})
@@ -385,23 +424,93 @@ class StrandedCopyRuleTests(_SyncedLocksTestBase):
         flag = DoorCodeEvent.objects.get(door_code=guest, metadata__action="duplicate_pin_survives_retire")
         self.assertEqual(flag.metadata["duplicate_door_code_id"], master.id)
 
-    def test_it_holds_when_retention_pruned_the_push_event(self):
-        master, _gateway = self._master_on_both()
-        DoorCodeEvent.objects.filter(door_code=master, metadata__action="pushed").delete()
+    def test_a_synced_codes_own_pushed_slot_is_not_retired_as_a_stranded_copy(self):
+        master, gateway = self._master_on_both()
+        guest = self._expired_guest_once_pushed_into_back_slot_2(master)
 
+        self._enforce(gateway)
+
+        self._assert_master_kept_and_flagged(master, guest, gateway)
+
+    def test_it_holds_when_retention_pruned_the_master_codes_push_events(self):
+        master, gateway = self._master_on_both()
+        DoorCodeEvent.objects.filter(door_code=master).delete()
+        guest = self._expired_guest_once_pushed_into_back_slot_2(master)
+
+        self.assertIsNotNone(door_codes_uc.retire_door_code(code=guest, reason="expired", zwavejs=gateway))
+
+        self.assertFalse(DoorCode.objects.get(id=guest.id).is_active)
+        self._assert_master_kept_and_flagged(master, guest, gateway)
+
+    def _stranded_copy(self) -> tuple[DoorCode, DoorCode, ClearFailingGateway]:
+        """What #133 left on the Back Door: the guest pushed into slot 1, the slot forgotten,
+        pushed again into slot 2, then slot 1 imported by lock sync."""
+        gateway = ClearFailingGateway(usersNumber=5, cache_updates_on_set=True, drops_duplicates=False)
+        guest = door_codes_uc.create_door_code(
+            user=self.user,
+            raw_code=self.PIN,
+            code_type=DoorCode.CodeType.TEMPORARY,
+            end_at=self._from_now(days=1),
+            lock_entity_ids=[self.BACK],
+            actor_user=self.user,
+            zwavejs=gateway,
+        )
+        DoorCodeLockAssignment.objects.filter(door_code=guest).update(
+            slot_index=None, push_state=DoorCode.PushState.PENDING
+        )
+        lock_push_uc.push_door_code_to_assigned_locks(
+            door_code=DoorCode.objects.prefetch_related("lock_assignments").get(id=guest.id), zwavejs=gateway
+        )
+        self._sync(gateway, self.BACK)
+        copy = DoorCode.objects.get(lock_assignments__lock_entity_id=self.BACK, lock_assignments__slot_index=1)
+        self.assertEqual(self._slots(guest), {self.BACK: 2})
         self.assertTrue(
-            door_codes_uc._copy_pushed_by_latchpoint(copy_id=master.id, lock_entity_id=self.BACK, slot_index=2)
+            door_codes_uc._is_stranded_copy(original=guest, copy_id=copy.id, lock_entity_id=self.BACK, slot_index=1)
         )
-        # The slot it was imported into was never pushed by latchpoint.
-        self.assertFalse(
-            door_codes_uc._copy_pushed_by_latchpoint(copy_id=master.id, lock_entity_id=self.FRONT, slot_index=1)
+        return guest, copy, gateway
+
+    def test_a_stranded_copy_someone_added_a_lock_to_is_only_flagged(self):
+        guest, copy, gateway = self._stranded_copy()
+        self._patch(copy, gateway, {"add_lock_entity_ids": [self.SIDE]})
+        self.assertEqual(self._slots(copy), {self.BACK: 1, self.SIDE: 1})
+
+        self._move(guest, end_at=self._ago(minutes=1))
+        self._enforce(gateway)
+
+        copy.refresh_from_db()
+        self.assertTrue(copy.is_active)
+        self.assertEqual(self._slots(copy), {self.BACK: 1, self.SIDE: 1})
+        self.assertEqual(self._lock_codes(gateway, 12), {1: self.PIN})
+        self.assertEqual(self._lock_codes(gateway, 13), {1: self.PIN})
+        self.assertTrue(
+            DoorCodeEvent.objects.filter(
+                door_code=guest,
+                metadata__action="duplicate_pin_survives_retire",
+                metadata__duplicate_door_code_id=copy.id,
+            ).exists()
         )
 
-    @staticmethod
-    def _one_minute():
-        from datetime import timedelta
+    def test_a_pending_retire_of_a_copy_someone_added_a_lock_to_since_leaves_it_alone(self):
+        guest, copy, gateway = self._stranded_copy()
+        self._move(guest, end_at=self._ago(minutes=1))
+        with patch.object(door_codes_uc, "_retire_synced_copy", return_value=False):
+            self._enforce(gateway)
+        self.assertTrue(DoorCodeEvent.objects.filter(metadata__action="duplicate_retire_pending").exists())
+        self._patch(copy, gateway, {"add_lock_entity_ids": [self.SIDE]})
 
-        return timedelta(minutes=1)
+        door_codes_uc.retry_pending_copy_retires(zwavejs=gateway)
+
+        copy.refresh_from_db()
+        self.assertTrue(copy.is_active)
+        self.assertEqual(self._slots(copy), {self.BACK: 1, self.SIDE: 1})
+        done = DoorCodeEvent.objects.get(door_code=guest, metadata__action="duplicate_retire_done")
+        self.assertEqual(done.metadata["outcome"], "left_alone")
+        self.assertTrue(
+            DoorCodeEvent.objects.filter(door_code=guest, metadata__action="duplicate_pin_survives_retire").exists()
+        )
+        # Done, so the next tick doesn't try again.
+        door_codes_uc.retry_pending_copy_retires(zwavejs=gateway)
+        self.assertEqual(DoorCodeEvent.objects.filter(metadata__action="duplicate_retire_done").count(), 1)
 
 
 class UnreadablePinStillRefusedOnlyForSyncedTests(_SyncedLocksTestBase):
@@ -420,3 +529,103 @@ class UnreadablePinStillRefusedOnlyForSyncedTests(_SyncedLocksTestBase):
 
         self.assertEqual(self._calls(gateway, "set"), [])
         self.assertEqual(set(self._slots(code)), {self.SIDE, self.BACK})
+
+
+class StaleCacheSyncTests(_SyncedLocksTestBase):
+    """A Back Door sync whose value cache still calls the pushed slot Available (the FakeGateway default)."""
+
+    CACHE_UPDATES_ON_SET = False
+
+    def _back(self, master: DoorCode) -> DoorCodeLockAssignment:
+        return DoorCodeLockAssignment.objects.get(door_code=master, lock_entity_id=self.BACK)
+
+    def test_a_stale_cache_neither_turns_the_code_off_nor_forgets_the_pushed_slot(self):
+        master, gateway = self._master_on_both()
+        # The push was confirmed by a live readback, but the cache hasn't caught up.
+        self.assertNotIn((12, 2), gateway._cache_codes)
+
+        result = self._sync(gateway, self.BACK)
+
+        row = self._slot_row(result, 2)
+        self.assertEqual((row.action, row.door_code_id), ("skipped", master.id))
+        self.assertIn("slot_not_confirmed_empty", row.warnings)
+        master.refresh_from_db()
+        self.assertTrue(master.is_active)
+        self.assertEqual(self._slots(master), {self.FRONT: 1, self.BACK: 2})
+        self.assertEqual(self._back(master).push_state, DoorCode.PushState.PUSHED)
+        self.assertEqual(self._calls(gateway, "set"), [])
+
+        # Nothing to push, and a Front Door sync leaves it on.
+        gateway.invoke_calls.clear()
+        self._push_pending(gateway)
+        self._sync(gateway, self.FRONT)
+        self.assertEqual(self._calls(gateway, "set"), [])
+        self.assertTrue(DoorCode.objects.get(id=master.id).is_active)
+
+        # Removing the Back Door still clears the slot.
+        self._patch(master, gateway, {"remove_lock_entity_ids": [self.BACK]})
+        self.assertEqual(self._calls(gateway, "clear"), [(12, [2])])
+        self.assertEqual(self._lock_codes(gateway, 12), {1: OTHER_PIN})
+
+    def test_a_pushed_slot_that_really_is_empty_is_pushed_again_without_turning_the_code_off(self):
+        master, gateway = self._master_on_both()
+        # Deleted at the Back Door.
+        del gateway._lock_codes[(12, 2)]
+
+        result = self._sync(gateway, self.BACK)
+
+        row = self._slot_row(result, 2)
+        self.assertEqual((row.action, row.door_code_id), ("updated", master.id))
+        self.assertIn("slot_empty_repush", row.warnings)
+        master.refresh_from_db()
+        self.assertTrue(master.is_active)
+        self.assertEqual(self._slots(master), {self.FRONT: 1, self.BACK: None})
+        self.assertEqual(self._back(master).push_state, DoorCode.PushState.PENDING)
+        self.assertEqual(self._lock_codes(gateway, 14), {1: self.PIN})
+
+        self._push_pending(gateway)
+
+        self.assertEqual(self._slots(master), {self.FRONT: 1, self.BACK: 2})
+        self.assertEqual(self._lock_codes(gateway, 12), {1: OTHER_PIN, 2: self.PIN})
+        self.assertTrue(DoorCode.objects.get(id=master.id).is_active)
+
+    def test_an_off_synced_code_keeps_its_pushed_slot(self):
+        # Lock sync turned it off from the Front Door; the Back Door slot waits for it to come back on.
+        master, gateway = self._master_on_both()
+        DoorCode.objects.filter(id=master.id).update(is_active=False)
+
+        self._sync(gateway, self.BACK)
+
+        self.assertEqual(self._slots(master), {self.FRONT: 1, self.BACK: 2})
+        self.assertEqual(self._calls(gateway, "set"), [])
+
+    def test_the_lock_it_was_imported_from_keeps_the_synced_rule(self):
+        # Deleted at the Front Door, which is the lock's say for a synced code.
+        master, gateway = self._master_on_both()
+        del gateway._lock_codes[(14, 1)]
+        del gateway._cache_codes[(14, 1)]
+
+        self._sync(gateway, self.FRONT)
+
+        master.refresh_from_db()
+        self.assertFalse(master.is_active)
+        self.assertEqual(self._slots(master), {self.FRONT: None, self.BACK: 2})
+        self.assertFalse(any(c["method_name"] == "get" and c["node_id"] == 14 for c in gateway.invoke_calls))
+
+
+# The tests above again with the FakeGateway default, where a set doesn't reach
+# the value cache, so every sync after a push sees the pushed slot as Available.
+class StaleCacheAddLockTests(AddLockTests):
+    CACHE_UPDATES_ON_SET = False
+
+
+class StaleCacheRemoveLockTests(RemoveLockTests):
+    CACHE_UPDATES_ON_SET = False
+
+
+class StaleCacheDatedSyncedCodeTests(DatedSyncedCodeTests):
+    CACHE_UPDATES_ON_SET = False
+
+
+class StaleCacheStrandedCopyRuleTests(StrandedCopyRuleTests):
+    CACHE_UPDATES_ON_SET = False

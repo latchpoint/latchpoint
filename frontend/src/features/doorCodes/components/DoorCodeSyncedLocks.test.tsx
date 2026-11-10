@@ -9,7 +9,7 @@ import { DoorCodeEditContainer } from './DoorCodeEditContainer'
 import type { DoorCode, Entity, UpdateDoorCodeRequest } from '@/types'
 
 const PIN_UNKNOWN =
-  "Latchpoint doesn't know this code's PIN, so it can't put it on another lock. The lock it was synced from hides its codes."
+  "Latchpoint doesn't have a readable PIN for this code, so it can't put it on another lock. Either the lock it was synced from hides its codes or the stored PIN can't be decrypted."
 
 // The master code lock sync imported from the Front Door.
 function syncedMaster(overrides: Partial<DoorCode> = {}): DoorCode {
@@ -158,6 +158,23 @@ describe('edit form for a synced code, locks', () => {
 
     expect(await screen.findByText('Select at least one lock.')).toBeTruthy()
     expect(onUpdate).not.toHaveBeenCalled()
+  })
+
+  it('saves a new label on a synced code whose only lock is still being removed', async () => {
+    const onUpdate = renderEditForm(
+      syncedMaster({
+        lockEntityIds: [],
+        lockSlotAssignments: [{ lockEntityId: 'lock.front_door', slotIndex: 1, pendingRemoval: true }],
+      }),
+    )
+    expect(lockCheckbox('lock.front_door')).not.toBeChecked()
+
+    fireEvent.change(screen.getByLabelText('Label'), { target: { value: 'Old master' } })
+    save()
+
+    await waitFor(() => expect(onUpdate).toHaveBeenCalledTimes(1))
+    expect(vi.mocked(onUpdate).mock.calls[0][1]).toEqual({ reauthPassword: 'pw', label: 'Old master' })
+    expect(screen.queryByText('Select at least one lock.')).toBeNull()
   })
 
   it('says up front when the PIN is unknown', () => {

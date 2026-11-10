@@ -1066,6 +1066,12 @@ def _empty_manual_slot_verdicts(
     pushing it again would add a copy or fail (:func:`_pin_elsewhere_on_lock`).
     Neither of those reads anything back. Inactive manual codes are the #167
     scheduler's to clear or forget.
+
+    A synced code's slot that latchpoint pushed itself, ie on a lock someone
+    added to the code (ADR 0082, :func:`~locks.use_cases.lock_push.slot_pushed_by_latchpoint`),
+    gets the same treatment, so a stale cache never turns the code off or
+    forgets a slot that still holds its PIN. A synced code's slot on the lock
+    it was imported from is the lock's, and keeps the synced rule below.
     """
     verdicts: dict[int, str | None] = {}
     assignments = (
@@ -1075,7 +1081,7 @@ def _empty_manual_slot_verdicts(
             slot_index__in=sorted(empty_slots),
             door_code__is_active=True,
         )
-        .exclude(door_code__source=DoorCode.Source.SYNCED)
+        .exclude(door_code__source=DoorCode.Source.SYNCED, last_push_attempt_at__isnull=True)
         .order_by("slot_index")
     )
     for assignment in assignments:
@@ -1110,9 +1116,10 @@ def _release_manual_slot(
 
     slot_index = int(assignment.slot_index)
     logger.info(
-        "Slot %d on %s (manual code_id=%d) reads back empty: releasing it to push the code again",
+        "Slot %d on %s (%s code_id=%d) reads back empty: releasing it to push the code again",
         slot_index,
         lock_entity_id,
+        code.source,
         code.id,
     )
     # The code row before its assignment row, like every writer of both.
@@ -1774,10 +1781,17 @@ def _sync_lock_config_atomically(
             code = assignment.door_code
             if not code:
                 continue
-            if code.source != DoorCode.Source.SYNCED:
+            from locks.use_cases.lock_push import slot_pushed_by_latchpoint
+
+            if code.source != DoorCode.Source.SYNCED or slot_pushed_by_latchpoint(assignment):
                 # Only the active ones _empty_manual_slot_verdicts looked at. An
                 # inactive manual code is the #167 scheduler's to clear or forget,
                 # and a dry run reads nothing back, so it can't tell (PR #211 review).
+                # A synced code's slot latchpoint pushed to a lock someone added
+                # goes the same way, so it's released and pushed again once it
+                # reads back empty and the code is never turned off for it. When
+                # the code is off it's left alone, and its next sync once it's on
+                # again checks the slot (ADR 0082).
                 if code.is_active and slot_index in manual_empty_verdicts:
                     manual_skip_reason = manual_empty_verdicts[slot_index]
                     if manual_skip_reason:

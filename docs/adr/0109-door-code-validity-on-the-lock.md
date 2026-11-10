@@ -129,12 +129,13 @@ notifications and retiring used up codes is a separate change.
   the copy's row was created after the first of those pushes. A lock sync
   having recorded the two as duplicates of each other doesn't count, and with
   no push event left for the slot (event retention) the copy is only flagged.
-  Neither does a slot latchpoint pushed the copy into itself, ie a lock added
-  to a synced code (ADR-0082), since its row's age says nothing about that
-  slot. That's a `pushed` event of the copy in that slot, or a push attempt on
-  its assignment there once retention has pruned the event. Such a copy is
-  only flagged.
-  Such a copy is turned off through the same locked deactivate, which clears
+  A synced code latchpoint has pushed to any of its locks, ie one someone added
+  a lock to (ADR-0082), is never a stranded copy either, since it's in use on
+  purpose and its row's age says nothing about a slot latchpoint pushed it
+  into. That's a push attempt on any of its assignments, which lock sync never
+  stamps. It's only flagged, and a pending retire of a copy someone has added a
+  lock to since ends with `outcome=left_alone` and the flag.
+  A stranded copy is turned off through the same locked deactivate, which clears
   its slot, and if that raises it's tried again on each later validity tick
   (`duplicate_retire_pending` until `duplicate_retire_done`), up to
   `door_codes.push_max_attempts` tries, then one `max_attempts_exceeded`

@@ -247,10 +247,6 @@ export function DoorCodeEditContainer({ code, locks, locksIsLoading, locksError,
     const req: UpdateDoorCodeRequest = { reauthPassword: editReauthPassword }
     if (labelField.isEdited) req.label = editLabel.trim()
 
-    if (!resolvedLockEntityIds.length) {
-      setEditError('Select at least one lock.')
-      return
-    }
     // Only what the user added or removed, compared with the server's locks
     // (without the ones being removed). The backend applies it to the locks the
     // code has when it saves, so a tab that missed another tab removing a lock
@@ -260,10 +256,17 @@ export function DoorCodeEditContainer({ code, locks, locksIsLoading, locksError,
     const savedLockSet = new Set(resolvedLockEntityIds)
     const addedLocks = resolvedLockEntityIds.filter((id) => !serverLockSet.has(id))
     const removedLocks = serverLockIds.filter((id) => !savedLockSet.has(id))
+    const isSynced = code.source === 'synced'
+    // A synced code whose locks are all still being removed shows none ticked,
+    // and a save that doesn't touch its locks (ie a new label) still goes through.
+    const changesLocks = addedLocks.length > 0 || removedLocks.length > 0
+    if (!resolvedLockEntityIds.length && (!isSynced || changesLocks)) {
+      setEditError('Select at least one lock.')
+      return
+    }
     if (addedLocks.length) req.addLockEntityIds = addedLocks
     if (removedLocks.length) req.removeLockEntityIds = removedLocks
 
-    const isSynced = code.source === 'synced'
     if (isSynced) {
       // Its locks can be added and removed like a manual code's (ADR 0082). An
       // off synced code with an end date can also change its active window and
