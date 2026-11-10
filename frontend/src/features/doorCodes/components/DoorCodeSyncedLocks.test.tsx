@@ -180,7 +180,12 @@ describe('edit form for a synced code, locks', () => {
   it('says up front when the PIN is unknown', () => {
     renderEditForm(syncedMaster({ pin: null, pinLength: null }))
 
-    expect(screen.getByText(/latchpoint doesn't know this PIN and can't put it on another lock/)).toBeTruthy()
+    const copy = screen.getByText(/This code is synced from the lock\./).textContent ?? ''
+    // Either cause, like the backend's 400, since the PIN may just be undecryptable.
+    expect(copy).toContain(
+      "Latchpoint doesn't have a readable PIN for this code, either because the lock it was synced from hides its codes or because the stored PIN can't be decrypted, so it can't put it on another lock. It can still be removed from locks.",
+    )
+    expect(copy).not.toContain('The lock it came from hides its codes')
   })
 
   it("shows the backend's 400 when the PIN is unknown", async () => {

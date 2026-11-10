@@ -23,7 +23,7 @@ function SyncedFieldsWarning({ validityEditable, pinUnknown }: { validityEditabl
           ? `This code is synced from the lock and has an end date. ${SYNCED_LOCKS_COPY} Its active window can be changed (but not cleared) and it can be turned on or off, which puts it on or takes it off its locks. The PIN, schedule, and max uses come from the lock and will be overwritten on the next sync.`
           : `This code is synced from the lock. ${SYNCED_LOCKS_COPY} The PIN, active status, schedule, and max uses come from the lock and will be overwritten on the next sync.`}
         {pinUnknown
-          ? " The lock it came from hides its codes, so latchpoint doesn't know this PIN and can't put it on another lock. It can still be removed from locks."
+          ? " Latchpoint doesn't have a readable PIN for this code, either because the lock it was synced from hides its codes or because the stored PIN can't be decrypted, so it can't put it on another lock. It can still be removed from locks."
           : null}
       </AlertDescription>
     </Alert>

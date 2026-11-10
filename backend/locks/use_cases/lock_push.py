@@ -1724,19 +1724,33 @@ def locks_to_push(
 def slot_pushed_by_latchpoint(assignment: DoorCodeLockAssignment) -> bool:
     """Whether latchpoint put the slot this assignment tracks there itself, rather than lock sync importing it.
 
-    A push attempt is the only thing that stamps an assignment's
-    ``last_push_attempt_at``, and lock sync only ever sets ``slot_index`` on
-    an assignment it creates, without that stamp. A push only goes to a lock
-    with no slot, so once an assignment has the stamp, any slot it holds came
-    from a push. For a synced code that's a lock someone added to it (ADR
-    0082), which latchpoint owns the way it owns a manual code's slot.
+    An assignment's ``last_push_attempt_at`` is stamped by push attempts, and
+    by migration 0010's backfill, which only stamped rows without a slot. Lock
+    sync never stamps it, and only ever sets ``slot_index`` on an assignment
+    it creates. A row without a slot only gets one from a push, so a stamped
+    row that holds a slot holds one a push put there. For a synced code that's
+    a lock someone added to it (ADR 0082), which latchpoint owns the way it
+    owns a manual code's slot.
     """
     return assignment.slot_index is not None and assignment.last_push_attempt_at is not None
 
 
 def has_lock_pushed_by_latchpoint(*, door_code_id: int) -> bool:
-    """Whether latchpoint has tried to push the code to any of its locks, ie a synced code someone added a lock to."""
-    return DoorCodeLockAssignment.objects.filter(door_code_id=door_code_id, last_push_attempt_at__isnull=False).exists()
+    """Whether latchpoint has tried or queued a push of the code to any of its locks, slot or not.
+
+    Broader than :func:`slot_pushed_by_latchpoint` on purpose. It's used to
+    leave a synced code alone instead of retiring it as a stranded copy (PR
+    #211), which fails safe since such a code is only flagged. So it's true
+    for an added lock whose push is still queued (``push_requested_at``) or
+    failed with no slot, for a dated synced code turned back on from
+    latchpoint (#189), and for a row migration 0010 stamped with its code's
+    last attempt. Each of those is a code someone acted on in latchpoint.
+    """
+    return (
+        DoorCodeLockAssignment.objects.filter(door_code_id=door_code_id)
+        .filter(Q(last_push_attempt_at__isnull=False) | Q(push_requested_at__isnull=False))
+        .exists()
+    )
 
 
 def being_removed_q() -> Exists:

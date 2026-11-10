@@ -380,11 +380,12 @@ def retire_door_code(
                 event_metadata={"reason": reason},
             )
             for copy_id, lock_entity_id, slot_index, stranded in copies:
-                if not stranded:
+                outcome = _retire_synced_copy(copy_id=copy_id, original=code, zwavejs=zwavejs) if stranded else None
+                if not stranded or outcome == _COPY_LEFT_ALONE:
                     _flag_surviving_duplicate(
                         original=code, copy_id=copy_id, lock_entity_id=lock_entity_id, slot_index=slot_index
                     )
-                elif not _retire_synced_copy(copy_id=copy_id, original=code, zwavejs=zwavejs):
+                elif not outcome:
                     _record_copy_event(
                         original=code,
                         action=_COPY_RETIRE_PENDING,
@@ -462,9 +463,11 @@ def _is_stranded_copy(*, original: DoorCode, copy_id: int, lock_entity_id: str, 
     code they use on purpose, and turning it off would take it off the locks
     they added too. It's only flagged. Its row's ``created_at`` is when it was
     imported from its first lock, so it says nothing about a slot latchpoint
-    pushed it into. That's a push attempt on any of its assignments
+    pushed it into. That's a push attempt or a queued push on any of its
+    assignments, slot or not
     (:func:`~locks.use_cases.lock_push.has_lock_pushed_by_latchpoint`), which
-    lock sync never stamps and event retention never prunes.
+    lock sync never stamps and event retention never prunes. It's broad on
+    purpose, since leaving a code alone only means flagging it.
     """
     from locks.use_cases.lock_push import has_lock_pushed_by_latchpoint
 
@@ -519,30 +522,40 @@ def _flag_surviving_duplicate(*, original: DoorCode, copy_id: int, lock_entity_i
     )
 
 
-def _retire_synced_copy(*, copy_id: int, original: DoorCode, zwavejs: ZwavejsGateway) -> bool:
+_COPY_RETIRED = "retired"
+_COPY_LEFT_ALONE = "left_alone"
+
+
+def _retire_synced_copy(*, copy_id: int, original: DoorCode, zwavejs: ZwavejsGateway) -> str | None:
     """Turn off a stranded synced copy of ``original``'s PIN and clear its slot (issue #185).
 
     The copy is read again under its own locks (when called from
     :func:`retire_door_code` the original's already cover its slot, so this only
     waits for a lock it has a clear or attempt on elsewhere) and left alone if
-    it's gone, off, given an ``end_at`` or holds a different PIN by then.
-    Returns ``False`` only when the retire raised (logged), so the caller can
-    have it tried again, and ``True`` once there's nothing left to do.
+    it's gone, off, given an ``end_at`` or holds a different PIN by then, which
+    is :data:`_COPY_RETIRED` since there's nothing left to do. It's
+    :data:`_COPY_LEFT_ALONE` when someone has added a lock to it by then
+    (:func:`_is_stranded_copy`), checked under those locks so an add that
+    landed after the caller looked is still seen, and the caller flags it
+    instead. ``None`` (falsy) only when the retire raised (logged), so the
+    caller can have it tried again.
     """
-    from locks.use_cases.lock_push import decrypt_pin_or_none
+    from locks.use_cases.lock_push import decrypt_pin_or_none, has_lock_pushed_by_latchpoint
 
     copy = DoorCode.objects.filter(id=copy_id).first()
     if copy is None:
-        return True
+        return _COPY_RETIRED
     try:
         with _hold_door_code_locks(code=copy):
+            if has_lock_pushed_by_latchpoint(door_code_id=copy.id):
+                return _COPY_LEFT_ALONE
             if (
                 copy.source != DoorCode.Source.SYNCED
                 or not copy.is_active
                 or copy.end_at is not None
                 or decrypt_pin_or_none(copy) != decrypt_pin_or_none(original)
             ):
-                return True
+                return _COPY_RETIRED
             _update_door_code_locked(
                 code=copy,
                 changes={"is_active": False},
@@ -550,9 +563,9 @@ def _retire_synced_copy(*, copy_id: int, original: DoorCode, zwavejs: ZwavejsGat
                 zwavejs=zwavejs,
                 event_metadata={"reason": "duplicate_of_retired_code", "duplicate_of_door_code_id": original.id},
             )
-            return True
+            return _COPY_RETIRED
     except NotFound:
-        return True
+        return _COPY_RETIRED
     except Exception:
         logger.warning(
             "Couldn't retire synced door code id=%d, a copy of retired door code id=%d's PIN; trying again next tick",
@@ -560,7 +573,7 @@ def _retire_synced_copy(*, copy_id: int, original: DoorCode, zwavejs: ZwavejsGat
             original.id,
             exc_info=True,
         )
-        return False
+        return None
 
 
 def _pending_copy_retires() -> list[tuple[DoorCodeEvent, int]]:
@@ -617,7 +630,7 @@ def retry_pending_copy_retires(*, zwavejs: ZwavejsGateway) -> int:
     deleted, and event retention keeps it while it's pending
     (:func:`pending_copy_retire_event_ids`). Returns how many it retired.
     """
-    from locks.use_cases.lock_push import _push_max_attempts, has_lock_pushed_by_latchpoint
+    from locks.use_cases.lock_push import _push_max_attempts
 
     max_attempts = _push_max_attempts()
     finished = 0
@@ -628,14 +641,15 @@ def retry_pending_copy_retires(*, zwavejs: ZwavejsGateway) -> int:
             "lock_entity_id": event.lock_entity_id,
             "slot_index": int(event.metadata.get("slot_index") or 0),
         }
-        if has_lock_pushed_by_latchpoint(door_code_id=copy_id):
+        outcome = _retire_synced_copy(copy_id=copy_id, original=event.door_code, zwavejs=zwavejs)
+        if outcome == _COPY_LEFT_ALONE:
             # Someone added a lock to it since, so it's not a stranded copy any
             # more (:func:`_is_stranded_copy`) and is only flagged.
             _flag_surviving_duplicate(**where)
-            _record_copy_event(action=_COPY_RETIRE_DONE, outcome="left_alone", **where)
+            _record_copy_event(action=_COPY_RETIRE_DONE, outcome=_COPY_LEFT_ALONE, **where)
             continue
-        if _retire_synced_copy(copy_id=copy_id, original=event.door_code, zwavejs=zwavejs):
-            _record_copy_event(action=_COPY_RETIRE_DONE, outcome="retired", **where)
+        if outcome:
+            _record_copy_event(action=_COPY_RETIRE_DONE, outcome=_COPY_RETIRED, **where)
             finished += 1
             continue
         _record_copy_event(action=_COPY_RETIRE_FAILED, **where)

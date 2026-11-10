@@ -931,7 +931,9 @@ def _flag_duplicate_pins(
             event.save(update_fields=["metadata"])
 
 
-def _existing_code_skip_reason(*, code: DoorCode, lock_entity_id: str, raw_pin: str | None) -> str | None:
+def _existing_code_skip_reason(
+    *, code: DoorCode, lock_entity_id: str, raw_pin: str | None, latchpoint_slot: bool = False
+) -> str | None:
     """Why the sync must leave the code tracked in this slot alone, or ``None`` to reconcile it (issue #150).
 
     - any code with a clear or unconfirmed push still outstanding: its slot may
@@ -939,7 +941,11 @@ def _existing_code_skip_reason(*, code: DoorCode, lock_entity_id: str, raw_pin: 
       code #144 turned off
     - a manual code that's off: latchpoint turned it off, so the PIN still in its
       slot is a clear that hasn't happened, not the lock's say
-    - a manual code whose slot holds a different PIN: flagged, never adopted
+    - a manual code whose slot holds a different PIN: flagged, never adopted.
+      The same goes for a synced code's slot latchpoint pushed itself
+      (``latchpoint_slot``, ADR 0082), since that slot isn't where its PIN comes
+      from. A synced code that's off keeps such a slot without a skip, since no
+      clear is coming for it
     - any code whose schedule latchpoint still owes this lock (``schedule_pending``,
       issue #123): the lock has the PIN without its schedule, so taking the
       schedule (or none) from the lock and marking it pushed would drop the
@@ -952,9 +958,10 @@ def _existing_code_skip_reason(*, code: DoorCode, lock_entity_id: str, raw_pin: 
         door_code=code, lock_entity_id=lock_entity_id, schedule_pending=True
     ).exists():
         return _SKIP_SCHEDULE_PENDING
-    if code.source == DoorCode.Source.SYNCED:
+    synced = code.source == DoorCode.Source.SYNCED
+    if synced and not latchpoint_slot:
         return None
-    if not code.is_active:
+    if not synced and not code.is_active:
         return _SKIP_INACTIVE_MANUAL_CODE
     if raw_pin is not None:
         from locks.use_cases.lock_push import decrypt_pin_or_none
@@ -1420,6 +1427,8 @@ def _sync_lock_config_atomically(
                 event,
             )
 
+        from locks.use_cases.lock_push import slot_pushed_by_latchpoint
+
         # Import occupied slots.
         for slot_index in sorted(occupied_slots):
             existing = (
@@ -1441,9 +1450,17 @@ def _sync_lock_config_atomically(
 
             skip_code: DoorCode | None = None
             skip_reason: str | None = None
+            # Latchpoint's own slot: a manual code's, or one latchpoint pushed for
+            # a synced code on a lock someone added to it (ADR 0082).
+            latchpoint_slot = bool(existing) and (
+                existing.door_code.source != DoorCode.Source.SYNCED or slot_pushed_by_latchpoint(existing)
+            )
             if existing:
                 skip_reason = _existing_code_skip_reason(
-                    code=existing.door_code, lock_entity_id=lock_entity_id, raw_pin=raw_pin
+                    code=existing.door_code,
+                    lock_entity_id=lock_entity_id,
+                    raw_pin=raw_pin,
+                    latchpoint_slot=latchpoint_slot,
                 )
                 skip_code = existing.door_code if skip_reason else None
             elif slot_index in outstanding_cleanup_by_slot:
@@ -1462,12 +1479,16 @@ def _sync_lock_config_atomically(
                 )
                 continue
 
-            if existing and existing.door_code.source != DoorCode.Source.SYNCED:
+            if existing and latchpoint_slot:
                 # An active manual code whose slot holds its PIN or a masked one
                 # (the skips above catch the rest). Latchpoint owns it, so it
                 # stays manual and editable, and its PIN, schedule, owner and
                 # active flag are left alone (issue #166). Codes an older sync
-                # already converted stay synced.
+                # already converted stay synced. A synced code's slot latchpoint
+                # pushed to a lock someone added gets the same, on or off: its
+                # PIN, schedule, owner and active flag come from the lock it was
+                # imported from, so this lock never turns it back on, gives it
+                # another PIN or owner (ADR 0082).
                 code = existing.door_code
                 action = "unchanged"
                 disabled_on_lock = is_active is False
@@ -1686,9 +1707,15 @@ def _sync_lock_config_atomically(
                 if existing:
                     code.delete()
                     existing_code = existing.door_code
+                    race_latchpoint_slot = existing_code.source != DoorCode.Source.SYNCED or slot_pushed_by_latchpoint(
+                        existing
+                    )
                     # Same guards as a code that already held the slot (issue #150).
                     race_skip_reason = _existing_code_skip_reason(
-                        code=existing_code, lock_entity_id=lock_entity_id, raw_pin=raw_pin
+                        code=existing_code,
+                        lock_entity_id=lock_entity_id,
+                        raw_pin=raw_pin,
+                        latchpoint_slot=race_latchpoint_slot,
                     )
                     if race_skip_reason:
                         skip_slot(
@@ -1701,9 +1728,10 @@ def _sync_lock_config_atomically(
                         )
                         continue
                     race_fields = _apply_slot_pin(code=existing_code, raw_pin=raw_pin)
-                    # A manual code's active flag is latchpoint's, not the lock's (issue #166).
+                    # A manual code's active flag is latchpoint's, not the lock's
+                    # (issue #166), and so is a synced code's on a slot latchpoint pushed.
                     if (
-                        existing_code.source == DoorCode.Source.SYNCED
+                        not race_latchpoint_slot
                         and is_active is not None
                         and existing_code.is_active != bool(is_active)
                     ):
@@ -1781,8 +1809,6 @@ def _sync_lock_config_atomically(
             code = assignment.door_code
             if not code:
                 continue
-            from locks.use_cases.lock_push import slot_pushed_by_latchpoint
-
             if code.source != DoorCode.Source.SYNCED or slot_pushed_by_latchpoint(assignment):
                 # Only the active ones _empty_manual_slot_verdicts looked at. An
                 # inactive manual code is the #167 scheduler's to clear or forget,

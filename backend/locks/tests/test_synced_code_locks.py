@@ -15,6 +15,8 @@ from django.urls import reverse
 from integrations_zwavejs.manager import ZwavejsCommandError
 from rest_framework.test import APITestCase
 
+from accounts.models import User
+from alarm.crypto import SettingsEncryption
 from locks.models import DoorCode, DoorCodeEvent, DoorCodeLockAssignment
 from locks.tests.test_lock_push import ClearFailingGateway
 from locks.tests.test_tracking_integrity import _TrackingTestBase
@@ -199,7 +201,9 @@ class AddLockTests(_SyncedLocksTestBase):
         self.assertEqual(response.status_code, 409, response.content)
         message = response.json()["error"]["message"]
         self.assertIn(f'{self.BACK} already has this PIN in slot 3 as door code {copy.id} ("Slot 3")', message)
-        self.assertIn("before adding that lock", message)
+        # A synced code's PIN is the lock's, so deleting the other code is the only way out.
+        self.assertIn("Delete that code before adding that lock.", message)
+        self.assertNotIn("different PIN", message)
         self.assertNotIn(self.PIN, message)
         self.assertEqual(gateway.invoke_calls, [])
         self.assertEqual(self._slots(master), {self.FRONT: 1})
@@ -613,6 +617,172 @@ class StaleCacheSyncTests(_SyncedLocksTestBase):
         self.assertFalse(any(c["method_name"] == "get" and c["node_id"] == 14 for c in gateway.invoke_calls))
 
 
+class PushedSlotReconcileTests(_SyncedLocksTestBase):
+    """A Back Door sync of the slot latchpoint pushed never decides the master code's state (ADR 0082).
+
+    The Front Door, which it was imported from, is the lock's say. The Back
+    Door's slot gets the manual code rule: marked pushed, skipped on another
+    PIN, and never a source of the PIN, active flag, schedule or owner.
+    """
+
+    def _pin(self, code: DoorCode) -> str | None:
+        code.refresh_from_db()
+        return SettingsEncryption.get().decrypt(code.encrypted_pin) if code.encrypted_pin else None
+
+    def _front_sync_turns_it_off(self, master: DoorCode, gateway: ClearFailingGateway) -> None:
+        self._sync(gateway, self.FRONT)
+        master.refresh_from_db()
+        self.assertFalse(master.is_active)
+        self.assertEqual(self._slots(master), {self.FRONT: None, self.BACK: 2})
+
+    def test_a_back_door_sync_doesnt_turn_back_on_a_code_the_front_door_turned_off(self):
+        # Scenario A: the PIN is deleted at the Front Door.
+        master, gateway = self._master_on_both()
+        del gateway._lock_codes[(14, 1)]
+        del gateway._cache_codes[(14, 1)]
+        self._front_sync_turns_it_off(master, gateway)
+
+        self._sync(gateway, self.BACK)
+        gateway.invoke_calls.clear()
+        self._push_pending(gateway)
+
+        master.refresh_from_db()
+        self.assertFalse(master.is_active)
+        self.assertEqual(self._calls(gateway, "set"), [])
+        self.assertEqual(self._lock_codes(gateway, 14), {})
+        # The Back Door keeps it until it's removed there in latchpoint (ADR-0109).
+        self.assertEqual(self._lock_codes(gateway, 12), {1: OTHER_PIN, 2: self.PIN})
+        self._patch(master, gateway, {"remove_lock_entity_ids": [self.BACK]})
+        self.assertEqual(self._lock_codes(gateway, 12), {1: OTHER_PIN})
+
+    def test_a_stale_front_cache_doesnt_end_in_a_second_copy_on_the_front_door(self):
+        # Scenario B: the Front Door's cache drops slot 1 while the PIN is still in it.
+        master, gateway = self._master_on_both()
+        del gateway._cache_codes[(14, 1)]
+        self._front_sync_turns_it_off(master, gateway)
+        # The cache catches up and the next Front Door sync imports it as its own code.
+        gateway._cache_codes[(14, 1)] = self.PIN
+        self._sync(gateway, self.FRONT)
+        slot_1 = DoorCode.objects.get(lock_assignments__lock_entity_id=self.FRONT, lock_assignments__slot_index=1)
+        self.assertNotEqual(slot_1.id, master.id)
+
+        self._sync(gateway, self.BACK)
+        gateway.invoke_calls.clear()
+        self._push_pending(gateway)
+
+        master.refresh_from_db()
+        self.assertFalse(master.is_active)
+        self.assertEqual(self._calls(gateway, "set"), [])
+        self.assertEqual(self._lock_codes(gateway, 14), {1: self.PIN})
+
+    def test_another_pin_in_the_pushed_slot_is_never_taken_as_the_codes_pin(self):
+        # Scenario C: someone programs a different PIN into Back Door slot 2 at the keypad.
+        master, gateway = self._master_on_both()
+        gateway._lock_codes[(12, 2)] = "5555"
+        gateway._cache_codes[(12, 2)] = "5555"
+
+        result = self._sync(gateway, self.BACK)
+
+        row = self._slot_row(result, 2)
+        self.assertEqual((row.action, row.door_code_id), ("skipped", master.id))
+        self.assertIn("pin_mismatch", row.warnings)
+        self.assertEqual(self._pin(master), self.PIN)
+        self.assertTrue(DoorCode.objects.get(id=master.id).is_active)
+        gateway.invoke_calls.clear()
+        self._sync(gateway, self.FRONT)
+        self._push_pending(gateway)
+        self.assertEqual(self._pin(master), self.PIN)
+        self.assertEqual(self._calls(gateway, "set"), [])
+        self.assertEqual(self._lock_codes(gateway, 14), {1: self.PIN})
+
+    def test_a_back_door_sync_for_another_user_doesnt_take_the_code(self):
+        master, gateway = self._master_on_both()
+        gateway._cache_codes[(12, 2)] = self.PIN
+        other = User.objects.create_user(email="other@example.com", password="pass")
+
+        result = lock_config_sync_uc.sync_lock_config(
+            lock_entity_id=self.BACK, target_user=other, actor_user=self.user, zwavejs=gateway
+        )
+
+        self.assertEqual(self._slot_row(result, 2).door_code_id, master.id)
+        self.assertNotIn("owner_changed", self._slot_row(result, 2).warnings)
+        self.assertEqual(DoorCode.objects.get(id=master.id).user_id, self.user.id)
+
+    def test_the_front_door_still_gives_the_code_its_pin_and_owner(self):
+        # The lock it was imported from keeps the synced rule.
+        master, gateway = self._master_on_both()
+        gateway._lock_codes[(14, 1)] = "8642"
+        gateway._cache_codes[(14, 1)] = "8642"
+        other = User.objects.create_user(email="other@example.com", password="pass")
+
+        lock_config_sync_uc.sync_lock_config(
+            lock_entity_id=self.FRONT, target_user=other, actor_user=self.user, zwavejs=gateway
+        )
+
+        self.assertEqual(self._pin(master), "8642")
+        self.assertEqual(DoorCode.objects.get(id=master.id).user_id, other.id)
+
+
+class CopyRetireRaceTests(_SyncedLocksTestBase):
+    """A lock added to a stranded copy right before its pending retire takes the copy's locks."""
+
+    def _pending_copy_retire(self):
+        guest, copy, gateway = StrandedCopyRuleTests._stranded_copy(self)
+        self._move(guest, end_at=self._ago(minutes=1))
+        with patch.object(door_codes_uc, "_retire_synced_copy", return_value=None):
+            self._enforce(gateway)
+        self.assertTrue(DoorCodeEvent.objects.filter(metadata__action="duplicate_retire_pending").exists())
+        return guest, copy, gateway
+
+    def _retry_with_an_add_landing_first(self, copy: DoorCode, gateway: ClearFailingGateway) -> None:
+        real = door_codes_uc._retire_synced_copy
+
+        def add_then_retire(**kwargs):
+            # After retry_pending_copy_retires decided to retire the copy, before
+            # the retire takes the copy's locks.
+            door_codes_uc.update_door_code(
+                code=door_codes_uc.get_door_code_for_read(code_id=copy.id),
+                changes={"add_lock_entity_ids": [self.SIDE]},
+                actor_user=self.user,
+                zwavejs=gateway,
+            )
+            return real(**kwargs)
+
+        with patch.object(door_codes_uc, "_retire_synced_copy", side_effect=add_then_retire):
+            door_codes_uc.retry_pending_copy_retires(zwavejs=gateway)
+
+    def _assert_left_alone(self, guest: DoorCode, copy: DoorCode) -> None:
+        copy.refresh_from_db()
+        self.assertTrue(copy.is_active)
+        self.assertEqual(self._slots(copy)[self.BACK], 1)
+        done = DoorCodeEvent.objects.get(door_code=guest, metadata__action="duplicate_retire_done")
+        self.assertEqual(done.metadata["outcome"], "left_alone")
+        self.assertTrue(
+            DoorCodeEvent.objects.filter(door_code=guest, metadata__action="duplicate_pin_survives_retire").exists()
+        )
+
+    def test_an_add_that_lands_before_the_retire_takes_the_locks_keeps_the_copy(self):
+        guest, copy, gateway = self._pending_copy_retire()
+
+        self._retry_with_an_add_landing_first(copy, gateway)
+
+        self._assert_left_alone(guest, copy)
+        self.assertEqual(self._slots(copy), {self.BACK: 1, self.SIDE: 1})
+        self.assertEqual(self._lock_codes(gateway, 12), {1: self.PIN})
+        self.assertEqual(self._lock_codes(gateway, 13), {1: self.PIN})
+
+    def test_an_add_whose_push_is_only_queued_keeps_the_copy_too(self):
+        guest, copy, gateway = self._pending_copy_retire()
+
+        with patch.object(lock_push_uc, "push_task_running", return_value=True):
+            self._retry_with_an_add_landing_first(copy, gateway)
+
+        self._assert_left_alone(guest, copy)
+        side = DoorCodeLockAssignment.objects.get(door_code=copy, lock_entity_id=self.SIDE)
+        self.assertIsNotNone(side.push_requested_at)
+        self.assertIsNone(side.last_push_attempt_at)
+
+
 # The tests above again with the FakeGateway default, where a set doesn't reach
 # the value cache, so every sync after a push sees the pushed slot as Available.
 class StaleCacheAddLockTests(AddLockTests):
@@ -628,4 +798,8 @@ class StaleCacheDatedSyncedCodeTests(DatedSyncedCodeTests):
 
 
 class StaleCacheStrandedCopyRuleTests(StrandedCopyRuleTests):
+    CACHE_UPDATES_ON_SET = False
+
+
+class StaleCachePushedSlotReconcileTests(PushedSlotReconcileTests):
     CACHE_UPDATES_ON_SET = False
