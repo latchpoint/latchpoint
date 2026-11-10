@@ -40,9 +40,9 @@ The selected entity gets `domain="lock"` and a simplified name (just the node na
 
 **Lock command class constants** (`CC_DOOR_LOCK=98`, `CC_USER_CODE=99`, `CC_SCHEDULE_ENTRY_LOCK=78`, `LOCK_COMMAND_CLASSES`) are defined in `integrations_zwavejs/manager.py` and imported by the entity sync module.
 
-### 2. Enforce read-only editing for synced door codes (label-only)
+### 2. Enforce read-only editing for synced door codes (label and locks only)
 
-`DoorCodeUpdateSerializer` rejects updates to all fields except `label` when the code's source is `SYNCED`. The rejected fields are:
+`DoorCodeUpdateSerializer` rejects updates to all fields except `label` and the code's locks when the code's source is `SYNCED`. The rejected fields are:
 
 - `code` (PIN)
 - `is_active`
@@ -50,9 +50,19 @@ The selected entity gets `domain="lock"` and a simplified name (just the node na
 - `days_of_week`
 - `window_start`, `window_end`
 - `max_uses`
-- `lock_entity_ids`
+
+`lock_entity_ids` was on this list until synced codes' locks were made editable (below).
 
 This validation is applied at the serializer level, so the use-case layer doesn't need to know about source-based restrictions. The user can still rename a synced code's label for organizational purposes.
+
+**Synced codes' locks are editable.** `lock_entity_ids` is no longer read-only, and neither are `add_lock_entity_ids` and `remove_lock_entity_ids` (issue #159). A synced code's locks are added and removed the same way a manual code's are: latchpoint pushes the code's PIN into a free slot on an added lock through the queued push (ADR-0111) and tracks that slot on the code's assignment, and clears the slot on a removed lock through the normal clear and pending removal path, including the lock the code was imported from. The code stays `source=synced`. The PIN, the schedule (`days_of_week`, `window_start`, `window_end`) and `max_uses` still come from the lock and stay read-only, and `is_active`, `start_at` and `end_at` only open up under ADR-0109's rule for synced codes with an `end_at`. The real case is a master code imported from the Front Door that also has to open the Back Door.
+
+- A synced code imported from a lock that masks its codes has no stored PIN, so adding a lock to it is a 400 ("Latchpoint doesn't have a readable PIN for this code, so it can't put it on another lock."), and so is one whose stored PIN can't be decrypted. Removing one still works, since a clear doesn't need the PIN.
+- Adding a lock is refused with a 409 when another code already has the PIN on that lock, the same check turning a code on uses (issue #188), against the added locks only. That goes for active manual codes too.
+- Removals that would leave a synced code with no locks are a 400, a full `lock_entity_ids: []` included, since the door codes list leaves out a synced code with no locks.
+- Lock sync treats the pushed slot as the code's own, since the code tracks it: it isn't imported as a "Slot N" code and the code isn't flagged `duplicate_pin` against itself. A slot latchpoint pushed (its assignment holds a slot and has a push attempt, which lock sync never stamps) gets the manual code rule from issue #166. When it's occupied, lock sync only marks that lock pushed and flags a disabled slot, skips it as `pin_mismatch` when it holds another PIN, and never takes the code's PIN, active flag, schedule or owner from it, whether the code is on or off. When the value cache calls it Available it's only let go after a live readback answers empty twice, then pushed again, and the code is never turned off for it. The slot on the lock the code was imported from keeps the synced rule above, so that lock alone decides the code's PIN, schedule, owner and active flag. A change made there isn't pushed on to the added locks. A code it turns off keeps its PIN on the added locks (ADR-0109).
+- Adding a lock to a synced code is checked for another code with the PIN on that lock whether the code is on or off, since lock sync turns an undated one back on without that check.
+- ADR-0109's stranded copy rule never retires a synced code latchpoint has pushed to a lock. It's only flagged.
 
 **Manual codes stay latchpoint's (issue #166).** Latchpoint, not the lock, is the authority for a manual code, so lock config sync never turns one into a synced code. Only slots latchpoint doesn't know about are imported as synced. For a manual code in its own slot the sync leaves the PIN, schedule, owner and active flag alone and only marks that lock pushed, flags a slot the lock reports disabled, and lets go of a tracked slot only when a live readback answers it empty twice and the lock can't already have the PIN in another slot, so the scheduler pushes the code again. Codes an earlier sync converted stay synced.
 
@@ -85,6 +95,8 @@ DELETE /api/door-codes/{id}  (admin + reauth)
 #### Error handling: Option A (fail the delete)
 
 If the Z-Wave JS server is unreachable or the lock doesn't respond, the `invoke_cc_api` call raises a `ZwavejsCommandError` (subclass of `GatewayError`), which the exception handler maps to HTTP 502. The database state is unchanged — the user must retry when the lock is reachable.
+
+Some synced codes are deleted the way a manual code is instead: clears an earlier save couldn't finish are retried, a clear that fails is recorded for the scheduler's retries, unconfirmed push slots are read back and cleared, and when any of that can't be done the delete is refused with "The door code wasn't deleted and is now off", with the slots it did clear forgotten. That's a synced code latchpoint has ever pushed or queued a push of to any lock (an assignment with `last_push_attempt_at` or `push_requested_at`, which includes rows migration 0010 stamped from the code's last attempt and a dated synced code turned back on under ADR-0109), or one that still has a clear failure or an unconfirmed push attempt on record, on a lock it's on or one it was removed from (§2). Fail-fast there would leave the row saying a slot it already cleared is still held, with nothing recorded to retry, or delete the row along with the record of a slot only latchpoint knew about and leave the PIN in it. Every other synced code keeps the fail-fast. Retry on a refused synced code that's off answers 409 and says to delete it again once its locks respond, since an undated one can't be turned on from latchpoint.
 
 **Rationale for Option A over alternatives:**
 

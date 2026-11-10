@@ -514,8 +514,10 @@ class DoorCodesApiTests(EncryptionTestMixin, APITestCase):
         )
         self.assertEqual(response.status_code, 400)
         details = response.json()["error"]["details"]
-        for field in ("max_uses", "is_active", "lock_entity_ids", "days_of_week"):
+        for field in ("max_uses", "is_active", "days_of_week"):
             self.assertIn(field, details, f"Expected validation error for {field}")
+        # Its locks can be edited like a manual code's (ADR 0082).
+        self.assertNotIn("lock_entity_ids", details)
 
     def test_synced_code_allows_label_update(self):
         code = self._create_synced_code()

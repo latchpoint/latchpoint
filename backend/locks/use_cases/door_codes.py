@@ -67,6 +67,14 @@ class DoorCodeWouldHaveNoLocks(ValidationError):
     """Lock removals on an update that would leave the code on no lock (issue #159)."""
 
 
+class DoorCodePinUnknown(ValidationError):
+    """Adding a lock to a code whose PIN latchpoint doesn't have, so there's nothing to push.
+
+    A synced code imported from a lock that masks its codes has no stored PIN,
+    and a stored PIN that can't be decrypted counts the same.
+    """
+
+
 class SlotClearFailed(GatewayError):
     """A slot that may hold the code's PIN couldn't be cleared, so the code was kept."""
 
@@ -372,11 +380,12 @@ def retire_door_code(
                 event_metadata={"reason": reason},
             )
             for copy_id, lock_entity_id, slot_index, stranded in copies:
-                if not stranded:
+                outcome = _retire_synced_copy(copy_id=copy_id, original=code, zwavejs=zwavejs) if stranded else None
+                if not stranded or outcome == _COPY_LEFT_ALONE:
                     _flag_surviving_duplicate(
                         original=code, copy_id=copy_id, lock_entity_id=lock_entity_id, slot_index=slot_index
                     )
-                elif not _retire_synced_copy(copy_id=copy_id, original=code, zwavejs=zwavejs):
+                elif not outcome:
                     _record_copy_event(
                         original=code,
                         action=_COPY_RETIRE_PENDING,
@@ -448,7 +457,22 @@ def _is_stranded_copy(*, original: DoorCode, copy_id: int, lock_entity_id: str, 
     dropped or landed in another slot, and a keypad code typed in after the
     guest's push into a slot the guest never used. With no push event left for
     the slot (event retention) the copy is flagged instead of retired.
+
+    A synced code latchpoint has pushed to any of its locks isn't one either,
+    whichever slot this is. Someone added a lock to it (ADR 0082), so it's a
+    code they use on purpose, and turning it off would take it off the locks
+    they added too. It's only flagged. Its row's ``created_at`` is when it was
+    imported from its first lock, so it says nothing about a slot latchpoint
+    pushed it into. That's a push attempt or a queued push on any of its
+    assignments, slot or not
+    (:func:`~locks.use_cases.lock_push.has_lock_pushed_by_latchpoint`), which
+    lock sync never stamps and event retention never prunes. It's broad on
+    purpose, since leaving a code alone only means flagging it.
     """
+    from locks.use_cases.lock_push import has_lock_pushed_by_latchpoint
+
+    if has_lock_pushed_by_latchpoint(door_code_id=copy_id):
+        return False
     first_push_at = (
         DoorCodeEvent.objects.filter(
             door_code=original,
@@ -498,30 +522,40 @@ def _flag_surviving_duplicate(*, original: DoorCode, copy_id: int, lock_entity_i
     )
 
 
-def _retire_synced_copy(*, copy_id: int, original: DoorCode, zwavejs: ZwavejsGateway) -> bool:
+_COPY_RETIRED = "retired"
+_COPY_LEFT_ALONE = "left_alone"
+
+
+def _retire_synced_copy(*, copy_id: int, original: DoorCode, zwavejs: ZwavejsGateway) -> str | None:
     """Turn off a stranded synced copy of ``original``'s PIN and clear its slot (issue #185).
 
     The copy is read again under its own locks (when called from
     :func:`retire_door_code` the original's already cover its slot, so this only
     waits for a lock it has a clear or attempt on elsewhere) and left alone if
-    it's gone, off, given an ``end_at`` or holds a different PIN by then.
-    Returns ``False`` only when the retire raised (logged), so the caller can
-    have it tried again, and ``True`` once there's nothing left to do.
+    it's gone, off, given an ``end_at`` or holds a different PIN by then, which
+    is :data:`_COPY_RETIRED` since there's nothing left to do. It's
+    :data:`_COPY_LEFT_ALONE` when someone has added a lock to it by then
+    (:func:`_is_stranded_copy`), checked under those locks so an add that
+    landed after the caller looked is still seen, and the caller flags it
+    instead. ``None`` (falsy) only when the retire raised (logged), so the
+    caller can have it tried again.
     """
-    from locks.use_cases.lock_push import decrypt_pin_or_none
+    from locks.use_cases.lock_push import decrypt_pin_or_none, has_lock_pushed_by_latchpoint
 
     copy = DoorCode.objects.filter(id=copy_id).first()
     if copy is None:
-        return True
+        return _COPY_RETIRED
     try:
         with _hold_door_code_locks(code=copy):
+            if has_lock_pushed_by_latchpoint(door_code_id=copy.id):
+                return _COPY_LEFT_ALONE
             if (
                 copy.source != DoorCode.Source.SYNCED
                 or not copy.is_active
                 or copy.end_at is not None
                 or decrypt_pin_or_none(copy) != decrypt_pin_or_none(original)
             ):
-                return True
+                return _COPY_RETIRED
             _update_door_code_locked(
                 code=copy,
                 changes={"is_active": False},
@@ -529,9 +563,9 @@ def _retire_synced_copy(*, copy_id: int, original: DoorCode, zwavejs: ZwavejsGat
                 zwavejs=zwavejs,
                 event_metadata={"reason": "duplicate_of_retired_code", "duplicate_of_door_code_id": original.id},
             )
-            return True
+            return _COPY_RETIRED
     except NotFound:
-        return True
+        return _COPY_RETIRED
     except Exception:
         logger.warning(
             "Couldn't retire synced door code id=%d, a copy of retired door code id=%d's PIN; trying again next tick",
@@ -539,7 +573,7 @@ def _retire_synced_copy(*, copy_id: int, original: DoorCode, zwavejs: ZwavejsGat
             original.id,
             exc_info=True,
         )
-        return False
+        return None
 
 
 def _pending_copy_retires() -> list[tuple[DoorCodeEvent, int]]:
@@ -587,7 +621,8 @@ def retry_pending_copy_retires(*, zwavejs: ZwavejsGateway) -> int:
     for the same copy on that retired code is tried again, and a
     ``duplicate_retire_done`` (``outcome=retired``) is written once it's
     retired or there's nothing left to do (the copy is gone, off, dated or
-    holds another PIN). Each try that raises leaves a ``duplicate_retire_failed``
+    holds another PIN). A copy someone has added a lock to since is flagged
+    instead and gets ``outcome=left_alone``. Each try that raises leaves a ``duplicate_retire_failed``
     event, and once the first try and those reach ``door_codes.push_max_attempts``
     it gives up with one ``max_attempts_exceeded`` event (``action=duplicate_retire``)
     and a ``duplicate_retire_done`` with ``outcome=gave_up`` (PR #211
@@ -606,8 +641,15 @@ def retry_pending_copy_retires(*, zwavejs: ZwavejsGateway) -> int:
             "lock_entity_id": event.lock_entity_id,
             "slot_index": int(event.metadata.get("slot_index") or 0),
         }
-        if _retire_synced_copy(copy_id=copy_id, original=event.door_code, zwavejs=zwavejs):
-            _record_copy_event(action=_COPY_RETIRE_DONE, outcome="retired", **where)
+        outcome = _retire_synced_copy(copy_id=copy_id, original=event.door_code, zwavejs=zwavejs)
+        if outcome == _COPY_LEFT_ALONE:
+            # Someone added a lock to it since, so it's not a stranded copy any
+            # more (:func:`_is_stranded_copy`) and is only flagged.
+            _flag_surviving_duplicate(**where)
+            _record_copy_event(action=_COPY_RETIRE_DONE, outcome=_COPY_LEFT_ALONE, **where)
+            continue
+        if outcome:
+            _record_copy_event(action=_COPY_RETIRE_DONE, outcome=_COPY_RETIRED, **where)
             finished += 1
             continue
         _record_copy_event(action=_COPY_RETIRE_FAILED, **where)
@@ -749,7 +791,44 @@ def _refuse_duplicate_pin_when_turning_on(*, code: DoorCode, changes: dict) -> N
         return
     # The locks it's being saved with, so a lock added in the same save counts
     # and one still being removed doesn't (issues #159, #171).
-    lock_entity_ids = _locks_after_save(code=code, changes=changes)
+    _refuse_pin_held_on_locks(
+        code=code, pin=pin, lock_entity_ids=_locks_after_save(code=code, changes=changes), before="turning it on"
+    )
+
+
+def _refuse_duplicate_pin_on_added_locks(*, code: DoorCode, changes: dict) -> None:
+    """Raise :class:`DuplicatePinOnLock` when a lock added to a code already has its PIN (issue #188).
+
+    The push to the added lock would put the PIN in a second slot there, the
+    same as turning a code on, so it's the same check on the added locks only.
+    A manual code that's being turned on in this save is checked on all its
+    locks by :func:`_refuse_duplicate_pin_when_turning_on`, and an inactive
+    one isn't pushed anywhere until that check runs. A synced code is checked
+    whether it's on or off: lock sync is what turns an undated one back on,
+    and lock sync never runs that check.
+    """
+    synced = code.source == DoorCode.Source.SYNCED
+    if not synced and (not code.is_active or ("is_active" in changes and not changes["is_active"])):
+        return
+    added = _added_locks(code=code, changes=changes)
+    if not added:
+        return
+    from locks.use_cases.lock_push import decrypt_pin_or_none
+
+    pin = str(changes["code"]).strip() if changes.get("code") else decrypt_pin_or_none(code)
+    if not pin:
+        return
+    _refuse_pin_held_on_locks(code=code, pin=pin, lock_entity_ids=added, before="adding that lock")
+
+
+def _refuse_pin_held_on_locks(*, code: DoorCode, pin: str, lock_entity_ids: list[str], before: str) -> None:
+    """Raise :class:`DuplicatePinOnLock` when another code on one of ``lock_entity_ids`` has ``pin`` (issue #188).
+
+    That's a code holding it in a slot there, or one active there and waiting
+    for its push. The error names the lock, the slot and the other code, never the PIN.
+    """
+    from locks.use_cases.lock_push import decrypt_pin_or_none
+
     others = (
         DoorCodeLockAssignment.objects.select_related("door_code")
         .filter(lock_entity_id__in=lock_entity_ids)
@@ -764,9 +843,13 @@ def _refuse_duplicate_pin_when_turning_on(*, code: DoorCode, changes: dict) -> N
             continue
         name = f'door code {other.id} ("{other.label}")' if other.label else f"door code {other.id}"
         where = f"in slot {assignment.slot_index}" if assignment.slot_index is not None else "waiting to be pushed"
+        # A synced code's PIN is the lock's, so deleting the other code is the only way.
+        if code.source == DoorCode.Source.SYNCED:
+            fix = "Delete that code"
+        else:
+            fix = "Delete that code or give this one a different PIN"
         raise DuplicatePinOnLock(
-            f"{assignment.lock_entity_id} already has this PIN {where} as {name}. "
-            "Delete that code or give this one a different PIN before turning it on."
+            f"{assignment.lock_entity_id} already has this PIN {where} as {name}. {fix} before {before}."
         )
 
 
@@ -823,12 +906,47 @@ def _refuse_lock_changes_leaving_no_locks(*, code: DoorCode, changes: dict) -> N
     """Raise :class:`DoorCodeWouldHaveNoLocks` when the save's lock removals would leave ``code`` on no lock.
 
     Only for ``add_lock_entity_ids`` / ``remove_lock_entity_ids``. A full
-    ``lock_entity_ids: []`` is still taken, as it always was. Checked before
-    anything changes. A code with a lock is only saved while that lock's
-    ``lock_sync:`` lock is held, so two removals can't both pass this.
+    ``lock_entity_ids: []`` is still taken for a manual code, as it always
+    was, but not for a synced one: the door codes list leaves out a synced code
+    with no locks, so it would be gone from the page while its row stays.
+    Checked before anything changes. A code with a lock is only saved while
+    that lock's ``lock_sync:`` lock is held, so two removals can't both pass this.
     """
-    if changes.get("remove_lock_entity_ids") and not _locks_after_save(code=code, changes=changes):
+    removes = bool(changes.get("remove_lock_entity_ids")) or (
+        code.source == DoorCode.Source.SYNCED and "lock_entity_ids" in changes
+    )
+    if removes and not _locks_after_save(code=code, changes=changes):
         raise DoorCodeWouldHaveNoLocks("This save would leave the code with no locks.")
+
+
+def _added_locks(*, code: DoorCode, changes: dict) -> list[str]:
+    """The locks this save puts ``code`` on that it has no assignment on yet, so a push goes to them.
+
+    A lock still being removed keeps its assignment, so adding it back only
+    cancels the removal and isn't counted.
+    """
+    current = set(DoorCodeLockAssignment.objects.filter(door_code=code).values_list("lock_entity_id", flat=True))
+    return [lock for lock in _locks_after_save(code=code, changes=changes) if lock not in current]
+
+
+def _refuse_adding_locks_without_pin(*, code: DoorCode, changes: dict) -> None:
+    """Raise :class:`DoorCodePinUnknown` when this save adds a lock to a synced code without a readable PIN.
+
+    A synced code imported from a lock that masks its codes has no stored PIN,
+    and one whose stored PIN can't be decrypted is no better, so there's
+    nothing to push to the new lock. Removing locks is still fine, since a
+    clear doesn't need the PIN. Manual codes always get a PIN when they're
+    made, so they're left as they were.
+    """
+    if code.source != DoorCode.Source.SYNCED or not _added_locks(code=code, changes=changes):
+        return
+    from locks.use_cases.lock_push import decrypt_pin_or_none
+
+    if decrypt_pin_or_none(code) is None:
+        raise DoorCodePinUnknown(
+            "Latchpoint doesn't have a readable PIN for this code, so it can't put it on another lock. "
+            "Either the lock it was synced from hides its codes or the stored PIN can't be decrypted."
+        )
 
 
 def _record_withdraw_gave_up(*, code: DoorCode, failure: ClearFailure, max_attempts: int) -> None:
@@ -886,10 +1004,15 @@ def _update_door_code_locked(
     diff below, so a lock another save added meanwhile is never dropped by
     this one, and a lock still being removed stays that way unless it's added
     again. Removals that would leave no lock are refused before anything
-    changes. A code deleted meanwhile is a :class:`NotFound`, never saved back.
+    changes, and so are added locks when the code's PIN isn't known or another
+    code already has it on an added lock (issue #188). That goes for synced
+    codes too, whose locks are edited the same way (ADR 0082). A code deleted
+    meanwhile is a :class:`NotFound`, never saved back.
     """
     _refuse_lock_changes_leaving_no_locks(code=code, changes=changes)
+    _refuse_adding_locks_without_pin(code=code, changes=changes)
     _refuse_duplicate_pin_when_turning_on(code=code, changes=changes)
+    _refuse_duplicate_pin_on_added_locks(code=code, changes=changes)
     updated_fields = []
     push_inline = False
 
@@ -1215,12 +1338,37 @@ def _delete_door_code_locked(
     with :class:`SlotClearFailed` when a slot that may hold its PIN can't be
     cleared right now (slots it did clear are forgotten), and skips and records a
     lock latchpoint can't resolve to a Z-Wave node, since no clear can reach it.
+
+    A synced code is deleted the way a manual code is when latchpoint has ever
+    pushed or queued a push of it to any lock (an assignment with
+    ``last_push_attempt_at`` or ``push_requested_at``, which also covers rows
+    migration 0010 stamped from the code's last attempt and a dated synced code
+    turned back on, #189), or when it still has a clear failure or an
+    unconfirmed push attempt on record, on a lock it's still on or one it was
+    removed from. Any of those can leave its PIN in a slot only latchpoint
+    knows about, ie an added lock's unconfirmed push (ADR 0082). A fail-fast
+    raise after the first lock's clear would leave the row saying that slot is
+    still held with nothing recorded to retry, and a delete that went ahead
+    would take the clear failure or attempt with it and leave the PIN on the
+    lock untracked. Any other synced code keeps the fail-fast.
     """
+    from locks.use_cases.lock_push import (
+        has_lock_pushed_by_latchpoint,
+        unconfirmed_attempt_lock_entity_ids,
+        unresolved_clear_failures,
+    )
+
     code_id = code.id
     label = code.label
     user = code.user
     extra_metadata: dict[str, object] = {}
-    manual = code.source != DoorCode.Source.SYNCED
+    # Whether the delete refuses and records failed clears, like a manual code's.
+    manual = (
+        code.source != DoorCode.Source.SYNCED
+        or has_lock_pushed_by_latchpoint(door_code_id=code.id)
+        or bool(unresolved_clear_failures(door_code=code))
+        or bool(unconfirmed_attempt_lock_entity_ids(door_code=code))
+    )
     transient_failures: list[ClearFailure] = []
     permanent_failures: list[ClearFailure] = []
 
@@ -1258,8 +1406,8 @@ def _delete_door_code_locked(
                     )
                     cleared.append(slot_info)
                 except Exception as exc:
-                    if code.source == DoorCode.Source.SYNCED:
-                        # Synced codes still fail-fast (ADR 0082 contract).
+                    if not manual:
+                        # Synced codes on their import lock only still fail-fast (ADR 0082 contract).
                         raise
                     # Recorded (unless permanent) so the scheduler keeps retrying it
                     # if the delete is refused below.
@@ -1495,6 +1643,13 @@ def retry_push_door_code(
         and not unresolved_clear_failures(door_code=code)
         and not inactive_slots_to_clear(door_code=code)
     ):
+        if code.source == DoorCode.Source.SYNCED:
+            # Lock sync turns an undated synced code on, not latchpoint, so point
+            # at what can be done here, ie after a refused delete (ADR 0082).
+            raise DoorCodeInactive(
+                "This synced door code is off, so there's nothing to push. If a delete was refused, "
+                "delete it again once its locks respond to finish clearing it."
+            )
         raise DoorCodeInactive("Door code is inactive. Turn it on before pushing it to its locks.")
     not_started = code.is_active and not is_started(code)
     if not_started and not unresolved_clear_failures(door_code=code) and not slots_to_withdraw(door_code=code):

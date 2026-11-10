@@ -167,7 +167,8 @@ class LockAddRemoveTests(_ApiTestBase):
         self.assertEqual(self._slots(code), {self.BACK: 1})
         self.assertEqual(gateway.invoke_calls, [])
 
-    def test_a_synced_code_cant_add_or_remove_locks(self):
+    def test_a_synced_code_can_add_and_remove_locks(self):
+        # ADR 0082: a synced code's locks are edited like a manual code's.
         code = DoorCode.objects.create(
             user=self.user,
             source=DoorCode.Source.SYNCED,
@@ -176,12 +177,17 @@ class LockAddRemoveTests(_ApiTestBase):
             code_type=DoorCode.CodeType.PERMANENT,
         )
         DoorCodeLockAssignment.objects.create(door_code=code, lock_entity_id=self.BACK, slot_index=1)
-        gateway = FakeGateway(usersNumber=5)
-        for field in ("add_lock_entity_ids", "remove_lock_entity_ids"):
-            with self.subTest(field=field):
-                response = self._patch_response(code, gateway, {field: [self.SIDE]})
-                self.assertEqual(response.status_code, 400, response.content)
-                self.assertIn(field, response.json()["error"]["details"])
+        gateway = FakeGateway(usersNumber=5, cache_updates_on_set=True)
+        gateway._lock_codes[(12, 1)] = self.PIN
+
+        data = self._patch(code, gateway, {"add_lock_entity_ids": [self.SIDE]})
+        self.assertEqual(data["lock_entity_ids"], [self.BACK, self.SIDE])
+        self.assertEqual(self._lock_codes(gateway, 13), {1: self.PIN})
+
+        data = self._patch(code, gateway, {"remove_lock_entity_ids": [self.SIDE]})
+        self.assertEqual(data["lock_entity_ids"], [self.BACK])
+        self.assertEqual(self._lock_codes(gateway, 13), {})
+        self.assertEqual(DoorCode.objects.get(id=code.id).source, DoorCode.Source.SYNCED)
 
 
 class DeletedMidRequestTests(_ApiTestBase):

@@ -80,8 +80,9 @@ after it (#144, #157, #167) already use.
   `end_at` can be moved but not cleared, since without one it would drop out of
   this rule and be stuck however it was left. It's keyed on the row rather than
   on the retire event because event retention deletes old events. Every other
-  synced code keeps ADR-0082's rule, and the PIN, schedule, max uses and locks
-  stay read-only on all of them.
+  synced code keeps ADR-0082's rule, and the PIN, schedule and max uses stay
+  read-only on all of them. Their locks can be added and removed (ADR-0082),
+  and a dated synced code on more than one lock is retired off all of them.
 - **No migration.** The first tick after deploy retires codes already past
   `end_at` and clears codes pushed before their start.
 
@@ -119,6 +120,14 @@ notifications and retiring used up codes is a separate change.
 - `exhausted` is reported in `validity` but nothing enforces it until use
   counting lands in PR2, so a used up code stays on its locks.
 - Latchpoint has to be running for codes to start and expire on time.
+- A synced code that lock sync turns off (its slot on the lock it was imported
+  from read empty or disabled) keeps the slots latchpoint pushed to the locks
+  someone added to it (ADR-0082), so its PIN still opens those doors. The #167
+  inactive clear only covers manual codes and lock sync never clears a slot.
+  That's on purpose: clearing them would let a stale value cache on the first
+  lock wipe a code that works on the others, and a household code that stays
+  on is the safer way to be wrong. Removing the lock from the code in
+  latchpoint takes the PIN off it.
 - Synced codes with dates are retired too, which clears their slot on the
   lock. A synced code without dates is only touched when it's a stranded copy
   of a code being retired (issue #185, PR #211 review). That's an active
@@ -128,7 +137,19 @@ notifications and retiring used up codes is a separate change.
   the copy's row was created after the first of those pushes. A lock sync
   having recorded the two as duplicates of each other doesn't count, and with
   no push event left for the slot (event retention) the copy is only flagged.
-  Such a copy is turned off through the same locked deactivate, which clears
+  A synced code latchpoint has pushed to any of its locks, ie one someone added
+  a lock to (ADR-0082), is never a stranded copy either, since it's in use on
+  purpose and its row's age says nothing about a slot latchpoint pushed it
+  into. That's a push attempt or a queued push on any of its assignments, with
+  or without a slot, which lock sync never stamps. It's broad on purpose,
+  since leaving a code alone only means flagging it: it also counts a push to
+  an added lock that failed with no slot, a dated synced code turned back on
+  from latchpoint, and a row without a slot that migration 0010 stamped with
+  its code's last attempt. It's checked again under the copy's `lock_sync:`
+  locks before it's turned off, so a lock added after the retire looked is
+  still seen. It's only flagged, and a pending retire of a copy someone has
+  added a lock to since ends with `outcome=left_alone` and the flag.
+  A stranded copy is turned off through the same locked deactivate, which clears
   its slot, and if that raises it's tried again on each later validity tick
   (`duplicate_retire_pending` until `duplicate_retire_done`), up to
   `door_codes.push_max_attempts` tries, then one `max_attempts_exceeded`
