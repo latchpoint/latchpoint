@@ -2271,6 +2271,10 @@ class UnconfirmedSlotCleanupTests(EncryptionTestMixin, TestCase):
         timeout = ZwavejsCommandError("driver TimeoutError after 5.0s")
         code, gateway, slot = self._pending_unconfirmed([timeout, timeout, timeout])
         DoorCode.objects.filter(id=code.id).update(source=DoorCode.Source.SYNCED)
+        # A synced code latchpoint never pushed to an added lock, like one an old
+        # sync converted before assignments recorded pushes. One latchpoint did
+        # push is refused like a manual code instead (ADR 0082 §3).
+        DoorCodeLockAssignment.objects.filter(door_code=code).update(last_push_attempt_at=None, push_requested_at=None)
         code.refresh_from_db()
 
         door_codes_uc.delete_door_code(code=code, actor_user=self.user, zwavejs=gateway)

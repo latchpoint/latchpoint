@@ -1338,12 +1338,22 @@ def _delete_door_code_locked(
     with :class:`SlotClearFailed` when a slot that may hold its PIN can't be
     cleared right now (slots it did clear are forgotten), and skips and records a
     lock latchpoint can't resolve to a Z-Wave node, since no clear can reach it.
+
+    A synced code latchpoint has pushed to a lock someone added to it (ADR
+    0082) is deleted the way a manual code is. Its added locks can hold the PIN
+    in a slot only latchpoint knows about (an unconfirmed push, say), and a
+    fail-fast raise after the first lock's clear would leave the row saying
+    that slot is still held with nothing recorded to retry. A synced code
+    with only the lock it was imported from keeps the fail-fast.
     """
+    from locks.use_cases.lock_push import has_lock_pushed_by_latchpoint
+
     code_id = code.id
     label = code.label
     user = code.user
     extra_metadata: dict[str, object] = {}
-    manual = code.source != DoorCode.Source.SYNCED
+    # Whether the delete refuses and records failed clears, like a manual code's.
+    manual = code.source != DoorCode.Source.SYNCED or has_lock_pushed_by_latchpoint(door_code_id=code.id)
     transient_failures: list[ClearFailure] = []
     permanent_failures: list[ClearFailure] = []
 
@@ -1381,8 +1391,8 @@ def _delete_door_code_locked(
                     )
                     cleared.append(slot_info)
                 except Exception as exc:
-                    if code.source == DoorCode.Source.SYNCED:
-                        # Synced codes still fail-fast (ADR 0082 contract).
+                    if not manual:
+                        # Synced codes on their import lock only still fail-fast (ADR 0082 contract).
                         raise
                     # Recorded (unless permanent) so the scheduler keeps retrying it
                     # if the delete is refused below.

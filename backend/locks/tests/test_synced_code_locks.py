@@ -11,6 +11,7 @@ from __future__ import annotations
 from datetime import timedelta
 from unittest.mock import patch
 
+from django.db.models.signals import post_save
 from django.urls import reverse
 from integrations_zwavejs.manager import ZwavejsCommandError
 from rest_framework.test import APITestCase
@@ -738,8 +739,9 @@ class CopyRetireRaceTests(_SyncedLocksTestBase):
         real = door_codes_uc._retire_synced_copy
 
         def add_then_retire(**kwargs):
-            # After retry_pending_copy_retires decided to retire the copy, before
-            # the retire takes the copy's locks.
+            # After retry_pending_copy_retires picked up the pending retire and
+            # before _retire_synced_copy takes the copy's lock_sync: locks, so
+            # only a check made under those locks can see it.
             door_codes_uc.update_door_code(
                 code=door_codes_uc.get_door_code_for_read(code_id=copy.id),
                 changes={"add_lock_entity_ids": [self.SIDE]},
@@ -781,6 +783,172 @@ class CopyRetireRaceTests(_SyncedLocksTestBase):
         side = DoorCodeLockAssignment.objects.get(door_code=copy, lock_entity_id=self.SIDE)
         self.assertIsNotNone(side.push_requested_at)
         self.assertIsNone(side.last_push_attempt_at)
+
+    def test_an_add_that_lands_while_the_original_retires_keeps_the_copy(self):
+        # retire_door_code classed the copy as stranded, then a lock gets added to
+        # it (no push task in this process, so its push is made inline and stamps
+        # the lock) before _retire_synced_copy takes the copy's locks.
+        guest, copy, gateway = StrandedCopyRuleTests._stranded_copy(self)
+        self._move(guest, end_at=self._ago(minutes=1))
+        real = door_codes_uc._is_stranded_copy
+        added: list[bool] = []
+
+        def stranded_then_add(**kwargs):
+            stranded = real(**kwargs)
+            if stranded and not added:
+                added.append(True)
+                door_codes_uc.update_door_code(
+                    code=door_codes_uc.get_door_code_for_read(code_id=copy.id),
+                    changes={"add_lock_entity_ids": [self.SIDE]},
+                    actor_user=self.user,
+                    zwavejs=gateway,
+                )
+            return stranded
+
+        with patch.object(door_codes_uc, "_is_stranded_copy", side_effect=stranded_then_add):
+            self._enforce(gateway)
+
+        self.assertEqual(added, [True])
+        self.assertFalse(DoorCode.objects.get(id=guest.id).is_active)
+        copy.refresh_from_db()
+        self.assertTrue(copy.is_active)
+        self.assertEqual(self._slots(copy), {self.BACK: 1, self.SIDE: 1})
+        self.assertEqual(self._lock_codes(gateway, 12), {1: self.PIN})
+        self.assertEqual(self._lock_codes(gateway, 13), {1: self.PIN})
+        self.assertTrue(
+            DoorCodeEvent.objects.filter(
+                door_code=guest,
+                metadata__action="duplicate_pin_survives_retire",
+                metadata__duplicate_door_code_id=copy.id,
+            ).exists()
+        )
+        self.assertFalse(DoorCodeEvent.objects.filter(metadata__action="duplicate_retire_pending").exists())
+
+
+class IntegrityRaceOnPushedSlotTests(_SyncedLocksTestBase):
+    """The sync's IntegrityError fallback, when the winner is a synced code on a slot latchpoint pushed."""
+
+    def _sync_back_losing_slot_2_to(self, master: DoorCode, gateway: ClearFailingGateway):
+        # The master's Back Door slot is put back between the sync's lookup of
+        # slot 2 and its insert of a new code's assignment there.
+        back = DoorCodeLockAssignment.objects.get(door_code=master, lock_entity_id=self.BACK)
+        DoorCodeLockAssignment.objects.filter(id=back.id).update(slot_index=None)
+
+        def take_slot_first(sender, instance, created, **kwargs):
+            if created and instance.source == DoorCode.Source.SYNCED:
+                DoorCodeLockAssignment.objects.filter(id=back.id).update(slot_index=2)
+
+        post_save.connect(take_slot_first, sender=DoorCode)
+        try:
+            return self._sync(gateway, self.BACK)
+        finally:
+            post_save.disconnect(take_slot_first, sender=DoorCode)
+
+    def test_another_pin_is_skipped_not_adopted(self):
+        master, gateway = self._master_on_both()
+        gateway._lock_codes[(12, 2)] = "5555"
+        gateway._cache_codes[(12, 2)] = "5555"
+
+        result = self._sync_back_losing_slot_2_to(master, gateway)
+
+        row = self._slot_row(result, 2)
+        self.assertEqual((row.action, row.door_code_id), ("skipped", master.id))
+        self.assertIn("integrity_race", row.warnings)
+        self.assertIn("pin_mismatch", row.warnings)
+        self.assertEqual(lock_push_uc.decrypt_pin_or_none(DoorCode.objects.get(id=master.id)), self.PIN)
+
+    def test_an_off_code_is_not_turned_on(self):
+        master, gateway = self._master_on_both()
+        gateway._cache_codes[(12, 2)] = self.PIN
+        DoorCode.objects.filter(id=master.id).update(is_active=False)
+
+        result = self._sync_back_losing_slot_2_to(master, gateway)
+
+        row = self._slot_row(result, 2)
+        self.assertEqual(row.door_code_id, master.id)
+        self.assertIn("integrity_race", row.warnings)
+        self.assertFalse(DoorCode.objects.get(id=master.id).is_active)
+
+
+class DeleteTests(_SyncedLocksTestBase):
+    """Deleting a synced code latchpoint pushed to an added lock goes the manual code's way (ADR 0082 §3)."""
+
+    def _delete_response(self, code: DoorCode, gateway: ClearFailingGateway):
+        with patch("locks.views.door_codes.default_zwavejs_gateway", gateway):
+            return self.client.delete(
+                reverse("door-code-detail", args=[code.id]), {"reauth_password": "pass"}, format="json"
+            )
+
+    def test_an_unconfirmed_slot_on_the_added_lock_that_cant_be_checked_refuses_the_delete(self):
+        # Scenario A: every readback on the Back Door times out, the push's and the delete's.
+        timeouts = [ZwavejsCommandError("driver TimeoutError after 5.0s")] * 20
+        gateway = self._gateway(get_responses={12: timeouts})
+        master = self._master(gateway)
+        self._patch(master, gateway, {"add_lock_entity_ids": [self.BACK]})
+        self.assertEqual(self._slots(master), {self.FRONT: 1, self.BACK: None})
+        self.assertEqual(self._lock_codes(gateway, 12), {1: OTHER_PIN, 2: self.PIN})
+
+        response = self._delete_response(master, gateway)
+
+        self.assertEqual(response.status_code, 502, response.content)
+        self.assertIn("wasn't deleted and is now off", response.json()["error"]["message"])
+        master.refresh_from_db()
+        self.assertFalse(master.is_active)
+        self.assertEqual(self._slots(master), {self.FRONT: None, self.BACK: None})
+        self.assertEqual(self._lock_codes(gateway, 14), {})
+        self.assertEqual(lock_push_uc.unconfirmed_attempt_lock_entity_ids(door_code=master), [self.BACK])
+        # A Back Door sync meanwhile leaves the slot to the master code instead of importing it.
+        result = self._sync(gateway, self.BACK)
+        self.assertEqual(result.created, 0)
+        self.assertEqual(self._slot_row(result, 2).door_code_id, master.id)
+
+        # Once the Back Door answers, deleting it again clears the slot.
+        gateway._get_scripts[12] = []
+        response = self._delete_response(master, gateway)
+
+        self.assertEqual(response.status_code, 204, response.content)
+        self.assertFalse(DoorCode.objects.filter(id=master.id).exists())
+        self.assertEqual(self._lock_codes(gateway, 12), {1: OTHER_PIN})
+
+    def test_a_failed_clear_on_the_added_lock_is_recorded_and_retried(self):
+        # Scenario B: the Front Door's slot clears, the Back Door's doesn't.
+        master, gateway = self._master_on_both()
+        gateway.clear_fails_on = {12}
+
+        response = self._delete_response(master, gateway)
+
+        self.assertEqual(response.status_code, 502, response.content)
+        self.assertIn("wasn't deleted and is now off", response.json()["error"]["message"])
+        master.refresh_from_db()
+        self.assertFalse(master.is_active)
+        self.assertEqual(self._lock_codes(gateway, 14), {})
+        self.assertEqual(self._slots(master), {self.FRONT: None, self.BACK: 2})
+        [failure] = lock_push_uc.unresolved_clear_failures(door_code=master)
+        self.assertEqual((failure.lock_entity_id, failure.slot_index), (self.BACK, 2))
+
+        # The scheduler's clear retry takes it off once the Back Door answers.
+        gateway.clear_fails_on = set()
+        self._push_pending(gateway)
+        self.assertEqual(self._lock_codes(gateway, 12), {1: OTHER_PIN})
+        self.assertEqual(self._slots(master), {self.FRONT: None, self.BACK: None})
+        self.assertEqual(self._calls(gateway, "set"), [])
+
+        self.assertEqual(self._delete_response(master, gateway).status_code, 204)
+        self.assertFalse(DoorCode.objects.filter(id=master.id).exists())
+
+    def test_a_synced_code_on_its_import_lock_only_still_fails_fast(self):
+        gateway = self._gateway()
+        master = self._master(gateway)
+        gateway.clear_fails_on = {14}
+
+        response = self._delete_response(master, gateway)
+
+        self.assertEqual(response.status_code, 502, response.content)
+        self.assertNotIn("is now off", response.json()["error"]["message"])
+        master.refresh_from_db()
+        self.assertTrue(master.is_active)
+        self.assertEqual(self._slots(master), {self.FRONT: 1})
+        self.assertEqual(lock_push_uc.unresolved_clear_failures(door_code=master), [])
 
 
 # The tests above again with the FakeGateway default, where a set doesn't reach

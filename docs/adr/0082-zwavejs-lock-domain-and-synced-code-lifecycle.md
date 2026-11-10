@@ -96,6 +96,8 @@ DELETE /api/door-codes/{id}  (admin + reauth)
 
 If the Z-Wave JS server is unreachable or the lock doesn't respond, the `invoke_cc_api` call raises a `ZwavejsCommandError` (subclass of `GatewayError`), which the exception handler maps to HTTP 502. The database state is unchanged — the user must retry when the lock is reachable.
 
+A synced code latchpoint has pushed or queued a push to a lock someone added to it (§2) is deleted the way a manual code is instead: clears an earlier save couldn't finish are retried, a clear that fails is recorded for the scheduler's retries, unconfirmed push slots are read back and cleared, and when any of that can't be done the delete is refused with "The door code wasn't deleted and is now off", with the slots it did clear forgotten. Fail-fast there would leave the row saying a slot it already cleared is still held, with nothing recorded to retry, or delete the row while an added lock may still hold the PIN in a slot only latchpoint knew about. A synced code with only the lock it was imported from keeps the fail-fast.
+
 **Rationale for Option A over alternatives:**
 
 - **Option B** (dismiss + queue retry) adds background job complexity and risks "phantom" codes that appear deleted in the UI but persist on the lock indefinitely if retries exhaust.
