@@ -47,6 +47,12 @@ class DrainRuleDispatcherTests(SimpleTestCase):
         self.addCleanup(patcher.stop)
         self.addCleanup(self.dispatcher.shutdown)
 
+    def _dispatch_now(self, entity_id: str) -> None:
+        """Queue `entity_id` and fire the debounce now instead of waiting 200ms for it."""
+        notify_entities_changed(source="test", entity_ids=[entity_id])
+        with self.dispatcher._lock:
+            self.dispatcher._flush_batch_locked("test", self.dispatcher._pending_entities[entity_id][0])
+
     def test_drops_a_batch_still_waiting_on_the_debounce(self):
         from config.test_runner import drain_rule_dispatcher
 
@@ -57,13 +63,28 @@ class DrainRuleDispatcherTests(SimpleTestCase):
             self.assertIsNotNone(timer)
 
             drain_rule_dispatcher()
+
+            # Right away, not after the debounce, or a timer the drain never stopped passes too.
+            self.assertFalse(timer.is_alive())
             # Past the 200ms debounce, so a timer that survived would have fired by now.
             time.sleep(0.3)
 
-        self.assertFalse(timer.is_alive())
         self.assertIsNone(self.dispatcher._debounce_timer)
         self.assertEqual(self.dispatcher._pending_entities, {})
         self.assertEqual(dispatched, [])
+
+    def test_clears_the_debounce_for_the_entities_it_drops(self):
+        from config.test_runner import drain_rule_dispatcher
+
+        entity_id = _entity_id()
+        with patch.object(self.dispatcher, "_dispatch_batch", lambda batch: None):
+            notify_entities_changed(source="test", entity_ids=[entity_id])
+            drain_rule_dispatcher()
+
+            # Inside the 200ms debounce, so a key left behind would skip this notify.
+            notify_entities_changed(source="test", entity_ids=[entity_id])
+
+        self.assertIn(entity_id, self.dispatcher._pending_entities)
 
     def test_waits_for_a_batch_already_running(self):
         from config.test_runner import drain_rule_dispatcher
@@ -78,10 +99,7 @@ class DrainRuleDispatcherTests(SimpleTestCase):
 
         entity_id = _entity_id()
         with patch.object(self.dispatcher, "_dispatch_batch", slow_dispatch):
-            notify_entities_changed(source="test", entity_ids=[entity_id])
-            # Fire the debounce now instead of waiting 200ms for it.
-            with self.dispatcher._lock:
-                self.dispatcher._flush_batch_locked("test", self.dispatcher._pending_entities[entity_id][0])
+            self._dispatch_now(entity_id)
             self.assertTrue(started.wait(timeout=5))
             workers = list(self.dispatcher._worker_pool._threads)
 
@@ -91,16 +109,89 @@ class DrainRuleDispatcherTests(SimpleTestCase):
         self.assertIsNone(self.dispatcher._worker_pool)
         self.assertEqual([t.name for t in workers if t.is_alive()], [])
 
-    def test_the_next_dispatch_still_runs(self):
+    def test_also_stops_a_batch_queued_by_a_running_batch(self):
+        """A running dispatch can notify again, like `ws_signals` does on an alarm state change."""
         from config.test_runner import drain_rule_dispatcher
 
-        dispatched = threading.Event()
-        with patch.object(self.dispatcher, "_dispatch_batch", lambda batch: dispatched.set()):
-            notify_entities_changed(source="test", entity_ids=[_entity_id()])
-            drain_rule_dispatcher()
-            notify_entities_changed(source="test", entity_ids=[_entity_id()])
+        started = threading.Event()
+        dispatched = []
+        follow_up = _entity_id()
 
-            self.assertTrue(dispatched.wait(timeout=5))
+        def dispatch_that_notifies(batch):
+            dispatched.append(batch.entity_ids)
+            if follow_up not in batch.entity_ids:
+                started.set()
+                # Late enough that the drain has already taken the timer and is waiting on the pool.
+                time.sleep(0.1)
+                self.dispatcher.notify_entities_changed(source="alarm_state", entity_ids=[follow_up])
+
+        first = _entity_id()
+        with patch.object(self.dispatcher, "_dispatch_batch", dispatch_that_notifies):
+            self._dispatch_now(first)
+            self.assertTrue(started.wait(timeout=5))
+
+            drain_rule_dispatcher()
+
+            self.assertIsNone(self.dispatcher._debounce_timer)
+            self.assertIsNone(self.dispatcher._worker_pool)
+            # Past the 200ms debounce, so the follow-up would have run by now if it survived.
+            time.sleep(0.3)
+
+        self.assertEqual(dispatched, [{first}])
+
+    def test_fails_the_test_naming_a_batch_that_never_finishes(self):
+        from config.test_runner import drain_rule_dispatcher
+
+        release = threading.Event()
+        started = threading.Event()
+
+        def stuck_dispatch(batch):
+            started.set()
+            release.wait(timeout=30)
+
+        entity_id = _entity_id()
+        with patch.object(self.dispatcher, "_dispatch_batch", stuck_dispatch):
+            self._dispatch_now(entity_id)
+            self.assertTrue(started.wait(timeout=5))
+            workers = list(self.dispatcher._worker_pool._threads)
+            self.addCleanup(lambda: [t.join(timeout=5) for t in workers])
+            self.addCleanup(release.set)
+            [batch] = self.dispatcher._pending_batches
+
+            began = time.monotonic()
+            with (
+                patch("config.test_runner.DRAIN_TIMEOUT_SECONDS", 0.2),
+                self.assertRaisesMessage(AssertionError, f"batch {batch.batch_id} from test for {entity_id}"),
+            ):
+                drain_rule_dispatcher()
+
+        self.assertLess(time.monotonic() - began, 5)
+
+    def test_the_next_dispatch_runs_on_a_new_pool(self):
+        from config.test_runner import drain_rule_dispatcher
+
+        dispatched = []
+        ran = threading.Semaphore(0)
+
+        def record(batch):
+            dispatched.append(batch.entity_ids)
+            ran.release()
+
+        before, after = _entity_id(), _entity_id()
+        with patch.object(self.dispatcher, "_dispatch_batch", record):
+            self._dispatch_now(before)
+            self.assertTrue(ran.acquire(timeout=5))
+            old_pool = self.dispatcher._worker_pool
+
+            drain_rule_dispatcher()
+            self.assertIsNone(self.dispatcher._worker_pool)
+
+            notify_entities_changed(source="test", entity_ids=[after])
+            self.assertTrue(ran.acquire(timeout=5))
+
+        self.assertEqual(dispatched, [{before}, {after}])
+        self.assertIsNotNone(self.dispatcher._worker_pool)
+        self.assertIsNot(self.dispatcher._worker_pool, old_pool)
 
     def test_does_nothing_before_the_dispatcher_exists(self):
         from config.test_runner import drain_rule_dispatcher
