@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import sys
 import threading
 import time
@@ -8,7 +9,7 @@ from unittest.mock import patch
 
 from django.contrib.auth.hashers import make_password
 from django.core.signals import got_request_exception
-from django.db import OperationalError, close_old_connections
+from django.db import OperationalError, close_old_connections, connection
 from django.test import TransactionTestCase
 from django.urls import reverse
 from rest_framework.test import APIClient
@@ -226,10 +227,29 @@ class ConcurrencyApiTests(TransactionTestCase):
         activate_one = reverse("alarm-settings-profile-activate", kwargs={"profile_id": profile_one.id})
         activate_two = reverse("alarm-settings-profile-activate", kwargs={"profile_id": profile_two.id})
 
+        # The first request to deactivate holds its transaction open at this barrier for the 1s
+        # timeout before it activates (#210). The second request never reaches the barrier while
+        # it's open, because it blocks on the first one's row lock, on the `select_for_update` or
+        # without it on the deactivate of the same row. So the barrier always times out, and the
+        # hold is what makes the test reliable. Without `select_for_update` the second request's
+        # deactivate has started before the first commits, so it misses the profile the first
+        # activates and both end up active every run, not only when the requests happened to
+        # overlap. With the lock the second reads after the first commits and deactivates it.
+        # The second then finds the barrier broken and goes straight on.
+        barrier = threading.Barrier(2)
+
+        def wait_after_deactivate(execute, sql, params, many, context):
+            result = execute(sql, params, many, context)
+            if sql.startswith('UPDATE "alarm_alarmsettingsprofile"') and "NOT (" in sql:
+                with contextlib.suppress(threading.BrokenBarrierError):
+                    barrier.wait(timeout=1)
+            return result
+
         def call_activate(url: str):
             client = APIClient(raise_request_exception=False)
             client.force_authenticate(self.admin)
-            response = client.post(url, data={}, format="json")
+            with connection.execute_wrapper(wait_after_deactivate):
+                response = client.post(url, data={}, format="json")
             return response.status_code
 
         statuses, errors = self._run_parallel(
