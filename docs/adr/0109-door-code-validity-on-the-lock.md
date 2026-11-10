@@ -127,7 +127,11 @@ notifications and retiring used up codes is a separate change.
   That's on purpose: clearing them would let a stale value cache on the first
   lock wipe a code that works on the others, and a household code that stays
   on is the safer way to be wrong. Removing the lock from the code in
-  latchpoint takes the PIN off it.
+  latchpoint takes the PIN off it. When the lock it was imported from gives
+  the code a new PIN as well (its slot read disabled with a new PIN that a
+  live readback confirms), the old PIN no longer belongs to the code, so the
+  scheduler clears it off the added locks, and the new one is pushed there
+  once the code is back on (issue #220, ADR-0082).
 - Synced codes with dates are retired too, which clears their slot on the
   lock. A synced code without dates is only touched when it's a stranded copy
   of a code being retired (issue #185, PR #211 review). That's an active

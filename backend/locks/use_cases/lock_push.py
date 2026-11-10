@@ -1540,6 +1540,70 @@ def clear_failures_message(failures: list[ClearFailure]) -> str:
     )
 
 
+def queue_clear_and_repush(
+    *, door_code: DoorCode, lock_entity_id: str, old_pin: str | None, pin_changed: bool, reason: str
+) -> bool:
+    """Queue a clear and re-push of ``door_code`` on ``lock_entity_id`` without sending anything (issue #220).
+
+    For lock sync, which takes a synced code's new PIN or schedule from the
+    lock it was imported from while it holds only that lock's ``lock_sync:``
+    lock, so it can't clear another lock's slot itself the way an edit does
+    (:func:`locks.use_cases.door_codes._update_door_code_locked`). The slot the
+    code tracks here gets a ``clear_failed`` with ``reason`` and ``old_pin``,
+    the state an edit leaves when its clear doesn't go through. The slot isn't
+    pushed to meanwhile, and :data:`PUSH_PENDING_TASK`, woken once the
+    caller's transaction commits, clears it, forgets it and pushes the code's
+    current PIN and schedule (or nothing, for a code that's off). With
+    ``pin_changed`` the slots an unconfirmed push may have left ``old_pin`` in
+    are recorded too, as ``unconfirmed``, so they're read back before they're
+    cleared, like :func:`clear_unconfirmed_slots_holding_pin` does. A slot with
+    a clear already on record is left as it is. Returns whether anything was recorded.
+    """
+    tracked = (
+        DoorCodeLockAssignment.objects.filter(door_code=door_code, lock_entity_id=lock_entity_id)
+        .values_list("slot_index", flat=True)
+        .first()
+    )
+    reason = sanitize_push_error_for_storage(reason)[:200]
+    failures: list[ClearFailure] = []
+    if tracked is not None:
+        failures.append(
+            ClearFailure(lock_entity_id=lock_entity_id, slot_index=int(tracked), reason=reason, expected_pin=old_pin)
+        )
+    if pin_changed:
+        verified = _verified_attempt_slots(door_code=door_code, lock_entity_id=lock_entity_id)
+        available = _available_attempt_slots(door_code=door_code, lock_entity_id=lock_entity_id)
+        attempts = _unconfirmed_attempts(
+            door_code=door_code,
+            lock_entity_id=lock_entity_id,
+            claimed_slots=_claimed_slots(lock_entity_id=lock_entity_id, door_code=door_code),
+        )
+        for slot_index, attempted_pin in attempts.items():
+            # The tracked slot is cleared as is above; an unconfirmed failure there would be settled as tracked.
+            if slot_index == tracked or not (attempted_pin or old_pin):
+                continue
+            failures.append(
+                ClearFailure(
+                    lock_entity_id=lock_entity_id,
+                    slot_index=slot_index,
+                    reason=reason,
+                    unconfirmed=True,
+                    slot_verified=slot_index in verified,
+                    slot_available=slot_index in available,
+                    expected_pin=attempted_pin or old_pin,
+                )
+            )
+    recorded = False
+    for failure in failures:
+        if _unresolved_clear_failure(door_code=door_code, lock_entity_id=lock_entity_id, slot_index=failure.slot_index):
+            continue
+        _create_clear_failed_event(door_code=door_code, failure=failure)
+        recorded = True
+    if recorded:
+        transaction.on_commit(_wake_pending_push_task, robust=True)
+    return recorded
+
+
 def _push_max_attempts() -> int:
     """``door_codes.push_max_attempts``, read through the scheduler's helper so a patch of it applies here too."""
     from locks.tasks import _get_push_max_attempts
@@ -4536,6 +4600,17 @@ def _wake_push_task() -> None:
     from scheduler.runner import wake_task
 
     wake_task(PUSH_REQUESTED_TASK)
+
+
+# The scheduler task that retries clears and then pushes, in locks/tasks.py (issue #126).
+PUSH_PENDING_TASK = "push_pending_door_codes"
+
+
+def _wake_pending_push_task() -> None:
+    """Run :data:`PUSH_PENDING_TASK` now rather than at its next 300s tick, for :func:`queue_clear_and_repush`."""
+    from scheduler.runner import wake_task
+
+    wake_task(PUSH_PENDING_TASK)
 
 
 def request_push(

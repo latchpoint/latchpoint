@@ -42,6 +42,9 @@ const SLOT_WARNING_LABELS: Record<string, string> = {
   pin_in_another_slot: 'Slot is empty but the PIN is in another slot, not sent again',
   disabled_on_lock: 'Disabled at the lock',
   slot_empty_repush: 'PIN missing from the lock, sending it again',
+  sent_to_other_locks: 'Sending the change to the other locks',
+  pin_change_unconfirmed: "Lock didn't confirm the new PIN, keeping the old one",
+  pin_held_on_other_lock: 'New PIN is already another code on another lock, not sent there',
 }
 
 function slotWarningLabel(warning: string): string {
