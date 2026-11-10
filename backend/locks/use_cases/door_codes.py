@@ -1339,21 +1339,36 @@ def _delete_door_code_locked(
     cleared right now (slots it did clear are forgotten), and skips and records a
     lock latchpoint can't resolve to a Z-Wave node, since no clear can reach it.
 
-    A synced code latchpoint has pushed to a lock someone added to it (ADR
-    0082) is deleted the way a manual code is. Its added locks can hold the PIN
-    in a slot only latchpoint knows about (an unconfirmed push, say), and a
-    fail-fast raise after the first lock's clear would leave the row saying
-    that slot is still held with nothing recorded to retry. A synced code
-    with only the lock it was imported from keeps the fail-fast.
+    A synced code is deleted the way a manual code is when latchpoint has ever
+    pushed or queued a push of it to any lock (an assignment with
+    ``last_push_attempt_at`` or ``push_requested_at``, which also covers rows
+    migration 0010 stamped from the code's last attempt and a dated synced code
+    turned back on, #189), or when it still has a clear failure or an
+    unconfirmed push attempt on record, on a lock it's still on or one it was
+    removed from. Any of those can leave its PIN in a slot only latchpoint
+    knows about, ie an added lock's unconfirmed push (ADR 0082). A fail-fast
+    raise after the first lock's clear would leave the row saying that slot is
+    still held with nothing recorded to retry, and a delete that went ahead
+    would take the clear failure or attempt with it and leave the PIN on the
+    lock untracked. Any other synced code keeps the fail-fast.
     """
-    from locks.use_cases.lock_push import has_lock_pushed_by_latchpoint
+    from locks.use_cases.lock_push import (
+        has_lock_pushed_by_latchpoint,
+        unconfirmed_attempt_lock_entity_ids,
+        unresolved_clear_failures,
+    )
 
     code_id = code.id
     label = code.label
     user = code.user
     extra_metadata: dict[str, object] = {}
     # Whether the delete refuses and records failed clears, like a manual code's.
-    manual = code.source != DoorCode.Source.SYNCED or has_lock_pushed_by_latchpoint(door_code_id=code.id)
+    manual = (
+        code.source != DoorCode.Source.SYNCED
+        or has_lock_pushed_by_latchpoint(door_code_id=code.id)
+        or bool(unresolved_clear_failures(door_code=code))
+        or bool(unconfirmed_attempt_lock_entity_ids(door_code=code))
+    )
     transient_failures: list[ClearFailure] = []
     permanent_failures: list[ClearFailure] = []
 
@@ -1628,6 +1643,13 @@ def retry_push_door_code(
         and not unresolved_clear_failures(door_code=code)
         and not inactive_slots_to_clear(door_code=code)
     ):
+        if code.source == DoorCode.Source.SYNCED:
+            # Lock sync turns an undated synced code on, not latchpoint, so point
+            # at what can be done here, ie after a refused delete (ADR 0082).
+            raise DoorCodeInactive(
+                "This synced door code is off, so there's nothing to push. If a delete was refused, "
+                "delete it again once its locks respond to finish clearing it."
+            )
         raise DoorCodeInactive("Door code is inactive. Turn it on before pushing it to its locks.")
     not_started = code.is_active and not is_started(code)
     if not_started and not unresolved_clear_failures(door_code=code) and not slots_to_withdraw(door_code=code):

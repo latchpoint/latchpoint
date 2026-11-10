@@ -897,10 +897,12 @@ class DeleteTests(_SyncedLocksTestBase):
         self.assertEqual(self._slots(master), {self.FRONT: None, self.BACK: None})
         self.assertEqual(self._lock_codes(gateway, 14), {})
         self.assertEqual(lock_push_uc.unconfirmed_attempt_lock_entity_ids(door_code=master), [self.BACK])
-        # A Back Door sync meanwhile leaves the slot to the master code instead of importing it.
+        # A Back Door sync meanwhile leaves the slot to the master code instead of
+        # importing it. With a stale cache it doesn't see the slot at all.
         result = self._sync(gateway, self.BACK)
         self.assertEqual(result.created, 0)
-        self.assertEqual(self._slot_row(result, 2).door_code_id, master.id)
+        rows = [row.door_code_id for row in result.slots if row.slot_index == 2]
+        self.assertEqual(rows, [master.id] if self.CACHE_UPDATES_ON_SET else [])
 
         # Once the Back Door answers, deleting it again clears the slot.
         gateway._get_scripts[12] = []
@@ -950,6 +952,85 @@ class DeleteTests(_SyncedLocksTestBase):
         self.assertEqual(self._slots(master), {self.FRONT: 1})
         self.assertEqual(lock_push_uc.unresolved_clear_failures(door_code=master), [])
 
+    def test_an_unconfirmed_slot_on_a_lock_removed_since_still_refuses_the_delete(self):
+        # The Back Door's push wrote slot 2 but every readback timed out, so the
+        # lock never got a slot. Then the Back Door was removed while it still
+        # didn't answer. Only the Front Door's unstamped assignment is left, but
+        # the Back Door's slot is still on record.
+        timeouts = [ZwavejsCommandError("driver TimeoutError after 5.0s")] * 40
+        gateway = self._gateway(get_responses={12: timeouts})
+        master = self._master(gateway)
+        self._patch(master, gateway, {"add_lock_entity_ids": [self.BACK]})
+        self._patch(master, gateway, {"remove_lock_entity_ids": [self.BACK]})
+        self.assertEqual(self._slots(master), {self.FRONT: 1})
+        self.assertFalse(lock_push_uc.has_lock_pushed_by_latchpoint(door_code_id=master.id))
+        self.assertEqual(self._lock_codes(gateway, 12), {1: OTHER_PIN, 2: self.PIN})
+
+        response = self._delete_response(master, gateway)
+
+        self.assertEqual(response.status_code, 502, response.content)
+        self.assertIn("wasn't deleted and is now off", response.json()["error"]["message"])
+        master.refresh_from_db()
+        self.assertFalse(master.is_active)
+        self.assertEqual(self._lock_codes(gateway, 14), {})
+
+        gateway._get_scripts[12] = []
+        self.assertEqual(self._delete_response(master, gateway).status_code, 204)
+        self.assertFalse(DoorCode.objects.filter(id=master.id).exists())
+        self.assertEqual(self._lock_codes(gateway, 12), {1: OTHER_PIN})
+
+    def test_a_recorded_failed_clear_is_retried_by_the_delete(self):
+        # A slot latchpoint still has a failed clear for, on a lock the code has no assignment on.
+        gateway = self._gateway()
+        master = self._master(gateway)
+        gateway._lock_codes[(12, 3)] = self.PIN
+        lock_push_uc.record_clear_failure(
+            door_code=master,
+            lock_entity_id=self.BACK,
+            slot_index=3,
+            exc=ZwavejsCommandError("driver TimeoutError after 5.0s"),
+            expected_pin=self.PIN,
+        )
+        gateway.invoke_calls.clear()
+
+        self.assertEqual(self._delete_response(master, gateway).status_code, 204)
+
+        self.assertIn((12, [3]), self._calls(gateway, "clear"))
+        self.assertEqual(self._lock_codes(gateway, 12), {1: OTHER_PIN})
+        self.assertEqual(self._lock_codes(gateway, 14), {})
+
+    def test_an_added_lock_whose_push_is_only_queued_is_deleted_like_a_manual_code(self):
+        gateway = self._gateway()
+        master = self._master(gateway)
+        with patch.object(lock_push_uc, "push_task_running", return_value=True):
+            self._patch(master, gateway, {"add_lock_entity_ids": [self.BACK]})
+        back = DoorCodeLockAssignment.objects.get(door_code=master, lock_entity_id=self.BACK)
+        self.assertIsNotNone(back.push_requested_at)
+        self.assertIsNone(back.last_push_attempt_at)
+        gateway.clear_fails_on = {14}
+
+        response = self._delete_response(master, gateway)
+
+        self.assertEqual(response.status_code, 502, response.content)
+        self.assertIn("wasn't deleted and is now off", response.json()["error"]["message"])
+        master.refresh_from_db()
+        self.assertFalse(master.is_active)
+        [failure] = lock_push_uc.unresolved_clear_failures(door_code=master)
+        self.assertEqual((failure.lock_entity_id, failure.slot_index), (self.FRONT, 1))
+
+    def test_retry_on_an_off_synced_code_says_what_to_do(self):
+        gateway = self._gateway()
+        master = self._master(gateway)
+        DoorCode.objects.filter(id=master.id).update(is_active=False)
+
+        with patch("locks.views.door_codes.default_zwavejs_gateway", gateway):
+            response = self.client.post(reverse("door-code-push", args=[master.id]), {}, format="json")
+
+        self.assertEqual(response.status_code, 409, response.content)
+        message = response.json()["error"]["message"]
+        self.assertIn("delete it again", message)
+        self.assertNotIn("Turn it on", message)
+
 
 # The tests above again with the FakeGateway default, where a set doesn't reach
 # the value cache, so every sync after a push sees the pushed slot as Available.
@@ -970,4 +1051,8 @@ class StaleCacheStrandedCopyRuleTests(StrandedCopyRuleTests):
 
 
 class StaleCachePushedSlotReconcileTests(PushedSlotReconcileTests):
+    CACHE_UPDATES_ON_SET = False
+
+
+class StaleCacheDeleteTests(DeleteTests):
     CACHE_UPDATES_ON_SET = False

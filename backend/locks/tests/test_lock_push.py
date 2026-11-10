@@ -2265,24 +2265,26 @@ class UnconfirmedSlotCleanupTests(EncryptionTestMixin, TestCase):
         self.assertIn("NotFound", unchecked["reason"])
         self.assertNotIn("cleared_unconfirmed_slots", metadata)
 
-    def test_synced_code_delete_keeps_a_trace_of_unconfirmed_slots_it_couldnt_check(self):
+    def test_synced_code_delete_refuses_while_an_unconfirmed_slot_cant_be_checked(self):
         from integrations_zwavejs.manager import ZwavejsCommandError
 
         timeout = ZwavejsCommandError("driver TimeoutError after 5.0s")
         code, gateway, slot = self._pending_unconfirmed([timeout, timeout, timeout])
         DoorCode.objects.filter(id=code.id).update(source=DoorCode.Source.SYNCED)
-        # A synced code latchpoint never pushed to an added lock, like one an old
-        # sync converted before assignments recorded pushes. One latchpoint did
-        # push is refused like a manual code instead (ADR 0082 §3).
-        DoorCodeLockAssignment.objects.filter(door_code=code).update(last_push_attempt_at=None, push_requested_at=None)
         code.refresh_from_db()
 
-        door_codes_uc.delete_door_code(code=code, actor_user=self.user, zwavejs=gateway)
+        # Deleting it would take the attempt with it and leave the PIN in that
+        # slot untracked, so it's refused like a manual code's (ADR 0082 §3).
+        with self.assertRaises(door_codes_uc.SlotClearFailed):
+            door_codes_uc.delete_door_code(code=code, actor_user=self.user, zwavejs=gateway)
 
-        self.assertFalse(DoorCode.objects.filter(id=code.id).exists())
-        [unchecked] = self._deleted_event().metadata["unconfirmed_slots_unchecked"]
-        self.assertEqual((unchecked["lock_entity_id"], unchecked["slot_index"]), (self.LOCK, slot))
-        self.assertNotIn("permanent", unchecked)
+        code.refresh_from_db()
+        self.assertFalse(code.is_active)
+        # The slot is still on record (as the attempt or a clear failure for it).
+        on_record = {f.lock_entity_id for f in lock_push_uc.unresolved_clear_failures(door_code=code)}
+        on_record.update(lock_push_uc.unconfirmed_attempt_lock_entity_ids(door_code=code))
+        self.assertEqual(on_record, {self.LOCK})
+        self.assertFalse(DoorCodeEvent.objects.filter(event_type=DoorCodeEvent.EventType.CODE_DELETED).exists())
 
     def test_dropping_a_lock_that_is_gone_records_its_unconfirmed_slot_in_the_update_event(self):
         code, gateway, slot = self._pending_unconfirmed([])
