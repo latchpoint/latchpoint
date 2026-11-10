@@ -171,6 +171,10 @@ if IS_TESTING:
     REST_FRAMEWORK["DEFAULT_THROTTLE_RATES"]["login"] = None
     REST_FRAMEWORK["DEFAULT_THROTTLE_RATES"]["alarm_code"] = None
 
+# `manage.py test` drains the rule dispatcher after every test (#210). pytest, which CI runs,
+# does the same from backend/conftest.py.
+TEST_RUNNER = "config.test_runner.LatchpointTestRunner"
+
 # Account lockout (defense-in-depth on top of the login throttle): after
 # ACCOUNT_LOCKOUT_THRESHOLD consecutive failed logins, the account is locked for
 # ACCOUNT_LOCKOUT_WINDOW_SECONDS. Set the threshold to 0 to disable lockout.
