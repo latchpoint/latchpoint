@@ -80,8 +80,9 @@ after it (#144, #157, #167) already use.
   `end_at` can be moved but not cleared, since without one it would drop out of
   this rule and be stuck however it was left. It's keyed on the row rather than
   on the retire event because event retention deletes old events. Every other
-  synced code keeps ADR-0082's rule, and the PIN, schedule, max uses and locks
-  stay read-only on all of them.
+  synced code keeps ADR-0082's rule, and the PIN, schedule and max uses stay
+  read-only on all of them. Their locks can be added and removed (ADR-0082),
+  and a dated synced code on more than one lock is retired off all of them.
 - **No migration.** The first tick after deploy retires codes already past
   `end_at` and clears codes pushed before their start.
 
@@ -128,6 +129,11 @@ notifications and retiring used up codes is a separate change.
   the copy's row was created after the first of those pushes. A lock sync
   having recorded the two as duplicates of each other doesn't count, and with
   no push event left for the slot (event retention) the copy is only flagged.
+  Neither does a slot latchpoint pushed the copy into itself, ie a lock added
+  to a synced code (ADR-0082), since its row's age says nothing about that
+  slot. That's a `pushed` event of the copy in that slot, or a push attempt on
+  its assignment there once retention has pruned the event. Such a copy is
+  only flagged.
   Such a copy is turned off through the same locked deactivate, which clears
   its slot, and if that raises it's tried again on each later validity tick
   (`duplicate_retire_pending` until `duplicate_retire_done`), up to

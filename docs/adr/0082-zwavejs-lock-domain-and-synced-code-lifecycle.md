@@ -40,9 +40,9 @@ The selected entity gets `domain="lock"` and a simplified name (just the node na
 
 **Lock command class constants** (`CC_DOOR_LOCK=98`, `CC_USER_CODE=99`, `CC_SCHEDULE_ENTRY_LOCK=78`, `LOCK_COMMAND_CLASSES`) are defined in `integrations_zwavejs/manager.py` and imported by the entity sync module.
 
-### 2. Enforce read-only editing for synced door codes (label-only)
+### 2. Enforce read-only editing for synced door codes (label and locks only)
 
-`DoorCodeUpdateSerializer` rejects updates to all fields except `label` when the code's source is `SYNCED`. The rejected fields are:
+`DoorCodeUpdateSerializer` rejects updates to all fields except `label` and the code's locks when the code's source is `SYNCED`. The rejected fields are:
 
 - `code` (PIN)
 - `is_active`
@@ -50,9 +50,18 @@ The selected entity gets `domain="lock"` and a simplified name (just the node na
 - `days_of_week`
 - `window_start`, `window_end`
 - `max_uses`
-- `lock_entity_ids`
+
+`lock_entity_ids` was on this list until synced codes' locks were made editable (below).
 
 This validation is applied at the serializer level, so the use-case layer doesn't need to know about source-based restrictions. The user can still rename a synced code's label for organizational purposes.
+
+**Synced codes' locks are editable.** `lock_entity_ids` is no longer read-only, and neither are `add_lock_entity_ids` and `remove_lock_entity_ids` (issue #159). A synced code's locks are added and removed the same way a manual code's are: latchpoint pushes the code's PIN into a free slot on an added lock through the queued push (ADR-0111) and tracks that slot on the code's assignment, and clears the slot on a removed lock through the normal clear and pending removal path, including the lock the code was imported from. The code stays `source=synced`. The PIN, the schedule (`days_of_week`, `window_start`, `window_end`) and `max_uses` still come from the lock and stay read-only, and `is_active`, `start_at` and `end_at` only open up under ADR-0109's rule for synced codes with an `end_at`. The real case is a master code imported from the Front Door that also has to open the Back Door.
+
+- A synced code imported from a lock that masks its codes has no stored PIN, so adding a lock to it is a 400 ("Latchpoint doesn't know this code's PIN, so it can't put it on another lock."). Removing one still works, since a clear doesn't need the PIN.
+- Adding a lock is refused with a 409 when another code already has the PIN on that lock, the same check turning a code on uses (issue #188). That goes for manual codes too.
+- Removals that would leave a synced code with no locks are a 400, a full `lock_entity_ids: []` included, since the door codes list leaves out a synced code with no locks.
+- Lock sync treats the pushed slot as the code's own, since the code tracks it: it isn't imported as a "Slot N" code and the code isn't flagged `duplicate_pin` against itself. A synced code on more than one lock still takes its PIN, schedule and active flag from whichever of its locks was synced last, and latchpoint doesn't push a change made at one lock on to the others.
+- ADR-0109's stranded copy rule doesn't count a slot latchpoint pushed the copy into itself, since that slot had to be free for the push.
 
 **Manual codes stay latchpoint's (issue #166).** Latchpoint, not the lock, is the authority for a manual code, so lock config sync never turns one into a synced code. Only slots latchpoint doesn't know about are imported as synced. For a manual code in its own slot the sync leaves the PIN, schedule, owner and active flag alone and only marks that lock pushed, flags a slot the lock reports disabled, and lets go of a tracked slot only when a live readback answers it empty twice and the lock can't already have the PIN in another slot, so the scheduler pushes the code again. Codes an earlier sync converted stay synced.
 

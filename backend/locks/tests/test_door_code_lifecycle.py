@@ -1156,8 +1156,8 @@ class SyncedCodeValidityTests(_LifecycleTestBase, APITestCase):
         response = self._patch(code, gateway, {"end_at": _iso(code.end_at), "label": "Guest"})
         self.assertEqual(response.status_code, 200, response.content)
 
-        # The rest stays the lock's.
-        for body in ({"code": "8642"}, {"days_of_week": 3}, {"lock_entity_ids": [self.SIDE]}):
+        # The PIN and schedule stay the lock's. Its locks don't (ADR 0082).
+        for body in ({"code": "8642"}, {"days_of_week": 3}, {"max_uses": 2}):
             with self.subTest(body=body):
                 response = self._patch(code, gateway, body)
                 self.assertEqual(response.status_code, 400, response.content)
@@ -1181,8 +1181,8 @@ class SyncedCodeValidityTests(_LifecycleTestBase, APITestCase):
         self.assertEqual(self._calls(gateway, "clear"), [(12, [1])])
         self.assertEqual(self._lock_codes(gateway, 12), {})
 
-        # The rest is still the lock's.
-        for body in ({"code": "8642"}, {"days_of_week": 3}, {"lock_entity_ids": [self.SIDE]}):
+        # The PIN and schedule are still the lock's. Its locks aren't (ADR 0082).
+        for body in ({"code": "8642"}, {"days_of_week": 3}, {"max_uses": 2}):
             with self.subTest(body=body):
                 response = self._patch(active, gateway, body)
                 self.assertEqual(response.status_code, 400, response.content)

@@ -247,10 +247,27 @@ export function DoorCodeEditContainer({ code, locks, locksIsLoading, locksError,
     const req: UpdateDoorCodeRequest = { reauthPassword: editReauthPassword }
     if (labelField.isEdited) req.label = editLabel.trim()
 
+    if (!resolvedLockEntityIds.length) {
+      setEditError('Select at least one lock.')
+      return
+    }
+    // Only what the user added or removed, compared with the server's locks
+    // (without the ones being removed). The backend applies it to the locks the
+    // code has when it saves, so a tab that missed another tab removing a lock
+    // can't put it back (#159). The manual ids stand in for the picker when it's
+    // empty, so they're compared the same way.
+    const serverLockSet = new Set(serverLockIds)
+    const savedLockSet = new Set(resolvedLockEntityIds)
+    const addedLocks = resolvedLockEntityIds.filter((id) => !serverLockSet.has(id))
+    const removedLocks = serverLockIds.filter((id) => !savedLockSet.has(id))
+    if (addedLocks.length) req.addLockEntityIds = addedLocks
+    if (removedLocks.length) req.removeLockEntityIds = removedLocks
+
     const isSynced = code.source === 'synced'
     if (isSynced) {
-      // An off synced code with an end date can change its active window and
-      // come back on (#145). Everything else on a synced code is the lock's.
+      // Its locks can be added and removed like a manual code's (ADR 0082). An
+      // off synced code with an end date can also change its active window and
+      // come back on (#145). The PIN, schedule and max uses are the lock's.
       if (isSyncedValidityEditable(code)) {
         if (isActiveField.isEdited) req.isActive = editIsActive
         if (dateRangeField.isEdited) {
@@ -275,11 +292,6 @@ export function DoorCodeEditContainer({ code, locks, locksIsLoading, locksError,
       } catch (err) {
         setEditError(getErrorMessage(err) || 'Failed to update door code')
       }
-      return
-    }
-
-    if (!resolvedLockEntityIds.length) {
-      setEditError('Select at least one lock.')
       return
     }
 
@@ -317,17 +329,6 @@ export function DoorCodeEditContainer({ code, locks, locksIsLoading, locksError,
     // turn a code back on.
     if (isActiveField.isEdited || !editIsActive) req.isActive = editIsActive
     if (maxUsesField.isEdited) req.maxUses = maxUses
-    // Only what the user added or removed, compared with the server's locks
-    // (without the ones being removed). The backend applies it to the locks the
-    // code has when it saves, so a tab that missed another tab removing a lock
-    // can't put it back (#159). The manual ids stand in for the picker when it's
-    // empty, so they're compared the same way.
-    const serverLockSet = new Set(serverLockIds)
-    const savedLockSet = new Set(resolvedLockEntityIds)
-    const addedLocks = resolvedLockEntityIds.filter((id) => !serverLockSet.has(id))
-    const removedLocks = serverLockIds.filter((id) => !savedLockSet.has(id))
-    if (addedLocks.length) req.addLockEntityIds = addedLocks
-    if (removedLocks.length) req.removeLockEntityIds = removedLocks
     if (typedPin) req.code = typedPin
     if (hasActiveWindow && dateRangeField.isEdited) {
       req.startAt = startAt

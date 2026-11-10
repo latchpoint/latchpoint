@@ -404,6 +404,9 @@ class DoorCodeUpdateSerializer(serializers.Serializer):
             raise serializers.ValidationError("Code must be 4 to 8 digits.")
         return code
 
+    # The PIN, schedule and max uses come from the lock. The locks don't: a
+    # synced code's locks can be added and removed like a manual code's, and
+    # latchpoint pushes its PIN to an added lock and clears it off a removed one.
     _SYNCED_READONLY_FIELDS = frozenset(
         {
             "code",
@@ -414,9 +417,6 @@ class DoorCodeUpdateSerializer(serializers.Serializer):
             "window_start",
             "window_end",
             "max_uses",
-            "lock_entity_ids",
-            "add_lock_entity_ids",
-            "remove_lock_entity_ids",
         }
     )
     # What a synced code with an end_at can still edit (issues #145, #189).
@@ -436,8 +436,8 @@ class DoorCodeUpdateSerializer(serializers.Serializer):
         one on or off goes through the normal push and clear. It's keyed on the
         row, not on the retire event, since event retention would delete that
         and leave the code stuck. Synced codes without an ``end_at`` (the
-        scheduler never turns those off) keep every field but ``label``
-        read-only (ADR 0082), so lock sync stays the say for them.
+        scheduler never turns those off) keep every field but ``label`` and
+        the locks read-only (ADR 0082), so lock sync stays the say for them.
         """
         return code.source == DoorCode.Source.SYNCED and code.end_at is not None
 
