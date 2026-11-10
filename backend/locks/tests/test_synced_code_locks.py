@@ -1249,7 +1249,9 @@ class ImportLockChangeTests(_SyncedLocksTestBase):
         self.assertEqual(self._lock_codes(gateway, 12), {1: OTHER_PIN})
         back = self._back(master)
         self.assertEqual((back.slot_index, back.push_state), (None, DoorCode.PushState.FAILED))
-        self.assertIn(f"{self.BACK} already has this PIN in slot 1 as door code {other.id}", back.last_push_error)
+        # The id isn't checked: stored errors mask any run of 4-8 digits, and test ids run that high on Postgres.
+        self.assertIn(f"{self.BACK} already has this PIN in slot 1 as door code ", back.last_push_error)
+        self.assertIn('("Slot 1"), so this code is off that lock', back.last_push_error)
         self.assertIn("Delete that code, then Retry", back.last_push_error)
         self.assertEqual(DoorCode.objects.get(id=master.id).push_state, DoorCode.PushState.FAILED)
 
