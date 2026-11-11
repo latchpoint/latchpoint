@@ -141,6 +141,8 @@ export function isDoorCodeSettling(code: DoorCode): boolean {
     (code.lockSlotAssignments ?? []).some((a) => isLockAwaitingPush(code, a))
   if (code.pushState === 'failed') return lockAwaitingPush
   if (hasPendingClears) return true
+  // Its PIN still coming off a lock added to it, which the scheduler retries (#221).
+  if (!code.isActive && (code.lockSlotAssignments ?? []).some((a) => a.takingPinOff)) return true
   if ((code.lockSlotAssignments ?? []).some((a) => a.pendingRemoval)) return true
   return lockAwaitingPush
 }

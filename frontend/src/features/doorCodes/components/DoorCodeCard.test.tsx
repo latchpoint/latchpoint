@@ -523,6 +523,58 @@ describe('DoorCodeCard', () => {
       expect(screen.getByRole('button', { name: /^Retry$/ })).toBeTruthy()
     })
 
+    describe('a synced code turned off at the lock it was synced from (#221)', () => {
+      const WAITING = 'Waiting to take the PIN off this lock, since the code is off at the lock it was synced from.'
+      const offCode = (backOverrides: Partial<Slot>, overrides: Partial<DoorCode> = {}) =>
+        twoLocks([back({ slotIndex: 2, takingPinOff: true, ...backOverrides }), front({ slotIndex: 1 })], {
+          source: 'synced',
+          isActive: false,
+          ...overrides,
+        })
+
+      it('shows the lock its PIN is still coming off as clearing, with Retry', () => {
+        renderCard(
+          offCode(
+            { pushState: 'pending', lastPushError: WAITING },
+            { pushState: 'pending', lastPushError: `lock.back_door: ${WAITING}` },
+          ),
+        )
+
+        expect(screen.getByText('Back Door (clearing)')).toHaveAttribute('title', WAITING)
+        expect(screen.getByText('Front Door')).toBeTruthy()
+        expect(screen.getByText('Pending clear')).toBeTruthy()
+        expect(screen.getByRole('button', { name: /Retry/ })).toBeTruthy()
+      })
+
+      it('shows a take-off the attempt cap failed as clear failed, with Retry', () => {
+        const error = "Couldn't clear slot 2: ZwavejsCommandError"
+        renderCard(
+          offCode(
+            { pushState: 'failed', lastPushError: error, pushAttemptCount: 24 },
+            { pushState: 'failed', lastPushError: `lock.back_door: ${error}` },
+          ),
+        )
+
+        expect(screen.getByText('Back Door (clear failed)')).toHaveAttribute('title', `${error} Retry tries again.`)
+        expect(screen.getByText(/^Clear failed/)).toBeTruthy()
+        expect(screen.getByRole('button', { name: /^Retry$/ })).toBeTruthy()
+      })
+
+      it('shows plain chips and no Retry once the PIN is off', () => {
+        renderCard(
+          twoLocks([back({ slotIndex: null, pushState: 'pending' }), front({ slotIndex: 1 })], {
+            source: 'synced',
+            isActive: false,
+            pushState: 'pushed',
+            lastPushError: '',
+          }),
+        )
+
+        expect(screen.getByText('Back Door')).toBeTruthy()
+        expect(screen.queryByRole('button', { name: /Retry/ })).toBeNull()
+      })
+    })
+
     it('flags a pushed lock whose slot lock sync found disabled (#166)', () => {
       renderCard(
         twoLocks(

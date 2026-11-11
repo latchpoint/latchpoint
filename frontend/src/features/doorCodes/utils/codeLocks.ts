@@ -11,3 +11,13 @@ export function codeLockEntityIds(code: DoorCode): string[] {
   for (const assignment of code.lockSlotAssignments || []) ids.add(assignment.lockEntityId)
   return [...ids].sort()
 }
+
+/**
+ * Whether latchpoint is still taking an off synced code's PIN off one of the
+ * locks added to it, after the lock it was synced from confirmed it off
+ * (#221). That's a clear the scheduler and Retry still run, like a
+ * pendingSlotClears entry.
+ */
+export function isTakingPinOff(code: DoorCode): boolean {
+  return !code.isActive && (code.lockSlotAssignments || []).some((a) => !!a.takingPinOff)
+}

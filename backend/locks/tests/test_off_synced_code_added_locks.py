@@ -119,6 +119,22 @@ class EmptyAtImportLockTests(_OffTestBase):
         back = self._back(master)
         self.assertEqual((back.slot_index, back.reconcile_requested_at), (None, None))
 
+    def test_a_keypad_pin_in_a_slot_from_before_0012_is_left_alone(self):
+        # Nothing recorded there, but the take-off knows the code's PIN is what
+        # should be in it, so another PIN isn't taken for latchpoint's (#226 review).
+        master, gateway = self._master_on_both()
+        self._pushed_before_0012(master)
+        self._keypad_pin_in_back_slot(gateway)
+        self._delete_at_front(gateway)
+
+        self._sync_front(gateway)
+        self._push_requested(gateway)
+
+        self.assertEqual(self._calls(gateway, "clear"), [])
+        self.assertEqual(self._lock_codes(gateway, 12), {1: OTHER_PIN, 2: KEYPAD_PIN})
+        back = self._back(master)
+        self.assertEqual((back.slot_index, back.reconcile_requested_at), (None, None))
+
     def test_a_slot_from_before_0012_holding_the_pin_is_cleared(self):
         master, gateway = self._master_on_both()
         self._pushed_before_0012(master)
@@ -355,6 +371,151 @@ class OffCodeLeftoverTests(_OffTestBase):
         self.assertFalse(DoorCodeEvent.objects.filter(id=event.id).exists())
 
 
+class TakeOffRaceTests(_OffTestBase):
+    """Review of PR #226: pushes and turn-ons that cross a confirmed off."""
+
+    def _off_at_front_during_back_set(self, gateway) -> None:
+        """The PIN is deleted at the Front Door and the Front Door synced while the Back Door's ``set`` is out."""
+
+        def delete_and_sync():
+            self._delete_at_front(gateway)
+            self._sync(gateway, self.FRONT)
+
+        self._before_call(gateway, node_id=12, command_class=99, method_name="set", hook=delete_and_sync)
+
+    def test_the_first_push_to_an_added_lock_that_lands_after_the_off_is_taken_off(self):
+        gateway = self._gateway()
+        master = self._master(gateway)
+        self._off_at_front_during_back_set(gateway)
+
+        self._patch(master, gateway, {"add_lock_entity_ids": [self.BACK]})
+
+        master.refresh_from_db()
+        self.assertFalse(master.is_active)
+        self.assertEqual(self._calls(gateway, "set"), [(12, [2, 1, self.PIN])])
+        self.assertEqual(self._calls(gateway, "clear"), [(12, [2])])
+        self.assertEqual(self._lock_codes(gateway, 12), {1: OTHER_PIN})
+        back = self._back(master)
+        self.assertEqual((back.slot_index, back.reconcile_requested_at), (None, None))
+        self.assertEqual(master.push_state, DoorCode.PushState.PUSHED)
+
+    def test_a_reconcile_push_that_lands_after_the_off_is_taken_off(self):
+        # Disabled, taken off, enabled again, and the PIN deleted at the Front Door
+        # while the reconcile's push back onto the Back Door is out.
+        master, gateway = self._master_on_both()
+        disabled: set[tuple[int, int]] = {(14, 1)}
+        self._disable_slots(gateway, disabled)
+        self._sync_front(gateway)
+        self._push_requested(gateway)
+        self.assertEqual(self._lock_codes(gateway, 12), {1: OTHER_PIN})
+        disabled.clear()
+        self._sync_front(gateway)
+        self._off_at_front_during_back_set(gateway)
+        gateway.invoke_calls.clear()
+
+        self._push_requested(gateway)
+
+        master.refresh_from_db()
+        self.assertFalse(master.is_active)
+        self.assertEqual(self._calls(gateway, "set"), [(12, [2, 1, self.PIN])])
+        self.assertEqual(self._calls(gateway, "clear"), [(12, [2])])
+        self.assertEqual(self._lock_codes(gateway, 12), {1: OTHER_PIN})
+        back = self._back(master)
+        self.assertEqual((back.slot_index, back.reconcile_requested_at), (None, None))
+        self.assertEqual(master.push_state, DoorCode.PushState.PUSHED)
+
+    def _back_with_only_an_unconfirmed_attempt(self):
+        """The master code on both doors, its Back Door push in slot 2 never confirmed."""
+        gateway = self._gateway(get_responses={12: [TIMEOUT] * 20})
+        master = self._master(gateway)
+        self._patch(master, gateway, {"add_lock_entity_ids": [self.BACK]})
+        gateway._get_scripts[12] = []
+        self.assertEqual(self._slots(master), {self.FRONT: 1, self.BACK: None})
+        self.assertEqual(self._lock_codes(gateway, 12), {1: OTHER_PIN, 2: self.PIN})
+        gateway.invoke_calls.clear()
+        return master, gateway
+
+    def test_an_added_lock_with_only_an_unconfirmed_push_is_flagged(self):
+        # M5.
+        master, gateway = self._back_with_only_an_unconfirmed_attempt()
+        self._delete_at_front(gateway)
+
+        self._sync_front(gateway)
+
+        self.assertIsNotNone(self._back(master).reconcile_requested_at)
+        self.assertEqual(self._off_events(master).get().metadata["taken_off_lock_entity_ids"], [self.BACK])
+
+    def test_the_take_off_clears_an_unconfirmed_slot_holding_the_current_pin(self):
+        # M10: the push would adopt it if the code were on, but nothing will now.
+        master, gateway = self._back_with_only_an_unconfirmed_attempt()
+        self._delete_at_front(gateway)
+        self._sync_front(gateway)
+
+        self._push_requested(gateway)
+
+        self.assertEqual(self._calls(gateway, "clear"), [(12, [2])])
+        self.assertEqual(self._lock_codes(gateway, 12), {1: OTHER_PIN})
+        self.assertEqual(lock_push_uc.unconfirmed_attempt_lock_entity_ids(door_code=master), [])
+
+    def test_a_code_turned_back_on_while_its_taken_off_goes_back_on(self):
+        # M13: enabled again at the Front Door right as the take-off clears the Back Door.
+        master, gateway = self._master_on_both()
+        disabled: set[tuple[int, int]] = {(14, 1)}
+        self._disable_slots(gateway, disabled)
+        self._sync_front(gateway)
+
+        def enable_and_sync():
+            disabled.clear()
+            self._sync(gateway, self.FRONT)
+
+        self._before_call(gateway, node_id=12, command_class=99, method_name="clear", hook=enable_and_sync)
+
+        self._push_requested(gateway)
+
+        master.refresh_from_db()
+        self.assertTrue(master.is_active)
+        self.assertEqual(self._calls(gateway, "clear"), [(12, [2])])
+        self.assertEqual(self._lock_codes(gateway, 12), {1: OTHER_PIN, 2: self.PIN})
+        back = self._back(master)
+        self.assertEqual((back.slot_index, back.reconcile_requested_at), (2, None))
+        self.assertEqual(master.push_state, DoorCode.PushState.PUSHED)
+
+
+class TakeOffApiTests(_OffTestBase):
+    def _back_entry(self, master: DoorCode) -> dict:
+        response = self.client.get(reverse("door-code-detail", args=[master.id]))
+        self.assertEqual(response.status_code, 200, response.content)
+        return {a["lock_entity_id"]: a for a in response.json()["data"]["lock_slot_assignments"]}
+
+    def test_the_api_says_which_lock_its_still_coming_off(self):
+        master, gateway = self._master_on_both()
+        self._delete_at_front(gateway)
+        self._sync_front(gateway)
+
+        locks = self._back_entry(master)
+        self.assertTrue(locks[self.BACK]["taking_pin_off"])
+        self.assertEqual(locks[self.BACK]["last_push_error"], reconcile_uc.OFF_WAITING_ERROR)
+        self.assertFalse(locks[self.FRONT]["taking_pin_off"])
+
+        self._push_requested(gateway)
+
+        self.assertFalse(self._back_entry(master)[self.BACK]["taking_pin_off"])
+
+    def test_a_lock_being_dropped_is_its_clears_not_the_take_offs(self):
+        master, gateway = self._master_on_both()
+        self._delete_at_front(gateway)
+        self._sync_front(gateway)
+        lock_push_uc.record_clear_failure(
+            door_code=master, lock_entity_id=self.BACK, slot_index=2, exc=TIMEOUT, expected_pin=self.PIN, removing=True
+        )
+        code = DoorCode.objects.get(id=master.id)
+        failures = lock_push_uc.unresolved_clear_failures(door_code=code)
+        assignments = list(DoorCodeLockAssignment.objects.filter(door_code=code))
+
+        self.assertEqual(lock_push_uc._locks_taking_pin_off(code=code, assignments=assignments, failures=failures), [])
+        self.assertFalse(self._back_entry(master)[self.BACK]["taking_pin_off"])
+
+
 class RefusedDeleteRecoveryTests(_OffTestBase):
     """Part two of issue #221: a delete refused because the Back Door didn't answer."""
 
@@ -417,4 +578,8 @@ class StaleCacheOffCodeLeftoverTests(OffCodeLeftoverTests):
 
 
 class StaleCacheRefusedDeleteRecoveryTests(RefusedDeleteRecoveryTests):
+    CACHE_UPDATES_ON_SET = False
+
+
+class StaleCacheTakeOffRaceTests(TakeOffRaceTests):
     CACHE_UPDATES_ON_SET = False

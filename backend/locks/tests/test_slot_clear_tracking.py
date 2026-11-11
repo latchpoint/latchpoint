@@ -478,6 +478,7 @@ class PendingSlotClearsSerializerTests(_SlotClearTestBase, APITestCase):
                 "schedule_pending",
                 "push_requested_at",
                 "push_queued",
+                "taking_pin_off",
             },
         )
         # The old PIN only lives in the encrypted event metadata, and the push

@@ -3469,6 +3469,7 @@ class LockSlotAssignmentsSerializerTests(EncryptionTestMixin, TestCase):
                     "schedule_pending": False,
                     "push_requested_at": None,
                     "push_queued": False,
+                    "taking_pin_off": False,
                 }
             ],
         )
@@ -3502,6 +3503,7 @@ class LockSlotAssignmentsSerializerTests(EncryptionTestMixin, TestCase):
                     "schedule_pending": False,
                     "push_requested_at": None,
                     "push_queued": False,
+                    "taking_pin_off": False,
                 }
             ],
         )

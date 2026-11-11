@@ -1591,14 +1591,20 @@ def _lock_error_part(assignment: DoorCodeLockAssignment, *, max_attempts: int) -
     return f"{assignment.lock_entity_id}: {error}"
 
 
-def _locks_taking_pin_off(*, code: DoorCode, assignments: list[DoorCodeLockAssignment]) -> list[DoorCodeLockAssignment]:
-    """The ``assignments`` of an off synced code whose reconcile still has to take its PIN off (issue #221)."""
+def _locks_taking_pin_off(
+    *, code: DoorCode, assignments: list[DoorCodeLockAssignment], failures: list[ClearFailure]
+) -> list[DoorCodeLockAssignment]:
+    """The ``assignments`` of an off synced code whose reconcile still has to take its PIN off (issue #221).
+
+    Not a lock the code is being dropped from (``failures`` with ``removing``), which is its clear's.
+    """
     if code.is_active or code.source != DoorCode.Source.SYNCED:
         return []
     from locks.use_cases.added_lock_reconcile import off_clear_q
 
+    removing = {f.lock_entity_id for f in failures if f.removing}
     ids = set(DoorCodeLockAssignment.objects.filter(door_code=code).filter(off_clear_q()).values_list("id", flat=True))
-    return [a for a in assignments if a.id in ids]
+    return [a for a in assignments if a.id in ids and a.lock_entity_id not in removing]
 
 
 def _derive_push_state(*, code: DoorCode, unrecorded_failures: list[ClearFailure]) -> tuple[str, str, bool]:
@@ -1631,7 +1637,7 @@ def _derive_push_state(*, code: DoorCode, unrecorded_failures: list[ClearFailure
         capped = clears_capped(outstanding)
         # A synced code its import lock turned off, whose added locks the reconcile
         # is still taking the PIN off (issue #221): those decide, like an active code's.
-        taking_off = _locks_taking_pin_off(code=code, assignments=assignments)
+        taking_off = _locks_taking_pin_off(code=code, assignments=assignments, failures=failures)
         if taking_off:
             state = failed if any(a.push_state == failed for a in taking_off) else pending
             lock_parts = [part for a in taking_off if (part := _lock_error_part(a, max_attempts=max_attempts))]
@@ -3818,6 +3824,67 @@ def _fail_slot_recorded_for_another_code(
     return LockPushFailed(sanitize_push_error_for_storage(message))
 
 
+def _take_off_if_turned_off_meanwhile(
+    *, door_code: DoorCode, lock_entity_id: str, zwavejs: ZwavejsGateway, actor_user, timeout_seconds: float
+) -> bool:
+    """Take the PIN a push just sent back off the lock when its synced code went off meanwhile (issue #221).
+
+    The push checked the code was on once it held this lock, but lock sync of
+    the lock the code was imported from only holds that lock, so it can turn the
+    code off while the ``set`` is out. It flags the added locks that may hold
+    the PIN, and a lock whose push hadn't recorded anything yet isn't one of
+    them, so the slot this push records (or the unconfirmed attempt it leaves)
+    would be left with the PIN on an off code. The push still holds the lock,
+    so this looks again under the code row: a synced code that's off now went
+    off through that sync, which only turns a code on other locks off once it
+    confirmed the slot live, and recorded an ``off_confirmed`` event. Every
+    other way an active code goes off holds this lock too, so it can't happen
+    during the push. The lock is flagged as of that event (so
+    ``added_lock_reconcile.off_clear_q`` takes it) and its reconcile takes the
+    PIN off right here, while the push still holds the lock. One that can't
+    stays flagged for the scheduler's retry. Returns whether it did that.
+    """
+    from locks.use_cases.added_lock_reconcile import OFF_WAITING_ERROR, reconcile_added_lock
+
+    with transaction.atomic():
+        code = _lock_code_row(door_code.id)
+        if code is None or code.is_active or code.source != DoorCode.Source.SYNCED:
+            return False
+        confirmed_at = (
+            DoorCodeEvent.objects.filter(
+                door_code=code, event_type=DoorCodeEvent.EventType.CODE_SYNCED, metadata__off_confirmed=True
+            )
+            .order_by("-created_at")
+            .values_list("created_at", flat=True)
+            .first()
+        )
+        if confirmed_at is None:
+            return False
+        DoorCodeLockAssignment.objects.filter(door_code=code, lock_entity_id=lock_entity_id).update(
+            reconcile_requested_at=confirmed_at,
+            push_state=DoorCode.PushState.PENDING,
+            push_attempt_count=0,
+            last_push_error=OFF_WAITING_ERROR,
+        )
+    logger.info(
+        "Door code id=%d went off at the lock it was synced from while its push to %s ran; taking it off",
+        door_code.id,
+        lock_entity_id,
+    )
+    try:
+        reconcile_added_lock(
+            door_code_id=door_code.id,
+            lock_entity_id=lock_entity_id,
+            zwavejs=zwavejs,
+            actor_user=actor_user,
+            timeout_seconds=timeout_seconds,
+        )
+    except Exception:
+        logger.exception("Couldn't take door code id=%d off %s right away", door_code.id, lock_entity_id)
+        refresh_push_state(door_code=door_code)
+    return True
+
+
 def push_door_code_to_lock(
     *,
     door_code: DoorCode,
@@ -4206,6 +4273,15 @@ def push_door_code_to_lock(
                 lock_entity_id=lock_entity_id,
                 counted=not _out_of_budget(zwavejs),
             )
+            if pin_sent_to_slot:
+                # The attempt slot may hold the PIN of a code turned off meanwhile (issue #221).
+                _take_off_if_turned_off_meanwhile(
+                    door_code=door_code,
+                    lock_entity_id=lock_entity_id,
+                    zwavejs=zwavejs,
+                    actor_user=actor_user,
+                    timeout_seconds=timeout_seconds,
+                )
             raise LockUnreachable("Lock did not accept the code in time; will retry.") from exc
 
         # Step 1: the PIN is confirmed, so claim the slot. Resetting the lock's
@@ -4284,6 +4360,18 @@ def push_door_code_to_lock(
             raise _fail_slot_recorded_for_another_code(
                 door_code=door_code, lock_entity_id=lock_entity_id, slot_index=slot_index
             ) from exc
+
+        if _take_off_if_turned_off_meanwhile(
+            door_code=door_code,
+            lock_entity_id=lock_entity_id,
+            zwavejs=zwavejs,
+            actor_user=actor_user,
+            timeout_seconds=timeout_seconds,
+        ):
+            # Off now, so no schedule goes into a slot that was just taken off again.
+            return _pushed_result(
+                lock_entity_id=lock_entity_id, node_id=node_id, slot_index=slot_index, weekdays_pushed=[]
+            )
 
         weekdays_pushed: list[int] = []
         if has_schedule:

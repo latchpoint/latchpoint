@@ -453,7 +453,9 @@ def _take_off_locked(*, code: DoorCode, assignment: DoorCodeLockAssignment, zwav
     they still hold it. The tracked slot is read with the delete's rule
     (:func:`_read_tracked_slot`): it's cleared when it holds the code's PIN, the
     one latchpoint wrote there or a code the lock won't show, and let go
-    untouched when it holds someone else's PIN or nothing. Nothing is pushed.
+    untouched when it holds someone else's PIN or nothing. Unlike the delete, a
+    slot with nothing recorded (before 0012) holding another readable PIN is let
+    go too, not taken as latchpoint's older one. Nothing is pushed.
     What latchpoint wrote there stays recorded with no slot, so turning the code
     back on at the import lock flags this lock again (:func:`lock_behind_code`)
     and the reconcile pushes it into a free slot. Failures count like any other
@@ -491,6 +493,10 @@ def _take_off_locked(*, code: DoorCode, assignment: DoorCodeLockAssignment, zwav
                 pin=pin,
                 written_pin=_decrypt(assignment.written_pin),
                 timeout_seconds=timeout_seconds,
+                # Nothing recorded (before 0012): only the code's own PIN or a
+                # masked code is cleared, since the code's PIN is what should be
+                # there. Any other PIN may be someone's keypad code (#221 review).
+                unrecorded_is_latchpoints=False,
             )
             if slot_is_latchpoints(holds):
                 _clear_tracked_slot(
@@ -638,7 +644,14 @@ def slot_is_latchpoints(verdict: str) -> bool:
 
 
 def _read_tracked_slot(
-    *, zwavejs, node_id: int, slot_index: int, pin: str | None, written_pin: str | None, timeout_seconds: float
+    *,
+    zwavejs,
+    node_id: int,
+    slot_index: int,
+    pin: str | None,
+    written_pin: str | None,
+    timeout_seconds: float,
+    unrecorded_is_latchpoints: bool = True,
 ) -> str:
     """Read the tracked slot live and say what it holds against ``pin`` (the code's) and ``written_pin``.
 
@@ -649,7 +662,10 @@ def _read_tracked_slot(
     0012 has nothing recorded (``written_pin`` is ``None``), and it may have
     fallen behind more than one change, so any readable PIN in it but the
     code's is taken as latchpoint's older one, like every clear did before.
-    Raises :class:`_Transient` when the lock gives no usable answer.
+    Without ``unrecorded_is_latchpoints`` (taking an off code's PIN off, issue
+    #221, where the code's PIN is the one that should be there) it's someone
+    else's instead and let go. Raises :class:`_Transient` when the lock gives no
+    usable answer.
     """
     from locks.use_cases.lock_config_sync import _coerce_int
     from locks.use_cases.lock_push import (
@@ -703,6 +719,8 @@ def _read_tracked_slot(
             if exc.clear_slot:
                 return _EMPTY
             if exc.holds_other:
+                if written_pin is None and not unrecorded_is_latchpoints:
+                    return _OTHER
                 if written_pin is None:
                     # Nothing recorded: latchpoint's, as before 0012 (review of PR #223),
                     # unless it's lock config (messaging or passage mode), which never is.

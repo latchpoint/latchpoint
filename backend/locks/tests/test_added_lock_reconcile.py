@@ -788,7 +788,6 @@ class OffCodeTests(_ReconcileTestBase):
         self.assertEqual(self._calls(gateway, "clear"), [])
         self.assertEqual(self._lock_codes(gateway, 12), {1: OTHER_PIN, 2: self.PIN})
         self.assertEqual(sorted(w for _n, _u, w, _h in self._schedule_calls(gateway)), [1, 3])
-        self.assertEqual(sorted(w for _n, _u, w, _h in self._schedule_calls(gateway)), [1, 3])
 
 
 class HeldPinTests(_ReconcileTestBase):
