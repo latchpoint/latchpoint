@@ -238,16 +238,20 @@ class DoorCodeSerializer(serializers.ModelSerializer):
             for assignment in obj.lock_assignments.all()
         ]
 
-    @staticmethod
-    def _taking_pin_off_ids(obj: DoorCode) -> set[int]:
-        """Ids of ``obj``'s assignments still having its PIN taken off (issue #221). No query for most codes."""
-        if obj.is_active or obj.source != DoorCode.Source.SYNCED:
-            return set()
-        from locks.use_cases.added_lock_reconcile import off_clear_q
+    def _taking_pin_off_ids(self, obj: DoorCode) -> set[int]:
+        """Ids of ``obj``'s assignments still having its PIN taken off (issue #221).
 
-        return set(
-            DoorCodeLockAssignment.objects.filter(door_code=obj).filter(off_clear_q()).values_list("id", flat=True)
-        )
+        From the list view's prefetch when there is one, which loads them for the
+        whole page in at most one query. Otherwise only an off synced code with a
+        flagged lock can have any (``off_clear_q`` needs the flag), which the
+        prefetched assignments already say, so every other code costs no query.
+        """
+        from locks.use_cases.lock_push import taking_pin_off_ids
+
+        prefetch = self._pending_clears_prefetch(obj)
+        if prefetch is not None:
+            return prefetch.taking_pin_off_ids(obj)
+        return taking_pin_off_ids([obj]).get(obj.pk, set())
 
     def get_pending_slot_clears(self, obj: DoorCode) -> list[dict]:
         """Slot clears still outstanding, as ``{lock_entity_id, slot_index, removing}`` (issue #151). No PINs."""

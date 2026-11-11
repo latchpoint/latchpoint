@@ -424,6 +424,85 @@ class TakeOffRaceTests(_OffTestBase):
         self.assertEqual((back.slot_index, back.reconcile_requested_at), (None, None))
         self.assertEqual(master.push_state, DoorCode.PushState.PUSHED)
 
+    def _back_queued(self, gateway) -> DoorCode:
+        """The master code from the Front Door with the Back Door added, its push only queued."""
+        master = self._master(gateway)
+        with patch.object(lock_push_uc, "push_task_running", return_value=True):
+            self._patch(master, gateway, {"add_lock_entity_ids": [self.BACK]})
+        gateway.invoke_calls.clear()
+        return DoorCode.objects.get(id=master.id)
+
+    def test_a_push_whose_readback_times_out_across_the_off_is_flagged_and_taken_off_later(self):
+        # N2: the readback after the set gets no answer, so the push leaves an
+        # unconfirmed attempt, and the take-off can't read the Back Door either.
+        gateway = self._gateway()
+        master = self._back_queued(gateway)
+        gateway._get_scripts[12] = [TIMEOUT] * 20
+        self._off_at_front_during_back_set(gateway)
+
+        with self.assertRaises(lock_push_uc.LockUnreachable):
+            lock_push_uc.push_door_code_to_lock(door_code=master, lock_entity_id=self.BACK, zwavejs=gateway)
+
+        self.assertFalse(DoorCode.objects.get(id=master.id).is_active)
+        self.assertEqual(self._lock_codes(gateway, 12), {1: OTHER_PIN, 2: self.PIN})
+        self.assertIsNotNone(self._back(master).reconcile_requested_at)
+        response = self.client.get(reverse("door-code-detail", args=[master.id]))
+        locks = {a["lock_entity_id"]: a for a in response.json()["data"]["lock_slot_assignments"]}
+        self.assertTrue(locks[self.BACK]["taking_pin_off"])
+
+        # The scheduler clears slot 2 once the Back Door answers.
+        gateway._get_scripts[12] = []
+        self._push_pending(gateway)
+
+        self.assertEqual(self._calls(gateway, "clear"), [(12, [2])])
+        self.assertEqual(self._lock_codes(gateway, 12), {1: OTHER_PIN})
+        self.assertIsNone(self._back(master).reconcile_requested_at)
+
+    def test_a_scheduled_code_whose_push_crosses_the_off_sends_no_schedule(self):
+        # N3 and N5: the take-off runs before the schedule would go out.
+        gateway = self._gateway()
+        self._master(gateway)
+        master = DoorCode.objects.get(lock_assignments__lock_entity_id=self.FRONT)
+        self._sync_front(gateway, days=self.WEEKDAYS)
+        self.assertEqual(DoorCode.objects.get(id=master.id).days_of_week, self.WEEKDAYS)
+        with patch.object(lock_push_uc, "push_task_running", return_value=True):
+            self._patch(master, gateway, {"add_lock_entity_ids": [self.BACK]})
+        gateway.invoke_calls.clear()
+        self._off_at_front_during_back_set(gateway)
+
+        result = lock_push_uc.push_door_code_to_lock(
+            door_code=DoorCode.objects.get(id=master.id), lock_entity_id=self.BACK, zwavejs=gateway
+        )
+
+        self.assertIsNone(result.slot_index)
+        self.assertEqual(result.weekdays_pushed, [])
+        self.assertEqual([c for c in gateway.invoke_calls if c["node_id"] == 12 and c["command_class"] == 78], [])
+        self.assertEqual(self._lock_codes(gateway, 12), {1: OTHER_PIN})
+        back = self._back(master)
+        self.assertEqual((back.slot_index, back.schedule_pending, back.reconcile_requested_at), (None, False, None))
+
+    def test_a_supervision_fail_across_the_off_still_fails_and_takes_the_pin_off(self):
+        # N4: the lock answers the set with Supervision Fail but stores the PIN anyway.
+        gateway = self._gateway()
+        master = self._back_queued(gateway)
+        gateway._set_result = {"status": 2}
+        self._off_at_front_during_back_set(gateway)
+
+        with self.assertRaises(lock_push_uc.LockRejectedCode) as raised:
+            lock_push_uc.push_door_code_to_lock(door_code=master, lock_entity_id=self.BACK, zwavejs=gateway)
+
+        self.assertTrue(raised.exception.supervision_failed)
+        self.assertTrue(
+            DoorCodeEvent.objects.filter(
+                door_code=master, lock_entity_id=self.BACK, metadata__supervision_status="fail"
+            ).exists()
+        )
+        self.assertFalse(DoorCode.objects.get(id=master.id).is_active)
+        self.assertEqual(self._calls(gateway, "clear"), [(12, [2])])
+        self.assertEqual(self._lock_codes(gateway, 12), {1: OTHER_PIN})
+        self.assertIsNone(self._back(master).reconcile_requested_at)
+        self.assertEqual(lock_push_uc.unconfirmed_attempt_lock_entity_ids(door_code=master), [])
+
     def _back_with_only_an_unconfirmed_attempt(self):
         """The master code on both doors, its Back Door push in slot 2 never confirmed."""
         gateway = self._gateway(get_responses={12: [TIMEOUT] * 20})

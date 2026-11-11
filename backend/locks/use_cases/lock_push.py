@@ -264,7 +264,8 @@ _VALIDITY_FIELDS = ["start_at", "end_at"]
 class PushResult:
     lock_entity_id: str
     node_id: int
-    slot_index: int
+    # None when the PIN was taken back off because the code went off during the push (issue #221).
+    slot_index: int | None
     schedule_applied: bool = False
     weekdays_pushed: list[int] = field(default_factory=list)
     timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
@@ -2515,6 +2516,32 @@ def pending_slot_clears(
     return [entries[key] for key in sorted(entries)]
 
 
+def taking_pin_off_ids(codes) -> dict[int, set[int]]:
+    """Code id -> ids of its assignments whose PIN is still being taken off (issue #221), for the API.
+
+    ``codes`` have ``lock_assignments`` prefetched. Only an off synced code with
+    a flagged lock can have any, since ``added_lock_reconcile.off_clear_q``
+    needs the flag, so the one query that checks the rest is only made when a
+    code like that is there.
+    """
+    flagged = [
+        assignment.id
+        for code in codes
+        if not code.is_active and code.source == DoorCode.Source.SYNCED
+        for assignment in code.lock_assignments.all()
+        if assignment.reconcile_requested_at is not None
+    ]
+    if not flagged:
+        return {}
+    from locks.use_cases.added_lock_reconcile import off_clear_q
+
+    found: dict[int, set[int]] = {}
+    rows = DoorCodeLockAssignment.objects.filter(id__in=flagged).filter(off_clear_q()).values_list("door_code_id", "id")
+    for code_id, assignment_id in rows:
+        found.setdefault(code_id, set()).add(assignment_id)
+    return found
+
+
 class PendingClearsPrefetch:
     """What the door code fields need from the events, loaded once for a page of codes (issue #170).
 
@@ -2540,8 +2567,11 @@ class PendingClearsPrefetch:
         self._last_pushed: dict[tuple[int, str], int] = {}
         self._slot_holders: dict[str, dict[int, set[int]]] = {}
         self._failures: dict[int, list[ClearFailure]] = {}
+        self._taking_pin_off: dict[int, set[int]] = {}
         if not self._codes:
             return
+        # At most one query, and none unless the page has an off synced code with a flagged lock (issue #221).
+        self._taking_pin_off = taking_pin_off_ids(self._codes.values())
         code_ids = list(self._codes)
         actions = sorted(_ATTEMPT_SETTLING_ACTIONS | {_UNCONFIRMED_PUSH_ACTION})
         events = (
@@ -2577,6 +2607,10 @@ class PendingClearsPrefetch:
 
     def covers(self, door_code: DoorCode) -> bool:
         return door_code.pk in self._codes
+
+    def taking_pin_off_ids(self, door_code: DoorCode) -> set[int]:
+        """:func:`taking_pin_off_ids` for ``door_code``, from the loaded rows."""
+        return self._taking_pin_off.get(door_code.pk, set())
 
     def clear_failures(self, door_code: DoorCode) -> list[ClearFailure]:
         """:func:`unresolved_clear_failures` without the trust check (see the class docstring)."""
@@ -3843,29 +3877,42 @@ def _take_off_if_turned_off_meanwhile(
     ``added_lock_reconcile.off_clear_q`` takes it) and its reconcile takes the
     PIN off right here, while the push still holds the lock. One that can't
     stays flagged for the scheduler's retry. Returns whether it did that.
+
+    Called after the slot is recorded and on every failure that leaves an
+    unconfirmed attempt behind (a readback with no answer, a Supervision Fail,
+    a terminal error after the ``set`` returned, another code's row taking the
+    slot). It never raises, so a failure branch still raises what it was going
+    to and records what it was going to, and only the lock's state is changed
+    after it, to the take-off's.
     """
     from locks.use_cases.added_lock_reconcile import OFF_WAITING_ERROR, reconcile_added_lock
 
-    with transaction.atomic():
-        code = _lock_code_row(door_code.id)
-        if code is None or code.is_active or code.source != DoorCode.Source.SYNCED:
-            return False
-        confirmed_at = (
-            DoorCodeEvent.objects.filter(
-                door_code=code, event_type=DoorCodeEvent.EventType.CODE_SYNCED, metadata__off_confirmed=True
+    try:
+        with transaction.atomic():
+            code = _lock_code_row(door_code.id)
+            if code is None or code.is_active or code.source != DoorCode.Source.SYNCED:
+                return False
+            confirmed_at = (
+                DoorCodeEvent.objects.filter(
+                    door_code=code, event_type=DoorCodeEvent.EventType.CODE_SYNCED, metadata__off_confirmed=True
+                )
+                .order_by("-created_at")
+                .values_list("created_at", flat=True)
+                .first()
             )
-            .order_by("-created_at")
-            .values_list("created_at", flat=True)
-            .first()
+            if confirmed_at is None:
+                return False
+            DoorCodeLockAssignment.objects.filter(door_code=code, lock_entity_id=lock_entity_id).update(
+                reconcile_requested_at=confirmed_at,
+                push_state=DoorCode.PushState.PENDING,
+                push_attempt_count=0,
+                last_push_error=OFF_WAITING_ERROR,
+            )
+    except Exception:
+        logger.exception(
+            "Couldn't check whether door code id=%d went off during its push to %s", door_code.id, lock_entity_id
         )
-        if confirmed_at is None:
-            return False
-        DoorCodeLockAssignment.objects.filter(door_code=code, lock_entity_id=lock_entity_id).update(
-            reconcile_requested_at=confirmed_at,
-            push_state=DoorCode.PushState.PENDING,
-            push_attempt_count=0,
-            last_push_error=OFF_WAITING_ERROR,
-        )
+        return False
     logger.info(
         "Door code id=%d went off at the lock it was synced from while its push to %s ran; taking it off",
         door_code.id,
@@ -3881,7 +3928,10 @@ def _take_off_if_turned_off_meanwhile(
         )
     except Exception:
         logger.exception("Couldn't take door code id=%d off %s right away", door_code.id, lock_entity_id)
-        refresh_push_state(door_code=door_code)
+        try:
+            refresh_push_state(door_code=door_code)
+        except Exception:
+            logger.exception("Couldn't refresh door code id=%d after its take-off", door_code.id)
     return True
 
 
@@ -4162,6 +4212,15 @@ def push_door_code_to_lock(
             _record_lock_push_failure(
                 door_code=door_code, error_message=str(exc), terminal=True, lock_entity_id=lock_entity_id
             )
+            if set_returned:
+                # The attempt slot may hold the PIN of a code turned off meanwhile (issue #221).
+                _take_off_if_turned_off_meanwhile(
+                    door_code=door_code,
+                    lock_entity_id=lock_entity_id,
+                    zwavejs=zwavejs,
+                    actor_user=actor_user,
+                    timeout_seconds=timeout_seconds,
+                )
             raise LockPushFailed(str(exc)) from exc
         except LockRejectedCode as exc:
             if exc.clear_slot and not exc.holds_pin:
@@ -4222,7 +4281,16 @@ def push_door_code_to_lock(
                 lock_entity_id=lock_entity_id,
                 event_metadata=event_metadata or None,
             )
-            raise
+            if exc.supervision_failed:
+                # The attempt slot may hold the PIN of a code turned off meanwhile (issue #221).
+                _take_off_if_turned_off_meanwhile(
+                    door_code=door_code,
+                    lock_entity_id=lock_entity_id,
+                    zwavejs=zwavejs,
+                    actor_user=actor_user,
+                    timeout_seconds=timeout_seconds,
+                )
+            raise exc
         except GatewayError as exc:
             error_message = f"{exc.__class__.__name__}: {exc}"
             if isinstance(exc, (TimeBudgetExceeded, ZwavejsClientUnavailable)) and not set_returned:
@@ -4357,9 +4425,18 @@ def push_door_code_to_lock(
             # may now hold this PIN over that code's. Retrying would only park the
             # PIN in a second slot, so this lock fails terminally for the operator
             # to check. The code's other locks carry on (issue #126).
-            raise _fail_slot_recorded_for_another_code(
+            failure = _fail_slot_recorded_for_another_code(
                 door_code=door_code, lock_entity_id=lock_entity_id, slot_index=slot_index
-            ) from exc
+            )
+            # Its committed pending_marker may hold the PIN of a code turned off meanwhile (issue #221).
+            _take_off_if_turned_off_meanwhile(
+                door_code=door_code,
+                lock_entity_id=lock_entity_id,
+                zwavejs=zwavejs,
+                actor_user=actor_user,
+                timeout_seconds=timeout_seconds,
+            )
+            raise failure from exc
 
         if _take_off_if_turned_off_meanwhile(
             door_code=door_code,
@@ -4368,10 +4445,9 @@ def push_door_code_to_lock(
             actor_user=actor_user,
             timeout_seconds=timeout_seconds,
         ):
-            # Off now, so no schedule goes into a slot that was just taken off again.
-            return _pushed_result(
-                lock_entity_id=lock_entity_id, node_id=node_id, slot_index=slot_index, weekdays_pushed=[]
-            )
+            # Off now, so no schedule goes into a slot that was just taken off
+            # again, and no slot is reported, since it's not the code's any more.
+            return _pushed_result(lock_entity_id=lock_entity_id, node_id=node_id, slot_index=None, weekdays_pushed=[])
 
         weekdays_pushed: list[int] = []
         if has_schedule:
@@ -4404,7 +4480,9 @@ def _restore_push_fields(door_code: DoorCode, snapshot: dict[str, object]) -> No
         setattr(door_code, name, value)
 
 
-def _pushed_result(*, lock_entity_id: str, node_id: int, slot_index: int, weekdays_pushed: list[int]) -> PushResult:
+def _pushed_result(
+    *, lock_entity_id: str, node_id: int, slot_index: int | None, weekdays_pushed: list[int]
+) -> PushResult:
     """Tell the dispatcher the lock changed and build the push's result."""
     timestamp = django_timezone.now()
     try:
