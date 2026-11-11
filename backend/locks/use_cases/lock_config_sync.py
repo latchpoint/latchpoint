@@ -770,6 +770,9 @@ _SKIP_SLOT_NOT_CONFIRMED_EMPTY = "slot_not_confirmed_empty"
 # Same, but this lock may already have the code's PIN in another slot, so
 # pushing it again would add a copy or fail (PR #214 review).
 _SKIP_PIN_IN_ANOTHER_SLOT = "pin_in_another_slot"
+# Same, but the other slot is one the lock hides the code of, so the sync can't
+# tell whether it's the code's PIN (issue #215).
+_SKIP_PIN_MAY_BE_IN_HIDDEN_SLOT = "pin_may_be_in_hidden_slot"
 # A synced code's added lock flagged to be brought in line with the code (issue #220).
 _SKIP_UPDATE_PENDING = "update_pending"
 _WARN_DUPLICATE_PIN = "duplicate_pin"
@@ -1212,12 +1215,39 @@ def _pin_elsewhere_on_lock(
     return False
 
 
+def _pin_may_be_in_hidden_slot(*, lock_entity_id: str, slot_index: int, hidden_slots: set[int]) -> bool:
+    """Whether a slot this lock hides the code of may hold the PIN of the code tracking ``slot_index`` (issue #215).
+
+    ``hidden_slots`` are the occupied slots whose PIN this sync couldn't read: a
+    lock that masks its codes, or a cache with a slot's status but not its code.
+    :func:`_pin_elsewhere_on_lock` can't compare against those. A hidden slot a
+    code tracks whose PIN latchpoint knows holds that code's PIN (that check
+    catches one with the same PIN). Any other, imported as a "Slot N" without a
+    PIN or not imported yet, may be a copy of this code's PIN, a #133 copy or a
+    keypad re-entry, so pushing the code again would add a second copy or fail.
+    """
+    from locks.use_cases.lock_push import decrypt_pin_or_none
+
+    others = hidden_slots - {slot_index}
+    if not others:
+        return False
+    known = {
+        int(assignment.slot_index)
+        for assignment in DoorCodeLockAssignment.objects.select_related("door_code").filter(
+            lock_entity_id=lock_entity_id, slot_index__in=sorted(others)
+        )
+        if decrypt_pin_or_none(assignment.door_code)
+    }
+    return bool(others - known)
+
+
 def _empty_manual_slot_verdicts(
     *,
     lock_entity_id: str,
     node_id: int,
     empty_slots: set[int],
     pin_by_slot: dict[int, str | None],
+    hidden_slots: set[int],
     zwavejs: ZwavejsGateway,
 ) -> dict[int, str | None]:
     """Decide what happens to each active manual code's tracked slot the cache called Available (issue #166).
@@ -1235,8 +1265,9 @@ def _empty_manual_slot_verdicts(
     push outstanding is left to that cleanup like every other skip, and one
     whose PIN this lock may already have in another slot keeps its slot, since
     pushing it again would add a copy or fail (:func:`_pin_elsewhere_on_lock`).
-    Neither of those reads anything back. Inactive manual codes are the #167
-    scheduler's to clear or forget.
+    So does one on a lock that hides the PIN of a slot that may be a copy of it
+    (:func:`_pin_may_be_in_hidden_slot`, issue #215). None of those reads
+    anything back. Inactive manual codes are the #167 scheduler's to clear or forget.
 
     A synced code's slot that latchpoint pushed itself, ie on a lock someone
     added to the code (ADR 0082, :func:`~locks.use_cases.lock_push.slot_pushed_by_latchpoint`),
@@ -1266,6 +1297,10 @@ def _empty_manual_slot_verdicts(
             code=code, lock_entity_id=lock_entity_id, slot_index=slot_index, pin_by_slot=pin_by_slot
         ):
             verdicts[slot_index] = _SKIP_PIN_IN_ANOTHER_SLOT
+        elif _pin_may_be_in_hidden_slot(
+            lock_entity_id=lock_entity_id, slot_index=slot_index, hidden_slots=hidden_slots
+        ):
+            verdicts[slot_index] = _SKIP_PIN_MAY_BE_IN_HIDDEN_SLOT
         elif _tracked_slot_reads_back_empty(zwavejs=zwavejs, node_id=node_id, slot_index=slot_index):
             verdicts[slot_index] = None
         else:
@@ -1690,6 +1725,9 @@ def _sync_lock_config_atomically(
         # transaction, and a dry run doesn't read anything back (PR #211 review).
         # The tracked slots of active manual codes share that budget and are read
         # first, before the sync writes or locks any row (issue #166, PR #214 review).
+        # When an untracked slot has an attempt to read back, the tracked ones stop
+        # SYNC_ATTEMPT_READBACK_RESERVE_SECONDS short of the end, so tracked slots
+        # that never answer can't leave those for later syncs every time (issue #215).
         manual_empty_verdicts: dict[int, str | None] = {}
         # (pin_ok, schedule_ok) for each slot of a synced code that's on other
         # locks too, from live readbacks of what changed (issue #220).
@@ -1699,18 +1737,34 @@ def _sync_lock_config_atomically(
         off_verdicts: dict[int, bool] = {}
         if not dry_run:
             from locks.use_cases.lock_push import (
+                SYNC_ATTEMPT_READBACK_RESERVE_SECONDS,
                 SYNC_READBACK_BUDGET_SECONDS,
                 BudgetedGateway,
                 check_attempt_slots_sync_saw_empty,
+                has_attempt_slots_sync_reads_back,
             )
 
+            # The readbacks below only read, so these are the slots tracked after them too.
+            tracked_slots = set(
+                DoorCodeLockAssignment.objects.filter(
+                    lock_entity_id=lock_entity_id, slot_index__isnull=False
+                ).values_list("slot_index", flat=True)
+            )
             readback_gateway = BudgetedGateway(zwavejs, seconds=SYNC_READBACK_BUDGET_SECONDS)
+            tracked_gateway = readback_gateway
+            if has_attempt_slots_sync_reads_back(
+                lock_entity_id=lock_entity_id, empty_slots=confirmed_empty_slots - tracked_slots
+            ):
+                tracked_gateway = BudgetedGateway(
+                    readback_gateway, seconds=SYNC_READBACK_BUDGET_SECONDS - SYNC_ATTEMPT_READBACK_RESERVE_SECONDS
+                )
             manual_empty_verdicts = _empty_manual_slot_verdicts(
                 lock_entity_id=lock_entity_id,
                 node_id=node_id,
                 empty_slots=confirmed_empty_slots,
                 pin_by_slot=pin_by_slot,
-                zwavejs=readback_gateway,
+                hidden_slots={slot for slot in occupied_slots if not pin_known_by_slot.get(slot)},
+                zwavejs=tracked_gateway,
             )
             import_verdicts = _import_changes_confirmed(
                 lock_entity_id=lock_entity_id,
@@ -1723,7 +1777,7 @@ def _sync_lock_config_atomically(
                 schedule_read_live=not any(
                     isinstance(vid, dict) and vid.get("commandClass") == CC_SCHEDULE_ENTRY_LOCK for vid in value_ids
                 ),
-                zwavejs=readback_gateway,
+                zwavejs=tracked_gateway,
             )
             off_verdicts = _import_off_verdicts(
                 lock_entity_id=lock_entity_id,
@@ -1731,12 +1785,7 @@ def _sync_lock_config_atomically(
                 empty_slots=confirmed_empty_slots,
                 disabled_slots={slot for slot in occupied_slots if slot_active.get(slot) is False},
                 pin_by_slot=pin_by_slot,
-                zwavejs=readback_gateway,
-            )
-            tracked_slots = set(
-                DoorCodeLockAssignment.objects.filter(
-                    lock_entity_id=lock_entity_id, slot_index__isnull=False
-                ).values_list("slot_index", flat=True)
+                zwavejs=tracked_gateway,
             )
             touched_code_ids.update(
                 check_attempt_slots_sync_saw_empty(
@@ -1831,6 +1880,18 @@ def _sync_lock_config_atomically(
                 if owner_id is not None:
                     skip_reason = _SKIP_CLEAR_OUTSTANDING
                     skip_code = DoorCode.objects.filter(id=owner_id).first()
+            if skip_reason == _SKIP_PIN_MISMATCH and existing and latchpoint_slot:
+                # The code's PIN isn't in its slot, so the lock's chip says so, like a
+                # disabled slot's, and a "disabled" error from before doesn't stay
+                # (issue #215). Only flagged: the slot stays the code's and nothing is
+                # sent. The next sync that finds the code's PIN there clears it.
+                mismatch_error = f"Slot {slot_index} holds a different PIN at the lock."
+                if existing.push_state == DoorCode.PushState.PUSHED and existing.last_push_error != mismatch_error:
+                    DoorCode.objects.select_for_update().filter(id=existing.door_code_id).first()
+                    DoorCodeLockAssignment.objects.filter(id=existing.id, push_state=DoorCode.PushState.PUSHED).update(
+                        last_push_error=mismatch_error
+                    )
+                    touched_code_ids.add(existing.door_code_id)
             if skip_reason and skip_code is not None:
                 skip_slot(
                     code=skip_code,
@@ -1858,7 +1919,8 @@ def _sync_lock_config_atomically(
                 if disabled_on_lock:
                     warnings.append(_WARN_DISABLED_ON_LOCK)
                     # The PIN won't open the door, so the lock's chip says so instead
-                    # of a bare "On lock" (PR #214 review). The slot is still the
+                    # of a bare "On lock" (PR #214 review), and so does the code's
+                    # badge, since the rollup has it (issue #215). The slot is still the
                     # code's, so the lock is pushed (which the scheduler's repair
                     # leaves alone, error included), and the next sync that finds
                     # the slot enabled clears the error.

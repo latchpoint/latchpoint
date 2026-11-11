@@ -170,6 +170,13 @@ PUSH_LOCK_BUDGET_SECONDS = 30.0
 # (issue #194). They run in the request and in the sync's transaction (PR #211 review).
 SYNC_READBACK_BUDGET_SECONDS = 30.0
 
+# How much of that budget lock sync keeps for those untracked attempt slots when
+# it has any to read. Its readbacks of tracked slots go first and stop this far
+# short of the end, so tracked slots that never answer (18s each) can't leave the
+# attempt slots for later syncs every time. Whatever the tracked ones leave goes
+# to the attempt slots too (issue #215).
+SYNC_ATTEMPT_READBACK_RESERVE_SECONDS = 10.0
+
 
 class BudgetedGateway:
     """Wraps a Z-Wave JS gateway so the calls made through it end by one deadline (issue #124).
@@ -1656,12 +1663,10 @@ def _derive_push_state(*, code: DoorCode, unrecorded_failures: list[ClearFailure
             state = pending
         else:
             state = pushed
-        lock_parts = [
-            part
-            for a in considered
-            if a.push_state != pushed or _lock_needs_push(a)
-            if (part := _lock_error_part(a, max_attempts=max_attempts))
-        ]
+        # A pushed lock only keeps an error when lock sync found its slot disabled
+        # at the lock or holding another PIN. It stays pushed, but the code's error
+        # says so too, so its badge isn't a plain "On lock" (issue #215).
+        lock_parts = [part for a in considered if (part := _lock_error_part(a, max_attempts=max_attempts))]
     if capped:
         state = failed
         clear_parts.append(f"Push gave up after {code.push_attempt_count} attempts")
@@ -1696,8 +1701,9 @@ def refresh_push_state(
     ``door_codes.push_max_attempts`` with a clear outstanding makes it
     ``failed`` (PRs #144, #167, #183). That count goes back to 0 once nothing is
     left to clear. ``last_push_error`` leads with the slots that may still hold
-    the PIN, then has ``"lock.x: <error>"`` for each lock in 3 that isn't
-    pushed. ``unrecorded_failures`` are clears still outstanding that left no
+    the PIN, then has ``"lock.x: <error>"`` for each lock in 3 with an error,
+    including a pushed one lock sync flagged (issue #215), which leaves the
+    state alone. ``unrecorded_failures`` are clears still outstanding that left no
     event (a lock still busy, a readback with no answer) and only go in the error.
 
     Takes the code row first (``select_for_update``), so it's never
@@ -3315,6 +3321,35 @@ def _check_synced_attempt_slots_on_lock(
     return settled
 
 
+def _attempt_slots_sync_saw_empty(*, lock_entity_id: str, empty_slots: set[int]) -> list[int]:
+    """The ``empty_slots`` some code has an unconfirmed push or clear failure on record for, in order."""
+    marked = {
+        slot_index
+        for slot_index in (
+            _coerce_int(value)
+            for value in DoorCodeEvent.objects.filter(
+                lock_entity_id=lock_entity_id,
+                door_code__isnull=False,
+                event_type=DoorCodeEvent.EventType.CODE_FAILED,
+                metadata__action__in=[_CLEAR_FAILED_ACTION, _UNCONFIRMED_PUSH_ACTION],
+            ).values_list("metadata__slot_index", flat=True)
+        )
+        if slot_index is not None
+    }
+    return sorted(set(empty_slots) & marked)
+
+
+def has_attempt_slots_sync_reads_back(*, lock_entity_id: str, empty_slots: set[int]) -> bool:
+    """Whether :func:`check_attempt_slots_sync_saw_empty` would read back any of ``empty_slots`` (issue #215).
+
+    Asked before the sync's other readbacks, so it can keep some of its budget for them.
+    """
+    return any(
+        _unconfirmed_records_on_slot(lock_entity_id=lock_entity_id, slot_index=slot_index)
+        for slot_index in _attempt_slots_sync_saw_empty(lock_entity_id=lock_entity_id, empty_slots=empty_slots)
+    )
+
+
 def check_attempt_slots_sync_saw_empty(
     *,
     lock_entity_id: str,
@@ -3344,20 +3379,7 @@ def check_attempt_slots_sync_saw_empty(
     of the codes it settled something of.
     """
     settled_code_ids: set[int] = set()
-    marked = {
-        slot_index
-        for slot_index in (
-            _coerce_int(value)
-            for value in DoorCodeEvent.objects.filter(
-                lock_entity_id=lock_entity_id,
-                door_code__isnull=False,
-                event_type=DoorCodeEvent.EventType.CODE_FAILED,
-                metadata__action__in=[_CLEAR_FAILED_ACTION, _UNCONFIRMED_PUSH_ACTION],
-            ).values_list("metadata__slot_index", flat=True)
-        )
-        if slot_index is not None
-    }
-    for slot_index in sorted(set(empty_slots) & marked):
+    for slot_index in _attempt_slots_sync_saw_empty(lock_entity_id=lock_entity_id, empty_slots=empty_slots):
         if _out_of_budget(zwavejs):
             # The rest wait for the next sync; nothing is recorded for them.
             logger.info("Out of time reading back unconfirmed attempt slots on %s", lock_entity_id)

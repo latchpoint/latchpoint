@@ -64,6 +64,52 @@ describe('DoorCodePushStatusBadge', () => {
     expect(screen.getByText(/On lock:.*Front Door.*slot 3/)).toBeTruthy()
   })
 
+  it('says to check the lock when lock sync flagged a slot of a pushed code (#215)', () => {
+    const render = (code: DoorCode) =>
+      renderWithProviders(
+        <DoorCodePushStatusBadge
+          code={code}
+          lockNameByEntityId={lockNames}
+          canRetry
+          isRetrying={false}
+          onRetry={vi.fn()}
+        />,
+      )
+    const flagged = {
+      lockEntityId: 'lock.front_door',
+      slotIndex: 3,
+      pendingRemoval: false,
+      pushState: 'pushed' as const,
+      lastPushError: 'Slot 3 is disabled at the lock.',
+    }
+    const { unmount } = render(
+      makeCode({
+        pushState: 'pushed',
+        lastPushError: 'lock.front_door: Slot 3 is disabled at the lock.',
+        lockSlotAssignments: [flagged],
+      }),
+    )
+
+    const badge = screen.getByText('On lock (check Front Door)')
+    expect(badge).toHaveAttribute('title', 'Front Door: Slot 3 is disabled at the lock.')
+    expect(badge.className).toContain('text-warning')
+    expect(screen.queryByRole('button', { name: /Retry/ })).toBeNull()
+    unmount()
+
+    // Without per-lock state it goes by the code's error.
+    render(
+      makeCode({
+        pushState: 'pushed',
+        lastPushError: 'lock.front_door: Slot 3 is disabled at the lock.',
+        lockSlotAssignments: [{ lockEntityId: 'lock.front_door', slotIndex: 3, pendingRemoval: false }],
+      }),
+    )
+    expect(screen.getByText('On lock (check lock)')).toHaveAttribute(
+      'title',
+      'lock.front_door: Slot 3 is disabled at the lock.',
+    )
+  })
+
   it('renders failed state with error message and retry button', () => {
     const onRetry = vi.fn()
     const code = makeCode({

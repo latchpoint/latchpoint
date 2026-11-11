@@ -73,7 +73,7 @@ function failedLockFallback(count: number, schedulePending: boolean): string {
   return `Push gave up after ${count} ${count === 1 ? 'attempt' : 'attempts'}, Retry sends it again.`
 }
 
-type LockChip = { suffix: string; title?: string; failed?: boolean }
+type LockChip = { suffix: string; title?: string; failed?: boolean; warning?: boolean }
 
 function slotsText(slots: number[]): string {
   return slots.length === 1 ? `Slot ${slots[0]}` : `Slots ${slots.join(', ')}`
@@ -154,9 +154,10 @@ function lockChipOf(code: DoorCode, lockEntityId: string): LockChip {
     return { suffix: ' (pending)', title: assignment.lastPushError || 'Waiting for the lock to accept the code.' }
   }
   // A pushed lock only keeps an error when lock sync found something wrong with
-  // its slot, ie the slot is disabled at the lock (#166).
+  // its slot, ie the slot is disabled at the lock (#166) or holds another PIN
+  // (#215). The PIN may not open that door, so it looks like a warning.
   if (assignment && pushState === 'pushed' && assignment.lastPushError) {
-    return { suffix: ' (check lock)', title: assignment.lastPushError }
+    return { suffix: ' (check lock)', title: assignment.lastPushError, warning: true }
   }
   return { suffix: '' }
 }
@@ -170,7 +171,11 @@ function LockBadges({ code, lockNameByEntityId }: { code: DoorCode; lockNameByEn
       {lockEntityIds.map((entityId) => {
         const chip = lockChipOf(code, entityId)
         return (
-          <Badge key={entityId} variant={chip.failed ? 'destructive' : 'outline'} title={chip.title}>
+          <Badge
+            key={entityId}
+            variant={chip.failed ? 'destructive' : chip.warning ? 'warning' : 'outline'}
+            title={chip.title}
+          >
             {lockNameByEntityId.get(entityId) || entityId}
             {chip.suffix}
           </Badge>
