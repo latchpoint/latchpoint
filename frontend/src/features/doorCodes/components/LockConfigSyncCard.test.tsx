@@ -110,6 +110,7 @@ describe('LockConfigSyncCard', () => {
       slotOf({ slotIndex: 2, action: 'unchanged', warnings: ['pin_change_unconfirmed'] }),
       slotOf({ slotIndex: 3, action: 'updated', warnings: ['pin_held_on_other_lock'] }),
       slotOf({ slotIndex: 4, action: 'unchanged', warnings: ['schedule_change_unconfirmed'] }),
+      slotOf({ slotIndex: 5, warnings: ['update_pending'] }),
     ])
 
     expect(screen.getByText('Sending the change to the other locks')).toHaveAttribute('title', 'sent_to_other_locks')
@@ -120,6 +121,7 @@ describe('LockConfigSyncCard', () => {
       ),
     ).toBeTruthy()
     expect(screen.getByText("Lock didn't confirm the new schedule, keeping the old one")).toBeTruthy()
+    expect(screen.getByText('Waiting for latchpoint to update this slot')).toBeTruthy()
   })
 
   it('names the door codes a duplicate PIN points at', async () => {

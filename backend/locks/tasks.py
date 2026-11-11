@@ -100,7 +100,6 @@ def push_pending_door_codes() -> int:
     transient gateway failures. Returns the number of codes attempted this tick.
     """
     from locks.use_cases.lock_push import (
-        CLEAR_MARKER_EVENT_TYPES,
         being_removed_q,
         check_synced_attempt_slots,
         inactive_slots_to_clear,
@@ -132,11 +131,10 @@ def push_pending_door_codes() -> int:
         # Belt and braces: the sweep above already failed every waiting lock at
         # the cap, but a push outside the scheduler can count one up since.
         needs_push_subquery = needs_push_subquery.filter(push_attempt_count__lt=max_attempts)
-    # Any recorded clear failure, settled or not, and planned ones (issue #220);
-    # retry_failed_slot_clears skips settled ones.
+    # Any recorded clear failure, settled or not; retry_failed_slot_clears skips settled ones.
     clear_failed_subquery = DoorCodeEvent.objects.filter(
         door_code=OuterRef("pk"),
-        event_type__in=CLEAR_MARKER_EVENT_TYPES,
+        event_type=DoorCodeEvent.EventType.CODE_FAILED,
         metadata__action="clear_failed",
     )
     # A rough cut for inactive codes; inactive_slots_to_clear has the exact rules.
@@ -250,6 +248,10 @@ def push_pending_door_codes() -> int:
                 },
             )
 
+    # Synced codes' added locks lock sync flagged and the queued push task
+    # didn't bring in line (issue #220).
+    attempted += _run_reconciles(now=now, fresh_only=False)
+
     # Locks this tick's failures took to the cap.
     sweep_push_cap(now=now, max_attempts=max_attempts)
     return attempted
@@ -258,6 +260,39 @@ def push_pending_door_codes() -> int:
 # How long the queued push task waits for a lock someone else holds before moving
 # on. The lock stays queued, so the next 5s tick waits for it again (issue #124).
 _QUEUED_PUSH_LOCK_WAIT_SECONDS = 10.0
+
+
+def _run_reconciles(*, now, fresh_only: bool) -> int:
+    """Reconcile the synced codes' added locks lock sync flagged (issue #220). Returns how many it tried.
+
+    ``fresh_only`` is the queued push task's share, flagged recently and not
+    tried since; ``push_pending_door_codes`` retries the rest under the cap.
+    Each lock waits up to ``_QUEUED_PUSH_LOCK_WAIT_SECONDS`` for its
+    ``lock_sync:`` lock and runs through a ``BudgetedGateway``. A lock still
+    busy stays flagged. Errors are caught per lock.
+    """
+    from locks.use_cases.added_lock_reconcile import reconcile_added_lock, reconcile_due
+    from locks.use_cases.lock_config_sync import LockBusy, sync_lock_deadline
+    from locks.use_cases.lock_push import PUSH_LOCK_BUDGET_SECONDS, BudgetedGateway
+
+    due = list(
+        reconcile_due(now=now, max_attempts=_get_push_max_attempts(), fresh_only=fresh_only)
+        .order_by("door_code_id", "lock_entity_id")
+        .values_list("door_code_id", "lock_entity_id")
+    )
+    for door_code_id, lock_entity_id in due:
+        try:
+            reconcile_added_lock(
+                door_code_id=door_code_id,
+                lock_entity_id=lock_entity_id,
+                zwavejs=BudgetedGateway(default_zwavejs_gateway, seconds=PUSH_LOCK_BUDGET_SECONDS),
+                deadline=sync_lock_deadline(_QUEUED_PUSH_LOCK_WAIT_SECONDS),
+            )
+        except LockBusy:
+            logger.info("Reconcile of door code id=%d on %s is waiting for the lock", door_code_id, lock_entity_id)
+        except Exception:
+            logger.exception("Unexpected error reconciling door code id=%d on %s", door_code_id, lock_entity_id)
+    return len(due)
 
 
 def _pushable_q(now) -> Q:
@@ -310,6 +345,7 @@ def push_requested_door_codes() -> int:
     is gone), and each code ends with ``refresh_push_state``. Errors are caught
     per lock and per code. Returns the number of locks it tried.
     """
+    from locks.use_cases.added_lock_reconcile import reconcile_due
     from locks.use_cases.lock_config_sync import LockBusy, hold_lock_sync, sync_lock_deadline
     from locks.use_cases.lock_push import (
         PUSH_LOCK_BUDGET_SECONDS,
@@ -326,12 +362,16 @@ def push_requested_door_codes() -> int:
     )
 
     now = timezone.now()
-    # Idle fast path (ADR-0103): one query, before the cap is even read.
-    if not queued_push_assignments(now=now, max_attempts=0).exists():
+    # Idle fast path (ADR-0103): one query, queued pushes and reconciles
+    # (issue #220) together, before the cap is even read.
+    idle = not (
+        queued_push_assignments(now=now, max_attempts=0) | reconcile_due(now=now, max_attempts=0, fresh_only=True)
+    ).exists()
+    if idle:
         return 0
     queued = queued_push_assignments(now=now, max_attempts=_get_push_max_attempts())
 
-    attempted = 0
+    attempted = _run_reconciles(now=now, fresh_only=True)
     for code_id in sorted(set(queued.values_list("door_code_id", flat=True))):
         code = DoorCode.objects.filter(id=code_id).first()
         if code is None:

@@ -43,6 +43,7 @@ const SLOT_WARNING_LABELS: Record<string, string> = {
   disabled_on_lock: 'Disabled at the lock',
   slot_empty_repush: 'PIN missing from the lock, sending it again',
   sent_to_other_locks: 'Sending the change to the other locks',
+  update_pending: 'Waiting for latchpoint to update this slot',
   pin_change_unconfirmed: "Lock didn't confirm the new PIN, keeping the old one",
   schedule_change_unconfirmed: "Lock didn't confirm the new schedule, keeping the old one",
   pin_held_on_other_lock:

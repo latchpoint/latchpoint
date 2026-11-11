@@ -768,6 +768,8 @@ _SKIP_SLOT_NOT_CONFIRMED_EMPTY = "slot_not_confirmed_empty"
 # Same, but this lock may already have the code's PIN in another slot, so
 # pushing it again would add a copy or fail (PR #214 review).
 _SKIP_PIN_IN_ANOTHER_SLOT = "pin_in_another_slot"
+# A synced code's added lock flagged to be brought in line with the code (issue #220).
+_SKIP_UPDATE_PENDING = "update_pending"
 _WARN_DUPLICATE_PIN = "duplicate_pin"
 # An active manual code whose slot holds its PIN but reads Occupied/Disabled.
 # Latchpoint owns a manual code, so the sync doesn't turn it off (issue #166).
@@ -796,11 +798,9 @@ def _has_outstanding_slot_cleanup(*, door_code: DoorCode, lock_entity_id: str) -
     them. That keeps a code latchpoint is turning off, or giving a new PIN, from
     being turned back on or given its old PIN by a stale read of a lock whose
     clear already went through, while another lock's clear is still failing
-    (PR #165). The exception is a ``repush`` clear queued for a lock added to a
-    synced code (issue #220): it only counts on that lock. The lock the code was
-    imported from decides its PIN and active flag, and the clear only follows a
-    change already taken from there, so counting it there would stop that lock
-    deciding anything for good once the added lock's clear hits the cap.
+    (PR #165). Bringing a synced code's added locks in line after a change from
+    the lock it was imported from never records one (issue #220,
+    :mod:`locks.use_cases.added_lock_reconcile`), so it can't hold that lock back.
     Unconfirmed attempts only count on the lock being synced, and only the
     ones a cleanup would still act on: not settled since (#161), not in a slot
     another code holds, and with a PIN to compare against. An attempt left on a
@@ -814,10 +814,7 @@ def _has_outstanding_slot_cleanup(*, door_code: DoorCode, lock_entity_id: str) -
         unresolved_clear_failures,
     )
 
-    if any(
-        not failure.repush or failure.lock_entity_id == lock_entity_id
-        for failure in unresolved_clear_failures(door_code=door_code)
-    ):
+    if unresolved_clear_failures(door_code=door_code):
         return True
     attempts = _unconfirmed_attempts(
         door_code=door_code,
@@ -840,7 +837,6 @@ def _slots_with_outstanding_cleanup(*, lock_entity_id: str) -> dict[int, list[tu
     from locks.use_cases.lock_push import (
         _CLEAR_FAILED_ACTION,
         _UNCONFIRMED_PUSH_ACTION,
-        CLEAR_MARKER_EVENT_TYPES,
         _unconfirmed_attempts,
         decrypt_pin_or_none,
         unresolved_clear_failures,
@@ -850,7 +846,7 @@ def _slots_with_outstanding_cleanup(*, lock_entity_id: str) -> dict[int, list[tu
         DoorCodeEvent.objects.filter(
             lock_entity_id=lock_entity_id,
             door_code__isnull=False,
-            event_type__in=CLEAR_MARKER_EVENT_TYPES,
+            event_type=DoorCodeEvent.EventType.CODE_FAILED,
             metadata__action__in=[_CLEAR_FAILED_ACTION, _UNCONFIRMED_PUSH_ACTION],
         )
         .values_list("door_code_id", flat=True)
@@ -1110,6 +1106,8 @@ def _empty_manual_slot_verdicts(
             lock_entity_id=lock_entity_id,
             slot_index__in=sorted(empty_slots),
             door_code__is_active=True,
+            # One waiting to be brought in line is the reconcile's (issue #220).
+            reconcile_requested_at__isnull=True,
         )
         .exclude(door_code__source=DoorCode.Source.SYNCED, last_push_attempt_at__isnull=True)
         .order_by("slot_index")
@@ -1312,106 +1310,37 @@ def _import_changes_confirmed(
 
 
 def _send_import_change_to_other_locks(
-    *,
-    code: DoorCode,
-    lock_entity_id: str,
-    old_pin: str | None,
-    old_days: int | None,
-    pin_changed: bool,
-    actor_user: User,
+    *, code: DoorCode, lock_entity_id: str, pin_changed: bool
 ) -> tuple[list[str], list[str]]:
-    """Send a new PIN or schedule lock sync just took from ``lock_entity_id`` on to the code's other locks (issue #220).
+    """Flag the code's other locks for a new PIN or schedule lock sync just took from ``lock_entity_id`` (issue #220).
 
     ``code`` is a synced code and ``lock_entity_id`` the lock it was imported
     from, which decides its PIN and schedule (ADR 0082). Its other locks are
-    ones someone added in latchpoint and got the PIN from a push, so they get
-    the change the way an edit sends one to a manual code's locks. The sync
-    holds only this lock's ``lock_sync:`` lock, so nothing is sent from here,
-    it's queued for the scheduler:
-
-    - a new PIN, or a schedule that drops a day or goes away: the slot there is
-      queued for a clear and the code pushed again (:func:`~locks.use_cases.lock_push.queue_clear_and_repush`),
-      since the old PIN or the dropped day's window would stay on the lock otherwise.
-      The clear reads the slot back first, and waits while the code is off
-    - a schedule that keeps every day it had (or a first one): the lock gets
-      ``schedule_pending`` and a queued push (:func:`~locks.use_cases.lock_push.request_push`),
-      which sends only the schedule into the code's slot there, once the code is on
-    - a lock with no slot yet gets the code's PIN and schedule from its pending
-      push. A new PIN only has the slots an unconfirmed push may have left the
-      old one in queued for a clear
-
-    A lock where another code already has the new PIN (in a slot, or active
-    and waiting for its push, the #188 rule) still gets the old PIN cleared,
-    since it was changed on purpose, but isn't pushed: the lock is failed for a
-    human once its slot is gone (:func:`~locks.use_cases.lock_push.hold_push_for_held_pin`).
-    Returns the locks something was queued for that the change goes out to,
-    and the ones held for another code's PIN.
+    ones someone added in latchpoint and got the PIN from a push. The sync holds
+    only this lock's ``lock_sync:`` lock, so it sends nothing to them. It flags
+    them (:func:`~locks.use_cases.added_lock_reconcile.flag_added_locks`) and the
+    queued push task brings each in line once this commits
+    (:func:`~locks.use_cases.added_lock_reconcile.reconcile_added_lock`).
+    Returns the locks flagged, without the ones where another code already has
+    the new PIN, which are returned second: the reconcile takes the old PIN
+    off those and fails them for a human (the #188 rule).
     """
-    from locks.use_cases.lock_push import (
-        REPUSH_FOR_PIN,
-        REPUSH_FOR_SCHEDULE,
-        hold_push_for_held_pin,
-        pin_held_by_another_code,
-        queue_clear_and_repush,
-        request_push,
-        schedule_only_grows,
-    )
+    from locks.use_cases.added_lock_reconcile import flag_added_locks, pin_held_by_another_code
 
-    grows = schedule_only_grows(old_days=old_days, new_days=code.days_of_week)
-    reason = REPUSH_FOR_PIN if pin_changed else REPUSH_FOR_SCHEDULE
-    sent: list[str] = []
-    held: list[str] = []
-    schedule_locks: list[str] = []
-    cleared = False
-    # The code row before its assignment rows, like every writer of both.
-    DoorCode.objects.select_for_update().filter(id=code.id).first()
-    for assignment in _other_lock_assignments(code=code, lock_entity_id=lock_entity_id):
-        other = assignment.lock_entity_id
-        pin_held = pin_changed and pin_held_by_another_code(door_code=code, lock_entity_id=other) is not None
-        if pin_held:
-            held.append(other)
-        if assignment.slot_index is None:
-            queued = pin_changed and queue_clear_and_repush(
-                door_code=code, lock_entity_id=other, old_pin=old_pin, pin_changed=True, reason=reason
-            )
-            cleared |= queued
-            if pin_held:
-                hold_push_for_held_pin(door_code=code, lock_entity_id=other)
-            elif queued:
-                sent.append(other)
-            continue
-        if not pin_changed and grows:
-            DoorCodeLockAssignment.objects.filter(id=assignment.id).update(
-                schedule_pending=True,
-                push_state=DoorCode.PushState.PENDING,
-                push_attempt_count=0,
-                last_push_error="",
-            )
-            schedule_locks.append(other)
-            sent.append(other)
-            continue
-        # False when a clear is already queued there, which pushes the current PIN and schedule too.
-        queued = queue_clear_and_repush(
-            door_code=code, lock_entity_id=other, old_pin=old_pin, pin_changed=pin_changed, reason=reason
-        )
-        cleared = True
-        if queued and not pin_held:
-            sent.append(other)
-    if cleared:
-        # A fresh start for the clear-retry cap, like an edit (issue #126), so
-        # a clear that gave up before is tried again for the new change.
-        DoorCode.objects.filter(id=code.id).update(push_attempt_count=0)
-        code.push_attempt_count = 0
-    if schedule_locks:
-        request_push(code, schedule_locks, actor_user=actor_user)
+    flagged = flag_added_locks(door_code=code, import_lock_entity_id=lock_entity_id)
+    held = [
+        other
+        for other in flagged
+        if pin_changed and pin_held_by_another_code(door_code=code, lock_entity_id=other) is not None
+    ]
     if held:
         logger.warning(
-            "Door code id=%d: the new PIN from %s is already another code's on %s; only the old one is cleared there",
+            "Door code id=%d: the new PIN from %s is already another code's on %s; only the old one comes off there",
             code.id,
             lock_entity_id,
             held,
         )
-    return sent, held
+    return [lock for lock in flagged if lock not in held], held
 
 
 def _record_sync_skip(
@@ -1727,7 +1656,12 @@ def _sync_lock_config_atomically(
             latchpoint_slot = bool(existing) and (
                 existing.door_code.source != DoorCode.Source.SYNCED or slot_pushed_by_latchpoint(existing)
             )
-            if existing:
+            if existing and latchpoint_slot and existing.reconcile_requested_at is not None:
+                # A synced code's added lock waiting to be brought in line owns
+                # its slot until then (issue #220), whatever the cache says now.
+                skip_reason = _SKIP_UPDATE_PENDING
+                skip_code = existing.door_code
+            elif existing:
                 skip_reason = _existing_code_skip_reason(
                     code=existing.door_code,
                     lock_entity_id=lock_entity_id,
@@ -1828,9 +1762,7 @@ def _sync_lock_config_atomically(
             if existing:
                 code = existing.door_code
                 updated_fields: list[str] = []
-                # What the code's other locks have now, for the change sent on to them below (issue #220).
                 old_pin = decrypt_pin_or_none(code)
-                old_days = code.days_of_week
 
                 if code.user_id != target_user.id:
                     code.user = target_user
@@ -1920,12 +1852,7 @@ def _sync_lock_config_atomically(
                 schedule_changed = bool({"days_of_week", "window_start", "window_end"} & set(updated_fields))
                 if not dry_run and (pin_changed or schedule_changed):
                     sent_to, held_on = _send_import_change_to_other_locks(
-                        code=code,
-                        lock_entity_id=lock_entity_id,
-                        old_pin=old_pin,
-                        old_days=old_days,
-                        pin_changed=pin_changed,
-                        actor_user=actor_user,
+                        code=code, lock_entity_id=lock_entity_id, pin_changed=pin_changed
                     )
                     if sent_to:
                         warnings.append(_WARN_SENT_TO_OTHER_LOCKS)

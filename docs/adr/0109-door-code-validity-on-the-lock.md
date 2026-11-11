@@ -128,11 +128,10 @@ notifications and retiring used up codes is a separate change.
   lock wipe a code that works on the others, and a household code that stays
   on is the safer way to be wrong. Removing the lock from the code in
   latchpoint takes the PIN off it. That holds when the lock it was imported
-  from gives the off code a new PIN or schedule too: the clear and push that
-  send the change to the added locks are queued but wait while the code is
-  off, so the added locks keep the old PIN and window until it's back on, and
-  then the change goes out (issue #220, ADR-0082). Deleting the code still
-  clears them right away.
+  from gives the off code a new PIN or schedule too: the added locks are
+  flagged for their reconcile, which waits while the code is off, so they keep
+  the old PIN and window until it's back on, and then the change goes out
+  (issue #220, ADR-0082). Deleting the code still clears them right away.
 - Synced codes with dates are retired too, which clears their slot on the
   lock. A synced code without dates is only touched when it's a stranded copy
   of a code being retired (issue #185, PR #211 review). That's an active

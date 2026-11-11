@@ -122,6 +122,18 @@ class DoorCodeLockAssignment(models.Model):
     push_requested_by = models.ForeignKey(
         User, on_delete=models.SET_NULL, null=True, blank=True, related_name="+", db_constraint=False
     )
+    # What latchpoint last wrote into slot_index (issue #220): the PIN, encrypted
+    # like DoorCode.encrypted_pin, and the schedule as
+    # lock_push.schedule_fingerprint ("" for none). Null is unknown (rows from
+    # before 0012, a slot lock sync imported, or one latchpoint let go of).
+    written_pin = models.TextField(null=True, blank=True)  # noqa: DJ001
+    # Null and "" differ here: not known, and no schedule written.
+    written_schedule = models.CharField(max_length=64, null=True, blank=True)  # noqa: DJ001
+    # A synced code's added lock that has to be brought in line with the code's
+    # PIN and schedule (issue #220). Set by lock sync of the lock the code was
+    # imported from, cleared by locks.use_cases.added_lock_reconcile once the
+    # lock matches, unless it was set again meanwhile.
+    reconcile_requested_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
