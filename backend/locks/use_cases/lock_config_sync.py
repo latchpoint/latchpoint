@@ -1861,13 +1861,22 @@ def _sync_lock_config_atomically(
                 elif not dry_run and "is_active" in updated_fields and code.is_active:
                     # Back on: the added locks it left behind while it was off go
                     # now, not at the scheduler's next 300s retry (review of PR #223).
-                    from locks.use_cases.added_lock_reconcile import flag_added_locks
+                    from locks.use_cases.added_lock_reconcile import flag_added_locks, pin_held_by_another_code
 
-                    sent_to = flag_added_locks(
+                    flagged = flag_added_locks(
                         door_code=code, import_lock_entity_id=lock_entity_id, out_of_date_only=True
                     )
+                    # The #188 rule, like a change: the reconcile only clears those.
+                    held_on = [
+                        other
+                        for other in flagged
+                        if pin_held_by_another_code(door_code=code, lock_entity_id=other) is not None
+                    ]
+                    sent_to = [other for other in flagged if other not in held_on]
                     if sent_to:
                         warnings.append(_WARN_SENT_TO_OTHER_LOCKS)
+                    if held_on:
+                        warnings.append(_WARN_PIN_HELD_ON_OTHER_LOCK)
 
                 event = DoorCodeEvent.objects.create(
                     door_code=code,

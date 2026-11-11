@@ -145,6 +145,13 @@ class PushSuperseded(LockUnreachable):
     """The code changed while its push waited for the lock (deleted, turned off, lock dropped); nothing was sent."""
 
 
+class ReconcilePending(PushSuperseded):
+    """The lock was flagged for its reconcile while the push waited for it (issue #220); nothing was sent.
+
+    Only this lock: the code's other locks still get their push.
+    """
+
+
 class PushInTransaction(RuntimeError):
     """A push was called inside a DB transaction someone else opened (issue #130). Raised in dev and tests only."""
 
@@ -3754,8 +3761,16 @@ def push_door_code_to_lock(
     zwavejs: ZwavejsGateway,
     actor_user=None,
     timeout_seconds: float = 5.0,
+    for_reconcile: bool = False,
 ) -> PushResult:
     """Program ``door_code``'s PIN onto ``lock_entity_id``.
+
+    A lock flagged for :mod:`locks.use_cases.added_lock_reconcile` by the time
+    the push holds it raises :class:`ReconcilePending` with nothing sent, unless
+    the reconcile is the caller (``for_reconcile``). A push picked the lock
+    before lock sync flagged it would otherwise send what it read (a schedule
+    cut down from a partial one, say) and record it as written, and the
+    reconcile would take the slot for in line (issue #220).
 
     Allocates the lowest-free slot, sends CC 99 ``set`` (and CC 78 schedule when
     the code carries a daily window), and persists the slot index + push state.
@@ -3820,6 +3835,8 @@ def push_door_code_to_lock(
         assignment = DoorCodeLockAssignment.objects.filter(door_code=door_code, lock_entity_id=lock_entity_id).first()
         if not door_code.is_active or assignment is None:
             raise PushSuperseded("Door code is no longer active on this lock; nothing was pushed.")
+        if assignment.reconcile_requested_at is not None and not for_reconcile:
+            raise ReconcilePending("This lock is waiting for its reconcile; nothing was pushed.")
         if not belongs_on_lock(door_code):
             # Its start_at moved into the future or it expired while the push waited (issue #145).
             raise PushSuperseded("Door code isn't valid right now (not started or expired); nothing was pushed.")
@@ -4495,6 +4512,9 @@ def push_door_code_to_assigned_locks(
                 timeout_seconds=timeout_seconds,
             )
             successes.append(result)
+        except ReconcilePending:
+            # Flagged meanwhile; the reconcile owns this lock, the others still go.
+            continue
         except PushSuperseded:
             # An update or delete got the lock first and settled the code's locks
             # and state itself, so this stale pass stops here.
@@ -4610,6 +4630,14 @@ def request_push(
         row = _lock_code_row(code.id)
         if row is None or not row.is_active or not belongs_on_lock(row, now=now):
             return []
+        # Added locks still waiting for their reconcile go from now too, ie a
+        # dated synced code turned back on from latchpoint (#189) long after the
+        # change that flagged them (issue #220).
+        reconciles = DoorCodeLockAssignment.objects.filter(door_code=row, reconcile_requested_at__isnull=False).update(
+            reconcile_requested_at=now
+        )
+        if reconciles:
+            transaction.on_commit(_wake_push_task, robust=True)
         locks = [a for a in locks_to_push(door_code=row) if wanted is None or a.lock_entity_id in wanted]
         if not locks:
             return []

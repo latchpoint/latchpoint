@@ -66,6 +66,10 @@ _STALE = "stale"
 _OTHER = "other"
 _EMPTY = "empty"
 
+# CC 99 userIdStatus values for a slot holding a user code.
+_USER_ID_STATUS_ENABLED = 1
+_USER_ID_STATUS_DISABLED = 2
+
 
 class _Transient(Exception):
     """A read or clear that got no usable answer; the lock stays flagged and is tried again."""
@@ -146,9 +150,11 @@ def flag_added_locks(
     assignments. Returns the locks flagged.
 
     ``out_of_date_only`` is for a code lock sync just turned back on: only the
-    locks still flagged, with no slot, or whose slot isn't known to hold the
-    code's PIN and schedule are flagged (again, from now), so the queued push
-    task takes them up at once however long the code was off (review of PR #223).
+    locks still flagged, or whose recorded PIN or schedule isn't the code's (or
+    that have lost their slot since) are flagged (again, from now), so the
+    queued push task takes them up at once however long the code was off
+    (review of PR #223). A row with nothing recorded and no flag is left for
+    the next real change, so an off and on doesn't clear it for nothing.
     """
     from locks.use_cases.lock_push import (
         _lock_code_row,
@@ -173,9 +179,13 @@ def flag_added_locks(
                 a.id
                 for a in others
                 if a.reconcile_requested_at is not None
-                or a.slot_index is None
-                or _decrypt(a.written_pin) != pin
-                or a.written_schedule != desired
+                # Nothing recorded and nothing changed: a row from before 0012
+                # is brought in line by the next real change, not by an off and
+                # on, which would clear it for nothing.
+                or (
+                    a.written_pin is not None
+                    and (a.slot_index is None or _decrypt(a.written_pin) != pin or a.written_schedule != desired)
+                )
             ]
             others = others.filter(id__in=behind)
         flagged = sorted(others.values_list("lock_entity_id", flat=True))
@@ -422,6 +432,7 @@ def _bring_in_line(
                     zwavejs=zwavejs,
                     actor_user=actor_user,
                     timeout_seconds=timeout_seconds,
+                    for_reconcile=True,
                 )
                 return PUSHED
             # A day goes away, or what's there isn't known: clear the slot and push it fresh.
@@ -445,6 +456,7 @@ def _bring_in_line(
         zwavejs=zwavejs,
         actor_user=actor_user,
         timeout_seconds=timeout_seconds,
+        for_reconcile=True,
     )
     return PUSHED
 
@@ -503,14 +515,25 @@ def _read_tracked_slot(
     def masked() -> str:
         return _CURRENT if written_pin and written_pin == pin else _STALE
 
-    def config_slot() -> bool:
+    def unrecorded() -> str:
+        """A readable PIN that isn't the code's in a slot with nothing recorded: read again for its status.
+
+        Latchpoint's (stale) only when the lock positively reports a user code,
+        enabled or disabled. Lock config (messaging or passage mode) is let go,
+        and anything else, a 254, no report or an answer that doesn't say, is
+        no verdict, so nothing is cleared on it.
+        """
         response = _refresh_user_code_slot(
             zwavejs=zwavejs, node_id=node_id, slot_index=slot_index, timeout_seconds=timeout_seconds
         )
         if isinstance(response, dict) and "response" in response:
             response = response["response"]
-        status = response.get("userIdStatus") if isinstance(response, dict) else None
-        return _coerce_int(status) in _USER_ID_STATUS_CONFIG_USES
+        status = _coerce_int(response.get("userIdStatus")) if isinstance(response, dict) else None
+        if status in (_USER_ID_STATUS_ENABLED, _USER_ID_STATUS_DISABLED):
+            return _STALE
+        if status in _USER_ID_STATUS_CONFIG_USES:
+            return _OTHER
+        raise _Transient(f"Slot {slot_index} gave no clear status on a second read")
 
     def holds(candidate: str) -> bool:
         try:
@@ -535,7 +558,7 @@ def _read_tracked_slot(
                 if written_pin is None:
                     # Nothing recorded: latchpoint's, as before 0012 (review of PR #223),
                     # unless it's lock config (messaging or passage mode), which never is.
-                    return _OTHER if config_slot() else _STALE
+                    return unrecorded()
                 if written_pin != pin and holds(written_pin):
                     return _STALE
                 return _OTHER

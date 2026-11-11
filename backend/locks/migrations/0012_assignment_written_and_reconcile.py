@@ -11,8 +11,10 @@
 Additive only. All three columns are nullable with no default, so code from
 before this migration can still insert assignments after a rollback of the code
 alone, and existing rows read as "not known what was written" and "nothing to
-reconcile". No backfill: an unknown written PIN is handled as "may not be ours"
-(a readable PIN in the slot is let go rather than cleared).
+reconcile". No backfill: an unknown written PIN on a slot latchpoint pushed is
+handled as latchpoint's, so any readable PIN in it other than the code's is
+cleared, like every clear did before (lock config slots aside), and an unknown
+written schedule gets the slot cleared and pushed again.
 
 The reverse drops the columns. A reconcile still flagged is lost, and the added
 lock keeps whatever it has until the import lock changes again or the lock is

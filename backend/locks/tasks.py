@@ -490,6 +490,7 @@ def enforce_door_code_validity() -> int:
     ends there, the next tick starting over (issue #186). Returns the number
     of codes it acted on.
     """
+    from locks.use_cases.added_lock_reconcile import rerequest_reconcile
     from locks.use_cases.door_codes import retire_door_code, retry_pending_copy_retires, withdraw_door_code
     from locks.use_cases.lock_push import push_door_code_to_assigned_locks, rearm_failed_locks, refresh_push_state
 
@@ -567,9 +568,10 @@ def enforce_door_code_validity() -> int:
     # count too: before its start nothing pushes a code, so a lock is only failed
     # then because the 0010 backfill copied the code's failure onto it, and it
     # gets re-armed below so the code still goes on its locks (PR #195 review).
+    # A synced code's added lock waiting for its reconcile counts too (issue #220).
     waiting = DoorCodeLockAssignment.objects.filter(door_code=OuterRef("pk")).filter(
         Q(push_state=DoorCode.PushState.PENDING) | Q(push_state=DoorCode.PushState.FAILED),
-        Q(slot_index__isnull=True) | Q(schedule_pending=True),
+        Q(slot_index__isnull=True) | Q(schedule_pending=True) | Q(reconcile_requested_at__isnull=False),
     )
     just_started = _load_validity_pass(
         DoorCode.objects.filter(is_active=True, start_at__isnull=False, start_at__lte=now)
@@ -586,6 +588,8 @@ def enforce_door_code_validity() -> int:
             if rearm_failed_locks(door_code=code):
                 code = DoorCode.objects.prefetch_related("lock_assignments").get(id=code.id)
             push_door_code_to_assigned_locks(door_code=code, zwavejs=default_zwavejs_gateway, only_unassigned=True)
+            # Its added locks waiting for their reconcile go now, not at the next 300s retry (issue #220).
+            rerequest_reconcile(door_code=code)
             acted += 1
         except Exception:
             logger.warning("Couldn't push door code id=%d at its start", code.id, exc_info=True)
