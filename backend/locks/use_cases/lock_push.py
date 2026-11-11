@@ -4287,7 +4287,18 @@ def _push_schedule_to_slot(
     schedule on its next tick instead of leaving the PIN working around the
     clock until the 300s retry (PR #201 review). A schedule-only push doesn't,
     so that's one more try at most.
+
+    The slot's ``written_schedule`` is set to unknown before anything is sent
+    and only recorded once the whole schedule went out, so a push that stops
+    partway leaves no record that would let ``added_lock_reconcile`` take a
+    half written schedule for an older one; unknown gets the slot cleared and
+    pushed again (issue #220).
     """
+    with transaction.atomic():
+        _lock_code_row(door_code.id)
+        DoorCodeLockAssignment.objects.filter(
+            door_code=door_code, lock_entity_id=lock_entity_id, slot_index=slot_index
+        ).update(written_schedule=None)
     try:
         weekdays_pushed = _push_daily_repeating_schedule(
             zwavejs=zwavejs,

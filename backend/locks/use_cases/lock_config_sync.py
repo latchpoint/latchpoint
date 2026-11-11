@@ -1310,12 +1310,7 @@ def _import_changes_confirmed(
 
 
 def _send_import_change_to_other_locks(
-    *,
-    code: DoorCode,
-    lock_entity_id: str,
-    pin_changed: bool,
-    previous_pin: str | None,
-    previous_schedule: str,
+    *, code: DoorCode, lock_entity_id: str, pin_changed: bool
 ) -> tuple[list[str], list[str]]:
     """Flag the code's other locks for a new PIN or schedule lock sync just took from ``lock_entity_id`` (issue #220).
 
@@ -1332,14 +1327,7 @@ def _send_import_change_to_other_locks(
     """
     from locks.use_cases.added_lock_reconcile import flag_added_locks, pin_held_by_another_code
 
-    # The code's PIN and schedule before this change stand in for what a push
-    # from before migration 0012 wrote, which wasn't recorded.
-    flagged = flag_added_locks(
-        door_code=code,
-        import_lock_entity_id=lock_entity_id,
-        previous_pin=previous_pin,
-        previous_schedule=previous_schedule,
-    )
+    flagged = flag_added_locks(door_code=code, import_lock_entity_id=lock_entity_id)
     held = [
         other
         for other in flagged
@@ -1640,7 +1628,7 @@ def _sync_lock_config_atomically(
                 event,
             )
 
-        from locks.use_cases.lock_push import code_schedule_fingerprint, decrypt_pin_or_none, slot_pushed_by_latchpoint
+        from locks.use_cases.lock_push import decrypt_pin_or_none, slot_pushed_by_latchpoint
 
         # Import occupied slots.
         for slot_index in sorted(occupied_slots):
@@ -1775,7 +1763,6 @@ def _sync_lock_config_atomically(
                 code = existing.door_code
                 updated_fields: list[str] = []
                 old_pin = decrypt_pin_or_none(code)
-                old_schedule = code_schedule_fingerprint(code)
 
                 if code.user_id != target_user.id:
                     code.user = target_user
@@ -1865,16 +1852,22 @@ def _sync_lock_config_atomically(
                 schedule_changed = bool({"days_of_week", "window_start", "window_end"} & set(updated_fields))
                 if not dry_run and (pin_changed or schedule_changed):
                     sent_to, held_on = _send_import_change_to_other_locks(
-                        code=code,
-                        lock_entity_id=lock_entity_id,
-                        pin_changed=pin_changed,
-                        previous_pin=old_pin,
-                        previous_schedule=old_schedule,
+                        code=code, lock_entity_id=lock_entity_id, pin_changed=pin_changed
                     )
                     if sent_to:
                         warnings.append(_WARN_SENT_TO_OTHER_LOCKS)
                     if held_on:
                         warnings.append(_WARN_PIN_HELD_ON_OTHER_LOCK)
+                elif not dry_run and "is_active" in updated_fields and code.is_active:
+                    # Back on: the added locks it left behind while it was off go
+                    # now, not at the scheduler's next 300s retry (review of PR #223).
+                    from locks.use_cases.added_lock_reconcile import flag_added_locks
+
+                    sent_to = flag_added_locks(
+                        door_code=code, import_lock_entity_id=lock_entity_id, out_of_date_only=True
+                    )
+                    if sent_to:
+                        warnings.append(_WARN_SENT_TO_OTHER_LOCKS)
 
                 event = DoorCodeEvent.objects.create(
                     door_code=code,

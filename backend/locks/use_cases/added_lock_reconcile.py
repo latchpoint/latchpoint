@@ -132,8 +132,7 @@ def flag_added_locks(
     *,
     door_code: DoorCode,
     import_lock_entity_id: str,
-    previous_pin: str | None = None,
-    previous_schedule: str | None = None,
+    out_of_date_only: bool = False,
     now: datetime | None = None,
 ) -> list[str]:
     """Flag ``door_code``'s locks other than ``import_lock_entity_id`` for :func:`reconcile_added_lock`.
@@ -146,15 +145,18 @@ def flag_added_locks(
     clear. The code row is taken first, like every writer of a code's
     assignments. Returns the locks flagged.
 
-    A slot latchpoint pushed before migration 0012 (``slot_pushed_by_latchpoint``
-    with no ``written_pin`` or ``written_schedule``) gets ``previous_pin`` and
-    ``previous_schedule``, the code's PIN and schedule fingerprint from before
-    this change, as what was written there. That's what the push put there,
-    since the code only gets a new one from this lock, so the reconcile clears
-    the old PIN instead of letting it go. A slot lock sync imported, or no slot,
-    stays unknown.
+    ``out_of_date_only`` is for a code lock sync just turned back on: only the
+    locks still flagged, with no slot, or whose slot isn't known to hold the
+    code's PIN and schedule are flagged (again, from now), so the queued push
+    task takes them up at once however long the code was off (review of PR #223).
     """
-    from locks.use_cases.lock_push import _lock_code_row, _locks_being_removed, _wake_push_task
+    from locks.use_cases.lock_push import (
+        _lock_code_row,
+        _locks_being_removed,
+        _wake_push_task,
+        code_schedule_fingerprint,
+        decrypt_pin_or_none,
+    )
 
     now = now or django_timezone.now()
     with transaction.atomic():
@@ -164,15 +166,19 @@ def flag_added_locks(
             .exclude(lock_entity_id=import_lock_entity_id)
             .exclude(lock_entity_id__in=_locks_being_removed(door_code=door_code))
         )
+        if out_of_date_only:
+            pin = decrypt_pin_or_none(door_code)
+            desired = code_schedule_fingerprint(door_code)
+            behind = [
+                a.id
+                for a in others
+                if a.reconcile_requested_at is not None
+                or a.slot_index is None
+                or _decrypt(a.written_pin) != pin
+                or a.written_schedule != desired
+            ]
+            others = others.filter(id__in=behind)
         flagged = sorted(others.values_list("lock_entity_id", flat=True))
-        # slot_pushed_by_latchpoint as a filter: a slot, and a push attempt on record.
-        pushed_before_0012 = others.filter(slot_index__isnull=False, last_push_attempt_at__isnull=False)
-        if previous_pin:
-            pushed_before_0012.filter(written_pin__isnull=True).update(
-                written_pin=SettingsEncryption.get().encrypt(previous_pin)
-            )
-        if previous_schedule is not None:
-            pushed_before_0012.filter(written_schedule__isnull=True).update(written_schedule=previous_schedule)
         if flagged:
             others.update(
                 reconcile_requested_at=now,
@@ -293,6 +299,7 @@ def _reconcile_locked(*, door_code_id: int, lock_entity_id: str, zwavejs, actor_
         LockUnreachable,
         PushSuperseded,
         _locks_being_removed,
+        _out_of_budget,
         decrypt_pin_or_none,
         refresh_push_state,
     )
@@ -326,7 +333,13 @@ def _reconcile_locked(*, door_code_id: int, lock_entity_id: str, zwavejs, actor_
             timeout_seconds=timeout_seconds,
         )
     except _Transient as exc:
-        _record_failure(code=code, assignment=assignment, message=str(exc), terminal=False)
+        _record_failure(
+            code=code,
+            assignment=assignment,
+            message=str(exc),
+            terminal=False,
+            counted=not _out_of_budget(zwavejs),
+        )
         return RETRY
     except PushSuperseded:
         # Off, out of its dates or dropped since; the next run sees why.
@@ -380,7 +393,7 @@ def _bring_in_line(
         if holds == _CURRENT:
             desired = code_schedule_fingerprint(code)
             written = assignment.written_schedule
-            if written == desired or (written is None and desired == ""):
+            if written == desired:
                 with transaction.atomic():
                     _lock_code_row(code.id)
                     DoorCodeLockAssignment.objects.filter(id=assignment.id).update(
@@ -392,8 +405,10 @@ def _bring_in_line(
                         written_schedule=desired,
                     )
                 return IN_LINE
-            if written is None or schedule_only_grows(old_days=_days_of(written), new_days=code.days_of_week):
+            if written is not None and schedule_only_grows(old_days=_days_of(written), new_days=code.days_of_week):
                 # Every day it had stays, so sending the schedule overwrites it all.
+                # Not known what's there (a row from before 0012, or a schedule
+                # push that didn't finish): cleared and pushed again below.
                 with transaction.atomic():
                     _lock_code_row(code.id)
                     DoorCodeLockAssignment.objects.filter(id=assignment.id).update(
@@ -409,7 +424,7 @@ def _bring_in_line(
                     timeout_seconds=timeout_seconds,
                 )
                 return PUSHED
-            # A day goes away: clear the slot and push it fresh.
+            # A day goes away, or what's there isn't known: clear the slot and push it fresh.
             _clear_tracked_slot(code=code, assignment=assignment, zwavejs=zwavejs, timeout_seconds=timeout_seconds)
         elif holds == _STALE:
             _clear_tracked_slot(code=code, assignment=assignment, zwavejs=zwavejs, timeout_seconds=timeout_seconds)
@@ -469,13 +484,33 @@ def _read_tracked_slot(
 
     A code the lock won't show is the one latchpoint wrote, since it pushed this
     slot: current when that was the code's PIN, stale otherwise or when what it
-    wrote isn't known. A readable PIN that's neither is someone else's.
+    wrote isn't known. A readable PIN that's neither is someone else's, but only
+    when a push recorded what it wrote there. A slot pushed before migration
+    0012 has nothing recorded (``written_pin`` is ``None``), and it may have
+    fallen behind more than one change, so any readable PIN in it but the
+    code's is taken as latchpoint's older one, like every clear did before.
     Raises :class:`_Transient` when the lock gives no usable answer.
     """
-    from locks.use_cases.lock_push import LockCodeUnverified, LockRejectedCode, _verify_user_code_slot
+    from locks.use_cases.lock_config_sync import _coerce_int
+    from locks.use_cases.lock_push import (
+        _USER_ID_STATUS_CONFIG_USES,
+        LockCodeUnverified,
+        LockRejectedCode,
+        _refresh_user_code_slot,
+        _verify_user_code_slot,
+    )
 
     def masked() -> str:
         return _CURRENT if written_pin and written_pin == pin else _STALE
+
+    def config_slot() -> bool:
+        response = _refresh_user_code_slot(
+            zwavejs=zwavejs, node_id=node_id, slot_index=slot_index, timeout_seconds=timeout_seconds
+        )
+        if isinstance(response, dict) and "response" in response:
+            response = response["response"]
+        status = response.get("userIdStatus") if isinstance(response, dict) else None
+        return _coerce_int(status) in _USER_ID_STATUS_CONFIG_USES
 
     def holds(candidate: str) -> bool:
         try:
@@ -497,7 +532,11 @@ def _read_tracked_slot(
             if exc.clear_slot:
                 return _EMPTY
             if exc.holds_other:
-                if written_pin and written_pin != pin and holds(written_pin):
+                if written_pin is None:
+                    # Nothing recorded: latchpoint's, as before 0012 (review of PR #223),
+                    # unless it's lock config (messaging or passage mode), which never is.
+                    return _OTHER if config_slot() else _STALE
+                if written_pin != pin and holds(written_pin):
                     return _STALE
                 return _OTHER
             # Disabled with a code the lock won't show.
@@ -629,8 +668,13 @@ def _clear_stale_attempts(
         )
 
 
-def _record_failure(*, code: DoorCode, assignment: DoorCodeLockAssignment, message: str, terminal: bool) -> None:
-    """Count a failed reconcile on the lock; the flag stays, so the scheduler tries it again under the cap."""
+def _record_failure(
+    *, code: DoorCode, assignment: DoorCodeLockAssignment, message: str, terminal: bool, counted: bool = True
+) -> None:
+    """Count a failed reconcile on the lock; the flag stays, so the scheduler tries it again under the cap.
+
+    Not ``counted`` when it ran out of its time budget, like a push (issue #124).
+    """
     from locks.use_cases.lock_push import (
         _cut_push_error,
         _lock_code_row,
@@ -646,7 +690,7 @@ def _record_failure(*, code: DoorCode, assignment: DoorCodeLockAssignment, messa
         row = DoorCodeLockAssignment.objects.filter(id=assignment.id).first()
         if row is None:
             return
-        attempts = row.push_attempt_count + 1
+        attempts = row.push_attempt_count + (1 if counted else 0)
         capped = max_attempts > 0 and attempts >= max_attempts
         DoorCodeLockAssignment.objects.filter(id=assignment.id).update(
             push_state=DoorCode.PushState.FAILED if terminal or capped else DoorCode.PushState.PENDING,
