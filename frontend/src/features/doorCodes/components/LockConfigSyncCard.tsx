@@ -48,6 +48,8 @@ const SLOT_WARNING_LABELS: Record<string, string> = {
   schedule_change_unconfirmed: "Lock didn't confirm the new schedule, keeping the old one",
   pin_held_on_other_lock:
     'New PIN is already another code on another lock, so this code is off that lock until that code is removed',
+  off_change_unconfirmed: "Lock didn't confirm the slot is disabled, keeping the code on",
+  taking_off_other_locks: 'Code is off, taking it off the other locks',
 }
 
 function slotWarningLabel(warning: string): string {

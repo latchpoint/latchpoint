@@ -1020,6 +1020,53 @@ def _convert_when_no_import_lock(*, code: DoorCode, added_lock_entity_ids: list[
     return fields
 
 
+def _record_unread_added_slot(
+    *, code: DoorCode, assignment: DoorCodeLockAssignment, written: str | None, pin: str | None, exc: Exception
+) -> ClearFailure:
+    """Record a synced code's added-lock slot whose read before a clear got no answer (#223's rule).
+
+    With what latchpoint wrote there recorded, the slot is let go and recorded as
+    an unconfirmed clear expecting that PIN (or a masked code), so the scheduler's
+    retry reads it back before it clears anything and never clears blind. With
+    nothing recorded (a lock pushed before 0012) the slot may hold any older PIN
+    of latchpoint's, so it stays tracked with a plain clear failure and the retry
+    clears it the way a delete clears a slot like that. A lock latchpoint can't
+    resolve any more is forgotten as ``lock_missing``. Used by the #222
+    conversion and by delete (issue #221).
+    """
+    from locks.use_cases.lock_push import forget_cleared_slot, record_clear_failure
+
+    slot_index = int(assignment.slot_index)
+    lock_entity_id = assignment.lock_entity_id
+    if written is None:
+        failure = record_clear_failure(
+            door_code=code, lock_entity_id=lock_entity_id, slot_index=slot_index, exc=exc, expected_pin=pin
+        )
+    else:
+        failure = record_clear_failure(
+            door_code=code,
+            lock_entity_id=lock_entity_id,
+            slot_index=slot_index,
+            exc=exc,
+            expected_pin=written,
+            unconfirmed=True,
+            slot_verified=True,
+        )
+    if failure.permanent:
+        forget_cleared_slot(
+            door_code=code, lock_entity_id=lock_entity_id, slot_index=slot_index, outcome="lock_missing"
+        )
+    elif written is not None:
+        DoorCodeLockAssignment.objects.filter(id=assignment.id).update(
+            slot_index=None,
+            written_pin=None,
+            written_schedule=None,
+            schedule_pending=False,
+            push_state=DoorCode.PushState.PENDING,
+        )
+    return failure
+
+
 def _clear_locks_behind_after_conversion(*, code: DoorCode, zwavejs: ZwavejsGateway) -> list[ClearFailure]:
     """Hand a converted code's added locks to the manual push paths (issue #222). Returns the clears that failed.
 
@@ -1099,40 +1146,8 @@ def _clear_locks_behind_after_conversion(*, code: DoorCode, zwavejs: ZwavejsGate
                 timeout_seconds=_REQUEST_CLEAR_TIMEOUT_SECONDS,
             )
         except Exception as exc:
-            if written is None:
-                # No verdict, and nothing recorded: the slot may hold any older
-                # PIN of latchpoint's, so it stays tracked and the retry clears
-                # it, the way a delete clears a slot like that (#223's rule).
-                failure = record_clear_failure(
-                    door_code=code, lock_entity_id=lock_entity_id, slot_index=slot_index, exc=exc, expected_pin=pin
-                )
-            else:
-                # No verdict. The slot is let go and recorded as one to read back
-                # and clear only when it holds what latchpoint wrote there (or a
-                # masked code), so the retry never clears blind (#223's rule).
-                failure = record_clear_failure(
-                    door_code=code,
-                    lock_entity_id=lock_entity_id,
-                    slot_index=slot_index,
-                    exc=exc,
-                    expected_pin=written,
-                    unconfirmed=True,
-                    slot_verified=True,
-                )
-            failures.append(failure)
-            if failure.permanent:
-                forget_cleared_slot(
-                    door_code=code, lock_entity_id=lock_entity_id, slot_index=slot_index, outcome="lock_missing"
-                )
-                continue
-            if written is None:
-                continue
-            DoorCodeLockAssignment.objects.filter(id=assignment.id).update(
-                slot_index=None,
-                written_pin=None,
-                written_schedule=None,
-                schedule_pending=False,
-                push_state=DoorCode.PushState.PENDING,
+            failures.append(
+                _record_unread_added_slot(code=code, assignment=assignment, written=written, pin=pin, exc=exc)
             )
             continue
         if not slot_is_latchpoints(verdict):
@@ -1649,14 +1664,34 @@ def _delete_door_code_locked(
             for slot_info in slots_to_clear:
                 if (slot_info["lock_entity_id"], slot_info["slot_index"]) in already_failed:
                     continue  # its retry above just failed
-                try:
-                    added_assignment = added.get((slot_info["lock_entity_id"], slot_info["slot_index"]))
-                    if added_assignment is not None and not _added_slot_is_latchpoints(
-                        code=code, assignment=added_assignment, zwavejs=zwavejs
-                    ):
+                added_assignment = added.get((slot_info["lock_entity_id"], slot_info["slot_index"]))
+                if added_assignment is not None:
+                    try:
+                        latchpoints = _added_slot_is_latchpoints(
+                            code=code, assignment=added_assignment, zwavejs=zwavejs
+                        )
+                    except Exception as exc:
+                        # No verdict: recorded so the scheduler's retry reads the slot
+                        # back before it clears it, not blind (issue #221).
+                        written = (
+                            decrypt_pin_or_none(DoorCode(encrypted_pin=added_assignment.written_pin))
+                            if added_assignment.written_pin
+                            else None
+                        )
+                        failure = _record_unread_added_slot(
+                            code=code,
+                            assignment=added_assignment,
+                            written=written,
+                            pin=decrypt_pin_or_none(code),
+                            exc=exc,
+                        )
+                        (permanent_failures if failure.permanent else transient_failures).append(failure)
+                        continue
+                    if not latchpoints:
                         # Someone else's PIN, or nothing: left as it is.
                         extra_metadata.setdefault("left_slots", []).append(slot_info)
                         continue
+                try:
                     clear_lock_user_code_slot(
                         lock_entity_id=slot_info["lock_entity_id"],
                         slot_index=slot_info["slot_index"],
@@ -1750,7 +1785,8 @@ def _added_slot_is_latchpoints(*, code: DoorCode, assignment: DoorCodeLockAssign
     Read live: the code's PIN, the one latchpoint last wrote there or a code the
     lock won't show count, and another PIN or an empty slot doesn't, the same
     rule :func:`locks.use_cases.added_lock_reconcile.reconcile_added_lock` uses.
-    A read that gets no answer raises, so the delete records it like a failed clear.
+    A read that gets no answer raises, and the delete records it with
+    :func:`_record_unread_added_slot`, so the retry reads it back first (issue #221).
     """
     from locks.use_cases.added_lock_reconcile import read_added_slot, slot_is_latchpoints
     from locks.use_cases.lock_config_sync import _resolve_lock_node_id
@@ -1877,7 +1913,8 @@ def retry_push_door_code(
     slot whose schedule is pending, which only gets the schedule. An
     inactive code is only retried when it has clears outstanding, which
     includes a slot it still holds or an unconfirmed attempt slot left to check
-    (issue #158), and is never pushed.
+    (issue #158), or for a synced code an added lock its import lock confirmed
+    it off for (issue #221), and is never pushed.
 
     The same goes for an active code before its ``start_at`` (issue #145): it's
     only retried when it has clears outstanding (a clear failure on record, or a
@@ -1923,17 +1960,21 @@ def retry_push_door_code(
         except DoorCode.DoesNotExist as exc:
             raise NotFound("Not found.") from exc
 
+    from locks.use_cases.added_lock_reconcile import off_clear_lock_entity_ids
+
     if (
         not code.is_active
         and not unresolved_clear_failures(door_code=code)
         and not inactive_slots_to_clear(door_code=code)
+        and not off_clear_lock_entity_ids(door_code=code)
     ):
         if code.source == DoorCode.Source.SYNCED:
-            # Lock sync turns an undated synced code on, not latchpoint, so point
-            # at what can be done here, ie after a refused delete (ADR 0082).
+            # Lock sync turns an undated synced code on, not latchpoint, and the
+            # clears a refused delete left are retried on their own (issue #221),
+            # so this only gets here once nothing is left to clear (ADR 0082).
             raise DoorCodeInactive(
-                "This synced door code is off, so there's nothing to push. If a delete was refused, "
-                "delete it again once its locks respond to finish clearing it."
+                "This synced door code is off and nothing is left to clear off its locks, so there's "
+                "nothing to retry. If a delete was refused, delete it again to finish it."
             )
         raise DoorCodeInactive("Door code is inactive. Turn it on before pushing it to its locks.")
     not_started = code.is_active and not is_started(code)
@@ -1966,9 +2007,15 @@ def retry_push_door_code(
 
     # A synced code's added locks waiting to be brought in line go through their
     # reconcile, queued again now, or run here where the task doesn't (issue #220).
+    # An off one's added locks its import lock confirmed it off for are taken off
+    # here, like an inactive code's clears, without touching their flag, which is
+    # what says the off was confirmed (issue #221).
     from locks.use_cases.added_lock_reconcile import rerequest_reconcile, run_reconciles_inline
 
-    reconcile_locks = rerequest_reconcile(door_code=code) if code.is_active else []
+    if code.is_active:
+        reconcile_locks = rerequest_reconcile(door_code=code)
+    else:
+        reconcile_locks = off_clear_lock_entity_ids(door_code=code)
 
     if code.is_active and push_task_running():
         # Every failed lock was re-armed above, so the queued push gets them too.

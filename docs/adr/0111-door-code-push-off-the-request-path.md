@@ -93,7 +93,9 @@ The request saves and returns, and a fast scheduler task makes the push.
   then queues the push. Its clear retries share a 15s budget, lock waits
   included, and a clear that doesn't fit keeps its `clear_failed` event for the
   scheduler. An inactive code's Retry, the not-started and expired branches,
-  delete, retire and withdraw are unchanged.
+  delete, retire and withdraw are unchanged. An off synced code's Retry runs
+  the reconciles that take its PIN off its added locks (issue #221, ADR-0082)
+  in the request, each with its 30s, since there's no push to queue.
 - **API.** Each `lock_slot_assignments` entry gets `push_requested_at` and
   `push_queued` (issue #205). `push_queued` is the source of truth for whether
   the lock is queued. The server works it out with the task's own rule

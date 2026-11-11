@@ -190,7 +190,11 @@ class DoorCodeSerializer(serializers.ModelSerializer):
         (issue #124). ``push_queued`` says whether the queued push task would
         still push the lock now (``lock_push.push_queued``, issue #205), which the
         frontend can't work out on its own: it needs the TTL, the cap and the
-        microseconds the JSON timestamps can lose in the browser. Never a PIN.
+        microseconds the JSON timestamps can lose in the browser.
+        ``taking_pin_off`` is set on a synced code that's off at the lock it was
+        imported from, for each added lock its reconcile still has to take the
+        PIN off (``added_lock_reconcile.off_clear_q``, issue #221), which is a
+        clear the scheduler and Retry still run. Never a PIN.
         """
         prefetched = getattr(obj, "_prefetched_objects_cache", {}) or {}
         if "lock_assignments" not in prefetched:
@@ -200,6 +204,7 @@ class DoorCodeSerializer(serializers.ModelSerializer):
         failures = self._clear_failures(obj)
         removing = {f.lock_entity_id for f in failures if f.removing}
         now = _validation_now(self)
+        taking_pin_off = self._taking_pin_off_ids(obj)
 
         def queued(assignment: DoorCodeLockAssignment) -> bool:
             # The cap is only read for a lock with a request, so a page with
@@ -228,9 +233,25 @@ class DoorCodeSerializer(serializers.ModelSerializer):
                     else None
                 ),
                 "push_queued": queued(assignment),
+                "taking_pin_off": assignment.id in taking_pin_off and assignment.lock_entity_id not in removing,
             }
             for assignment in obj.lock_assignments.all()
         ]
+
+    def _taking_pin_off_ids(self, obj: DoorCode) -> set[int]:
+        """Ids of ``obj``'s assignments still having its PIN taken off (issue #221).
+
+        From the list view's prefetch when there is one, which loads them for the
+        whole page in at most one query. Otherwise only an off synced code with a
+        flagged lock can have any (``off_clear_q`` needs the flag), which the
+        prefetched assignments already say, so every other code costs no query.
+        """
+        from locks.use_cases.lock_push import taking_pin_off_ids
+
+        prefetch = self._pending_clears_prefetch(obj)
+        if prefetch is not None:
+            return prefetch.taking_pin_off_ids(obj)
+        return taking_pin_off_ids([obj]).get(obj.pk, set())
 
     def get_pending_slot_clears(self, obj: DoorCode) -> list[dict]:
         """Slot clears still outstanding, as ``{lock_entity_id, slot_index, removing}`` (issue #151). No PINs."""

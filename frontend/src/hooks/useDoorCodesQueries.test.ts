@@ -205,6 +205,14 @@ describe('useDoorCodesQueries', () => {
       expect(isDoorCodeSettling(makeCode({ isActive: false, pendingSlotClears: [clear] }))).toBe(true)
     })
 
+    it("is settling while an off synced code's PIN is still coming off a lock (#221)", () => {
+      const takingOff = [{ lockEntityId: 'lock.back_door', slotIndex: 2, pendingRemoval: false, takingPinOff: true }]
+      const offCode = { source: 'synced' as const, isActive: false, lockSlotAssignments: takingOff }
+      expect(isDoorCodeSettling(makeCode({ ...offCode, pushState: 'pending' }))).toBe(true)
+      // Past the cap only a Retry moves it.
+      expect(isDoorCodeSettling(makeCode({ ...offCode, pushState: 'failed' }))).toBe(false)
+    })
+
     it('is settling while a lock is waiting on its removal', () => {
       const removing = [{ lockEntityId: 'lock.front_door', slotIndex: 3, pendingRemoval: true }]
       expect(isDoorCodeSettling(makeCode({ lockSlotAssignments: removing }))).toBe(true)

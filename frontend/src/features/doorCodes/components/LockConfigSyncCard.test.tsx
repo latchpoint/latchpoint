@@ -124,6 +124,19 @@ describe('LockConfigSyncCard', () => {
     expect(screen.getByText('Waiting for latchpoint to update this slot')).toBeTruthy()
   })
 
+  it('labels a synced code turned off at the lock it was synced from', async () => {
+    await syncWith([
+      slotOf({ slotIndex: 1, action: 'updated', warnings: ['taking_off_other_locks'] }),
+      slotOf({ slotIndex: 2, action: 'unchanged', warnings: ['off_change_unconfirmed'] }),
+    ])
+
+    expect(screen.getByText('Code is off, taking it off the other locks')).toHaveAttribute(
+      'title',
+      'taking_off_other_locks',
+    )
+    expect(screen.getByText("Lock didn't confirm the slot is disabled, keeping the code on")).toBeTruthy()
+  })
+
   it('names the door codes a duplicate PIN points at', async () => {
     await syncWith([
       slotOf({ slotIndex: 1, action: 'created', warnings: ['duplicate_pin'], duplicatePinDoorCodeIds: [12] }),

@@ -717,7 +717,9 @@ class OffCodeTests(_ReconcileTestBase):
         self._push_requested(gateway)
         self.assertEqual(self._lock_codes(gateway, 12), {1: OTHER_PIN, 2: self.NEW_PIN})
 
-    def test_turning_the_code_back_on_leaves_a_lock_already_in_line_alone(self):
+    def test_turning_the_code_back_on_before_its_taken_off_leaves_the_lock_in_line(self):
+        # Off at the Front Door flags the Back Door to take it off (issue #221), but
+        # it's back on before that ran: the reconcile finds the PIN there and keeps it.
         master, gateway = self._master_on_both()
         disabled: set[tuple[int, int]] = {(14, 1)}
         self._disable_slots(gateway, disabled)
@@ -727,11 +729,16 @@ class OffCodeTests(_ReconcileTestBase):
         disabled.clear()
         row = self._slot_row(self._sync_front(gateway), 1)
 
-        self.assertNotIn("sent_to_other_locks", row.warnings)
+        self.assertIn("sent_to_other_locks", row.warnings)
+        gateway.invoke_calls.clear()
+        self._push_requested(gateway)
+        self.assertEqual(self._node_calls(gateway), [])
+        self.assertEqual(self._lock_codes(gateway, 12), {1: OTHER_PIN, 2: self.PIN})
         self.assertIsNone(self._back(master).reconcile_requested_at)
 
-    def test_an_off_code_keeps_its_old_pin_on_the_added_lock_until_its_back_on(self):
-        # ADR-0109: a code the Front Door turns off keeps its PIN on the added locks.
+    def test_an_off_code_with_a_new_pin_comes_off_the_added_lock_and_goes_back_with_the_new_pin(self):
+        # Issue #221: a code the Front Door turns off (confirmed live) comes off the
+        # added locks, rather than keep its old PIN there until it's back on.
         master, gateway = self._master_on_both()
         disabled: set[tuple[int, int]] = {(14, 1)}
         self._disable_slots(gateway, disabled)
@@ -744,18 +751,20 @@ class OffCodeTests(_ReconcileTestBase):
         self.assertEqual(self._pin(master), self.NEW_PIN)
         self._push_requested(gateway)
         self._push_pending(gateway)
-        self.assertEqual(self._node_calls(gateway), [])
-        self.assertEqual(self._lock_codes(gateway, 12), {1: OTHER_PIN, 2: self.PIN})
-        self.assertIsNotNone(self._back(master).reconcile_requested_at)
+        self.assertEqual(self._calls(gateway, "clear"), [(12, [2])])
+        self.assertEqual(self._calls(gateway, "set"), [])
+        self.assertEqual(self._lock_codes(gateway, 12), {1: OTHER_PIN})
+        self.assertIsNone(self._back(master).reconcile_requested_at)
 
         disabled.clear()
+        gateway.invoke_calls.clear()
         self._sync_front(gateway)
         self.assertTrue(DoorCode.objects.get(id=master.id).is_active)
         self._push_requested(gateway)
-        self.assertEqual(self._calls(gateway, "clear"), [(12, [2])])
+        self.assertEqual(self._calls(gateway, "clear"), [])
         self.assertEqual(self._lock_codes(gateway, 12), {1: OTHER_PIN, 2: self.NEW_PIN})
 
-    def test_an_off_code_keeps_its_window_on_the_added_lock_until_its_back_on(self):
+    def test_an_off_code_with_a_new_window_comes_off_the_added_lock_and_goes_back_with_it(self):
         master, gateway = self._master_on_both()
         self._sync_front(gateway, days=self.WEEKDAYS)
         self._push_requested(gateway)
@@ -768,12 +777,16 @@ class OffCodeTests(_ReconcileTestBase):
         gateway.invoke_calls.clear()
         self._push_requested(gateway)
         self._push_pending(gateway)
-        self.assertEqual(self._node_calls(gateway), [])
+        self.assertEqual(
+            self._node_calls(gateway), [{"node_id": 12, "command_class": 99, "method_name": "clear", "args": [2]}]
+        )
 
         disabled.clear()
+        gateway.invoke_calls.clear()
         self._sync_front(gateway, days=self.MON_WED)
         self._push_requested(gateway)
-        self.assertEqual(self._calls(gateway, "clear"), [(12, [2])])
+        self.assertEqual(self._calls(gateway, "clear"), [])
+        self.assertEqual(self._lock_codes(gateway, 12), {1: OTHER_PIN, 2: self.PIN})
         self.assertEqual(sorted(w for _n, _u, w, _h in self._schedule_calls(gateway)), [1, 3])
 
 
@@ -998,21 +1011,25 @@ class LateWriterTests(_ReconcileTestBase):
         back = self._back(master)
         self.assertEqual((back.written_schedule, back.reconcile_requested_at), ("1|08:00|18:00", None))
 
-    def test_turning_a_code_off_and_on_leaves_a_slot_with_nothing_recorded_alone(self):
-        # Item 2: the next real change brings it in line.
+    def test_turning_a_code_off_and_on_takes_a_slot_with_nothing_recorded_off_and_puts_it_back(self):
+        # Item 2, after issue #221: going off (confirmed live) takes the code's PIN off
+        # the slot, and with nothing recorded the scheduler's push puts it back once
+        # it's on again, rather than a flag.
         master, gateway = self._master_on_both()
         self._pushed_before_0012(master)
         disabled: set[tuple[int, int]] = {(14, 1)}
         self._disable_slots(gateway, disabled)
         self._sync_front(gateway)
+        self._push_requested(gateway)
+        self.assertEqual(self._lock_codes(gateway, 12), {1: OTHER_PIN})
         disabled.clear()
 
         row = self._slot_row(self._sync_front(gateway), 1)
 
         self.assertNotIn("sent_to_other_locks", row.warnings)
         self.assertIsNone(self._back(master).reconcile_requested_at)
-        self._push_requested(gateway)
-        self.assertEqual(self._node_calls(gateway), [])
+        self._push_pending(gateway)
+        self.assertEqual(self._lock_codes(gateway, 12), {1: OTHER_PIN, 2: self.PIN})
 
     def _unclear_second_read(self, gateway) -> None:
         """Back Door slot 2 reads back with another PIN, then with no clear status."""
@@ -1059,8 +1076,9 @@ class LateWriterTests(_ReconcileTestBase):
         self.assertIn("pin_held_on_other_lock", row.warnings)
         self.assertNotIn("sent_to_other_locks", row.warnings)
 
-    def test_a_schedule_recorded_differently_is_flagged_when_the_code_comes_back_on_not_when_it_goes_off(self):
-        # Mutants 6 and 10.
+    def test_a_schedule_recorded_differently_is_flagged_when_the_code_comes_back_on(self):
+        # Mutants 6 and 10. Going off (confirmed live) flags it too since issue #221,
+        # but to take the PIN off, not to send the schedule.
         master, gateway = self._master_on_both()
         DoorCodeLockAssignment.objects.filter(door_code=master, lock_entity_id=self.BACK).update(
             written_schedule="31|08:00|18:00"
@@ -1071,9 +1089,28 @@ class LateWriterTests(_ReconcileTestBase):
         self._sync_front(gateway)
 
         self.assertFalse(DoorCode.objects.get(id=master.id).is_active)
-        self.assertIsNone(self._back(master).reconcile_requested_at)
+        self.assertEqual(self._back(master).last_push_error, reconcile_uc.OFF_WAITING_ERROR)
 
         disabled.clear()
+        self._sync_front(gateway)
+        back = self._back(master)
+        self.assertIsNotNone(back.reconcile_requested_at)
+        self.assertEqual(back.last_push_error, reconcile_uc.WAITING_ERROR)
+
+    def test_turning_an_off_code_on_flags_a_lock_only_when_its_behind(self):
+        # The same rule on a code turned off before issue #221, so nothing flagged it then.
+        master, gateway = self._master_on_both()
+        DoorCode.objects.filter(id=master.id).update(is_active=False)
+
+        self._sync_front(gateway)
+
+        self.assertTrue(DoorCode.objects.get(id=master.id).is_active)
+        self.assertIsNone(self._back(master).reconcile_requested_at)
+
+        DoorCode.objects.filter(id=master.id).update(is_active=False)
+        DoorCodeLockAssignment.objects.filter(door_code=master, lock_entity_id=self.BACK).update(
+            written_schedule="31|08:00|18:00"
+        )
         self._sync_front(gateway)
         self.assertIsNotNone(self._back(master).reconcile_requested_at)
 

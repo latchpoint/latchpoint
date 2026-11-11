@@ -2,7 +2,7 @@ import type { DoorCode } from '@/types'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { isLockAwaitingPush, isLockQueued } from '@/hooks/useDoorCodesQueries'
-import { codeLockEntityIds } from '@/features/doorCodes/utils/codeLocks'
+import { codeLockEntityIds, isTakingPinOff } from '@/features/doorCodes/utils/codeLocks'
 
 type Props = {
   code: DoorCode
@@ -70,7 +70,9 @@ export function DoorCodePushStatusBadge({ code, lockNameByEntityId, canRetry, is
   // really failed (a lock sync turning one off leaves none, #149), which happens
   // once one with an end date is turned off from here (#189). Those get retried
   // and capped like a manual code's, and past the cap only Retry clears them.
-  const clearing = !code.isActive && (code.pendingSlotClears?.length ?? 0) > 0
+  // So is a synced code turned off at the lock it was synced from, while its PIN
+  // is still being taken off the locks added to it (#221).
+  const clearing = !code.isActive && ((code.pendingSlotClears?.length ?? 0) > 0 || isTakingPinOff(code))
   // A lock still being removed counts, so a code whose only lock is mid-removal
   // keeps its badge (#171).
   const lockCount = codeLockEntityIds(code).length

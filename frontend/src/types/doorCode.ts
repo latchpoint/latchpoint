@@ -43,6 +43,12 @@ export interface DoorCodeLockSlotAssignment {
    * because an API from before #205 doesn't send it.
    */
   pushQueued?: boolean
+  /**
+   * The code is a synced code that's off at the lock it was synced from, and
+   * latchpoint is still taking its PIN off this lock (#221). Optional because
+   * an API from before #221 doesn't send it.
+   */
+  takingPinOff?: boolean
 }
 
 /** A slot latchpoint still has to clear (or check and clear) for this code. */

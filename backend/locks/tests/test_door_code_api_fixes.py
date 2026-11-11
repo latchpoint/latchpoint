@@ -366,6 +366,43 @@ class DoorCodeListQueriesTests(_ApiTestBase):
                         data = self._list()
                     self.assertEqual(len(data), count)
 
+    def _off_synced_code(self, n: int, *, flagged: bool) -> DoorCode:
+        """A synced code off at the Front Door with a Back Door slot, flagged to take it off when ``flagged`` (#221)."""
+        code = self._code(is_active=False, source=DoorCode.Source.SYNCED)
+        self._assign(code, self.FRONT, 10 + n)
+        self._assign(
+            code,
+            self.BACK,
+            20 + n,
+            last_push_attempt_at=timezone.now(),
+            reconcile_requested_at=timezone.now() if flagged else None,
+        )
+        if flagged:
+            DoorCodeEvent.objects.create(
+                door_code=code,
+                lock_entity_id=self.FRONT,
+                event_type=DoorCodeEvent.EventType.CODE_SYNCED,
+                metadata={"action": "deactivated", "slot_index": 10 + n, "off_confirmed": True},
+            )
+        return code
+
+    def test_off_synced_codes_being_taken_off_cost_the_same_queries_whatever_the_count(self):
+        # Review of PR #226: taking_pin_off is loaded for the whole page, not per code.
+        self._off_synced_code(0, flagged=False)
+        none_flagged = self._list_queries()
+        for count in (1, 3, 10):
+            with self.subTest(codes=count):
+                DoorCode.objects.all().delete()
+                codes = [self._off_synced_code(n, flagged=n % 2 == 0) for n in range(count)]
+                with self.assertNumQueries(none_flagged + 1):
+                    data = self._list()
+                taking_off = {
+                    entry["id"]: {a["lock_entity_id"]: a["taking_pin_off"] for a in entry["lock_slot_assignments"]}
+                    for entry in data
+                }
+                for n, code in enumerate(codes):
+                    self.assertEqual(taking_off[code.id], {self.FRONT: False, self.BACK: n % 2 == 0})
+
     def test_a_mixed_page_costs_the_same_as_a_small_one(self):
         self._heavy_inactive_code(0)
         self._queued_active_code(0)

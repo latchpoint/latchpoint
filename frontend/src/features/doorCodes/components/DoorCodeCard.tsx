@@ -56,6 +56,8 @@ function pushStateKeyOf(code: DoorCode): string {
         // A new queued push, and the push it queued being tried (#124).
         a.pushRequestedAt ?? '',
         isLockQueued(code, a),
+        // Its PIN still coming off this lock (#221).
+        !!a.takingPinOff,
       ])
     })
     .sort()
@@ -87,6 +89,22 @@ function lockChipOf(code: DoorCode, lockEntityId: string): LockChip {
   const assignment = assignments.find((a) => a.lockEntityId === lockEntityId)
   // Still listed until its slot clear works (#151).
   if (assignment?.pendingRemoval) return { suffix: ' (removing)' }
+
+  // A synced code off at the lock it was synced from, its PIN still being taken
+  // off this one (#221). The lock's own state and error say how that's going.
+  if (!code.isActive && assignment?.takingPinOff) {
+    if (assignment.pushState === 'failed') {
+      return {
+        suffix: ' (clear failed)',
+        title: `${assignment.lastPushError || "Couldn't take the PIN off this lock."} Retry tries again.`,
+        failed: true,
+      }
+    }
+    return {
+      suffix: ' (clearing)',
+      title: assignment.lastPushError || 'Waiting to take the PIN off this lock.',
+    }
+  }
 
   const onItsLocks = code.isActive && code.validity !== 'scheduled' && code.validity !== 'expired'
   const pushState = onItsLocks ? assignment?.pushState : undefined

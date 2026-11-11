@@ -25,11 +25,16 @@ recorded by every push):
 Before any push, slots an unconfirmed push may have left an older PIN in are
 read back and cleared when they hold it. A lock where another code already has
 the code's PIN is failed for a human instead of pushed (issue #188), once the
-old PIN is off it. A code that's off, not started, expired or being dropped
-from the lock is left for later (ADR-0109). The flag is only cleared when it's
-still the one this run read, so a sync that flags the lock again meanwhile gets
-another run. Failures count on the lock's attempts, never as clear failures, so
-they don't hold back the import lock's sync.
+old PIN is off it. A code that's not started, expired or being dropped from the
+lock is left for later (ADR-0109), and so is one that's off, unless lock sync
+flagged the lock when two live reads confirmed the import lock's slot empty or
+disabled (issue #221, :func:`off_clear_q`). Then the PIN comes off it instead,
+with the same read first: the code's PIN, the one latchpoint wrote there or a
+code the lock won't show is cleared, anything else is let go untouched, and
+nothing is pushed. The flag is only cleared when it's still the one this run
+read, so a sync that flags the lock again meanwhile gets another run. Failures
+count on the lock's attempts, never as clear failures, so they don't hold back
+the import lock's sync.
 """
 
 from __future__ import annotations
@@ -38,25 +43,33 @@ import logging
 from datetime import datetime
 
 from django.db import transaction
-from django.db.models import F, Q
+from django.db.models import Exists, F, OuterRef, Q
 from django.utils import timezone as django_timezone
 
 from alarm.crypto import SettingsEncryption
 from config.domain_exceptions import GatewayError
-from locks.models import DoorCode, DoorCodeLockAssignment
+from locks.models import DoorCode, DoorCodeEvent, DoorCodeLockAssignment
 from locks.use_cases.code_lifecycle import belongs_on_lock, expired_q, started_q
 
 logger = logging.getLogger(__name__)
 
 # The lock's error while it waits for its reconcile.
 WAITING_ERROR = "Waiting to send the code's new PIN or schedule to this lock."
+# The same, when the reconcile is to take the PIN off because the code is off (issue #221).
+OFF_WAITING_ERROR = "Waiting to take the PIN off this lock, since the code is off at the lock it was synced from."
+
+# The key lock sync puts on its ``code_synced`` event for a slot of the import
+# lock that two live reads confirmed empty or disabled (issue #221). It's what
+# lets the reconcile of an off code's added lock clear it (:func:`off_clear_q`).
+OFF_CONFIRMED_KEY = "off_confirmed"
 
 # reconcile_added_lock outcomes.
 NOTHING = "nothing"  # not flagged, or the code or lock is gone
-WAITING = "waiting"  # off, outside its dates or being dropped; left flagged
+WAITING = "waiting"  # off without a confirmed off, outside its dates or being dropped; left flagged
 IN_LINE = "in_line"  # already matched, marked pushed
 PUSHED = "pushed"  # sent what was missing
 HELD = "held"  # another code has the PIN there; failed for a human
+CLEARED = "cleared"  # off at the import lock: its PIN is off this lock now, nothing pushed
 RETRY = "retry"  # transient failure, still flagged
 FAILED = "failed"  # terminal failure, still flagged until Retry or another change
 
@@ -138,12 +151,15 @@ def flag_added_locks(
     import_lock_entity_id: str,
     out_of_date_only: bool = False,
     now: datetime | None = None,
+    error: str = WAITING_ERROR,
+    only: list[str] | None = None,
 ) -> list[str]:
     """Flag ``door_code``'s locks other than ``import_lock_entity_id`` for :func:`reconcile_added_lock`.
 
     For lock sync, once it has taken a new PIN or schedule from the lock the
-    code was imported from. Each lock is re-armed (``pending``, no attempts, the
-    :data:`WAITING_ERROR`), which also brings back one a held PIN or the
+    code was imported from, or confirmed the code off there (issue #221, with
+    :data:`OFF_WAITING_ERROR` as ``error``). Each lock is re-armed (``pending``,
+    no attempts, ``error``), which also brings back one a held PIN or the
     attempt cap failed, and the queued push task is woken once the caller's
     transaction commits. A lock the code is being dropped from is left to its
     clear. The code row is taken first, like every writer of a code's
@@ -155,6 +171,8 @@ def flag_added_locks(
     queued push task takes them up at once however long the code was off
     (review of PR #223). A row with nothing recorded and no flag is left for
     the next real change, so an off and on doesn't clear it for nothing.
+
+    ``only`` limits it to those locks.
     """
     from locks.use_cases.lock_push import (
         _lock_code_row,
@@ -172,6 +190,8 @@ def flag_added_locks(
             .exclude(lock_entity_id=import_lock_entity_id)
             .exclude(lock_entity_id__in=_locks_being_removed(door_code=door_code))
         )
+        if only is not None:
+            others = others.filter(lock_entity_id__in=only)
         if out_of_date_only:
             pin = decrypt_pin_or_none(door_code)
             desired = code_schedule_fingerprint(door_code)
@@ -183,7 +203,7 @@ def flag_added_locks(
                 reconcile_requested_at=now,
                 push_state=DoorCode.PushState.PENDING,
                 push_attempt_count=0,
-                last_push_error=WAITING_ERROR,
+                last_push_error=error,
             )
             transaction.on_commit(_wake_push_task, robust=True)
     return flagged
@@ -204,6 +224,47 @@ def lock_behind_code(assignment: DoorCodeLockAssignment, *, pin: str | None, des
             or _decrypt(assignment.written_pin) != pin
             or assignment.written_schedule != desired
         )
+    )
+
+
+def off_clear_q() -> Q:
+    """``DoorCodeLockAssignment`` rows whose reconcile takes the PIN off, since the code is off (issue #221).
+
+    The lock is flagged, its code is a synced code that's off, and lock sync
+    recorded that two live reads confirmed the import lock's slot empty or
+    disabled (an :data:`OFF_CONFIRMED_KEY` ``code_synced`` event) when it set
+    that flag or after. Lock sync writes that event right after it flags the
+    lock, so it's never older than its own flag. A flag set any other way, ie a
+    new PIN taken while the code was off, or by #223 before this, isn't one, and
+    neither is an off the sync only saw in the Z-Wave JS cache: those keep
+    waiting for the code to be back on, so a stale cache never takes a working
+    PIN off another door.
+    """
+    marker = DoorCodeEvent.objects.filter(
+        door_code=OuterRef("door_code"),
+        event_type=DoorCodeEvent.EventType.CODE_SYNCED,
+        metadata__off_confirmed=True,
+        created_at__gte=OuterRef("reconcile_requested_at"),
+    )
+    return Q(
+        reconcile_requested_at__isnull=False,
+        door_code__is_active=False,
+        door_code__source=DoorCode.Source.SYNCED,
+    ) & Exists(marker)
+
+
+def off_clear_lock_entity_ids(*, door_code: DoorCode) -> list[str]:
+    """The code's locks :func:`off_clear_q` matches, without one it's being dropped from. Sorted."""
+    from locks.use_cases.lock_push import _locks_being_removed
+
+    if door_code.is_active or door_code.source != DoorCode.Source.SYNCED:
+        return []
+    return sorted(
+        lock_entity_id
+        for lock_entity_id in DoorCodeLockAssignment.objects.filter(door_code=door_code)
+        .filter(off_clear_q())
+        .values_list("lock_entity_id", flat=True)
+        if lock_entity_id not in _locks_being_removed(door_code=door_code)
     )
 
 
@@ -245,16 +306,19 @@ def run_reconciles_inline(*, door_code: DoorCode, lock_entity_ids: list[str], zw
 def reconcile_due(*, now: datetime, max_attempts: int, fresh_only: bool):
     """Flagged locks to reconcile at ``now``, as a ``DoorCodeLockAssignment`` queryset.
 
-    On a code that's active, started and not expired, not ``failed``, under the
-    attempt cap and not being dropped. ``fresh_only`` is the queued push task's
-    share, like a queued push: flagged within ``PUSH_REQUEST_TTL`` and not tried
-    since. ``push_pending_door_codes`` retries the rest every 300s.
+    On a code that's active, started and not expired, or off with its off
+    confirmed at the import lock (:func:`off_clear_q`, issue #221). Not
+    ``failed``, under the attempt cap and not being dropped. ``fresh_only`` is
+    the queued push task's share, like a queued push: flagged within
+    ``PUSH_REQUEST_TTL`` and not tried since. ``push_pending_door_codes``
+    retries the rest every 300s.
     """
     from locks.use_cases.lock_push import PUSH_REQUEST_TTL, being_removed_q
 
     pushable = DoorCode.objects.filter(is_active=True).filter(started_q(now) & ~expired_q(now))
     due = (
-        DoorCodeLockAssignment.objects.filter(reconcile_requested_at__isnull=False, door_code__in=pushable)
+        DoorCodeLockAssignment.objects.filter(reconcile_requested_at__isnull=False)
+        .filter(Q(door_code__in=pushable) | off_clear_q())
         .exclude(push_state=DoorCode.PushState.FAILED)
         .exclude(being_removed_q())
     )
@@ -298,7 +362,7 @@ def reconcile_added_lock(
             flagged_again = DoorCodeLockAssignment.objects.filter(
                 door_code_id=door_code_id, lock_entity_id=lock_entity_id, reconcile_requested_at__isnull=False
             ).exists()
-            if outcome not in (IN_LINE, PUSHED, HELD) or not flagged_again:
+            if outcome not in (IN_LINE, PUSHED, HELD, CLEARED) or not flagged_again:
                 return outcome
         return outcome
 
@@ -326,7 +390,14 @@ def _reconcile_locked(*, door_code_id: int, lock_entity_id: str, zwavejs, actor_
     if assignment is None or code is None or assignment.reconcile_requested_at is None:
         return NOTHING
     requested_at = assignment.reconcile_requested_at
-    if not code.is_active or not belongs_on_lock(code) or lock_entity_id in _locks_being_removed(door_code=code):
+    if lock_entity_id in _locks_being_removed(door_code=code):
+        return WAITING
+    if not code.is_active:
+        # Off at the import lock, confirmed live: the PIN comes off this lock (issue #221).
+        if not DoorCodeLockAssignment.objects.filter(id=assignment.id).filter(off_clear_q()).exists():
+            return WAITING
+        return _take_off_locked(code=code, assignment=assignment, zwavejs=zwavejs, timeout_seconds=timeout_seconds)
+    if not belongs_on_lock(code):
         return WAITING
     pin = decrypt_pin_or_none(code)
     if not pin:
@@ -372,6 +443,82 @@ def _reconcile_locked(*, door_code_id: int, lock_entity_id: str, zwavejs, actor_
     )
     refresh_push_state(door_code=code)
     return outcome
+
+
+def _take_off_locked(*, code: DoorCode, assignment: DoorCodeLockAssignment, zwavejs, timeout_seconds: float) -> str:
+    """Take an off code's PIN off this added lock, after its import lock confirmed the off (issue #221).
+
+    Slots an unconfirmed push may have left any PIN of the code in, the current
+    one included since nothing will adopt it now, are read back and cleared when
+    they still hold it. The tracked slot is read with the delete's rule
+    (:func:`_read_tracked_slot`): it's cleared when it holds the code's PIN, the
+    one latchpoint wrote there or a code the lock won't show, and let go
+    untouched when it holds someone else's PIN or nothing. Unlike the delete, a
+    slot with nothing recorded (before 0012) holding another readable PIN is let
+    go too, not taken as latchpoint's older one. Nothing is pushed.
+    What latchpoint wrote there stays recorded with no slot, so turning the code
+    back on at the import lock flags this lock again (:func:`lock_behind_code`)
+    and the reconcile pushes it into a free slot. Failures count like any other
+    reconcile and never as clear failures.
+    """
+    from locks.use_cases.lock_config_sync import InvalidRequest, NotFound, _resolve_lock_node_id
+    from locks.use_cases.lock_push import _out_of_budget, decrypt_pin_or_none, refresh_push_state
+
+    requested_at = assignment.reconcile_requested_at
+    lock_entity_id = assignment.lock_entity_id
+    try:
+        node_id = _resolve_lock_node_id(lock_entity_id=lock_entity_id)
+    except (NotFound, InvalidRequest) as exc:
+        _record_failure(code=code, assignment=assignment, message=str(exc), terminal=True)
+        return FAILED
+
+    DoorCodeLockAssignment.objects.filter(id=assignment.id).update(last_push_attempt_at=django_timezone.now())
+    pin = decrypt_pin_or_none(code)
+    try:
+        _clear_stale_attempts(
+            code=code,
+            lock_entity_id=lock_entity_id,
+            node_id=node_id,
+            pin=pin or "",
+            tracked=assignment.slot_index,
+            zwavejs=zwavejs,
+            timeout_seconds=timeout_seconds,
+            keep_current=False,
+        )
+        if assignment.slot_index is not None:
+            holds = _read_tracked_slot(
+                zwavejs=zwavejs,
+                node_id=node_id,
+                slot_index=int(assignment.slot_index),
+                pin=pin,
+                written_pin=_decrypt(assignment.written_pin),
+                timeout_seconds=timeout_seconds,
+                # Nothing recorded (before 0012): only the code's own PIN or a
+                # masked code is cleared, since the code's PIN is what should be
+                # there. Any other PIN may be someone's keypad code (#221 review).
+                unrecorded_is_latchpoints=False,
+            )
+            if slot_is_latchpoints(holds):
+                _clear_tracked_slot(
+                    code=code,
+                    assignment=assignment,
+                    zwavejs=zwavejs,
+                    timeout_seconds=timeout_seconds,
+                    keep_written=True,
+                )
+            else:
+                _let_go(code=code, assignment=assignment, empty=holds == _EMPTY, keep_written=True)
+    except _Transient as exc:
+        _record_failure(
+            code=code, assignment=assignment, message=str(exc), terminal=False, counted=not _out_of_budget(zwavejs)
+        )
+        return RETRY
+    # Only the flag this run read: turned back on meanwhile, it's pushed on the next pass.
+    DoorCodeLockAssignment.objects.filter(id=assignment.id, reconcile_requested_at=requested_at).update(
+        reconcile_requested_at=None, push_attempt_count=0, last_push_error=""
+    )
+    refresh_push_state(door_code=code)
+    return CLEARED
 
 
 def _bring_in_line(
@@ -497,7 +644,14 @@ def slot_is_latchpoints(verdict: str) -> bool:
 
 
 def _read_tracked_slot(
-    *, zwavejs, node_id: int, slot_index: int, pin: str | None, written_pin: str | None, timeout_seconds: float
+    *,
+    zwavejs,
+    node_id: int,
+    slot_index: int,
+    pin: str | None,
+    written_pin: str | None,
+    timeout_seconds: float,
+    unrecorded_is_latchpoints: bool = True,
 ) -> str:
     """Read the tracked slot live and say what it holds against ``pin`` (the code's) and ``written_pin``.
 
@@ -508,7 +662,10 @@ def _read_tracked_slot(
     0012 has nothing recorded (``written_pin`` is ``None``), and it may have
     fallen behind more than one change, so any readable PIN in it but the
     code's is taken as latchpoint's older one, like every clear did before.
-    Raises :class:`_Transient` when the lock gives no usable answer.
+    Without ``unrecorded_is_latchpoints`` (taking an off code's PIN off, issue
+    #221, where the code's PIN is the one that should be there) it's someone
+    else's instead and let go. Raises :class:`_Transient` when the lock gives no
+    usable answer.
     """
     from locks.use_cases.lock_config_sync import _coerce_int
     from locks.use_cases.lock_push import (
@@ -562,6 +719,8 @@ def _read_tracked_slot(
             if exc.clear_slot:
                 return _EMPTY
             if exc.holds_other:
+                if written_pin is None and not unrecorded_is_latchpoints:
+                    return _OTHER
                 if written_pin is None:
                     # Nothing recorded: latchpoint's, as before 0012 (review of PR #223),
                     # unless it's lock config (messaging or passage mode), which never is.
@@ -576,8 +735,13 @@ def _read_tracked_slot(
         raise _Transient(f"Couldn't read slot {slot_index} back: {exc.__class__.__name__}") from exc
 
 
-def _clear_tracked_slot(*, code: DoorCode, assignment: DoorCodeLockAssignment, zwavejs, timeout_seconds: float) -> None:
-    """Clear the slot latchpoint's older PIN or schedule is in, then stop tracking it."""
+def _clear_tracked_slot(
+    *, code: DoorCode, assignment: DoorCodeLockAssignment, zwavejs, timeout_seconds: float, keep_written: bool = False
+) -> None:
+    """Clear the slot latchpoint's older PIN or schedule is in, then stop tracking it.
+
+    ``keep_written`` is :func:`_forget`'s.
+    """
     from locks.use_cases.lock_config_sync import clear_lock_user_code_slot
 
     slot_index = int(assignment.slot_index)
@@ -590,11 +754,14 @@ def _clear_tracked_slot(*, code: DoorCode, assignment: DoorCodeLockAssignment, z
         )
     except Exception as exc:
         raise _Transient(f"Couldn't clear slot {slot_index}: {exc.__class__.__name__}") from exc
-    _forget(code=code, assignment=assignment, outcome="cleared", slot_empty=False)
+    _forget(code=code, assignment=assignment, outcome="cleared", slot_empty=False, keep_written=keep_written)
 
 
-def _let_go(*, code: DoorCode, assignment: DoorCodeLockAssignment, empty: bool) -> None:
-    """Stop tracking a slot that holds someone else's PIN or nothing, without touching it."""
+def _let_go(*, code: DoorCode, assignment: DoorCodeLockAssignment, empty: bool, keep_written: bool = False) -> None:
+    """Stop tracking a slot that holds someone else's PIN or nothing, without touching it.
+
+    ``keep_written`` is :func:`_forget`'s.
+    """
     logger.info(
         "Slot %s on %s for door code id=%d holds %s; letting it go",
         assignment.slot_index,
@@ -602,13 +769,21 @@ def _let_go(*, code: DoorCode, assignment: DoorCodeLockAssignment, empty: bool) 
         code.id,
         "nothing" if empty else "another PIN",
     )
-    _forget(code=code, assignment=assignment, outcome="not_holding_pin", slot_empty=empty)
+    _forget(code=code, assignment=assignment, outcome="not_holding_pin", slot_empty=empty, keep_written=keep_written)
 
 
-def _forget(*, code: DoorCode, assignment: DoorCodeLockAssignment, outcome: str, slot_empty: bool) -> None:
+def _forget(
+    *, code: DoorCode, assignment: DoorCodeLockAssignment, outcome: str, slot_empty: bool, keep_written: bool = False
+) -> None:
+    """Stop tracking the slot. ``keep_written`` keeps ``written_pin`` and ``written_schedule`` (issue #221).
+
+    So a lock an off code was taken off still reads as behind it
+    (:func:`lock_behind_code`) and is flagged again once the code is back on.
+    """
     from locks.use_cases.lock_push import _lock_code_row, _settle_unconfirmed_slot
 
     slot_index = int(assignment.slot_index)
+    written = {} if keep_written else {"written_pin": None, "written_schedule": None}
     with transaction.atomic():
         _lock_code_row(code.id)
         _settle_unconfirmed_slot(
@@ -620,10 +795,9 @@ def _forget(*, code: DoorCode, assignment: DoorCodeLockAssignment, outcome: str,
         )
         DoorCodeLockAssignment.objects.filter(id=assignment.id).update(
             slot_index=None,
-            written_pin=None,
-            written_schedule=None,
             schedule_pending=False,
             push_state=DoorCode.PushState.PENDING,
+            **written,
         )
     assignment.slot_index = None
 
@@ -637,6 +811,7 @@ def _clear_stale_attempts(
     tracked: int | None,
     zwavejs,
     timeout_seconds: float,
+    keep_current: bool = True,
 ) -> None:
     """Clear slots an unconfirmed push left an older PIN of the code in, before anything is pushed.
 
@@ -646,6 +821,10 @@ def _clear_stale_attempts(
     still hold the PIN that attempt sent (or a masked code, for a tagged
     attempt), and settled either way. Has to run before the push, whose
     ``code_synced`` event ends the attempts' window.
+
+    Without ``keep_current`` (an off code being taken off the lock, issue #221)
+    nothing is pushed after, so those holding the current PIN are cleared too,
+    and one recorded without its PIN is compared against the current one.
     """
     from locks.use_cases.lock_config_sync import clear_lock_user_code_slot
     from locks.use_cases.lock_push import (
@@ -664,7 +843,10 @@ def _clear_stale_attempts(
         lock_entity_id=lock_entity_id,
         claimed_slots=_claimed_slots(lock_entity_id=lock_entity_id, door_code=code),
     )
-    stale = {slot: sent for slot, sent in attempts.items() if slot != tracked and sent and sent != pin}
+    if keep_current:
+        stale = {slot: sent for slot, sent in attempts.items() if slot != tracked and sent and sent != pin}
+    else:
+        stale = {slot: sent or pin for slot, sent in attempts.items() if slot != tracked and (sent or pin)}
     if not stale:
         return
     verified = _verified_attempt_slots(door_code=code, lock_entity_id=lock_entity_id)
