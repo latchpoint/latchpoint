@@ -606,7 +606,8 @@ class StaleCacheSyncTests(_SyncedLocksTestBase):
         self.assertEqual(self._calls(gateway, "set"), [])
 
     def test_the_lock_it_was_imported_from_keeps_the_synced_rule(self):
-        # Deleted at the Front Door, which is the lock's say for a synced code.
+        # Deleted at the Front Door, which is the lock's say for a synced code. Since
+        # issue #221 that's read back live first, as the Back Door's PIN comes off too.
         master, gateway = self._master_on_both()
         del gateway._lock_codes[(14, 1)]
         del gateway._cache_codes[(14, 1)]
@@ -616,7 +617,8 @@ class StaleCacheSyncTests(_SyncedLocksTestBase):
         master.refresh_from_db()
         self.assertFalse(master.is_active)
         self.assertEqual(self._slots(master), {self.FRONT: None, self.BACK: 2})
-        self.assertFalse(any(c["method_name"] == "get" and c["node_id"] == 14 for c in gateway.invoke_calls))
+        self.assertEqual(len([c for c in gateway.invoke_calls if c["method_name"] == "get" and c["node_id"] == 14]), 2)
+        self.assertIsNotNone(self._back(master).reconcile_requested_at)
 
 
 class PushedSlotReconcileTests(_SyncedLocksTestBase):
@@ -652,30 +654,41 @@ class PushedSlotReconcileTests(_SyncedLocksTestBase):
         self.assertFalse(master.is_active)
         self.assertEqual(self._calls(gateway, "set"), [])
         self.assertEqual(self._lock_codes(gateway, 14), {})
-        # The Back Door keeps it until it's removed there in latchpoint (ADR-0109).
-        self.assertEqual(self._lock_codes(gateway, 12), {1: OTHER_PIN, 2: self.PIN})
+        # The Front Door's empty slot was read back live, so it comes off the Back Door too (issue #221).
+        self.assertEqual(self._lock_codes(gateway, 12), {1: OTHER_PIN})
+        self.assertEqual(self._slots(master), {self.FRONT: None, self.BACK: None})
+        # Removing the Back Door still works, with nothing left to clear there.
         self._patch(master, gateway, {"remove_lock_entity_ids": [self.BACK]})
         self.assertEqual(self._lock_codes(gateway, 12), {1: OTHER_PIN})
 
     def test_a_stale_front_cache_doesnt_end_in_a_second_copy_on_the_front_door(self):
         # Scenario B: the Front Door's cache drops slot 1 while the PIN is still in it.
+        # The code is on the Back Door too, so the slot is read back live first, which
+        # finds the PIN: nothing is turned off or let go of (issue #221).
         master, gateway = self._master_on_both()
         del gateway._cache_codes[(14, 1)]
-        self._front_sync_turns_it_off(master, gateway)
-        # The cache catches up and the next Front Door sync imports it as its own code.
+        result = self._sync(gateway, self.FRONT)
+
+        row = self._slot_row(result, 1)
+        self.assertEqual((row.action, row.door_code_id), ("skipped", master.id))
+        self.assertIn("slot_not_confirmed_empty", row.warnings)
+        master.refresh_from_db()
+        self.assertTrue(master.is_active)
+        self.assertEqual(self._slots(master), {self.FRONT: 1, self.BACK: 2})
+        # The cache catches up and the next Front Door sync finds it in its slot.
         gateway._cache_codes[(14, 1)] = self.PIN
         self._sync(gateway, self.FRONT)
-        slot_1 = DoorCode.objects.get(lock_assignments__lock_entity_id=self.FRONT, lock_assignments__slot_index=1)
-        self.assertNotEqual(slot_1.id, master.id)
+        self.assertEqual(DoorCode.objects.filter(lock_assignments__lock_entity_id=self.FRONT).count(), 1)
 
         self._sync(gateway, self.BACK)
         gateway.invoke_calls.clear()
         self._push_pending(gateway)
 
         master.refresh_from_db()
-        self.assertFalse(master.is_active)
+        self.assertTrue(master.is_active)
         self.assertEqual(self._calls(gateway, "set"), [])
         self.assertEqual(self._lock_codes(gateway, 14), {1: self.PIN})
+        self.assertEqual(self._lock_codes(gateway, 12), {1: OTHER_PIN, 2: self.PIN})
 
     def test_another_pin_in_the_pushed_slot_is_never_taken_as_the_codes_pin(self):
         # Scenario C: someone programs a different PIN into Back Door slot 2 at the keypad.

@@ -764,6 +764,8 @@ _SKIP_PIN_MISMATCH = "pin_mismatch"
 _SKIP_SCHEDULE_PENDING = "schedule_pending"
 # An active manual code's tracked slot the cache called Available, but a live
 # readback didn't answer Available twice, so the code keeps the slot (issue #166).
+# Also a synced code's slot on the lock it was imported from, when the code is
+# on other locks too: it isn't turned off or let go of (issue #221).
 _SKIP_SLOT_NOT_CONFIRMED_EMPTY = "slot_not_confirmed_empty"
 # Same, but this lock may already have the code's PIN in another slot, so
 # pushing it again would add a copy or fail (PR #214 review).
@@ -788,6 +790,13 @@ _WARN_SENT_TO_OTHER_LOCKS = "sent_to_other_locks"
 # Another code on one of those locks already has the new PIN, so only the old
 # one is cleared there and the code is off that lock until the other is deleted (issues #188, #220).
 _WARN_PIN_HELD_ON_OTHER_LOCK = "pin_held_on_other_lock"
+# A synced code that's on other locks too, whose slot here the cache calls
+# disabled, but two live reads didn't both say so. It stays on, so a stale read
+# never takes its PIN off those locks (issue #221).
+_WARN_OFF_CHANGE_UNCONFIRMED = "off_change_unconfirmed"
+# This slot was confirmed disabled (or empty) by two live reads, so the code is
+# off and its PIN is being taken off the code's other locks (issue #221).
+_WARN_TAKING_OFF_OTHER_LOCKS = "taking_off_other_locks"
 
 
 def _has_outstanding_slot_cleanup(*, door_code: DoorCode, lock_entity_id: str) -> bool:
@@ -1033,6 +1042,142 @@ def _tracked_slot_reads_back_empty(*, zwavejs: ZwavejsGateway, node_id: int, slo
     except Exception:
         logger.warning("Couldn't read back tracked slot %d on node %d", slot_index, node_id, exc_info=True)
     return False
+
+
+def _slot_reads_back_disabled(*, zwavejs: ZwavejsGateway, node_id: int, slot_index: int) -> bool:
+    """Whether two live CC 99 ``get``\\s of the slot both report a user code that's disabled (issue #221).
+
+    The cache's Occupied/Disabled can be stale the same way its Available can,
+    so it's asked twice, like an empty slot is (:func:`_tracked_slot_reads_back_empty`).
+    Read only. ``False`` for anything else: enabled, empty, lock config, no
+    answer, out of the sync's readback budget or an error.
+    """
+    from locks.use_cases.lock_push import _out_of_budget, _refresh_user_code_slot
+
+    for _ in range(2):
+        if _out_of_budget(zwavejs):
+            return False
+        try:
+            response = _refresh_user_code_slot(
+                zwavejs=zwavejs, node_id=node_id, slot_index=slot_index, timeout_seconds=5.0
+            )
+        except Exception:
+            logger.warning("Couldn't read back slot %d on node %d", slot_index, node_id, exc_info=True)
+            return False
+        if isinstance(response, dict) and "response" in response:
+            response = response["response"]
+        status = response.get("userIdStatus") if isinstance(response, dict) else None
+        if _parse_user_code_status(status) != (True, False):
+            return False
+    return True
+
+
+def _off_needs_confirming(*, code: DoorCode, lock_entity_id: str) -> bool:
+    """Whether ``code``'s empty or disabled slot on the lock it was imported from needs a live check (issue #221).
+
+    That's a synced code on other locks too, since turning it off takes its PIN
+    off them: one that's on, or one that's off and may still have its PIN on one
+    of them (a slot it tracks there, or an unconfirmed push). A lock it's being
+    dropped from is its clear's.
+    """
+    from locks.use_cases.lock_push import _locks_being_removed, unconfirmed_attempt_lock_entity_ids
+
+    others = _other_lock_assignments(code=code, lock_entity_id=lock_entity_id).exclude(
+        lock_entity_id__in=_locks_being_removed(door_code=code)
+    )
+    if code.is_active:
+        return others.exists()
+    if others.filter(slot_index__isnull=False).exists():
+        return True
+    pending = set(unconfirmed_attempt_lock_entity_ids(door_code=code))
+    return any(lock in pending for lock in others.values_list("lock_entity_id", flat=True))
+
+
+def _import_off_verdicts(
+    *,
+    lock_entity_id: str,
+    node_id: int,
+    empty_slots: set[int],
+    disabled_slots: set[int],
+    pin_by_slot: dict[int, str | None],
+    zwavejs: ZwavejsGateway,
+) -> dict[int, bool]:
+    """Confirm the slots here that would turn a synced code off, when that takes its PIN off other locks (issue #221).
+
+    For a synced code's slot on the lock it was imported from that the cache
+    calls Available (``empty_slots``) or Occupied/Disabled (``disabled_slots``),
+    when :func:`_off_needs_confirming`. The code going off there takes its PIN
+    off the locks someone added to it, and the cache can be stale, so a live
+    readback has to give the same twice first: Available twice
+    (:func:`_tracked_slot_reads_back_empty`), or disabled twice
+    (:func:`_slot_reads_back_disabled`). Maps slot -> whether it did. A slot not
+    in the map keeps the old rule. Read only, and run before the sync writes
+    anything, like :func:`_empty_manual_slot_verdicts`. Slots the sync skips
+    anyway aren't read.
+    """
+    from locks.use_cases.lock_push import slot_pushed_by_latchpoint
+
+    verdicts: dict[int, bool] = {}
+    assignments = (
+        DoorCodeLockAssignment.objects.select_related("door_code")
+        .filter(
+            lock_entity_id=lock_entity_id,
+            slot_index__in=sorted(empty_slots | disabled_slots),
+            door_code__source=DoorCode.Source.SYNCED,
+        )
+        .order_by("slot_index")
+    )
+    for assignment in assignments:
+        code = assignment.door_code
+        slot_index = int(assignment.slot_index)
+        if slot_pushed_by_latchpoint(assignment) or not _off_needs_confirming(code=code, lock_entity_id=lock_entity_id):
+            continue
+        if slot_index in empty_slots:
+            if _has_outstanding_slot_cleanup(door_code=code, lock_entity_id=lock_entity_id):
+                continue
+            verdicts[slot_index] = _tracked_slot_reads_back_empty(
+                zwavejs=zwavejs, node_id=node_id, slot_index=slot_index
+            )
+        else:
+            if _existing_code_skip_reason(
+                code=code, lock_entity_id=lock_entity_id, raw_pin=pin_by_slot.get(slot_index)
+            ):
+                continue
+            verdicts[slot_index] = _slot_reads_back_disabled(zwavejs=zwavejs, node_id=node_id, slot_index=slot_index)
+    return verdicts
+
+
+def _take_off_other_locks(*, code: DoorCode, lock_entity_id: str) -> list[str]:
+    """Flag ``code``'s other locks so the reconcile takes its PIN off them, once the off here is confirmed (issue #221).
+
+    Only the ones that may hold it: a slot the code tracks there or an
+    unconfirmed push. One with neither, say a push still queued or a lock
+    failed because another code has the PIN there (#188), is left as it is.
+    The sync holds only this lock, so it sends nothing to them, like a new PIN
+    (:func:`_send_import_change_to_other_locks`). The caller records the
+    confirmation on the slot's ``code_synced`` event right after, which is what
+    lets the reconcile clear an off code's lock
+    (:func:`~locks.use_cases.added_lock_reconcile.off_clear_q`). Returns the locks flagged.
+    """
+    from locks.use_cases.added_lock_reconcile import OFF_WAITING_ERROR, flag_added_locks
+    from locks.use_cases.lock_push import unconfirmed_attempt_lock_entity_ids
+
+    holding = set(
+        _other_lock_assignments(code=code, lock_entity_id=lock_entity_id)
+        .filter(slot_index__isnull=False)
+        .values_list("lock_entity_id", flat=True)
+    ) | set(unconfirmed_attempt_lock_entity_ids(door_code=code))
+    flagged = flag_added_locks(
+        door_code=code,
+        import_lock_entity_id=lock_entity_id,
+        error=OFF_WAITING_ERROR,
+        only=sorted(holding - {lock_entity_id}),
+    )
+    if flagged:
+        logger.info(
+            "Door code id=%d is off at %s (confirmed live); taking its PIN off %s", code.id, lock_entity_id, flagged
+        )
+    return flagged
 
 
 def _pin_elsewhere_on_lock(
@@ -1549,6 +1694,9 @@ def _sync_lock_config_atomically(
         # (pin_ok, schedule_ok) for each slot of a synced code that's on other
         # locks too, from live readbacks of what changed (issue #220).
         import_verdicts: dict[int, tuple[bool, bool]] = {}
+        # Whether each import lock slot that would turn a synced code on other
+        # locks off was confirmed empty or disabled live (issue #221).
+        off_verdicts: dict[int, bool] = {}
         if not dry_run:
             from locks.use_cases.lock_push import (
                 SYNC_READBACK_BUDGET_SECONDS,
@@ -1575,6 +1723,14 @@ def _sync_lock_config_atomically(
                 schedule_read_live=not any(
                     isinstance(vid, dict) and vid.get("commandClass") == CC_SCHEDULE_ENTRY_LOCK for vid in value_ids
                 ),
+                zwavejs=readback_gateway,
+            )
+            off_verdicts = _import_off_verdicts(
+                lock_entity_id=lock_entity_id,
+                node_id=node_id,
+                empty_slots=confirmed_empty_slots,
+                disabled_slots={slot for slot in occupied_slots if slot_active.get(slot) is False},
+                pin_by_slot=pin_by_slot,
                 zwavejs=readback_gateway,
             )
             tracked_slots = set(
@@ -1628,6 +1784,7 @@ def _sync_lock_config_atomically(
                 event,
             )
 
+        from locks.use_cases.added_lock_reconcile import OFF_CONFIRMED_KEY
         from locks.use_cases.lock_push import decrypt_pin_or_none, slot_pushed_by_latchpoint
 
         # Import occupied slots.
@@ -1781,9 +1938,15 @@ def _sync_lock_config_atomically(
                     updated_fields.extend(_apply_slot_pin(code=code, raw_pin=raw_pin))
                 else:
                     warnings.append(_WARN_PIN_CHANGE_UNCONFIRMED)
+                # A code on other locks too only goes off here once two live reads
+                # confirm the slot disabled, since that takes its PIN off them (issue #221).
+                off_verdict = off_verdicts.get(slot_index) if is_active is False else None
                 if is_active is not None and code.is_active != bool(is_active):
-                    code.is_active = bool(is_active)
-                    updated_fields.append("is_active")
+                    if off_verdict is False:
+                        warnings.append(_WARN_OFF_CHANGE_UNCONFIRMED)
+                    else:
+                        code.is_active = bool(is_active)
+                        updated_fields.append("is_active")
 
                 schedule_applied = False
                 schedule_unsupported = bool(schedule_unsupported_reason)
@@ -1848,9 +2011,18 @@ def _sync_lock_config_atomically(
                 # schedule goes on to the locks added to it (issue #220).
                 sent_to: list[str] = []
                 held_on: list[str] = []
+                taken_off: list[str] = []
                 pin_changed = "encrypted_pin" in updated_fields
                 schedule_changed = bool({"days_of_week", "window_start", "window_end"} & set(updated_fields))
-                if not dry_run and (pin_changed or schedule_changed):
+                if off_verdict:
+                    # Off here, confirmed live: its PIN comes off the other locks
+                    # instead, whatever else changed (issue #221). Also for a code
+                    # that was already off and may still be on one of them.
+                    taken_off = _take_off_other_locks(code=code, lock_entity_id=lock_entity_id)
+                    touched_code_ids.add(code.id)
+                    if taken_off:
+                        warnings.append(_WARN_TAKING_OFF_OTHER_LOCKS)
+                elif not dry_run and (pin_changed or schedule_changed):
                     sent_to, held_on = _send_import_change_to_other_locks(
                         code=code, lock_entity_id=lock_entity_id, pin_changed=pin_changed
                     )
@@ -1893,6 +2065,9 @@ def _sync_lock_config_atomically(
                         **({"pin_held_on_lock_entity_ids": held_on} if held_on else {}),
                         **({_WARN_PIN_CHANGE_UNCONFIRMED: True} if _WARN_PIN_CHANGE_UNCONFIRMED in warnings else {}),
                         **({_WARN_SCHEDULE_CHANGE_UNCONFIRMED: True} if schedule_held else {}),
+                        **({_WARN_OFF_CHANGE_UNCONFIRMED: True} if _WARN_OFF_CHANGE_UNCONFIRMED in warnings else {}),
+                        # After the flags, so the reconcile sees them as set by this (off_clear_q).
+                        **({OFF_CONFIRMED_KEY: True, "taken_off_lock_entity_ids": taken_off} if off_verdict else {}),
                     },
                 )
 
@@ -2117,6 +2292,19 @@ def _sync_lock_config_atomically(
                     warnings=[],
                 )
                 continue
+            off_verdict = off_verdicts.get(slot_index)
+            if off_verdict is False:
+                # On other locks too, and two live reads didn't confirm the slot
+                # empty: the code stays as it is with its slot (issue #221).
+                skip_slot(
+                    code=code,
+                    slot_index=slot_index,
+                    reason=_SKIP_SLOT_NOT_CONFIRMED_EMPTY,
+                    pin_known=None,
+                    is_active=None,
+                    warnings=[],
+                )
+                continue
             was_active = code.is_active
             logger.info(
                 "Slot %d on %s (code_id=%d) is empty: %s",
@@ -2138,6 +2326,8 @@ def _sync_lock_config_atomically(
             assignment.push_state = DoorCode.PushState.PENDING
             assignment.schedule_pending = False
             assignment.save(update_fields=["slot_index", "push_state", "schedule_pending", "updated_at"])
+            # Confirmed empty live: its PIN comes off the other locks too (issue #221).
+            taken_off = _take_off_other_locks(code=code, lock_entity_id=lock_entity_id) if off_verdict else []
             DoorCodeEvent.objects.create(
                 door_code=code,
                 user=actor_user,
@@ -2146,6 +2336,8 @@ def _sync_lock_config_atomically(
                 metadata={
                     "slot_index": slot_index,
                     "action": "deactivated" if was_active else "slot_released",
+                    # After the flags, so the reconcile sees them as set by this (off_clear_q).
+                    **({OFF_CONFIRMED_KEY: True, "taken_off_lock_entity_ids": taken_off} if off_verdict else {}),
                 },
             )
 

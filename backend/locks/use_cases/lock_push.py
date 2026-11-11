@@ -1591,6 +1591,16 @@ def _lock_error_part(assignment: DoorCodeLockAssignment, *, max_attempts: int) -
     return f"{assignment.lock_entity_id}: {error}"
 
 
+def _locks_taking_pin_off(*, code: DoorCode, assignments: list[DoorCodeLockAssignment]) -> list[DoorCodeLockAssignment]:
+    """The ``assignments`` of an off synced code whose reconcile still has to take its PIN off (issue #221)."""
+    if code.is_active or code.source != DoorCode.Source.SYNCED:
+        return []
+    from locks.use_cases.added_lock_reconcile import off_clear_q
+
+    ids = set(DoorCodeLockAssignment.objects.filter(door_code=code).filter(off_clear_q()).values_list("id", flat=True))
+    return [a for a in assignments if a.id in ids]
+
+
 def _derive_push_state(*, code: DoorCode, unrecorded_failures: list[ClearFailure]) -> tuple[str, str, bool]:
     """The rollup :func:`refresh_push_state` writes, as ``(push_state, last_push_error, reset_clear_count)``."""
     pending, pushed, failed = DoorCode.PushState.PENDING, DoorCode.PushState.PUSHED, DoorCode.PushState.FAILED
@@ -1619,6 +1629,12 @@ def _derive_push_state(*, code: DoorCode, unrecorded_failures: list[ClearFailure
         outstanding = bool(failures or extra or to_clear)
         state = pending if outstanding or code.is_active else pushed
         capped = clears_capped(outstanding)
+        # A synced code its import lock turned off, whose added locks the reconcile
+        # is still taking the PIN off (issue #221): those decide, like an active code's.
+        taking_off = _locks_taking_pin_off(code=code, assignments=assignments)
+        if taking_off:
+            state = failed if any(a.push_state == failed for a in taking_off) else pending
+            lock_parts = [part for a in taking_off if (part := _lock_error_part(a, max_attempts=max_attempts))]
     else:
         # 3. Active and started: the locks decide, pending-removal ones aside (issue #126).
         removing = {f.lock_entity_id for f in failures if f.removing}
@@ -1662,7 +1678,9 @@ def refresh_push_state(
     2. Inactive, or active before its start: ``pending`` while a clear failure,
        a slot :func:`inactive_slots_to_clear` finds or one
        :func:`slots_to_withdraw` finds is outstanding, else ``pushed`` when
-       inactive and ``pending`` (scheduled) when active.
+       inactive and ``pending`` (scheduled) when active. An off synced code
+       whose added locks the reconcile is still taking its PIN off (issue
+       #221) is ``pending``, or ``failed`` when one of them is, with their errors.
     3. Active and started: ignoring locks being dropped, ``failed`` when any lock
        is ``failed``, else ``pending`` when any lock still needs its ``set`` or
        schedule or a clear failure is outstanding, else ``pushed``.
@@ -3410,6 +3428,10 @@ def retained_marker_event_ids(*, older_than: datetime) -> set[int]:
     (``synced_check_paused``, ``synced_check_unanswered``), plus every
     ``duplicate_retire_pending`` copy retire still pending and its failed tries
     (PR #211 re-review, ``door_codes.pending_copy_retire_event_ids``).
+
+    And an ``off_confirmed`` ``code_synced`` event of an off code with an added
+    lock still flagged since before it, since that's what lets the reconcile
+    take the PIN off that lock (issue #221, ``added_lock_reconcile.off_clear_q``).
     """
     old = DoorCodeEvent.objects.filter(created_at__lt=older_than, door_code__isnull=False)
     old_markers = old.filter(
@@ -3468,6 +3490,20 @@ def retained_marker_event_ids(*, older_than: datetime) -> set[int]:
     from locks.use_cases.door_codes import pending_copy_retire_event_ids
 
     keep.update(pending_copy_retire_event_ids())
+    flagged_before = DoorCodeLockAssignment.objects.filter(
+        door_code=OuterRef("door_code"),
+        reconcile_requested_at__isnull=False,
+        reconcile_requested_at__lte=OuterRef("created_at"),
+    )
+    keep.update(
+        old.filter(
+            event_type=DoorCodeEvent.EventType.CODE_SYNCED,
+            metadata__off_confirmed=True,
+            door_code__is_active=False,
+        )
+        .filter(Exists(flagged_before))
+        .values_list("id", flat=True)
+    )
     return keep
 
 

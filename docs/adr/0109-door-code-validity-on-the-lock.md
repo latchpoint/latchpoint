@@ -121,17 +121,19 @@ notifications and retiring used up codes is a separate change.
   counting lands in PR2, so a used up code stays on its locks.
 - Latchpoint has to be running for codes to start and expire on time.
 - A synced code that lock sync turns off (its slot on the lock it was imported
-  from read empty or disabled) keeps the slots latchpoint pushed to the locks
-  someone added to it (ADR-0082), so its PIN still opens those doors. The #167
-  inactive clear only covers manual codes and lock sync never clears a slot.
-  That's on purpose: clearing them would let a stale value cache on the first
-  lock wipe a code that works on the others, and a household code that stays
-  on is the safer way to be wrong. Removing the lock from the code in
-  latchpoint takes the PIN off it. That holds when the lock it was imported
-  from gives the off code a new PIN or schedule too: the added locks are
-  flagged for their reconcile, which waits while the code is off, so they keep
-  the old PIN and window until it's back on, and then the change goes out
-  (issue #220, ADR-0082). Deleting the code still clears them right away.
+  from read empty or disabled) comes off the locks someone added to it too
+  (issue #221, ADR-0082), but only after two live reads of that slot confirm
+  it. Clearing on the cache read alone would let a stale value cache on the
+  first lock wipe a code that works on the others, so until the slot is
+  confirmed the code stays on, and its PIN with it. Once it is, the added
+  locks are flagged and their reconcile takes the PIN off them with #223's
+  read first, so a PIN someone typed into one of those slots stays. Turning it
+  back on at the import lock (enabling the slot) puts it back on them. A code
+  turned off that way before this change, or one whose off wasn't confirmed,
+  keeps its PIN on the added locks like before until a sync of the import lock
+  confirms it, and the added locks still flagged for a new PIN or schedule
+  wait for it to be back on (issue #220). Deleting the code still clears them
+  right away.
   Removing the lock it was imported from makes it a manual code (issue #222,
   ADR-0082), and a manual code that's off has its PIN taken off its locks by
   the #167 inactive clear, so the added locks stop opening then too. That's on
