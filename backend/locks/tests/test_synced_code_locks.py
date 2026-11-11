@@ -329,7 +329,8 @@ class RemoveLockTests(_SyncedLocksTestBase):
         self.assertEqual(data["lock_entity_ids"], [self.BACK])
         self.assertEqual(self._slots(master), {self.BACK: 2})
         master.refresh_from_db()
-        self.assertEqual((master.source, master.is_active), (DoorCode.Source.SYNCED, True))
+        # No lock decides its PIN any more, so it's a manual code now (issue #222).
+        self.assertEqual((master.source, master.is_active), (DoorCode.Source.MANUAL, True))
 
         # A Front Door sync finds nothing of it, and the Back Door still tracks it.
         self.assertEqual(self._sync(gateway, self.FRONT).created, 0)

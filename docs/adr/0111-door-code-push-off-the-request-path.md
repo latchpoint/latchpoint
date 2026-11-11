@@ -41,7 +41,11 @@ The request saves and returns, and a fast scheduler task makes the push.
   lock_entity_ids=None, *, actor_user=None)` stamps them on the locks
   `locks_to_push` picks (nothing for a code that's inactive, not started or
   expired), taking the code row first like every writer of a code's
-  assignments. A request is used up by the first push attempt on that lock
+  assignments. A lock an update adds to a code gets `push_requested_at` when
+  its row is made, even on a code that's inactive or not started, so it's
+  never taken for a lock a synced code was imported from (issue #222,
+  ADR-0082). The task still only pushes it once the code belongs on its
+  locks, and the stamp lapses like any other. A request is used up by the first push attempt on that lock
   that comes after it, the 300s retry and an inline push included, and lapses
   after `PUSH_REQUEST_TTL` (10 minutes), when the lock is the 300s retry's like
   any pending lock. Nothing clears the columns.

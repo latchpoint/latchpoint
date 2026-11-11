@@ -132,6 +132,11 @@ notifications and retiring used up codes is a separate change.
   flagged for their reconcile, which waits while the code is off, so they keep
   the old PIN and window until it's back on, and then the change goes out
   (issue #220, ADR-0082). Deleting the code still clears them right away.
+  Removing the lock it was imported from makes it a manual code (issue #222,
+  ADR-0082), and a manual code that's off has its PIN taken off its locks by
+  the #167 inactive clear, so the added locks stop opening then too. That's on
+  purpose: removing the import lock is a deliberate choice, and an off manual
+  code doesn't stay on a lock. Turning it back on pushes it again.
 - Synced codes with dates are retired too, which clears their slot on the
   lock. A synced code without dates is only touched when it's a stranded copy
   of a code being retired (issue #185, PR #211 review). That's an active

@@ -175,18 +175,7 @@ def flag_added_locks(
         if out_of_date_only:
             pin = decrypt_pin_or_none(door_code)
             desired = code_schedule_fingerprint(door_code)
-            behind = [
-                a.id
-                for a in others
-                if a.reconcile_requested_at is not None
-                # Nothing recorded and nothing changed: a row from before 0012
-                # is brought in line by the next real change, not by an off and
-                # on, which would clear it for nothing.
-                or (
-                    a.written_pin is not None
-                    and (a.slot_index is None or _decrypt(a.written_pin) != pin or a.written_schedule != desired)
-                )
-            ]
+            behind = [a.id for a in others if lock_behind_code(a, pin=pin, desired=desired)]
             others = others.filter(id__in=behind)
         flagged = sorted(others.values_list("lock_entity_id", flat=True))
         if flagged:
@@ -198,6 +187,24 @@ def flag_added_locks(
             )
             transaction.on_commit(_wake_push_task, robust=True)
     return flagged
+
+
+def lock_behind_code(assignment: DoorCodeLockAssignment, *, pin: str | None, desired: str) -> bool:
+    """Whether this added lock may not have the code's PIN (``pin``) and schedule (``desired``) yet.
+
+    Flagged for its reconcile, or recorded as holding another PIN or schedule
+    (or no longer a slot). Nothing recorded and no flag isn't: a row from before
+    0012 is brought in line by the next real change, not by an off and on, which
+    would clear it for nothing (review of PR #223).
+    """
+    return assignment.reconcile_requested_at is not None or (
+        assignment.written_pin is not None
+        and (
+            assignment.slot_index is None
+            or _decrypt(assignment.written_pin) != pin
+            or assignment.written_schedule != desired
+        )
+    )
 
 
 def rerequest_reconcile(*, door_code: DoorCode) -> list[str]:
