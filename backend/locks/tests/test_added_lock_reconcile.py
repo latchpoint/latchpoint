@@ -358,19 +358,72 @@ class PinChangeTests(_ReconcileTestBase):
         self.assertEqual(self._calls(gateway, "clear"), [(12, [2])])
         self.assertEqual(self._lock_codes(gateway, 12), {1: OTHER_PIN, 2: self.NEW_PIN})
 
-    def test_a_slot_with_no_record_of_what_was_written_is_let_go(self):
-        # A row from before migration 0012: a readable PIN that isn't the code's may not be latchpoint's.
+    def _pushed_before_0012(self, master: DoorCode) -> None:
+        """The Back Door was added and pushed by #219, before migration 0012 recorded what a push wrote."""
+        DoorCodeLockAssignment.objects.filter(door_code=master, lock_entity_id=self.BACK).update(
+            written_pin=None, written_schedule=None
+        )
+
+    def test_a_slot_pushed_before_0012_has_the_old_pin_cleared_when_the_pin_changes(self):
         master, gateway = self._master_on_both()
-        DoorCodeLockAssignment.objects.filter(door_code=master, lock_entity_id=self.BACK).update(written_pin=None)
-        # So a stale cache doesn't offer slot 2 as free.
-        gateway._cache_codes[(12, 2)] = self.PIN
+        self._pushed_before_0012(master)
         self._change_front_pin(gateway, self.NEW_PIN)
+
         self._sync_front(gateway)
+
+        # The sync records the code's PIN and schedule from before the change as what the push wrote.
+        back = self._back(master)
+        self.assertEqual(SettingsEncryption.get().decrypt(back.written_pin), self.PIN)
+        self.assertEqual(back.written_schedule, "")
 
         self._push_requested(gateway)
 
+        self.assertEqual(self._calls(gateway, "clear"), [(12, [2])])
+        self.assertEqual(self._calls(gateway, "set"), [(12, [2, 1, self.NEW_PIN])])
+        self.assertEqual(self._lock_codes(gateway, 12), {1: OTHER_PIN, 2: self.NEW_PIN})
+        self.assertEqual(self._slots(master), {self.FRONT: 1, self.BACK: 2})
+
+    def test_a_masked_slot_pushed_before_0012_has_the_old_pin_cleared_too(self):
+        master, gateway = self._master_on_both()
+        self._pushed_before_0012(master)
+        self._mask_reads(gateway, node=12)
+        self._change_front_pin(gateway, self.NEW_PIN)
+
+        self._sync_front(gateway)
+        self._push_requested(gateway)
+
+        self.assertEqual(self._calls(gateway, "clear"), [(12, [2])])
+        self.assertEqual(self._lock_codes(gateway, 12), {1: OTHER_PIN, 2: self.NEW_PIN})
+
+    def test_a_keypad_pin_in_a_slot_pushed_before_0012_is_still_let_go(self):
+        # The old PIN is what's recorded, so a third PIN there is still someone else's.
+        master, gateway = self._master_on_both()
+        self._pushed_before_0012(master)
+        gateway._lock_codes[(12, 2)] = gateway._cache_codes[(12, 2)] = "5555"
+        self._change_front_pin(gateway, self.NEW_PIN)
+
+        self._sync_front(gateway)
+        self._push_requested(gateway)
+
         self.assertEqual(self._calls(gateway, "clear"), [])
-        self.assertEqual(self._lock_codes(gateway, 12), {1: OTHER_PIN, 2: self.PIN, 3: self.NEW_PIN})
+        self.assertEqual(self._lock_codes(gateway, 12), {1: OTHER_PIN, 2: "5555", 3: self.NEW_PIN})
+
+    def test_a_slotless_or_imported_row_stays_unknown(self):
+        master, gateway = self._master_on_both()
+        DoorCodeLockAssignment.objects.filter(door_code=master, lock_entity_id=self.BACK).update(
+            written_pin=None, written_schedule=None, last_push_attempt_at=None
+        )
+        self._change_front_pin(gateway, self.NEW_PIN)
+
+        reconcile_uc.flag_added_locks(
+            door_code=DoorCode.objects.get(id=master.id),
+            import_lock_entity_id=self.FRONT,
+            previous_pin=self.PIN,
+            previous_schedule="",
+        )
+
+        back = self._back(master)
+        self.assertEqual((back.written_pin, back.written_schedule), (None, None))
 
     def test_an_unconfirmed_push_to_the_added_lock_has_its_old_pin_cleared(self):
         # Every readback on the Back Door times out, so the PIN is only on record as an attempt in slot 2.

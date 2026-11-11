@@ -128,7 +128,14 @@ def held_pin_error(assignment: DoorCodeLockAssignment) -> str:
     )
 
 
-def flag_added_locks(*, door_code: DoorCode, import_lock_entity_id: str, now: datetime | None = None) -> list[str]:
+def flag_added_locks(
+    *,
+    door_code: DoorCode,
+    import_lock_entity_id: str,
+    previous_pin: str | None = None,
+    previous_schedule: str | None = None,
+    now: datetime | None = None,
+) -> list[str]:
     """Flag ``door_code``'s locks other than ``import_lock_entity_id`` for :func:`reconcile_added_lock`.
 
     For lock sync, once it has taken a new PIN or schedule from the lock the
@@ -138,6 +145,14 @@ def flag_added_locks(*, door_code: DoorCode, import_lock_entity_id: str, now: da
     transaction commits. A lock the code is being dropped from is left to its
     clear. The code row is taken first, like every writer of a code's
     assignments. Returns the locks flagged.
+
+    A slot latchpoint pushed before migration 0012 (``slot_pushed_by_latchpoint``
+    with no ``written_pin`` or ``written_schedule``) gets ``previous_pin`` and
+    ``previous_schedule``, the code's PIN and schedule fingerprint from before
+    this change, as what was written there. That's what the push put there,
+    since the code only gets a new one from this lock, so the reconcile clears
+    the old PIN instead of letting it go. A slot lock sync imported, or no slot,
+    stays unknown.
     """
     from locks.use_cases.lock_push import _lock_code_row, _locks_being_removed, _wake_push_task
 
@@ -150,6 +165,14 @@ def flag_added_locks(*, door_code: DoorCode, import_lock_entity_id: str, now: da
             .exclude(lock_entity_id__in=_locks_being_removed(door_code=door_code))
         )
         flagged = sorted(others.values_list("lock_entity_id", flat=True))
+        # slot_pushed_by_latchpoint as a filter: a slot, and a push attempt on record.
+        pushed_before_0012 = others.filter(slot_index__isnull=False, last_push_attempt_at__isnull=False)
+        if previous_pin:
+            pushed_before_0012.filter(written_pin__isnull=True).update(
+                written_pin=SettingsEncryption.get().encrypt(previous_pin)
+            )
+        if previous_schedule is not None:
+            pushed_before_0012.filter(written_schedule__isnull=True).update(written_schedule=previous_schedule)
         if flagged:
             others.update(
                 reconcile_requested_at=now,
