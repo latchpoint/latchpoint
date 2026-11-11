@@ -145,6 +145,13 @@ class PushSuperseded(LockUnreachable):
     """The code changed while its push waited for the lock (deleted, turned off, lock dropped); nothing was sent."""
 
 
+class ReconcilePending(PushSuperseded):
+    """The lock was flagged for its reconcile while the push waited for it (issue #220); nothing was sent.
+
+    Only this lock: the code's other locks still get their push.
+    """
+
+
 class PushInTransaction(RuntimeError):
     """A push was called inside a DB transaction someone else opened (issue #130). Raised in dev and tests only."""
 
@@ -1540,6 +1547,21 @@ def clear_failures_message(failures: list[ClearFailure]) -> str:
     )
 
 
+def schedule_fingerprint(*, days_of_week: int | None, window_start: time | None, window_end: time | None) -> str:
+    """What a push writes for this schedule, as stored in ``written_schedule`` (issue #220). ``""`` for none."""
+    if days_of_week is None:
+        return ""
+    start = window_start.strftime("%H:%M") if window_start else "-"
+    end = window_end.strftime("%H:%M") if window_end else "-"
+    return f"{int(days_of_week)}|{start}|{end}"
+
+
+def code_schedule_fingerprint(door_code: DoorCode) -> str:
+    return schedule_fingerprint(
+        days_of_week=door_code.days_of_week, window_start=door_code.window_start, window_end=door_code.window_end
+    )
+
+
 def _push_max_attempts() -> int:
     """``door_codes.push_max_attempts``, read through the scheduler's helper so a patch of it applies here too."""
     from locks.tasks import _get_push_max_attempts
@@ -1705,6 +1727,9 @@ def locks_to_push(
     #151), never a slot that still has a clear outstanding (it may hold an
     older PIN, so a schedule-only resend there would give that PIN the new
     window, PR #196 review), and a ``failed`` lock only with ``include_failed``.
+    Never a synced code's added lock flagged for
+    :func:`locks.use_cases.added_lock_reconcile.reconcile_added_lock` either,
+    which owns every change to it until it's in line (issue #220).
     """
     if assignments is None:
         assignments = list(DoorCodeLockAssignment.objects.filter(door_code=door_code).order_by("pk"))
@@ -1715,6 +1740,7 @@ def locks_to_push(
         a
         for a in assignments
         if a.lock_entity_id not in removing
+        and a.reconcile_requested_at is None
         and (not only_unassigned or _lock_needs_push(a))
         and (include_failed or a.push_state != DoorCode.PushState.FAILED)
         and not (a.slot_index is not None and (a.lock_entity_id, int(a.slot_index)) in clearing)
@@ -1805,7 +1831,11 @@ def normalize_assignment_push_state() -> int:
         (
             # Not a lock being dropped: the rollup ignores it, so its code can be
             # non-failed with the lock failed for real (PR #196 review).
-            Q(push_state=failed, door_code__is_active=True) & ~Q(door_code__push_state=failed) & ~being_removed_q(),
+            # Nor a synced code's added lock waiting for its reconcile, which
+            # owns its state until then (issue #220), here and in the next rule.
+            Q(push_state=failed, door_code__is_active=True, reconcile_requested_at__isnull=True)
+            & ~Q(door_code__push_state=failed)
+            & ~being_removed_q(),
             {
                 "push_state": pending,
                 "push_attempt_count": Subquery(
@@ -1814,7 +1844,8 @@ def normalize_assignment_push_state() -> int:
             },
         ),
         (
-            Q(slot_index__isnull=False, schedule_pending=False) & ~Q(push_state=pushed),
+            Q(slot_index__isnull=False, schedule_pending=False, reconcile_requested_at__isnull=True)
+            & ~Q(push_state=pushed),
             {"push_state": pushed, "push_attempt_count": 0, "last_push_error": ""},
         ),
         (
@@ -2921,7 +2952,11 @@ def synced_attempt_slots_to_check(*, door_code: DoorCode) -> list[tuple[str, int
     max_attempts = _push_max_attempts()
     slots: list[tuple[str, int]] = []
     for lock_entity_id in (
-        DoorCodeLockAssignment.objects.filter(door_code=door_code, slot_index__isnull=False)
+        # An added lock waiting for its reconcile is left to it, which clears
+        # what an older push left there (issue #220).
+        DoorCodeLockAssignment.objects.filter(
+            door_code=door_code, slot_index__isnull=False, reconcile_requested_at__isnull=True
+        )
         .order_by("lock_entity_id")
         .values_list("lock_entity_id", flat=True)
     ):
@@ -3726,8 +3761,16 @@ def push_door_code_to_lock(
     zwavejs: ZwavejsGateway,
     actor_user=None,
     timeout_seconds: float = 5.0,
+    for_reconcile: bool = False,
 ) -> PushResult:
     """Program ``door_code``'s PIN onto ``lock_entity_id``.
+
+    A lock flagged for :mod:`locks.use_cases.added_lock_reconcile` by the time
+    the push holds it raises :class:`ReconcilePending` with nothing sent, unless
+    the reconcile is the caller (``for_reconcile``). A push picked the lock
+    before lock sync flagged it would otherwise send what it read (a schedule
+    cut down from a partial one, say) and record it as written, and the
+    reconcile would take the slot for in line (issue #220).
 
     Allocates the lowest-free slot, sends CC 99 ``set`` (and CC 78 schedule when
     the code carries a daily window), and persists the slot index + push state.
@@ -3792,6 +3835,8 @@ def push_door_code_to_lock(
         assignment = DoorCodeLockAssignment.objects.filter(door_code=door_code, lock_entity_id=lock_entity_id).first()
         if not door_code.is_active or assignment is None:
             raise PushSuperseded("Door code is no longer active on this lock; nothing was pushed.")
+        if assignment.reconcile_requested_at is not None and not for_reconcile:
+            raise ReconcilePending("This lock is waiting for its reconcile; nothing was pushed.")
         if not belongs_on_lock(door_code):
             # Its start_at moved into the future or it expired while the push waited (issue #145).
             raise PushSuperseded("Door code isn't valid right now (not started or expired); nothing was pushed.")
@@ -4140,6 +4185,10 @@ def push_door_code_to_lock(
                     last_push_attempt_at=pushed_at,
                     last_push_error="",
                     schedule_pending=has_schedule,
+                    # What's in the slot now, for added_lock_reconcile (issue #220). No schedule
+                    # entries yet; step 2 records the ones it sends.
+                    written_pin=SettingsEncryption.get().encrypt(pin),
+                    written_schedule="",
                 )
                 DoorCodeEvent.objects.create(
                     door_code=door_code,
@@ -4255,7 +4304,18 @@ def _push_schedule_to_slot(
     schedule on its next tick instead of leaving the PIN working around the
     clock until the 300s retry (PR #201 review). A schedule-only push doesn't,
     so that's one more try at most.
+
+    The slot's ``written_schedule`` is set to unknown before anything is sent
+    and only recorded once the whole schedule went out, so a push that stops
+    partway leaves no record that would let ``added_lock_reconcile`` take a
+    half written schedule for an older one; unknown gets the slot cleared and
+    pushed again (issue #220).
     """
+    with transaction.atomic():
+        _lock_code_row(door_code.id)
+        DoorCodeLockAssignment.objects.filter(
+            door_code=door_code, lock_entity_id=lock_entity_id, slot_index=slot_index
+        ).update(written_schedule=None)
     try:
         weekdays_pushed = _push_daily_repeating_schedule(
             zwavejs=zwavejs,
@@ -4313,6 +4373,10 @@ def _push_schedule_to_slot(
                 push_attempt_count=0,
                 last_push_attempt_at=pushed_at,
                 last_push_error="",
+                # The schedule just sent, which may already be an older one than
+                # the code's: lock sync flags the lock for added_lock_reconcile
+                # whenever it changes it (issue #220).
+                written_schedule=code_schedule_fingerprint(door_code),
             )
             DoorCodeEvent.objects.create(
                 door_code=door_code,
@@ -4448,6 +4512,9 @@ def push_door_code_to_assigned_locks(
                 timeout_seconds=timeout_seconds,
             )
             successes.append(result)
+        except ReconcilePending:
+            # Flagged meanwhile; the reconcile owns this lock, the others still go.
+            continue
         except PushSuperseded:
             # An update or delete got the lock first and settled the code's locks
             # and state itself, so this stale pass stops here.
@@ -4563,6 +4630,14 @@ def request_push(
         row = _lock_code_row(code.id)
         if row is None or not row.is_active or not belongs_on_lock(row, now=now):
             return []
+        # Added locks still waiting for their reconcile go from now too, ie a
+        # dated synced code turned back on from latchpoint (#189) long after the
+        # change that flagged them (issue #220).
+        reconciles = DoorCodeLockAssignment.objects.filter(door_code=row, reconcile_requested_at__isnull=False).update(
+            reconcile_requested_at=now
+        )
+        if reconciles:
+            transaction.on_commit(_wake_push_task, robust=True)
         locks = [a for a in locks_to_push(door_code=row) if wanted is None or a.lock_entity_id in wanted]
         if not locks:
             return []
@@ -4593,6 +4668,8 @@ def queued_push_assignments(*, now: datetime, max_attempts: int):
         )
         .filter(Q(slot_index__isnull=True) | Q(schedule_pending=True))
         .filter(Q(last_push_attempt_at__isnull=True) | Q(last_push_attempt_at__lt=F("push_requested_at")))
+        # A flagged added lock is the reconcile's (issue #220).
+        .filter(reconcile_requested_at__isnull=True)
         .exclude(being_removed_q())
     )
     if max_attempts > 0:
@@ -4620,7 +4697,7 @@ def push_queued(
     slot with a clear outstanding, and the code active, started and not expired.
     """
     requested = assignment.push_requested_at
-    if requested is None or requested <= now - PUSH_REQUEST_TTL:
+    if requested is None or requested <= now - PUSH_REQUEST_TTL or assignment.reconcile_requested_at is not None:
         return False
     if assignment.last_push_attempt_at is not None and assignment.last_push_attempt_at >= requested:
         return False

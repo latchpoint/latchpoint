@@ -1354,6 +1354,7 @@ def _delete_door_code_locked(
     """
     from locks.use_cases.lock_push import (
         has_lock_pushed_by_latchpoint,
+        slot_pushed_by_latchpoint,
         unconfirmed_attempt_lock_entity_ids,
         unresolved_clear_failures,
     )
@@ -1394,10 +1395,23 @@ def _delete_door_code_locked(
             from locks.use_cases.lock_push import decrypt_pin_or_none, record_clear_failure
 
             already_failed = {(f.lock_entity_id, f.slot_index) for f in transient_failures}
+            # A synced code's added locks (issue #220): only a PIN latchpoint put in the slot is cleared.
+            added = {
+                (a.lock_entity_id, int(a.slot_index)): a
+                for a in assignments
+                if code.source == DoorCode.Source.SYNCED and a.slot_index is not None and slot_pushed_by_latchpoint(a)
+            }
             for slot_info in slots_to_clear:
                 if (slot_info["lock_entity_id"], slot_info["slot_index"]) in already_failed:
                     continue  # its retry above just failed
                 try:
+                    added_assignment = added.get((slot_info["lock_entity_id"], slot_info["slot_index"]))
+                    if added_assignment is not None and not _added_slot_is_latchpoints(
+                        code=code, assignment=added_assignment, zwavejs=zwavejs
+                    ):
+                        # Someone else's PIN, or nothing: left as it is.
+                        extra_metadata.setdefault("left_slots", []).append(slot_info)
+                        continue
                     clear_lock_user_code_slot(
                         lock_entity_id=slot_info["lock_entity_id"],
                         slot_index=slot_info["slot_index"],
@@ -1483,6 +1497,32 @@ def _delete_door_code_locked(
         )
 
         code.delete()
+
+
+def _added_slot_is_latchpoints(*, code: DoorCode, assignment: DoorCodeLockAssignment, zwavejs: ZwavejsGateway) -> bool:
+    """Whether a synced code's added-lock slot holds a PIN latchpoint put there, so a delete clears it (issue #220).
+
+    Read live: the code's PIN, the one latchpoint last wrote there or a code the
+    lock won't show count, and another PIN or an empty slot doesn't, the same
+    rule :func:`locks.use_cases.added_lock_reconcile.reconcile_added_lock` uses.
+    A read that gets no answer raises, so the delete records it like a failed clear.
+    """
+    from locks.use_cases.added_lock_reconcile import read_added_slot, slot_is_latchpoints
+    from locks.use_cases.lock_config_sync import _resolve_lock_node_id
+    from locks.use_cases.lock_push import decrypt_pin_or_none
+
+    written = None
+    if assignment.written_pin:
+        written = decrypt_pin_or_none(DoorCode(encrypted_pin=assignment.written_pin))
+    verdict = read_added_slot(
+        zwavejs=zwavejs,
+        node_id=_resolve_lock_node_id(lock_entity_id=assignment.lock_entity_id),
+        slot_index=int(assignment.slot_index),
+        pin=decrypt_pin_or_none(code),
+        written_pin=written,
+        timeout_seconds=_REQUEST_CLEAR_TIMEOUT_SECONDS,
+    )
+    return slot_is_latchpoints(verdict)
 
 
 def _refuse_delete_after_failed_clears(
@@ -1679,11 +1719,20 @@ def retry_push_door_code(
             refresh_push_state(door_code=code)
         return fresh()
 
+    # A synced code's added locks waiting to be brought in line go through their
+    # reconcile, queued again now, or run here where the task doesn't (issue #220).
+    from locks.use_cases.added_lock_reconcile import rerequest_reconcile, run_reconciles_inline
+
+    reconcile_locks = rerequest_reconcile(door_code=code) if code.is_active else []
+
     if code.is_active and push_task_running():
         # Every failed lock was re-armed above, so the queued push gets them too.
         _request_push_best_effort(code=code, actor_user=actor_user)
         refresh_push_state(door_code=code)
         return fresh()
+
+    if reconcile_locks:
+        run_reconciles_inline(door_code=code, lock_entity_ids=reconcile_locks, zwavejs=zwavejs, actor_user=actor_user)
 
     push_or_settle_after_clear_retry(
         door_code=code,

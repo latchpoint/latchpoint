@@ -768,6 +768,8 @@ _SKIP_SLOT_NOT_CONFIRMED_EMPTY = "slot_not_confirmed_empty"
 # Same, but this lock may already have the code's PIN in another slot, so
 # pushing it again would add a copy or fail (PR #214 review).
 _SKIP_PIN_IN_ANOTHER_SLOT = "pin_in_another_slot"
+# A synced code's added lock flagged to be brought in line with the code (issue #220).
+_SKIP_UPDATE_PENDING = "update_pending"
 _WARN_DUPLICATE_PIN = "duplicate_pin"
 # An active manual code whose slot holds its PIN but reads Occupied/Disabled.
 # Latchpoint owns a manual code, so the sync doesn't turn it off (issue #166).
@@ -775,6 +777,17 @@ _WARN_DISABLED_ON_LOCK = "disabled_on_lock"
 # An active manual code whose tracked slot read back empty: the slot is let go
 # and the code goes pending so the scheduler pushes it again (issue #166).
 _WARN_SLOT_EMPTY_REPUSH = "slot_empty_repush"
+# A synced code that's on other locks too, whose slot here holds a new PIN a
+# live readback didn't confirm. The PIN isn't taken, so a stale read never goes
+# out to those locks, and the next sync tries again (issue #220).
+_WARN_PIN_CHANGE_UNCONFIRMED = "pin_change_unconfirmed"
+# The same for a new schedule (or one removed) a live CC 78 read didn't confirm (issue #220).
+_WARN_SCHEDULE_CHANGE_UNCONFIRMED = "schedule_change_unconfirmed"
+# The new PIN or schedule taken from this slot was queued for the code's other locks (issue #220).
+_WARN_SENT_TO_OTHER_LOCKS = "sent_to_other_locks"
+# Another code on one of those locks already has the new PIN, so only the old
+# one is cleared there and the code is off that lock until the other is deleted (issues #188, #220).
+_WARN_PIN_HELD_ON_OTHER_LOCK = "pin_held_on_other_lock"
 
 
 def _has_outstanding_slot_cleanup(*, door_code: DoorCode, lock_entity_id: str) -> bool:
@@ -782,7 +795,13 @@ def _has_outstanding_slot_cleanup(*, door_code: DoorCode, lock_entity_id: str) -
     gone through yet (#144) or an unconfirmed push still in its window (#111).
 
     Clear failures count on any lock, since the scheduler retries every one of
-    them. Unconfirmed attempts only count on the lock being synced, and only the
+    them. That keeps a code latchpoint is turning off, or giving a new PIN, from
+    being turned back on or given its old PIN by a stale read of a lock whose
+    clear already went through, while another lock's clear is still failing
+    (PR #165). Bringing a synced code's added locks in line after a change from
+    the lock it was imported from never records one (issue #220,
+    :mod:`locks.use_cases.added_lock_reconcile`), so it can't hold that lock back.
+    Unconfirmed attempts only count on the lock being synced, and only the
     ones a cleanup would still act on: not settled since (#161), not in a slot
     another code holds, and with a PIN to compare against. An attempt left on a
     lock the code was dropped from before #167 has nothing coming to settle it,
@@ -1087,6 +1106,8 @@ def _empty_manual_slot_verdicts(
             lock_entity_id=lock_entity_id,
             slot_index__in=sorted(empty_slots),
             door_code__is_active=True,
+            # One waiting to be brought in line is the reconcile's (issue #220).
+            reconcile_requested_at__isnull=True,
         )
         .exclude(door_code__source=DoorCode.Source.SYNCED, last_push_attempt_at__isnull=True)
         .order_by("slot_index")
@@ -1156,6 +1177,170 @@ def _release_manual_slot(
         event_type=DoorCodeEvent.EventType.CODE_SYNCED,
         metadata={"slot_index": slot_index, "action": "slot_released", "reason": _WARN_SLOT_EMPTY_REPUSH},
     )
+
+
+def _other_lock_assignments(*, code: DoorCode, lock_entity_id: str):
+    """``code``'s assignments on locks other than ``lock_entity_id``, by lock."""
+    return (
+        DoorCodeLockAssignment.objects.filter(door_code=code)
+        .exclude(lock_entity_id=lock_entity_id)
+        .order_by("lock_entity_id")
+    )
+
+
+def _schedule_from_lock(schedule_obj: dict[str, Any] | None) -> tuple[int | None, time | None, time | None]:
+    """``(days_of_week, window_start, window_end)`` a slot's schedule read gives a synced code."""
+    if schedule_obj is None:
+        return None, None, None
+    return (
+        int(schedule_obj["days_of_week"]),
+        time.fromisoformat(str(schedule_obj["window_start"])),
+        time.fromisoformat(str(schedule_obj["window_end"])),
+    )
+
+
+def _code_schedule(code: DoorCode) -> tuple[int | None, time | None, time | None]:
+    return code.days_of_week, code.window_start, code.window_end
+
+
+def _import_pin_confirmed(*, zwavejs: ZwavejsGateway, node_id: int, slot_index: int, new_pin: str) -> bool:
+    """Whether a live CC 99 ``get`` of the slot reports ``new_pin``, enabled or disabled (issue #220)."""
+    from locks.use_cases.lock_push import LockRejectedCode, _out_of_budget, _verify_user_code_slot
+
+    if _out_of_budget(zwavejs):
+        return False
+    try:
+        return _verify_user_code_slot(
+            zwavejs=zwavejs, node_id=node_id, slot_index=slot_index, pin=new_pin, timeout_seconds=5.0
+        )
+    except LockRejectedCode as exc:
+        # Disabled at the lock, but it's the new PIN.
+        return bool(exc.holds_pin)
+    except Exception:
+        logger.warning("Couldn't read back slot %d on node %d", slot_index, node_id, exc_info=True)
+    return False
+
+
+def _import_schedule_confirmed(
+    *, zwavejs: ZwavejsGateway, node_id: int, slot_index: int, expected: tuple[int | None, time | None, time | None]
+) -> bool:
+    """Whether a live CC 78 read of the slot's daily repeating entries gives ``expected`` (issue #220).
+
+    Every entry of the slot is read, so a day that was dropped or a schedule
+    that went away is seen too. A failed read, an unsupported answer or a sync
+    out of its readback budget is ``False``.
+    """
+    from locks.use_cases.lock_push import _out_of_budget
+
+    if _out_of_budget(zwavejs):
+        return False
+    try:
+        live, unsupported = _extract_daily_repeating_schedule_windows_via_cc_api(
+            zwavejs=zwavejs, node_id=node_id, slot_indices={slot_index}, timeout_seconds=5.0
+        )
+    except Exception:
+        logger.warning("Couldn't read back the schedule of slot %d on node %d", slot_index, node_id, exc_info=True)
+        return False
+    if slot_index in unsupported:
+        return False
+    return _schedule_from_lock(live.get(slot_index)) == expected
+
+
+def _import_changes_confirmed(
+    *,
+    lock_entity_id: str,
+    node_id: int,
+    occupied_slots: set[int],
+    pin_by_slot: dict[int, str | None],
+    schedule_by_slot: dict[int, dict[str, Any] | None],
+    unsupported_schedule_by_slot: dict[int, str],
+    schedule_read_live: bool,
+    zwavejs: ZwavejsGateway,
+) -> dict[int, tuple[bool, bool]]:
+    """Confirm what this sync would take from each slot here of a synced code that's on other locks too (issue #220).
+
+    That's the slot on the lock the code was imported from, whose PIN and
+    schedule lock sync takes as the code's and then sends on to its other
+    locks, clearing the old ones there (:func:`_send_import_change_to_other_locks`).
+    A value read off the Z-Wave JS cache alone may be stale, or one cached for a
+    ``set`` the lock dropped, and sending it on would take what works off the
+    other locks. So a new PIN is only taken when a live CC 99 ``get`` of the
+    slot reports it, and a new schedule (one removed included) when a live CC 78
+    read of the slot gives it, unless the sync's schedule read was live already.
+    Maps slot -> ``(pin_ok, schedule_ok)``, ``True`` for what didn't change. A
+    masked answer, another value, no answer or a sync out of its readback budget
+    is ``False``. Read only, and run before the sync writes anything, like
+    :func:`_empty_manual_slot_verdicts`. Slots the sync skips anyway aren't read.
+    """
+    from locks.use_cases.lock_push import decrypt_pin_or_none, slot_pushed_by_latchpoint
+
+    verdicts: dict[int, tuple[bool, bool]] = {}
+    assignments = (
+        DoorCodeLockAssignment.objects.select_related("door_code")
+        .filter(
+            lock_entity_id=lock_entity_id,
+            slot_index__in=sorted(occupied_slots),
+            door_code__source=DoorCode.Source.SYNCED,
+        )
+        .order_by("slot_index")
+    )
+    for assignment in assignments:
+        code = assignment.door_code
+        slot_index = int(assignment.slot_index)
+        new_pin = pin_by_slot.get(slot_index)
+        if slot_pushed_by_latchpoint(assignment):
+            continue
+        if not _other_lock_assignments(code=code, lock_entity_id=lock_entity_id).exists():
+            continue
+        if _existing_code_skip_reason(code=code, lock_entity_id=lock_entity_id, raw_pin=new_pin):
+            continue
+        pin_ok = new_pin is None or decrypt_pin_or_none(code) == new_pin
+        if not pin_ok:
+            pin_ok = _import_pin_confirmed(zwavejs=zwavejs, node_id=node_id, slot_index=slot_index, new_pin=new_pin)
+        expected = _schedule_from_lock(schedule_by_slot.get(slot_index))
+        schedule_ok = (
+            slot_index in unsupported_schedule_by_slot or schedule_read_live or _code_schedule(code) == expected
+        )
+        if not schedule_ok:
+            schedule_ok = _import_schedule_confirmed(
+                zwavejs=zwavejs, node_id=node_id, slot_index=slot_index, expected=expected
+            )
+        verdicts[slot_index] = (pin_ok, schedule_ok)
+    return verdicts
+
+
+def _send_import_change_to_other_locks(
+    *, code: DoorCode, lock_entity_id: str, pin_changed: bool
+) -> tuple[list[str], list[str]]:
+    """Flag the code's other locks for a new PIN or schedule lock sync just took from ``lock_entity_id`` (issue #220).
+
+    ``code`` is a synced code and ``lock_entity_id`` the lock it was imported
+    from, which decides its PIN and schedule (ADR 0082). Its other locks are
+    ones someone added in latchpoint and got the PIN from a push. The sync holds
+    only this lock's ``lock_sync:`` lock, so it sends nothing to them. It flags
+    them (:func:`~locks.use_cases.added_lock_reconcile.flag_added_locks`) and the
+    queued push task brings each in line once this commits
+    (:func:`~locks.use_cases.added_lock_reconcile.reconcile_added_lock`).
+    Returns the locks flagged, without the ones where another code already has
+    the new PIN, which are returned second: the reconcile takes the old PIN
+    off those and fails them for a human (the #188 rule).
+    """
+    from locks.use_cases.added_lock_reconcile import flag_added_locks, pin_held_by_another_code
+
+    flagged = flag_added_locks(door_code=code, import_lock_entity_id=lock_entity_id)
+    held = [
+        other
+        for other in flagged
+        if pin_changed and pin_held_by_another_code(door_code=code, lock_entity_id=other) is not None
+    ]
+    if held:
+        logger.warning(
+            "Door code id=%d: the new PIN from %s is already another code's on %s; only the old one comes off there",
+            code.id,
+            lock_entity_id,
+            held,
+        )
+    return [lock for lock in flagged if lock not in held], held
 
 
 def _record_sync_skip(
@@ -1361,6 +1546,9 @@ def _sync_lock_config_atomically(
         # The tracked slots of active manual codes share that budget and are read
         # first, before the sync writes or locks any row (issue #166, PR #214 review).
         manual_empty_verdicts: dict[int, str | None] = {}
+        # (pin_ok, schedule_ok) for each slot of a synced code that's on other
+        # locks too, from live readbacks of what changed (issue #220).
+        import_verdicts: dict[int, tuple[bool, bool]] = {}
         if not dry_run:
             from locks.use_cases.lock_push import (
                 SYNC_READBACK_BUDGET_SECONDS,
@@ -1374,6 +1562,19 @@ def _sync_lock_config_atomically(
                 node_id=node_id,
                 empty_slots=confirmed_empty_slots,
                 pin_by_slot=pin_by_slot,
+                zwavejs=readback_gateway,
+            )
+            import_verdicts = _import_changes_confirmed(
+                lock_entity_id=lock_entity_id,
+                node_id=node_id,
+                occupied_slots=occupied_slots,
+                pin_by_slot=pin_by_slot,
+                schedule_by_slot=schedule_by_slot,
+                unsupported_schedule_by_slot=unsupported_schedule_by_slot,
+                # The cache-less fallback of _extract_weekday_schedule_windows reads the lock live.
+                schedule_read_live=not any(
+                    isinstance(vid, dict) and vid.get("commandClass") == CC_SCHEDULE_ENTRY_LOCK for vid in value_ids
+                ),
                 zwavejs=readback_gateway,
             )
             tracked_slots = set(
@@ -1427,7 +1628,7 @@ def _sync_lock_config_atomically(
                 event,
             )
 
-        from locks.use_cases.lock_push import slot_pushed_by_latchpoint
+        from locks.use_cases.lock_push import decrypt_pin_or_none, slot_pushed_by_latchpoint
 
         # Import occupied slots.
         for slot_index in sorted(occupied_slots):
@@ -1455,7 +1656,12 @@ def _sync_lock_config_atomically(
             latchpoint_slot = bool(existing) and (
                 existing.door_code.source != DoorCode.Source.SYNCED or slot_pushed_by_latchpoint(existing)
             )
-            if existing:
+            if existing and latchpoint_slot and existing.reconcile_requested_at is not None:
+                # A synced code's added lock waiting to be brought in line owns
+                # its slot until then (issue #220), whatever the cache says now.
+                skip_reason = _SKIP_UPDATE_PENDING
+                skip_code = existing.door_code
+            elif existing:
                 skip_reason = _existing_code_skip_reason(
                     code=existing.door_code,
                     lock_entity_id=lock_entity_id,
@@ -1556,20 +1762,39 @@ def _sync_lock_config_atomically(
             if existing:
                 code = existing.door_code
                 updated_fields: list[str] = []
+                old_pin = decrypt_pin_or_none(code)
 
                 if code.user_id != target_user.id:
                     code.user = target_user
                     updated_fields.append("user")
                     warnings.append("owner_changed")
 
-                updated_fields.extend(_apply_slot_pin(code=code, raw_pin=raw_pin))
+                # A code that's on other locks too only takes what a live readback
+                # confirmed, since it goes on to those locks (issue #220). A slot
+                # the readbacks didn't get to counts as unconfirmed.
+                pin_ok, schedule_ok = (
+                    import_verdicts.get(slot_index, (False, False))
+                    if not dry_run and _other_lock_assignments(code=code, lock_entity_id=lock_entity_id).exists()
+                    else (True, True)
+                )
+                if pin_ok or raw_pin is None or old_pin == raw_pin:
+                    updated_fields.extend(_apply_slot_pin(code=code, raw_pin=raw_pin))
+                else:
+                    warnings.append(_WARN_PIN_CHANGE_UNCONFIRMED)
                 if is_active is not None and code.is_active != bool(is_active):
                     code.is_active = bool(is_active)
                     updated_fields.append("is_active")
 
                 schedule_applied = False
                 schedule_unsupported = bool(schedule_unsupported_reason)
-                if not schedule_unsupported:
+                schedule_held = (
+                    not schedule_unsupported
+                    and not schedule_ok
+                    and _code_schedule(code) != _schedule_from_lock(schedule_obj)
+                )
+                if schedule_held:
+                    warnings.append(_WARN_SCHEDULE_CHANGE_UNCONFIRMED)
+                elif not schedule_unsupported:
                     if schedule_obj is None:
                         # No schedule => clear weekday window.
                         if code.days_of_week is not None:
@@ -1619,6 +1844,40 @@ def _sync_lock_config_atomically(
                     result.unchanged += 1
                     logger.debug("Slot %d on %s: unchanged", slot_index, lock_entity_id)
 
+                # This is the lock the code was imported from, so a new PIN or
+                # schedule goes on to the locks added to it (issue #220).
+                sent_to: list[str] = []
+                held_on: list[str] = []
+                pin_changed = "encrypted_pin" in updated_fields
+                schedule_changed = bool({"days_of_week", "window_start", "window_end"} & set(updated_fields))
+                if not dry_run and (pin_changed or schedule_changed):
+                    sent_to, held_on = _send_import_change_to_other_locks(
+                        code=code, lock_entity_id=lock_entity_id, pin_changed=pin_changed
+                    )
+                    if sent_to:
+                        warnings.append(_WARN_SENT_TO_OTHER_LOCKS)
+                    if held_on:
+                        warnings.append(_WARN_PIN_HELD_ON_OTHER_LOCK)
+                elif not dry_run and "is_active" in updated_fields and code.is_active:
+                    # Back on: the added locks it left behind while it was off go
+                    # now, not at the scheduler's next 300s retry (review of PR #223).
+                    from locks.use_cases.added_lock_reconcile import flag_added_locks, pin_held_by_another_code
+
+                    flagged = flag_added_locks(
+                        door_code=code, import_lock_entity_id=lock_entity_id, out_of_date_only=True
+                    )
+                    # The #188 rule, like a change: the reconcile only clears those.
+                    held_on = [
+                        other
+                        for other in flagged
+                        if pin_held_by_another_code(door_code=code, lock_entity_id=other) is not None
+                    ]
+                    sent_to = [other for other in flagged if other not in held_on]
+                    if sent_to:
+                        warnings.append(_WARN_SENT_TO_OTHER_LOCKS)
+                    if held_on:
+                        warnings.append(_WARN_PIN_HELD_ON_OTHER_LOCK)
+
                 event = DoorCodeEvent.objects.create(
                     door_code=code,
                     user=actor_user,
@@ -1630,6 +1889,10 @@ def _sync_lock_config_atomically(
                         "pin_known": pin_known,
                         "schedule_applied": schedule_applied,
                         "schedule_unsupported": schedule_unsupported,
+                        **({"sent_to_lock_entity_ids": sent_to} if sent_to else {}),
+                        **({"pin_held_on_lock_entity_ids": held_on} if held_on else {}),
+                        **({_WARN_PIN_CHANGE_UNCONFIRMED: True} if _WARN_PIN_CHANGE_UNCONFIRMED in warnings else {}),
+                        **({_WARN_SCHEDULE_CHANGE_UNCONFIRMED: True} if schedule_held else {}),
                     },
                 )
 
