@@ -113,6 +113,69 @@ describe('edit form for a synced code, locks', () => {
     expect(copy).not.toContain('hides its codes')
   })
 
+  it('says removing the lock it was synced from makes it a manual code (#222)', () => {
+    renderEditForm(syncedMaster())
+
+    const copy = screen.getByText(/This code is synced from the lock\./).textContent ?? ''
+    expect(copy).toContain('Removing the lock it was synced from turns it into a manual code you can fully edit.')
+  })
+
+  it('opens up the PIN, schedule and active status once the save comes back manual (#222)', () => {
+    const code = syncedMaster({
+      codeType: 'temporary',
+      daysOfWeek: 31,
+      windowStart: '08:00',
+      windowEnd: '18:00',
+      lockEntityIds: ['lock.back_door', 'lock.front_door'],
+      lockSlotAssignments: [
+        { lockEntityId: 'lock.front_door', slotIndex: 1, pendingRemoval: false },
+        { lockEntityId: 'lock.back_door', slotIndex: 2, pendingRemoval: false },
+      ],
+    })
+    const { rerender } = renderWithProviders(
+      <DoorCodeEditContainer
+        code={code}
+        locks={LOCKS}
+        locksIsLoading={false}
+        locksError={null}
+        isSaving={false}
+        isDeleting={false}
+        onClose={vi.fn()}
+        onUpdate={vi.fn()}
+        onDelete={vi.fn()}
+      />,
+    )
+    const windowStart = () => document.getElementById('door-code-edit-window-start-5')
+    expect(screen.getByLabelText('New code (optional)')).toBeDisabled()
+    expect(windowStart()).toBeDisabled()
+
+    // The Front Door was removed, and the refetch has it as a manual code on the Back Door.
+    rerender(
+      <DoorCodeEditContainer
+        code={{
+          ...code,
+          source: 'manual',
+          lockEntityIds: ['lock.back_door'],
+          lockSlotAssignments: [{ lockEntityId: 'lock.back_door', slotIndex: 2, pendingRemoval: false }],
+        }}
+        locks={LOCKS}
+        locksIsLoading={false}
+        locksError={null}
+        isSaving={false}
+        isDeleting={false}
+        onClose={vi.fn()}
+        onUpdate={vi.fn()}
+        onDelete={vi.fn()}
+      />,
+    )
+
+    expect(screen.queryByText(/This code is synced from the lock\./)).toBeNull()
+    expect(screen.getByLabelText('New code (optional)')).not.toBeDisabled()
+    expect(screen.getByRole('switch', { name: 'Active' })).not.toBeDisabled()
+    expect(screen.queryByText('(Controlled by lock sync)')).toBeNull()
+    expect(windowStart()).not.toBeDisabled()
+  })
+
   it('says the same for a synced code with an end date', () => {
     renderEditForm(syncedMaster({ endAt: '2026-12-02T12:00:00Z', validity: 'valid' }))
 

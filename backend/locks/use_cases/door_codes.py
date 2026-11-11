@@ -315,7 +315,9 @@ def update_door_code(
     """
     extra_lock_entity_ids = [*(changes.get("lock_entity_ids") or ()), *(changes.get("add_lock_entity_ids") or ())]
     with _hold_door_code_locks(code=code, extra_lock_entity_ids=extra_lock_entity_ids):
-        code, push_inline = _update_door_code_locked(code=code, changes=changes, actor_user=actor_user, zwavejs=zwavejs)
+        code, push_inline = _update_door_code_locked(
+            code=code, changes=changes, actor_user=actor_user, zwavejs=zwavejs, convert_without_import_lock=True
+        )
     if push_inline and zwavejs is not None:
         fresh = DoorCode.objects.prefetch_related("lock_assignments").filter(id=code.id).first()
         if fresh is not None:
@@ -973,6 +975,139 @@ def _record_withdraw_gave_up(*, code: DoorCode, failure: ClearFailure, max_attem
     )
 
 
+# ``source_changed.reason`` on the ``code_updated`` event of a synced code made manual (issue #222).
+_CONVERTED_NO_IMPORT_LOCK = "no_import_lock"
+
+
+def _convert_when_no_import_lock(*, code: DoorCode, added_lock_entity_ids: list[str]) -> list[str]:
+    """Make a synced code manual once no lock it's on is one lock sync imported it from (issue #222).
+
+    A synced code's PIN, active flag and schedule come only from its import lock
+    (ADR 0082). Lock sync treats every slot latchpoint pushed like a manual
+    code's, so with the import lock removed (or being removed), or removed and
+    added back (which makes it a pushed lock), nothing would ever change them
+    and the edit form would keep them read-only. Latchpoint is the only one
+    pushing the code then, so it's a manual code from here on, which lock sync
+    keeps manual (#166, #214).
+
+    The import locks are :func:`~locks.use_cases.lock_push.import_lock_entity_ids`
+    less the locks this save added. A code with no locks at all is left as it
+    is. A permanent code with dates becomes temporary, since a manual code only
+    has dates as temporary (or one-time) and couldn't change them otherwise.
+    Saved under the code row like every writer of it. Returns the fields
+    changed, ``[]`` when it stays synced.
+    """
+    from locks.use_cases.lock_push import import_lock_entity_ids
+
+    if code.source != DoorCode.Source.SYNCED:
+        return []
+    if not DoorCodeLockAssignment.objects.filter(door_code=code).exists():
+        return []
+    if import_lock_entity_ids(door_code=code, exclude=added_lock_entity_ids):
+        return []
+    fields = ["source"]
+    code.source = DoorCode.Source.MANUAL
+    if code.code_type == DoorCode.CodeType.PERMANENT and (code.start_at is not None or code.end_at is not None):
+        code.code_type = DoorCode.CodeType.TEMPORARY
+        fields.append("code_type")
+    with transaction.atomic():
+        if DoorCode.objects.select_for_update().filter(id=code.id).first() is None:
+            raise NotFound("Not found.")
+        DoorCode.objects.filter(id=code.id).update(
+            source=code.source, code_type=code.code_type, updated_at=django_timezone.now()
+        )
+    logger.info("Door code id=%d has no import lock left; it's a manual code now", code.id)
+    return fields
+
+
+def _clear_locks_behind_after_conversion(*, code: DoorCode, zwavejs: ZwavejsGateway) -> list[ClearFailure]:
+    """Hand a converted code's added locks to the manual push paths (issue #222). Returns the clears that failed.
+
+    Lock sync of the import lock flagged the added locks for their reconcile
+    when it took a new PIN or schedule (issue #220), and a lock still flagged
+    (or recorded as holding another PIN or schedule than the code's,
+    :func:`~locks.use_cases.added_lock_reconcile.lock_behind_code`) may still
+    hold the older one. A manual code's PIN or schedule change clears its slots
+    and pushes them again, so these get the same: slots an unconfirmed push may
+    have left a PIN in are read back and cleared when they hold it, the tracked
+    slot is cleared, and the lock goes back to pending for the push. A clear
+    that fails is recorded for the scheduler's retries and keeps the slot, like
+    an edit's. Every flag on the code is dropped, so nothing is left for the
+    reconcile and nothing writes to these locks twice. A lock the code is being
+    dropped from is left to its clear. The caller holds every lock the code is on.
+    """
+    from locks.use_cases.added_lock_reconcile import lock_behind_code
+    from locks.use_cases.lock_config_sync import clear_lock_user_code_slot
+    from locks.use_cases.lock_push import (
+        _lock_code_row,
+        _locks_being_removed,
+        clear_unconfirmed_slots_holding_pin,
+        code_schedule_fingerprint,
+        decrypt_pin_or_none,
+        forget_cleared_slot,
+        record_clear_failure,
+    )
+
+    pin = decrypt_pin_or_none(code)
+    desired = code_schedule_fingerprint(code)
+    removing = _locks_being_removed(door_code=code)
+    behind = [
+        a
+        for a in DoorCodeLockAssignment.objects.filter(door_code=code).order_by("lock_entity_id")
+        if a.lock_entity_id not in removing and lock_behind_code(a, pin=pin, desired=desired)
+    ]
+    failures: list[ClearFailure] = []
+    if behind:
+        _, unconfirmed_failures = clear_unconfirmed_slots_holding_pin(
+            door_code=code, pin=pin or "", lock_entity_ids=[a.lock_entity_id for a in behind], zwavejs=zwavejs
+        )
+        failures.extend(unconfirmed_failures)
+    for assignment in behind:
+        if assignment.slot_index is None:
+            continue
+        slot_index = int(assignment.slot_index)
+        try:
+            clear_lock_user_code_slot(
+                lock_entity_id=assignment.lock_entity_id,
+                slot_index=slot_index,
+                zwavejs=zwavejs,
+                timeout_seconds=_REQUEST_CLEAR_TIMEOUT_SECONDS,
+            )
+        except Exception as exc:
+            # What latchpoint last wrote there, when it's recorded.
+            written = (
+                decrypt_pin_or_none(DoorCode(encrypted_pin=assignment.written_pin)) if assignment.written_pin else None
+            )
+            failure = record_clear_failure(
+                door_code=code,
+                lock_entity_id=assignment.lock_entity_id,
+                slot_index=slot_index,
+                exc=exc,
+                expected_pin=written or pin,
+            )
+            failures.append(failure)
+            if not failure.permanent:
+                # The slot stays tracked until a retry clears it (issue #139).
+                continue
+            outcome = "lock_missing"
+        else:
+            outcome = "cleared"
+        forget_cleared_slot(
+            door_code=code, lock_entity_id=assignment.lock_entity_id, slot_index=slot_index, outcome=outcome
+        )
+    with transaction.atomic():
+        _lock_code_row(code.id)
+        DoorCodeLockAssignment.objects.filter(door_code=code, reconcile_requested_at__isnull=False).update(
+            reconcile_requested_at=None
+        )
+        if behind:
+            # A fresh start, without the reconcile's "Waiting to send…" error.
+            DoorCodeLockAssignment.objects.filter(id__in=[a.id for a in behind]).update(
+                push_attempt_count=0, last_push_error=""
+            )
+    return failures
+
+
 def _update_door_code_locked(
     *,
     code: DoorCode,
@@ -980,6 +1115,7 @@ def _update_door_code_locked(
     actor_user: User | None = None,
     zwavejs: ZwavejsGateway | None = None,
     event_metadata: dict[str, object] | None = None,
+    convert_without_import_lock: bool = False,
 ) -> tuple[DoorCode, bool]:
     """Update a door code and its lock assignments, emitting a `DoorCodeEvent` when changed.
 
@@ -1008,6 +1144,12 @@ def _update_door_code_locked(
     code already has it on an added lock (issue #188). That goes for synced
     codes too, whose locks are edited the same way (ADR 0082). A code deleted
     meanwhile is a :class:`NotFound`, never saved back.
+
+    With ``convert_without_import_lock`` (a user's edit, not a retire) a synced
+    code whose lock changes in this save leave it no import lock becomes a
+    manual code (issue #222, :func:`_convert_when_no_import_lock`), and its added locks
+    that may be behind its PIN or schedule are cleared and pushed again
+    (:func:`_clear_locks_behind_after_conversion`).
     """
     _refuse_lock_changes_leaving_no_locks(code=code, changes=changes)
     _refuse_adding_locks_without_pin(code=code, changes=changes)
@@ -1174,6 +1316,14 @@ def _update_door_code_locked(
         if locks_changed:
             updated_fields.append("lock_entity_ids")
 
+    # Only on a save that changes the code's locks, under every lock it's on, so
+    # no lock sync or reconcile runs on them while it changes. Needs the gateway
+    # for the clears it may take.
+    converted_fields: list[str] = []
+    if convert_without_import_lock and locks_changed and zwavejs is not None:
+        converted_fields = _convert_when_no_import_lock(code=code, added_lock_entity_ids=added_lock_entity_ids)
+        updated_fields.extend(converted_fields)
+
     updated_event: DoorCodeEvent | None = None
     if updated_fields:
         metadata: dict[str, object] = {"updated_fields": updated_fields, **(event_metadata or {})}
@@ -1181,6 +1331,12 @@ def _update_door_code_locked(
             metadata["added_lock_entity_ids"] = sorted(added_lock_entity_ids)
         if removed_lock_entity_ids:
             metadata["removed_lock_entity_ids"] = sorted(removed_lock_entity_ids)
+        if converted_fields:
+            metadata["source_changed"] = {
+                "from": DoorCode.Source.SYNCED,
+                "to": DoorCode.Source.MANUAL,
+                "reason": _CONVERTED_NO_IMPORT_LOCK,
+            }
         updated_event = DoorCodeEvent.objects.create(
             door_code=code,
             user=actor_user,
@@ -1210,8 +1366,11 @@ def _update_door_code_locked(
             )
             failed_slot_clears.extend(unconfirmed_failures)
 
+        if converted_fields:
+            failed_slot_clears.extend(_clear_locks_behind_after_conversion(code=code, zwavejs=zwavejs))
+
         push_relevant_change = bool(push_trigger_changes)
-        if push_relevant_change or locks_changed:
+        if push_relevant_change or locks_changed or converted_fields:
             if push_relevant_change:
                 # PIN, schedule, or is_active changed. The lock still holds the OLD
                 # PIN at the OLD slot; pushing fresh would pick a *different* slot

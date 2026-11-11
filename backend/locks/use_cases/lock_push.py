@@ -1761,6 +1761,32 @@ def slot_pushed_by_latchpoint(assignment: DoorCodeLockAssignment) -> bool:
     return assignment.slot_index is not None and assignment.last_push_attempt_at is not None
 
 
+def import_lock_entity_ids(*, door_code: DoorCode, exclude=()) -> list[str]:
+    """The locks ``door_code`` is on that latchpoint never pushed to, ie lock sync imported it from (issue #222).
+
+    For a synced code that's the lock whose slot decides its PIN, active flag and
+    schedule (ADR 0082). An assignment latchpoint tried or queued a push to has
+    ``last_push_attempt_at`` or ``push_requested_at``, which lock sync never
+    stamps, so every other one is lock sync's, slot or not. A lock the code is
+    being dropped from doesn't count, since lock sync skips its slot until the
+    clear works and then it's gone, and neither do ``exclude`` (the locks a save
+    just added, whose push hasn't been queued or tried yet). Sorted.
+
+    A row without a slot counts too. That's a slot lock sync let go of when it
+    read empty, which turned the code off, or a lock added while the code was
+    off and never pushed, and the two can't be told apart on the row.
+    """
+    removing = _locks_being_removed(door_code=door_code)
+    skip = set(exclude) | removing
+    return sorted(
+        lock_entity_id
+        for lock_entity_id in DoorCodeLockAssignment.objects.filter(
+            door_code=door_code, last_push_attempt_at__isnull=True, push_requested_at__isnull=True
+        ).values_list("lock_entity_id", flat=True)
+        if lock_entity_id not in skip
+    )
+
+
 def has_lock_pushed_by_latchpoint(*, door_code_id: int) -> bool:
     """Whether latchpoint has tried or queued a push of the code to any of its locks, slot or not.
 

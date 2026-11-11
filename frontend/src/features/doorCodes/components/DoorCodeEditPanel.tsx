@@ -12,8 +12,10 @@ import { isSyncedValidityEditable } from '@/features/doorCodes/utils/syncedValid
 import type { DoorCode, Entity } from '@/types'
 
 // A synced code's locks can be added and removed like a manual code's. Its PIN
-// goes on the added locks and comes off the removed ones (ADR 0082).
-const SYNCED_LOCKS_COPY = 'You can add or remove locks, which puts its PIN on them or takes it off.'
+// goes on the added locks and comes off the removed ones, and taking it off the
+// lock it was synced from makes it a manual code (ADR 0082, #222).
+const SYNCED_LOCKS_COPY =
+  'You can add or remove locks, which puts its PIN on them or takes it off. Removing the lock it was synced from turns it into a manual code you can fully edit.'
 
 function SyncedFieldsWarning({ validityEditable, pinUnknown }: { validityEditable: boolean; pinUnknown: boolean }) {
   return (
