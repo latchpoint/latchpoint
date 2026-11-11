@@ -1241,6 +1241,22 @@ def _pin_may_be_in_hidden_slot(*, lock_entity_id: str, slot_index: int, hidden_s
     return bool(others - known)
 
 
+def _flag_pushed_lock(*, assignment: DoorCodeLockAssignment, error: str) -> bool:
+    """Give a pushed lock ``error`` for its "(check lock)" chip and the code's badge, leaving it pushed (issue #215).
+
+    Only flagged: the slot stays the code's and nothing is sent. The next sync
+    that finds the code's PIN in its slot clears it. Takes the code row before
+    the assignment row, like every writer of both. Returns whether it changed.
+    """
+    pushed = DoorCode.PushState.PUSHED
+    if assignment.push_state != pushed or assignment.last_push_error == error:
+        return False
+    DoorCode.objects.select_for_update().filter(id=assignment.door_code_id).first()
+    return bool(
+        DoorCodeLockAssignment.objects.filter(id=assignment.id, push_state=pushed).update(last_push_error=error)
+    )
+
+
 def _empty_manual_slot_verdicts(
     *,
     lock_entity_id: str,
@@ -1880,18 +1896,17 @@ def _sync_lock_config_atomically(
                 if owner_id is not None:
                     skip_reason = _SKIP_CLEAR_OUTSTANDING
                     skip_code = DoorCode.objects.filter(id=owner_id).first()
-            if skip_reason == _SKIP_PIN_MISMATCH and existing and latchpoint_slot:
-                # The code's PIN isn't in its slot, so the lock's chip says so, like a
-                # disabled slot's, and a "disabled" error from before doesn't stay
-                # (issue #215). Only flagged: the slot stays the code's and nothing is
-                # sent. The next sync that finds the code's PIN there clears it.
-                mismatch_error = f"Slot {slot_index} holds a different PIN at the lock."
-                if existing.push_state == DoorCode.PushState.PUSHED and existing.last_push_error != mismatch_error:
-                    DoorCode.objects.select_for_update().filter(id=existing.door_code_id).first()
-                    DoorCodeLockAssignment.objects.filter(id=existing.id, push_state=DoorCode.PushState.PUSHED).update(
-                        last_push_error=mismatch_error
-                    )
-                    touched_code_ids.add(existing.door_code_id)
+            # The code's PIN isn't in its slot, so the lock's chip says so, like a
+            # disabled slot's, and a "disabled" error from before doesn't stay (issue #215).
+            if (
+                skip_reason == _SKIP_PIN_MISMATCH
+                and existing
+                and latchpoint_slot
+                and _flag_pushed_lock(
+                    assignment=existing, error=f"Slot {slot_index} holds a different PIN at the lock."
+                )
+            ):
+                touched_code_ids.add(existing.door_code_id)
             if skip_reason and skip_code is not None:
                 skip_slot(
                     code=skip_code,
@@ -2320,6 +2335,13 @@ def _sync_lock_config_atomically(
                 # again checks the slot (ADR 0082).
                 if code.is_active and slot_index in manual_empty_verdicts:
                     manual_skip_reason = manual_empty_verdicts[slot_index]
+                    if manual_skip_reason == _SKIP_PIN_MAY_BE_IN_HIDDEN_SLOT and _flag_pushed_lock(
+                        assignment=assignment,
+                        error=f"Slot {slot_index} reads empty but the lock hides its codes, check the lock.",
+                    ):
+                        # Held back, possibly for good, so it shows on the card (issue #215).
+                        # It goes once the code's PIN is read in the slot or the release goes ahead.
+                        touched_code_ids.add(code.id)
                     if manual_skip_reason:
                         skip_slot(
                             code=code,

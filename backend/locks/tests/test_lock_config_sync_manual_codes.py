@@ -397,6 +397,7 @@ class ManualCodeSyncTests(_TrackingTestBase, APITestCase):
                     assignment = self._assignment(code)
                     self.assertEqual(assignment.slot_index, 1)
                     self.assertEqual(assignment.push_state, DoorCode.PushState.PUSHED)
+                    self.assertEqual(assignment.last_push_error, self.HIDDEN_HOLD_ERROR)
 
                     # So the scheduler doesn't push a second copy, or fail the code on a Yale.
                     self._push_pending(gateway)
@@ -404,6 +405,46 @@ class ManualCodeSyncTests(_TrackingTestBase, APITestCase):
                     self.assertEqual(self._lock_codes(gateway, 12), {3: self.PIN})
                     code.refresh_from_db()
                     self.assertEqual(code.push_state, DoorCode.PushState.PUSHED)
+                    self.assertEqual(code.last_push_error, f"lock.back_door: {self.HIDDEN_HOLD_ERROR}")
+
+    HIDDEN_HOLD_ERROR = "Slot 1 reads empty but the lock hides its codes, check the lock."
+
+    def test_a_held_back_slot_shows_on_the_card_until_its_pin_is_read_there_or_it_is_released(self):
+        for ended_by in ("pin read in its slot", "released"):
+            with self.subTest(ended_by=ended_by):
+                DoorCodeEvent.objects.all().delete()
+                DoorCode.objects.all().delete()
+                code = self._code(slots={self.BACK: 1})
+                gateway = self._gateway({3: self.PIN}, cache={3: "****"})
+                self._sync_for(gateway)
+                self.assertEqual(self._assignment(code).last_push_error, self.HIDDEN_HOLD_ERROR)
+
+                if ended_by == "pin read in its slot":
+                    # The cache was stale, the lock has the (hidden) PIN in slot 1 after all.
+                    gateway._lock_codes[(12, 1)] = self.PIN
+                    gateway._cache_codes[(12, 1)] = "****"
+                    self._sync_for(gateway)
+
+                    assignment = self._assignment(code)
+                    self.assertEqual(assignment.slot_index, 1)
+                    self.assertEqual(assignment.push_state, DoorCode.PushState.PUSHED)
+                    self.assertEqual(assignment.last_push_error, "")
+                    code.refresh_from_db()
+                    self.assertEqual(code.push_state, DoorCode.PushState.PUSHED)
+                    self.assertEqual(code.last_push_error, "")
+                else:
+                    # The hidden slot is deleted at the lock, so nothing holds the release back.
+                    del gateway._lock_codes[(12, 3)]
+                    del gateway._cache_codes[(12, 3)]
+                    result = self._sync_for(gateway)
+
+                    self.assertIn("slot_empty_repush", self._row(result, 1).warnings)
+                    assignment = self._assignment(code)
+                    self.assertIsNone(assignment.slot_index)
+                    self.assertEqual(assignment.push_state, DoorCode.PushState.PENDING)
+                    self.assertEqual(assignment.last_push_error, "Slot 1 read back empty during a lock sync.")
+                    code.refresh_from_db()
+                    self.assertNotIn("hides its codes", code.last_push_error)
 
     def test_on_a_masking_lock_a_hidden_slot_of_a_code_whose_pin_latchpoint_knows_does_not_hold_the_release(self):
         code = self._code(slots={self.BACK: 1})
