@@ -383,3 +383,12 @@ class RunnerLogLevelTests(TransactionTestCase):
         self.assertTrue(any(m.startswith(f"Task {self._name} scheduled") for m in debug_msgs))
         self.assertIn(f"Task {self._name} starting", debug_msgs)
         self.assertTrue(any(m.startswith(f"Task {self._name} completed") for m in debug_msgs))
+
+        # The log lines would still be there if a telemetry write broke, since
+        # `_safe_telemetry` only logs that at DEBUG (#210), so check the row too.
+        health = SchedulerTaskHealth.objects.get(task_name=self._name, instance_id="default")
+        self.assertIsNotNone(health.next_run_at)
+        self.assertFalse(health.is_running)
+        self.assertIsNotNone(health.last_started_at)
+        self.assertGreaterEqual(health.last_finished_at, health.last_started_at)
+        self.assertEqual(health.consecutive_failures, 0)
