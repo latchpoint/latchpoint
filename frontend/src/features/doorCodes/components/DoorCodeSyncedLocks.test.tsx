@@ -118,6 +118,16 @@ describe('edit form for a synced code, locks', () => {
 
     const copy = screen.getByText(/This code is synced from the lock\./).textContent ?? ''
     expect(copy).toContain('Removing the lock it was synced from turns it into a manual code you can fully edit.')
+    expect(copy).not.toContain("Since it's off")
+  })
+
+  it('says removing it from an off code also takes the PIN off its other locks (#222)', () => {
+    renderEditForm(syncedMaster({ isActive: false }))
+
+    const copy = screen.getByText(/This code is synced from the lock\./).textContent ?? ''
+    expect(copy).toContain(
+      "Removing the lock it was synced from turns it into a manual code you can fully edit. Since it's off, that also takes its PIN off its other locks.",
+    )
   })
 
   it('opens up the PIN, schedule and active status once the save comes back manual (#222)', () => {

@@ -16,14 +16,25 @@ import type { DoorCode, Entity } from '@/types'
 // lock it was synced from makes it a manual code (ADR 0082, #222).
 const SYNCED_LOCKS_COPY =
   'You can add or remove locks, which puts its PIN on them or takes it off. Removing the lock it was synced from turns it into a manual code you can fully edit.'
+// A manual code that's off isn't left on any lock (#222).
+const SYNCED_OFF_COPY = " Since it's off, that also takes its PIN off its other locks."
 
-function SyncedFieldsWarning({ validityEditable, pinUnknown }: { validityEditable: boolean; pinUnknown: boolean }) {
+function SyncedFieldsWarning({
+  validityEditable,
+  pinUnknown,
+  isOff,
+}: {
+  validityEditable: boolean
+  pinUnknown: boolean
+  isOff: boolean
+}) {
+  const locksCopy = `${SYNCED_LOCKS_COPY}${isOff ? SYNCED_OFF_COPY : ''}`
   return (
     <Alert variant="warning" layout="inline">
       <AlertDescription>
         {validityEditable
-          ? `This code is synced from the lock and has an end date. ${SYNCED_LOCKS_COPY} Its active window can be changed (but not cleared) and it can be turned on or off, which puts it on or takes it off its locks. The PIN, schedule, and max uses come from the lock and will be overwritten on the next sync.`
-          : `This code is synced from the lock. ${SYNCED_LOCKS_COPY} The PIN, active status, schedule, and max uses come from the lock and will be overwritten on the next sync.`}
+          ? `This code is synced from the lock and has an end date. ${locksCopy} Its active window can be changed (but not cleared) and it can be turned on or off, which puts it on or takes it off its locks. The PIN, schedule, and max uses come from the lock and will be overwritten on the next sync.`
+          : `This code is synced from the lock. ${locksCopy} The PIN, active status, schedule, and max uses come from the lock and will be overwritten on the next sync.`}
         {pinUnknown
           ? " Latchpoint doesn't have a readable PIN for this code, either because the lock it was synced from hides its codes or because the stored PIN can't be decrypted, so it can't put it on another lock. It can still be removed from locks."
           : null}
@@ -136,7 +147,13 @@ export function DoorCodeEditPanel({
 
   return (
     <div className="mt-4 space-y-4 border-t border-input pt-4">
-      {isSynced && <SyncedFieldsWarning validityEditable={syncedValidityEditable} pinUnknown={code.pin == null} />}
+      {isSynced && (
+        <SyncedFieldsWarning
+          validityEditable={syncedValidityEditable}
+          pinUnknown={code.pin == null}
+          isOff={!code.isActive}
+        />
+      )}
 
       <DoorCodeEditBasicsFields
         codeId={code.id}

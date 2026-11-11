@@ -1037,13 +1037,24 @@ def _clear_locks_behind_after_conversion(*, code: DoorCode, zwavejs: ZwavejsGate
     the lock goes back to pending and the push puts the code in a free slot. A
     clear that fails is recorded for the scheduler's retries and keeps the
     slot, like an edit's. A read with no answer lets the slot go and records it
-    as an unconfirmed clear expecting the PIN latchpoint wrote there (the
-    code's when that isn't recorded), so the retry reads it back before it
-    clears anything. Every flag on the code is dropped, so nothing is left for the
-    reconcile and nothing writes to these locks twice. A lock the code is being
-    dropped from is left to its clear. The caller holds every lock the code is on.
+    as an unconfirmed clear expecting the PIN latchpoint wrote there, so the
+    retry reads it back before it clears anything. When nothing is recorded
+    there the slot stays tracked with a plain clear failure instead, so the
+    retry clears it like a delete would. A lock where another code already has
+    the PIN is failed with :func:`~locks.use_cases.added_lock_reconcile.held_pin_error`
+    once its slot is off it, not pushed (issue #188). Every flag on the code is
+    dropped, so nothing is left for the reconcile and nothing writes to these
+    locks twice. A lock the code is being dropped from is left to its clear.
+    The caller holds every lock the code is on.
     """
-    from locks.use_cases.added_lock_reconcile import _let_go, lock_behind_code, read_added_slot, slot_is_latchpoints
+    from locks.use_cases.added_lock_reconcile import (
+        _let_go,
+        held_pin_error,
+        lock_behind_code,
+        pin_held_by_another_code,
+        read_added_slot,
+        slot_is_latchpoints,
+    )
     from locks.use_cases.lock_config_sync import _resolve_lock_node_id, clear_lock_user_code_slot
     from locks.use_cases.lock_push import (
         _lock_code_row,
@@ -1088,23 +1099,33 @@ def _clear_locks_behind_after_conversion(*, code: DoorCode, zwavejs: ZwavejsGate
                 timeout_seconds=_REQUEST_CLEAR_TIMEOUT_SECONDS,
             )
         except Exception as exc:
-            # No verdict. The slot is let go and recorded as one to read back
-            # and clear only when it holds what latchpoint wrote there (or a
-            # masked code), so the retry never clears blind (#223's rule).
-            failure = record_clear_failure(
-                door_code=code,
-                lock_entity_id=lock_entity_id,
-                slot_index=slot_index,
-                exc=exc,
-                expected_pin=written or pin,
-                unconfirmed=True,
-                slot_verified=True,
-            )
+            if written is None:
+                # No verdict, and nothing recorded: the slot may hold any older
+                # PIN of latchpoint's, so it stays tracked and the retry clears
+                # it, the way a delete clears a slot like that (#223's rule).
+                failure = record_clear_failure(
+                    door_code=code, lock_entity_id=lock_entity_id, slot_index=slot_index, exc=exc, expected_pin=pin
+                )
+            else:
+                # No verdict. The slot is let go and recorded as one to read back
+                # and clear only when it holds what latchpoint wrote there (or a
+                # masked code), so the retry never clears blind (#223's rule).
+                failure = record_clear_failure(
+                    door_code=code,
+                    lock_entity_id=lock_entity_id,
+                    slot_index=slot_index,
+                    exc=exc,
+                    expected_pin=written,
+                    unconfirmed=True,
+                    slot_verified=True,
+                )
             failures.append(failure)
             if failure.permanent:
                 forget_cleared_slot(
                     door_code=code, lock_entity_id=lock_entity_id, slot_index=slot_index, outcome="lock_missing"
                 )
+                continue
+            if written is None:
                 continue
             DoorCodeLockAssignment.objects.filter(id=assignment.id).update(
                 slot_index=None,
@@ -1153,6 +1174,15 @@ def _clear_locks_behind_after_conversion(*, code: DoorCode, zwavejs: ZwavejsGate
             DoorCodeLockAssignment.objects.filter(id__in=[a.id for a in behind]).update(
                 push_attempt_count=0, last_push_error=""
             )
+        # The #188 rule, like the reconcile: a lock where another code already
+        # has the PIN isn't pushed, it's failed for a human once its old PIN is
+        # off. One whose slot is still tracked (its clear failed) waits for that.
+        for row in DoorCodeLockAssignment.objects.filter(id__in=[a.id for a in behind], slot_index__isnull=True):
+            holder = pin_held_by_another_code(door_code=code, lock_entity_id=row.lock_entity_id, pin=pin)
+            if holder is not None:
+                DoorCodeLockAssignment.objects.filter(id=row.id).update(
+                    push_state=DoorCode.PushState.FAILED, push_attempt_count=0, last_push_error=held_pin_error(holder)
+                )
     return failures
 
 
@@ -1351,11 +1381,18 @@ def _update_door_code_locked(
                 # rather than assignments for a code that's gone.
                 if DoorCode.objects.select_for_update().filter(id=code.id).first() is None:
                     raise NotFound("Not found.")
+                # Stamped as queued even when the code is off or not started and
+                # nothing pushes it yet, so a lock added in latchpoint is never
+                # taken for one lock sync imported the code from (issue #222).
+                # The queued push task only picks it up once the code belongs on
+                # its locks, and the request lapses like any other.
+                added_at = django_timezone.now()
                 DoorCodeLockAssignment.objects.bulk_create(
                     [
                         DoorCodeLockAssignment(
                             door_code=code,
                             lock_entity_id=entity_id,
+                            push_requested_at=added_at,
                         )
                         for entity_id in added_lock_entity_ids
                     ],
@@ -1364,11 +1401,12 @@ def _update_door_code_locked(
         if locks_changed:
             updated_fields.append("lock_entity_ids")
 
-    # Only on a save that changes the code's locks, under every lock it's on, so
-    # no lock sync or reconcile runs on them while it changes. Needs the gateway
-    # for the clears it may take.
+    # Only on a save that adds or drops a lock (a full list that names the same
+    # locks doesn't count), under every lock the code is on, so no lock sync or
+    # reconcile runs on them while it changes. Needs the gateway for the clears
+    # it may take.
     converted_fields: list[str] = []
-    if convert_without_import_lock and locks_changed and zwavejs is not None:
+    if convert_without_import_lock and (added_lock_entity_ids or dropped_lock_entity_ids) and zwavejs is not None:
         converted_fields = _convert_when_no_import_lock(code=code, added_lock_entity_ids=added_lock_entity_ids)
         updated_fields.extend(converted_fields)
 

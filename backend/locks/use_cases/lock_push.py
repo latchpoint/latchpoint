@@ -1773,8 +1773,10 @@ def import_lock_entity_ids(*, door_code: DoorCode, exclude=()) -> list[str]:
     just added, whose push hasn't been queued or tried yet). Sorted.
 
     A row without a slot counts too. That's a slot lock sync let go of when it
-    read empty, which turned the code off, or a lock added while the code was
-    off and never pushed, and the two can't be told apart on the row.
+    read empty, which turned the code off. A lock added in latchpoint is
+    stamped with ``push_requested_at`` when it's added, even while the code is
+    off, so it never counts, but one added to an off code before that stamp
+    existed has nothing on the row to tell it apart and still does.
     """
     removing = _locks_being_removed(door_code=door_code)
     skip = set(exclude) | removing
