@@ -12,9 +12,12 @@ manual code paths.
 from __future__ import annotations
 
 from locks.models import DoorCode, DoorCodeEvent, DoorCodeLockAssignment
-from locks.tests.test_added_lock_reconcile import _ReconcileTestBase
+from locks.tests.test_added_lock_reconcile import TIMEOUT, _ReconcileTestBase
 from locks.tests.test_door_code_lifecycle import _iso
 from locks.tests.test_synced_code_locks import OTHER_PIN
+from locks.use_cases import lock_push as lock_push_uc
+
+KEYPAD_PIN = "5555"
 
 
 class ImportLockRemovedTests(_ReconcileTestBase):
@@ -156,6 +159,73 @@ class ImportLockRemovedTests(_ReconcileTestBase):
         self._push_requested(gateway)
         self._push_pending(gateway)
         self.assertEqual(self._node_calls(gateway, 12), [])
+
+    def _flagged_back_door(self) -> tuple[DoorCode, object]:
+        """The Front Door's PIN changed and its sync flagged the Back Door, which still has the old PIN in slot 2."""
+        master, gateway = self._master_on_both()
+        self._change_front_pin(gateway, self.NEW_PIN)
+        self._sync_front(gateway)
+        self.assertIsNotNone(self._back(master).reconcile_requested_at)
+        gateway.invoke_calls.clear()
+        return master, gateway
+
+    def test_a_keypad_pin_in_a_flagged_slot_is_left_alone(self):
+        master, gateway = self._flagged_back_door()
+        # Someone typed their own code into the Back Door's slot 2 at the keypad.
+        gateway._lock_codes[(12, 2)] = KEYPAD_PIN
+        gateway._cache_codes[(12, 2)] = KEYPAD_PIN
+
+        self._remove_front(master, gateway)
+
+        self._assert_manual(master)
+        self.assertNotIn((12, [2]), self._calls(gateway, "clear"))
+        self.assertEqual(self._lock_codes(gateway, 12), {1: OTHER_PIN, 2: KEYPAD_PIN, 3: self.NEW_PIN})
+        self.assertEqual(self._slots(master), {self.BACK: 3})
+        self.assertIsNone(self._back(master).reconcile_requested_at)
+        # Nothing is left to clear it later either.
+        self.assertEqual(lock_push_uc.unresolved_clear_failures(door_code=master), [])
+        gateway.invoke_calls.clear()
+        self._push_pending(gateway)
+        self.assertEqual(self._node_calls(gateway, 12), [])
+
+    def test_a_flagged_slot_that_doesnt_answer_is_read_back_before_its_cleared(self):
+        master, gateway = self._flagged_back_door()
+        # Every try of the read back of slot 2 times out. The value cache has
+        # caught up with slot 2, so the push doesn't take it for a free one.
+        gateway._get_scripts[12] = [TIMEOUT] * 3
+        gateway._cache_codes[(12, 2)] = self.PIN
+
+        data = self._remove_front(master, gateway)
+
+        self.assertEqual(data["source"], DoorCode.Source.MANUAL)
+        self.assertNotIn((12, [2]), self._calls(gateway, "clear"))
+        # The code went into a free slot, and slot 2 waits for a retry that reads it back first.
+        self.assertEqual(self._lock_codes(gateway, 12), {1: OTHER_PIN, 2: self.PIN, 3: self.NEW_PIN})
+        self.assertEqual(self._slots(master), {self.BACK: 3})
+        [failure] = lock_push_uc.unresolved_clear_failures(door_code=master)
+        self.assertEqual((failure.lock_entity_id, failure.slot_index), (self.BACK, 2))
+        self.assertTrue(failure.unconfirmed)
+        self.assertEqual(failure.expected_pin, self.PIN)
+
+        self._push_pending(gateway)
+
+        self.assertEqual(self._lock_codes(gateway, 12), {1: OTHER_PIN, 3: self.NEW_PIN})
+        self.assertEqual(self._slots(master), {self.BACK: 3})
+        self.assertEqual(lock_push_uc.unresolved_clear_failures(door_code=master), [])
+
+    def test_a_keypad_pin_in_a_flagged_slot_that_didnt_answer_is_still_left_alone(self):
+        master, gateway = self._flagged_back_door()
+        gateway._get_scripts[12] = [TIMEOUT] * 3
+        gateway._cache_codes[(12, 2)] = self.PIN
+        self._remove_front(master, gateway)
+        # Typed in at the keypad after the read that didn't answer.
+        gateway._lock_codes[(12, 2)] = KEYPAD_PIN
+        gateway._cache_codes[(12, 2)] = KEYPAD_PIN
+
+        self._push_pending(gateway)
+
+        self.assertEqual(self._lock_codes(gateway, 12), {1: OTHER_PIN, 2: KEYPAD_PIN, 3: self.NEW_PIN})
+        self.assertEqual(lock_push_uc.unresolved_clear_failures(door_code=master), [])
 
     def test_a_back_door_whose_clear_fails_is_retried_like_a_manual_codes(self):
         master, gateway = self._master_on_both()

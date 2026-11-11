@@ -1027,17 +1027,24 @@ def _clear_locks_behind_after_conversion(*, code: DoorCode, zwavejs: ZwavejsGate
     when it took a new PIN or schedule (issue #220), and a lock still flagged
     (or recorded as holding another PIN or schedule than the code's,
     :func:`~locks.use_cases.added_lock_reconcile.lock_behind_code`) may still
-    hold the older one. A manual code's PIN or schedule change clears its slots
-    and pushes them again, so these get the same: slots an unconfirmed push may
-    have left a PIN in are read back and cleared when they hold it, the tracked
-    slot is cleared, and the lock goes back to pending for the push. A clear
-    that fails is recorded for the scheduler's retries and keeps the slot, like
-    an edit's. Every flag on the code is dropped, so nothing is left for the
+    hold the older one. So it's cleared and pushed again: slots an unconfirmed
+    push may have left a PIN in are read back and cleared when they hold it,
+    and the tracked slot is read back with the reconcile's and the delete's
+    rule (:func:`~locks.use_cases.added_lock_reconcile.read_added_slot`). It's
+    cleared when it holds the code's PIN, the PIN latchpoint wrote there or a
+    code the lock won't show (or any user code when nothing is recorded), and
+    let go untouched when it holds someone else's PIN or nothing. Either way
+    the lock goes back to pending and the push puts the code in a free slot. A
+    clear that fails is recorded for the scheduler's retries and keeps the
+    slot, like an edit's. A read with no answer lets the slot go and records it
+    as an unconfirmed clear expecting the PIN latchpoint wrote there (the
+    code's when that isn't recorded), so the retry reads it back before it
+    clears anything. Every flag on the code is dropped, so nothing is left for the
     reconcile and nothing writes to these locks twice. A lock the code is being
     dropped from is left to its clear. The caller holds every lock the code is on.
     """
-    from locks.use_cases.added_lock_reconcile import lock_behind_code
-    from locks.use_cases.lock_config_sync import clear_lock_user_code_slot
+    from locks.use_cases.added_lock_reconcile import _let_go, lock_behind_code, read_added_slot, slot_is_latchpoints
+    from locks.use_cases.lock_config_sync import _resolve_lock_node_id, clear_lock_user_code_slot
     from locks.use_cases.lock_push import (
         _lock_code_row,
         _locks_being_removed,
@@ -1066,35 +1073,76 @@ def _clear_locks_behind_after_conversion(*, code: DoorCode, zwavejs: ZwavejsGate
         if assignment.slot_index is None:
             continue
         slot_index = int(assignment.slot_index)
+        lock_entity_id = assignment.lock_entity_id
+        # What latchpoint last wrote there, when it's recorded.
+        written = (
+            decrypt_pin_or_none(DoorCode(encrypted_pin=assignment.written_pin)) if assignment.written_pin else None
+        )
+        try:
+            verdict = read_added_slot(
+                zwavejs=zwavejs,
+                node_id=_resolve_lock_node_id(lock_entity_id=lock_entity_id),
+                slot_index=slot_index,
+                pin=pin,
+                written_pin=written,
+                timeout_seconds=_REQUEST_CLEAR_TIMEOUT_SECONDS,
+            )
+        except Exception as exc:
+            # No verdict. The slot is let go and recorded as one to read back
+            # and clear only when it holds what latchpoint wrote there (or a
+            # masked code), so the retry never clears blind (#223's rule).
+            failure = record_clear_failure(
+                door_code=code,
+                lock_entity_id=lock_entity_id,
+                slot_index=slot_index,
+                exc=exc,
+                expected_pin=written or pin,
+                unconfirmed=True,
+                slot_verified=True,
+            )
+            failures.append(failure)
+            if failure.permanent:
+                forget_cleared_slot(
+                    door_code=code, lock_entity_id=lock_entity_id, slot_index=slot_index, outcome="lock_missing"
+                )
+                continue
+            DoorCodeLockAssignment.objects.filter(id=assignment.id).update(
+                slot_index=None,
+                written_pin=None,
+                written_schedule=None,
+                schedule_pending=False,
+                push_state=DoorCode.PushState.PENDING,
+            )
+            continue
+        if not slot_is_latchpoints(verdict):
+            # Someone else's PIN (typed in at the keypad, say) or nothing: left as it
+            # is, and the code is pushed into a free slot.
+            _let_go(code=code, assignment=assignment, empty=verdict == "empty")
+            continue
         try:
             clear_lock_user_code_slot(
-                lock_entity_id=assignment.lock_entity_id,
+                lock_entity_id=lock_entity_id,
                 slot_index=slot_index,
                 zwavejs=zwavejs,
                 timeout_seconds=_REQUEST_CLEAR_TIMEOUT_SECONDS,
             )
         except Exception as exc:
-            # What latchpoint last wrote there, when it's recorded.
-            written = (
-                decrypt_pin_or_none(DoorCode(encrypted_pin=assignment.written_pin)) if assignment.written_pin else None
-            )
             failure = record_clear_failure(
                 door_code=code,
-                lock_entity_id=assignment.lock_entity_id,
+                lock_entity_id=lock_entity_id,
                 slot_index=slot_index,
                 exc=exc,
                 expected_pin=written or pin,
             )
             failures.append(failure)
             if not failure.permanent:
-                # The slot stays tracked until a retry clears it (issue #139).
+                # It was just read back as latchpoint's, so it stays tracked
+                # until a retry clears it (issue #139).
                 continue
             outcome = "lock_missing"
         else:
             outcome = "cleared"
-        forget_cleared_slot(
-            door_code=code, lock_entity_id=assignment.lock_entity_id, slot_index=slot_index, outcome=outcome
-        )
+        forget_cleared_slot(door_code=code, lock_entity_id=lock_entity_id, slot_index=slot_index, outcome=outcome)
     with transaction.atomic():
         _lock_code_row(code.id)
         DoorCodeLockAssignment.objects.filter(door_code=code, reconcile_requested_at__isnull=False).update(
