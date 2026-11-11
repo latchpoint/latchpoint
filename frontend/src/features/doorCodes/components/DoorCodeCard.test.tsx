@@ -587,6 +587,24 @@ describe('DoorCodeCard', () => {
       expect(screen.getByText('Front Door')).toBeTruthy()
     })
 
+    it('shows a flagged lock as a warning, on its chip and the code badge (#215)', () => {
+      renderCard(
+        twoLocks(
+          [back({ slotIndex: 2, lastPushError: 'Slot 2 holds a different PIN at the lock.' }), front({ slotIndex: 1 })],
+          { pushState: 'pushed', lastPushError: 'lock.back_door: Slot 2 holds a different PIN at the lock.' },
+        ),
+      )
+
+      const chip = screen.getByText('Back Door (check lock)')
+      expect(chip).toHaveAttribute('title', 'Slot 2 holds a different PIN at the lock.')
+      expect(chip.className).toContain('text-warning')
+      expect(screen.getByText('Front Door').className).not.toContain('text-warning')
+      const badge = screen.getByText('On lock (check Back Door)')
+      expect(badge).toHaveAttribute('title', 'Back Door: Slot 2 holds a different PIN at the lock.')
+      expect(badge.className).toContain('text-warning')
+      expect(screen.queryByText(/^On lock:/)).toBeNull()
+    })
+
     it('says the push gave up when the cap failed a lock with no error of its own', () => {
       renderCard(
         twoLocks([back({ pushState: 'failed', pushAttemptCount: 24 }), front({ pushState: 'failed' })], {

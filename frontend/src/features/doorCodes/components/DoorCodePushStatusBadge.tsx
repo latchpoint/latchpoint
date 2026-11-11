@@ -144,6 +144,23 @@ export function DoorCodePushStatusBadge({ code, lockNameByEntityId, canRetry, is
         </div>
       )
     }
+    // A pushed code only has an error when lock sync found a slot of it disabled
+    // at the lock or holding another PIN (#215). The lock's chip says which, and
+    // so does this, since the PIN may not open that door.
+    if (code.isActive && code.lastPushError) {
+      const nameOf = (a: { lockEntityId: string }) => lockNameByEntityId.get(a.lockEntityId) || a.lockEntityId
+      const flagged = code.lockSlotAssignments.filter(
+        (a) => !a.pendingRemoval && a.pushState === 'pushed' && !!a.lastPushError,
+      )
+      return (
+        <Badge
+          variant="warning"
+          title={flagged.length ? flagged.map((a) => `${nameOf(a)}: ${a.lastPushError}`).join('; ') : code.lastPushError}
+        >
+          On lock (check {flagged.length ? joinNames(flagged.map(nameOf)) : 'lock'})
+        </Badge>
+      )
+    }
     const slotDesc = describeSlots(code, lockNameByEntityId)
     return (
       <Badge variant="secondary" title={slotDesc || undefined}>

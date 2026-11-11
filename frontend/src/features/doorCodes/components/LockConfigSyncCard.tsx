@@ -40,6 +40,7 @@ const SLOT_WARNING_LABELS: Record<string, string> = {
   schedule_unsupported: 'Schedule not supported',
   slot_not_confirmed_empty: "Lock didn't confirm the slot is empty",
   pin_in_another_slot: 'Slot is empty but the PIN is in another slot, not sent again',
+  pin_may_be_in_hidden_slot: 'Slot is empty but the PIN may be in a slot the lock hides, not sent again',
   disabled_on_lock: 'Disabled at the lock',
   slot_empty_repush: 'PIN missing from the lock, sending it again',
   sent_to_other_locks: 'Sending the change to the other locks',
