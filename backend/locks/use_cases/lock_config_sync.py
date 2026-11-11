@@ -1244,17 +1244,15 @@ def _pin_may_be_in_hidden_slot(*, lock_entity_id: str, slot_index: int, hidden_s
 def _flag_pushed_lock(*, assignment: DoorCodeLockAssignment, error: str) -> bool:
     """Give a pushed lock ``error`` for its "(check lock)" chip and the code's badge, leaving it pushed (issue #215).
 
-    Only flagged: the slot stays the code's and nothing is sent. The next sync
+    ``""`` takes an earlier one off. Only flagged: the slot stays the code's and nothing is sent. The next sync
     that finds the code's PIN in its slot clears it. Takes the code row before
     the assignment row, like every writer of both. Returns whether it changed.
     """
-    pushed = DoorCode.PushState.PUSHED
-    if assignment.push_state != pushed or assignment.last_push_error == error:
+    # A lock still waiting on a push, or failed, has its own error to show.
+    if assignment.push_state != DoorCode.PushState.PUSHED or assignment.last_push_error == error:
         return False
     DoorCode.objects.select_for_update().filter(id=assignment.door_code_id).first()
-    return bool(
-        DoorCodeLockAssignment.objects.filter(id=assignment.id, push_state=pushed).update(last_push_error=error)
-    )
+    return bool(DoorCodeLockAssignment.objects.filter(id=assignment.id).update(last_push_error=error))
 
 
 def _empty_manual_slot_verdicts(
@@ -1740,10 +1738,12 @@ def _sync_lock_config_atomically(
         # of them share one budget, since this is the request and the sync's
         # transaction, and a dry run doesn't read anything back (PR #211 review).
         # The tracked slots of active manual codes share that budget and are read
-        # first, before the sync writes or locks any row (issue #166, PR #214 review).
-        # When an untracked slot has an attempt to read back, the tracked ones stop
-        # SYNC_ATTEMPT_READBACK_RESERVE_SECONDS short of the end, so tracked slots
+        # before them, before the sync writes or locks any row (issue #166, PR #214
+        # review). When an untracked slot has an attempt to read back, the manual ones
+        # stop SYNC_ATTEMPT_READBACK_RESERVE_SECONDS short of the end, so tracked slots
         # that never answer can't leave those for later syncs every time (issue #215).
+        # A synced code's import lock confirmations (issues #220, #221) go first and
+        # aren't held to that, since they decide what goes on to its other locks.
         manual_empty_verdicts: dict[int, str | None] = {}
         # (pin_ok, schedule_ok) for each slot of a synced code that's on other
         # locks too, from live readbacks of what changed (issue #220).
@@ -1767,21 +1767,8 @@ def _sync_lock_config_atomically(
                 ).values_list("slot_index", flat=True)
             )
             readback_gateway = BudgetedGateway(zwavejs, seconds=SYNC_READBACK_BUDGET_SECONDS)
-            tracked_gateway = readback_gateway
-            if has_attempt_slots_sync_reads_back(
-                lock_entity_id=lock_entity_id, empty_slots=confirmed_empty_slots - tracked_slots
-            ):
-                tracked_gateway = BudgetedGateway(
-                    readback_gateway, seconds=SYNC_READBACK_BUDGET_SECONDS - SYNC_ATTEMPT_READBACK_RESERVE_SECONDS
-                )
-            manual_empty_verdicts = _empty_manual_slot_verdicts(
-                lock_entity_id=lock_entity_id,
-                node_id=node_id,
-                empty_slots=confirmed_empty_slots,
-                pin_by_slot=pin_by_slot,
-                hidden_slots={slot for slot in occupied_slots if not pin_known_by_slot.get(slot)},
-                zwavejs=tracked_gateway,
-            )
+            # What a synced code on other locks takes from its import lock goes on to
+            # those locks, so its confirmations go first, on the whole budget (PR #227 review).
             import_verdicts = _import_changes_confirmed(
                 lock_entity_id=lock_entity_id,
                 node_id=node_id,
@@ -1793,7 +1780,7 @@ def _sync_lock_config_atomically(
                 schedule_read_live=not any(
                     isinstance(vid, dict) and vid.get("commandClass") == CC_SCHEDULE_ENTRY_LOCK for vid in value_ids
                 ),
-                zwavejs=tracked_gateway,
+                zwavejs=readback_gateway,
             )
             off_verdicts = _import_off_verdicts(
                 lock_entity_id=lock_entity_id,
@@ -1801,7 +1788,25 @@ def _sync_lock_config_atomically(
                 empty_slots=confirmed_empty_slots,
                 disabled_slots={slot for slot in occupied_slots if slot_active.get(slot) is False},
                 pin_by_slot=pin_by_slot,
-                zwavejs=tracked_gateway,
+                zwavejs=readback_gateway,
+            )
+            # Then the manual codes' tracked slots, which stop the reserve short of
+            # the end when an untracked slot has an attempt to read back (issue #215).
+            manual_gateway = readback_gateway
+            if has_attempt_slots_sync_reads_back(
+                lock_entity_id=lock_entity_id, empty_slots=confirmed_empty_slots - tracked_slots
+            ):
+                manual_gateway = BudgetedGateway(
+                    readback_gateway,
+                    seconds=max(0.0, readback_gateway.remaining() - SYNC_ATTEMPT_READBACK_RESERVE_SECONDS),
+                )
+            manual_empty_verdicts = _empty_manual_slot_verdicts(
+                lock_entity_id=lock_entity_id,
+                node_id=node_id,
+                empty_slots=confirmed_empty_slots,
+                pin_by_slot=pin_by_slot,
+                hidden_slots={slot for slot in occupied_slots if not pin_known_by_slot.get(slot)},
+                zwavejs=manual_gateway,
             )
             touched_code_ids.update(
                 check_attempt_slots_sync_saw_empty(
@@ -2335,12 +2340,16 @@ def _sync_lock_config_atomically(
                 # again checks the slot (ADR 0082).
                 if code.is_active and slot_index in manual_empty_verdicts:
                     manual_skip_reason = manual_empty_verdicts[slot_index]
-                    if manual_skip_reason == _SKIP_PIN_MAY_BE_IN_HIDDEN_SLOT and _flag_pushed_lock(
-                        assignment=assignment,
-                        error=f"Slot {slot_index} reads empty but the lock hides its codes, check the lock.",
-                    ):
-                        # Held back, possibly for good, so it shows on the card (issue #215).
-                        # It goes once the code's PIN is read in the slot or the release goes ahead.
+                    # Held back for a hidden slot, possibly for good, so it shows on the
+                    # card (issue #215). Kept for any other reason, the slot didn't show
+                    # a disabled code or another PIN this time, so an error an earlier
+                    # sync set for that goes (PR #227 review). The release sets its own.
+                    kept_error = (
+                        f"Slot {slot_index} reads empty but the lock hides its codes, check the lock."
+                        if manual_skip_reason == _SKIP_PIN_MAY_BE_IN_HIDDEN_SLOT
+                        else ""
+                    )
+                    if manual_skip_reason and _flag_pushed_lock(assignment=assignment, error=kept_error):
                         touched_code_ids.add(code.id)
                     if manual_skip_reason:
                         skip_slot(

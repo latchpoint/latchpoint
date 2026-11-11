@@ -171,10 +171,12 @@ PUSH_LOCK_BUDGET_SECONDS = 30.0
 SYNC_READBACK_BUDGET_SECONDS = 30.0
 
 # How much of that budget lock sync keeps for those untracked attempt slots when
-# it has any to read. Its readbacks of tracked slots go first and stop this far
+# it has any to read. Its readbacks of manual codes' tracked slots stop this far
 # short of the end, so tracked slots that never answer (18s each) can't leave the
-# attempt slots for later syncs every time. Whatever the tracked ones leave goes
-# to the attempt slots too (issue #215).
+# attempt slots for later syncs every time. Whatever they leave goes to the
+# attempt slots too (issue #215). A synced code's import lock confirmations
+# (#220, #221) run before both on the whole budget, since they decide what goes
+# on to its other locks (PR #227 review).
 SYNC_ATTEMPT_READBACK_RESERVE_SECONDS = 10.0
 
 

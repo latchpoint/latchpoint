@@ -13,12 +13,12 @@ from unittest.mock import patch
 
 from django.db.models import Model, QuerySet
 from django.urls import reverse
+from django.utils import timezone
 from integrations_zwavejs.manager import ZwavejsCommandError
 from rest_framework.test import APITestCase
 
 from accounts.models import User
 from locks.models import DoorCode, DoorCodeEvent, DoorCodeLockAssignment
-from locks.tests.test_lock_push import ClearFailingGateway
 from locks.tests.test_tracking_integrity import (
     EMPTY,
     MASKED,
@@ -586,11 +586,125 @@ class ManualCodeSyncTests(_TrackingTestBase, APITestCase):
                     self.assertIn("slot_empty_repush", self._row(result, 2).warnings)
                     self.assertIsNone(self._assignment(second).slot_index)
 
+    def test_a_settled_attempt_slot_does_not_hold_back_any_of_the_budget(self):
+        clock = _Clock()
+        other = self._code(pin="5678", push_state=DoorCode.PushState.PENDING)
+        self._attempt(other, 3, pin="5678", slot_available=True)
+        self.assertTrue(lock_push_uc.has_attempt_slots_sync_reads_back(lock_entity_id=self.BACK, empty_slots={3}))
+        # Its attempt is settled, so its record is still there but there's nothing to read back.
+        lock_push_uc._settle_unconfirmed_slot(
+            door_code=other, lock_entity_id=self.BACK, slot_index=3, outcome="not_holding_pin", slot_empty=True
+        )
+        self.assertFalse(lock_push_uc.has_attempt_slots_sync_reads_back(lock_entity_id=self.BACK, empty_slots={3}))
+
+        result, gateway, _first, second, _other = self._budget_case(clock, slot_two=[None, EMPTY, EMPTY], attempt=False)
+
+        # So the manual readbacks get the whole 30s, and slot 2 is let go.
+        self.assertIn("slot_empty_repush", self._row(result, 2).warnings)
+        self.assertIsNone(self._assignment(second).slot_index)
+        self.assertNotIn([3], [call[1] for call in self._calls(gateway, "get")])
+
+    def test_import_lock_confirmations_go_first_and_do_not_lose_time_to_the_reserve(self):
+        # PR #227 review: with the manual readbacks first, a slot that never answers
+        # left #221's off confirmation 2s, so the PIN stayed on the added lock.
+        clock = _Clock()
+        other = self._code(pin="5678", push_state=DoorCode.PushState.PENDING)
+        self._attempt(other, 3, pin="5678", slot_available=True)
+        manual = self._code(slots={self.BACK: 1})
+        # Imported from slot 4 here, and pushed to the Side Door, slot 2.
+        master = self._code(pin="2468", source=DoorCode.Source.SYNCED, slots={self.BACK: 4, self.SIDE: 2})
+        DoorCodeLockAssignment.objects.filter(door_code=master, lock_entity_id=self.SIDE).update(
+            last_push_attempt_at=timezone.now()
+        )
+        # Its PIN was deleted at this lock, and the lock takes 2s to answer for slot 4.
+        gateway = _PerSlotClockGateway(clock, {1: [None, None, None], 3: [EMPTY, EMPTY], 4: [(2, EMPTY), (2, EMPTY)]})
+
+        with patch.object(lock_push_uc, "_time", clock):
+            result = self._sync_for(gateway)
+
+        gets = [call[1] for call in self._calls(gateway, "get")]
+        self.assertEqual(gets[:2], [[4], [4]])
+        master.refresh_from_db()
+        self.assertFalse(master.is_active)
+        side = DoorCodeLockAssignment.objects.get(door_code=master, lock_entity_id=self.SIDE)
+        self.assertIsNotNone(side.reconcile_requested_at)
+        # The manual slot still had its readback, and the attempt slot its share.
+        self.assertEqual(gets.count([1]), 3)
+        self.assertIn("slot_not_confirmed_empty", self._row(result, 1).warnings)
+        self.assertEqual(self._assignment(manual).slot_index, 1)
+        self.assertEqual(gets[-2:], [[3], [3]])
+        self.assertEqual(self._unsettled_slots(other), [])
+        self.assertLessEqual(clock.now - 1000.0, lock_push_uc.SYNC_READBACK_BUDGET_SECONDS + 2)
+
+    def test_a_mismatch_on_a_lock_that_is_not_pushed_keeps_its_own_error(self):
+        code = self._code(slots={self.BACK: 1})
+        DoorCodeLockAssignment.objects.filter(door_code=code).update(
+            push_state=DoorCode.PushState.FAILED, last_push_error="Lock timed out."
+        )
+        gateway = self._gateway({1: "9999"}, cache={1: "9999"})
+
+        result = self._sync_for(gateway)
+
+        self.assertIn("pin_mismatch", self._row(result, 1).warnings)
+        assignment = self._assignment(code)
+        self.assertEqual(assignment.push_state, DoorCode.PushState.FAILED)
+        self.assertEqual(assignment.last_push_error, "Lock timed out.")
+
+    def test_a_flag_from_an_earlier_sync_does_not_stay_once_the_slot_reads_empty_and_is_kept(self):
+        def disabled(gateway):
+            gateway._slot_status = {1: 2}
+
+        def other_pin(gateway):
+            gateway._cache_codes[(12, 1)] = "9999"
+
+        def lock_still_has_it(gateway):
+            # Stale cache: Available, but the lock answers with the PIN.
+            gateway._slot_status = {}
+            gateway._cache_codes.pop((12, 1), None)
+
+        def hidden_copy(gateway):
+            gateway._slot_status = {}
+            gateway._cache_codes.pop((12, 1), None)
+            del gateway._lock_codes[(12, 1)]
+            gateway._lock_codes[(12, 3)] = self.PIN
+            gateway._cache_codes[(12, 3)] = "****"
+
+        def readable_copy(gateway):
+            hidden_copy(gateway)
+            gateway._cache_codes[(12, 3)] = self.PIN
+
+        cases = (
+            ("disabled, then not confirmed empty", disabled, "Slot 1 is disabled at the lock.", lock_still_has_it, ""),
+            ("other PIN, then held", other_pin, "Slot 1 holds a different PIN at the lock.", hidden_copy, None),
+            ("disabled, then the PIN in another slot", disabled, "Slot 1 is disabled at the lock.", readable_copy, ""),
+        )
+        for name, first, first_error, then, then_error in cases:
+            with self.subTest(case=name):
+                DoorCodeEvent.objects.all().delete()
+                DoorCode.objects.all().delete()
+                code = self._code(slots={self.BACK: 1})
+                gateway = self._gateway({1: self.PIN})
+                first(gateway)
+                self._sync_for(gateway)
+                self.assertEqual(self._assignment(code).last_push_error, first_error)
+
+                then(gateway)
+                self._sync_for(gateway)
+
+                expected = self.HIDDEN_HOLD_ERROR if then_error is None else then_error
+                assignment = self._assignment(code)
+                self.assertEqual(assignment.slot_index, 1)
+                self.assertEqual(assignment.push_state, DoorCode.PushState.PUSHED)
+                self.assertEqual(assignment.last_push_error, expected)
+                code.refresh_from_db()
+                self.assertEqual(code.last_push_error, f"lock.back_door: {expected}" if expected else "")
+
 
 class _PerSlotClockGateway(_SlowGateway):
     """CC 99 ``get`` answers from a script per slot, then from the lock, taking no time of ``clock``.
 
     A ``None`` entry is no answer, which takes the call's whole timeout of ``clock``.
+    A ``(seconds, answer)`` entry takes that long, or times out like ``None`` past the timeout.
     """
 
     def __init__(self, clock: _Clock, scripts: dict[int, list]):
@@ -600,8 +714,12 @@ class _PerSlotClockGateway(_SlowGateway):
     def invoke_cc_api(self, **kwargs):
         if kwargs.get("command_class") == 99 and kwargs.get("method_name") == "get":
             script = self.slot_scripts.get(int(kwargs["args"][0])) or []
-            self._get_scripts = {None: [script.pop(0)]} if script else {}
-            if self._get_scripts and self._get_scripts[None][0] is None:
-                self.clock.now += float(kwargs.get("timeout_seconds") or 0)
-                self._get_scripts = {None: _timeouts(1)}
-        return ClearFailingGateway.invoke_cc_api(self, **kwargs)
+            entry = script.pop(0) if script else {}
+            delay, answer = entry if isinstance(entry, tuple) else (0.0, entry)
+            timeout = float(kwargs.get("timeout_seconds") or 0)
+            if answer is None or delay > timeout:
+                delay, answer = timeout, _timeouts(1)[0]
+            self.clock.now += delay
+            self._get_scripts = {None: [answer]} if answer else {}
+        # Past _SlowGateway, whose every get takes 31s.
+        return super(_SlowGateway, self).invoke_cc_api(**kwargs)
