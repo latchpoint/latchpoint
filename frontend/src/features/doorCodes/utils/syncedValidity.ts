@@ -17,9 +17,13 @@ export function isSyncedValidityEditable(code: DoorCode): boolean {
  * and lock sync let it go. Lock sync only finds a code by the slot it's in, so
  * nothing brings this one back and deleting it is the way out. Not while a lock
  * is still being removed or having the PIN taken off, or a clear is still owed.
+ * Not for one with no start date whose PIN latchpoint can read either, since
+ * lock sync matches that PIN typed in again back to it (#233). A lock that hides
+ * its codes gives no PIN.
  */
 export function isSyncedCodeStuckOff(code: DoorCode): boolean {
   if (code.source !== 'synced' || code.isActive || isSyncedValidityEditable(code)) return false
+  if (code.pin != null && code.startAt == null) return false
   const assignments = code.lockSlotAssignments ?? []
   if (!assignments.length || (code.pendingSlotClears ?? []).length) return false
   return assignments.every((a) => a.slotIndex == null && !a.pendingRemoval && !a.takingPinOff)

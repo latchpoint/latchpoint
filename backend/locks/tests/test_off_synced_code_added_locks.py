@@ -363,6 +363,14 @@ class OffCodeLeftoverTests(_OffTestBase):
         DoorCodeLockAssignment.objects.filter(door_code=master, lock_entity_id=self.BACK).update(
             reconcile_requested_at=timezone.now() - timedelta(days=92)
         )
+        # A newer release on the Front Door, so retention's #233 keep (the code's
+        # newest release per lock) doesn't hold this one and only the flag does.
+        DoorCodeEvent.objects.create(
+            door_code=master,
+            lock_entity_id=self.FRONT,
+            event_type=DoorCodeEvent.EventType.CODE_SYNCED,
+            metadata={"slot_index": 1, "action": "slot_released"},
+        )
 
         self._run_retention(DoorCodeEvent.objects.filter(id=event.id))
 

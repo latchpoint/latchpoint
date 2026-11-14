@@ -24,6 +24,10 @@ logger = logging.getLogger(__name__)
 # default (issue #124).
 _REQUEST_CLEAR_TIMEOUT_SECONDS = 5.0
 
+# The ``reason`` on the ``code_updated`` event of a delete that was refused and
+# left the code off (:func:`_refuse_delete_after_failed_clears`).
+DELETE_REFUSED_REASON = "delete_refused"
+
 # How long Retry's clear retries may take in the request, lock waits included.
 # Room for one unconfirmed slot's readback and clear on a slow lock (issue #124).
 # A guess, not timed on the real locks yet (issue #203).
@@ -1998,15 +2002,19 @@ def _refuse_delete_after_failed_clears(
             outcome="cleared",
         )
     code.refresh_from_db(fields=["is_active"])
-    if code.is_active:
+    was_active = code.is_active
+    if was_active:
         code.is_active = False
         code.save(update_fields=["is_active", "updated_at"])
-        DoorCodeEvent.objects.create(
-            door_code=code,
-            user=actor_user,
-            event_type=DoorCodeEvent.EventType.CODE_UPDATED,
-            metadata={"updated_fields": ["is_active"], "reason": "delete_refused"},
-        )
+    # Also for a code that was already off, since lock sync must never match a
+    # PIN typed in again back to a code someone wanted gone (issue #233), and
+    # event retention keeps it while the code exists.
+    DoorCodeEvent.objects.create(
+        door_code=code,
+        user=actor_user,
+        event_type=DoorCodeEvent.EventType.CODE_UPDATED,
+        metadata={"updated_fields": ["is_active"] if was_active else [], "reason": DELETE_REFUSED_REASON},
+    )
     refresh_push_state(door_code=code)
     raise SlotClearFailed(f"{message}. The door code wasn't deleted and is now off, try again when the lock responds.")
 
