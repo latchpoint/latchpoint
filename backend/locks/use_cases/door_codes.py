@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 from django.conf import settings
 from django.db import Error as DbError
 from django.db import transaction
-from django.db.models import Exists, F, OuterRef, Q, QuerySet
+from django.db.models import Exists, F, OuterRef, ProtectedError, Q, QuerySet
 from django.utils import timezone as django_timezone
 
 from accounts.models import User
@@ -1656,6 +1656,48 @@ def _update_door_code_locked(
         refresh_push_state(door_code=code)
 
     return code, push_inline
+
+
+def door_codes_on_locks(*, users) -> list[DoorCode]:
+    """The ``users``' door codes that may be on a lock (issue #235), with ``user`` loaded.
+
+    Deleting a user cascades their door codes without :func:`delete_door_code`,
+    so nothing clears them off the locks and their PINs keep opening the doors
+    untracked. These codes keep the user from being deleted until they're
+    deleted the normal way. A code may be on a lock when
+    :func:`~locks.use_cases.lock_push.affected_lock_entity_ids` has one for it,
+    the locks its delete works from: an assigned lock, or one it was dropped
+    from with a clear failure or an unconfirmed push still open (PR #236
+    review). Any other code can still cascade.
+    """
+    from locks.use_cases.lock_push import affected_lock_entity_ids
+
+    codes = DoorCode.objects.filter(user__in=users).select_related("user").order_by("id")
+    return [code for code in codes if affected_lock_entity_ids(door_code=code)]
+
+
+def user_delete_refused_message(users) -> str:
+    """Why ``users`` can't be deleted while :func:`door_codes_on_locks` has codes for them."""
+    names = ", ".join(sorted(str(user) for user in users))
+    return (
+        f"Can't delete {names}: they still have door codes on a lock. "
+        "Delete their door codes first, which clears them off the locks, then delete the user."
+    )
+
+
+def refuse_deleting_user_with_door_codes_on_locks(sender, instance, **kwargs) -> None:  # noqa: ARG001
+    """``pre_delete`` receiver for ``User``: raise ``ProtectedError`` while they have door codes on a lock (issue #235).
+
+    Covers every ORM delete (``user.delete()``, ``QuerySet.delete()``). Django
+    sends ``pre_delete`` inside the delete's transaction before deleting
+    anything, so the raise leaves every user and code in place. That
+    transaction has no savepoint, so inside an outer ``atomic`` the raise
+    breaks it unless the delete has its own ``atomic``. The Django admin
+    refuses before it gets here (``accounts.admin.UserAdmin``).
+    """
+    codes = door_codes_on_locks(users=[instance])
+    if codes:
+        raise ProtectedError(user_delete_refused_message([instance]), set(codes))
 
 
 def delete_door_code(

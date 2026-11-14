@@ -9,6 +9,7 @@ from django.conf import settings
 from django.contrib.auth.hashers import make_password
 from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
+from django.db.models import ProtectedError
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 from integrations_home_assistant import api as home_assistant
@@ -264,7 +265,12 @@ class Command(BaseCommand):
 
         now = timezone.now()
         with transaction.atomic():
-            _delete_all_seed_data()
+            try:
+                _delete_all_seed_data()
+            except ProtectedError as exc:
+                # A user with door codes on a lock can't be deleted (issue #235).
+                # Raising rolls back every delete above.
+                raise CommandError(exc.args[0]) from exc
 
             alarm_system = AlarmSystem.objects.create(
                 name="Test Home",

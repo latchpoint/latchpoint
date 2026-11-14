@@ -1002,7 +1002,8 @@ def keep_slot_empty_markers_of_deleted_user(sender, instance, **kwargs) -> None:
     """``pre_delete`` receiver for ``User``: :func:`keep_slot_empty_markers_of_deleted_code` for each of their codes.
 
     Deleting a user (Django admin has the only way) cascades their door codes
-    without :func:`locks.use_cases.door_codes.delete_door_code`, so this takes
+    without :func:`locks.use_cases.door_codes.delete_door_code`. Only codes off
+    every lock get that far (issue #235), but their markers count, so this takes
     the markers off them first. The cascade's delete of the codes' events
     is a query run after the ``pre_delete`` signals, so it no longer matches them.
     """

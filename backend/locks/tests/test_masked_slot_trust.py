@@ -417,6 +417,8 @@ class DeletedCodeSlotEmptyMarkerTests(_MaskedSlotTrustTestBase):
         code, other = self._other_code_saw_the_slot_empty()
         owner = User.objects.create_user(email="owner@example.com", password="pass")
         DoorCode.objects.filter(id=other.id).update(user=owner)
+        # A user with a code on a lock can't be deleted (issue #235), so it's off every lock.
+        DoorCodeLockAssignment.objects.filter(door_code=other).delete()
 
         owner.delete()
 
