@@ -320,6 +320,24 @@ class PushGateTests(_UsedUpTestBase):
 
         self.assertEqual(self._calls(gateway, "set"), [])
 
+    def test_the_retry_tasks_query_leaves_it_out(self):
+        # The push arm's SQL cut on its own, without the exact check after it.
+        code = self._used_up_waiting_for_a_push()
+        gateway = FakeGateway(usersNumber=5, cache_updates_on_set=True)
+        real = lock_push_uc.push_or_settle_after_clear_retry
+
+        with (
+            patch("locks.tasks.belongs_on_lock", return_value=True),
+            patch.object(lock_push_uc, "push_or_settle_after_clear_retry", wraps=real) as attempted,
+        ):
+            self._push_pending(gateway)
+            attempted.assert_not_called()
+
+            # Raising max_uses brings it back.
+            DoorCode.objects.filter(id=code.id).update(max_uses=3)
+            self._push_pending(gateway)
+            attempted.assert_called_once()
+
     def test_a_direct_push_skips_it(self):
         code = self._used_up_waiting_for_a_push()
         gateway = FakeGateway(usersNumber=5, cache_updates_on_set=True)
@@ -351,12 +369,18 @@ class PushGateTests(_UsedUpTestBase):
         from locks.use_cases.added_lock_reconcile import reconcile_due
 
         code = self._used_up_waiting_for_a_push()
-        DoorCodeLockAssignment.objects.filter(door_code=code).update(reconcile_requested_at=timezone.now())
         now = timezone.now()
 
+        # Queued by its save, but used up since.
         self.assertFalse(lock_push_uc.queued_push_assignments(now=now, max_attempts=24).exists())
+        DoorCode.objects.filter(id=code.id).update(max_uses=3)
+        self.assertTrue(lock_push_uc.queued_push_assignments(now=now, max_attempts=24).exists())
+
+        # A flagged added lock is the reconcile's, which leaves a used up code alone too.
+        DoorCode.objects.filter(id=code.id).update(max_uses=2)
+        DoorCodeLockAssignment.objects.filter(door_code=code).update(reconcile_requested_at=now)
         self.assertFalse(reconcile_due(now=now, max_attempts=24, fresh_only=False).exists())
-        # Raising max_uses puts it back in both.
+        # Raising max_uses puts it back.
         DoorCode.objects.filter(id=code.id).update(max_uses=3)
         self.assertTrue(reconcile_due(now=now, max_attempts=24, fresh_only=False).exists())
 
@@ -370,6 +394,29 @@ class PushGateTests(_UsedUpTestBase):
         self.assertEqual(self._calls(gateway, "set"), [])
         # Retired instead, and it had nothing on the lock.
         self.assertFalse(DoorCode.objects.get(id=code.id).is_active)
+
+    def test_the_start_pass_leaves_it_out_when_its_retire_fails(self):
+        # Still on after a retire that raised, so only the start pass's own filter keeps it out.
+        code = self._used_up_waiting_for_a_push()
+        DoorCode.objects.filter(id=code.id).update(start_at=self._ago(minutes=1))
+        gateway = FakeGateway(usersNumber=5, cache_updates_on_set=True)
+        real = lock_push_uc.push_door_code_to_assigned_locks
+
+        with (
+            patch.object(door_codes_uc, "retire_door_code", side_effect=RuntimeError("busy")),
+            patch.object(lock_push_uc, "push_door_code_to_assigned_locks", wraps=real) as pushed,
+        ):
+            self.assertEqual(self._enforce(gateway), 0)
+            pushed.assert_not_called()
+
+            code.refresh_from_db()
+            self.assertTrue(code.is_active)
+            # Not stamped as pushed at its start either, so it's still picked up once it isn't used up.
+            self.assertIsNone(code.last_push_attempt_at)
+
+            DoorCode.objects.filter(id=code.id).update(max_uses=3)
+            self.assertEqual(self._enforce(gateway), 1)
+            pushed.assert_called_once()
 
 
 class ReEnableTests(_UsedUpTestBase, APITestCase):

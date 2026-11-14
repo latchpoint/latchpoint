@@ -5105,7 +5105,7 @@ def request_push(
     ``code_synced`` event the push records) on the locks a push would send
     something to, by :func:`locks_to_push`'s rule, limited to
     ``lock_entity_ids`` when given. Nothing for a code that's inactive, not
-    started or expired, since nothing pushes one of those. The code row is
+    started, expired or used up, since nothing pushes one of those. The code row is
     taken first like every writer of a code's assignments. The task is woken
     once the caller's transaction commits, never on a rollback, and a wake in a
     process that doesn't run the task does nothing (the stamp still is
