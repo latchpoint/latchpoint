@@ -90,6 +90,42 @@ after it (#144, #157, #167) already use.
 nothing counts uses yet. Counting uses from Z-Wave JS access control
 notifications and retiring used up codes is a separate change.
 
+**Update (issue #145 part 2b, ADR-0114).** Uses are counted now, and a used up
+code comes off its locks the same way an expired one does:
+
+- **Used up.** A code is used up when `uses_count` reaches its use limit,
+  `max_uses` when it's set and 1 for a one-time code without one
+  (`use_limit`). `exhausted_q` is `is_exhausted` as a filter. Like the dates,
+  this doesn't look at `source`.
+- **Never pushed.** `belongs_on_lock` is false for a used up code, and every
+  query gate that had `started_q(now) & ~expired_q(now)` has `~exhausted_q()`
+  too: the retry task's push arm, the cap sweep, the queued push task, the
+  added lock reconcile and the start pass. `push_door_code_to_lock` re-reads
+  the use fields with the dates once it holds the lock, so a push that loaded
+  the code before its last use raises `PushSuperseded`.
+- **Retired.** `enforce_door_code_validity` has a pass after the expiry pass
+  that runs `retire_door_code(reason="exhausted")` on active codes that are
+  used up and not expired (an expired one is the expiry pass's). The retire
+  checks the fresh row again for its reason, so a code whose `max_uses` was
+  raised while it waited for the lock is left alone, the same as a later
+  `end_at` for an expiry. It's the same locked deactivate, so every lock's
+  slot is cleared, added locks included, and failed clears are retried.
+  Retry on an active used up code retires it.
+- **Turning it back on.** The API refuses `is_active: true` while the code
+  would still be used up with the `max_uses` being saved. Raising `max_uses`
+  past `uses_count` (or clearing it) doesn't turn it on by itself. The user
+  turns it on, in the same save or after, and it goes through the normal
+  push. A one-time code comes back by getting a `max_uses`. The count is never
+  reset.
+- **Lowering `max_uses`.** Lowering it to `uses_count` or below is allowed and
+  `update_door_code` retires the code right after the save. If that retire
+  raises (a busy lock), the save still stands and the next tick retires it.
+- **UI.** Max uses is back in the create and edit forms. The card says
+  "Uses: N of M" when the code has a limit, and "Used up" next to "Inactive"
+  for a code that's off and used up. The push badge says "Used up (removing
+  from lock)" for one that's still on. The edit form disables Active for a
+  used up code that's off until Max uses is raised past its uses.
+
 ## Alternatives Considered
 
 - **Program the dates onto the lock with CC 78 year-day schedules.** The lock
@@ -117,8 +153,20 @@ notifications and retiring used up codes is a separate change.
 - A push that's already running when `end_at` passes can still land, since it
   only checks the dates once it holds the lock. The next tick retires the code
   and clears it.
-- `exhausted` is reported in `validity` but nothing enforces it until use
-  counting lands in PR2, so a used up code stays on its locks.
+- A used up code stays on its locks until the validity task runs after its
+  last use (a keypad use that gets it there wakes the task, otherwise it's up
+  to 60s), plus however long the clear takes. The lock already let that last
+  use in, and a use latchpoint never heard about (ADR-0114) isn't counted, so
+  `max_uses` is only as good as the count.
+- A synced code with `max_uses` (only one from a lock sync before #166 can
+  have one, since ADR-0082 keeps it read-only) is retired like a manual one,
+  off every lock. Its `max_uses` and, without an `end_at`, its Active are
+  read-only, so it can't be turned back on from latchpoint. Deleting it is the
+  way out.
+- Stranded synced copies of a used up code's PIN (issue #185) are found and
+  retired the same way as for an expired one, but event retention only keeps
+  the first push of codes with an `end_at` (issue #212). A used up code
+  without one whose push event was pruned has its copies flagged and left on.
 - Latchpoint has to be running for codes to start and expire on time.
 - A synced code that lock sync turns off (its slot on the lock it was imported
   from read empty or disabled) comes off the locks someone added to it too

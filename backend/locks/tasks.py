@@ -14,7 +14,7 @@ from alarm.system_config_utils import get_int_system_config_value
 from scheduler import DailyAt, Every, register
 
 from .models import DoorCode, DoorCodeEvent, DoorCodeLockAssignment
-from .use_cases.code_lifecycle import belongs_on_lock, expired_q, started_q
+from .use_cases.code_lifecycle import belongs_on_lock, exhausted_q, expired_q, started_q
 
 logger = logging.getLogger(__name__)
 
@@ -80,7 +80,7 @@ def push_pending_door_codes() -> int:
     a push whose own attempt count reached ``door_codes.push_max_attempts``
     (``sweep_push_cap``, again after the attempts). Then a code is picked up when
 
-    - it's active, started and not expired (issue #145) and one of its locks
+    - it's active, started, not expired and not used up (issue #145) and one of its locks
       is ``pending`` with no slot or a pending schedule (issue #123) and under
       the cap. The code's own ``push_state`` doesn't matter, so a terminal
       failure on one lock doesn't stop the retries of another
@@ -154,8 +154,8 @@ def push_pending_door_codes() -> int:
     ) & (Q(_holds_slot=True) | Q(_has_unconfirmed=True))
     # A rough cut too; synced_attempt_slots_to_check has the exact rules (issue #180).
     synced_with_attempts = Q(source=DoorCode.Source.SYNCED, _has_unconfirmed=True)
-    # Only codes between their start_at and end_at get pushed (issue #145).
-    to_push = Q(_needs_push=True, is_active=True) & started_q(now) & ~expired_q(now)
+    # Only codes between their start_at and end_at that aren't used up get pushed (issue #145).
+    to_push = Q(_needs_push=True, is_active=True) & started_q(now) & ~expired_q(now) & ~exhausted_q()
     clears_to_retry = Q(_has_clear_failures=True)
     if max_attempts > 0:
         # The clear-retry cap stays at code level (issue #126).
@@ -307,8 +307,8 @@ def _run_reconciles(*, now, fresh_only: bool) -> int:
 
 
 def _pushable_q(now) -> Q:
-    """A code something would push at ``now``: active, started and not expired."""
-    return Q(is_active=True) & started_q(now) & ~expired_q(now)
+    """A code something would push at ``now``: active, started, not expired and not used up."""
+    return Q(is_active=True) & started_q(now) & ~expired_q(now) & ~exhausted_q()
 
 
 def _requester(assignment: DoorCodeLockAssignment | None):
@@ -477,19 +477,22 @@ def _load_validity_pass(codes) -> list[DoorCode] | None:
 @register(
     "enforce_door_code_validity",
     schedule=Every(seconds=60),
-    description="Takes door codes off their locks once they expire and puts them on once they start.",
+    description="Takes door codes off their locks once they expire or are used up, and puts them on once they start.",
     connections=("zwavejs",),
 )
 def enforce_door_code_validity() -> int:
-    """Keep each door code's PIN on its locks only between its ``start_at`` and ``end_at`` (issue #145).
+    """Keep each door code's PIN on its locks only between its ``start_at`` and ``end_at``, until it's used up (#145).
 
-    Four passes against one ``now``, for codes of any source or type:
+    Five passes against one ``now``, for codes of any source or type:
 
     - an active code at or past its ``end_at`` is retired: turned off through
       the same locked update a user's deactivate uses, so a clear that fails is
       left to ``push_pending_door_codes``'s retries. Stranded synced copies of
       its PIN go with it, and one whose retire raised is tried again on later
       ticks (``retry_pending_copy_retires``)
+    - an active code that isn't expired but is used up (``uses_count`` at its
+      ``max_uses``, or a used one-time code) is retired the same way with
+      ``reason: exhausted``. A keypad use that gets it there wakes this task
     - an active code whose ``start_at`` is still ahead but that may hold a slot
       (pushed before this was enforced, or its start moved later) has those
       slots cleared and stays active
@@ -525,6 +528,20 @@ def enforce_door_code_validity() -> int:
                 acted += 1
         except Exception:
             logger.warning("Couldn't retire expired door code id=%d this tick", code.id, exc_info=True)
+
+    # Used up, ie a keypad use reached its max_uses (ADR-0114). An expired one
+    # was the pass above's, and stays its if that retire didn't go through.
+    exhausted = _load_validity_pass(
+        DoorCode.objects.filter(is_active=True).filter(exhausted_q()).exclude(expired_q(now)).order_by("id")
+    )
+    if exhausted is None:
+        return acted
+    for code in exhausted:
+        try:
+            if retire_door_code(code=code, reason="exhausted", zwavejs=default_zwavejs_gateway, now=now) is not None:
+                acted += 1
+        except Exception:
+            logger.warning("Couldn't retire used up door code id=%d this tick", code.id, exc_info=True)
 
     # Stranded synced copies a retire couldn't take off last time (PR #211 review).
     try:
@@ -595,6 +612,7 @@ def enforce_door_code_validity() -> int:
     just_started = _load_validity_pass(
         DoorCode.objects.filter(is_active=True, start_at__isnull=False, start_at__lte=now)
         .exclude(expired_q(now))
+        .exclude(exhausted_q())
         .filter(Exists(waiting))
         .filter(Q(last_push_attempt_at__isnull=True) | Q(last_push_attempt_at__lt=F("start_at")))
         .prefetch_related("lock_assignments")

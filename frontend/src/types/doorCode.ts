@@ -4,8 +4,8 @@ export type DoorCodePushState = 'pending' | 'pushed' | 'failed'
 /**
  * Where the code is in its start_at/end_at (end_at itself counts as expired),
  * from the backend (#145). Scheduled codes go on their locks at start_at, and
- * expired ones are turned off and taken off. Nothing counts uses yet, so
- * exhausted doesn't come up until that lands.
+ * expired ones are turned off and taken off. Exhausted is a code whose keypad
+ * uses reached its max uses (one for a one-time code), which is taken off too.
  */
 export type DoorCodeValidity = 'scheduled' | 'valid' | 'expired' | 'exhausted'
 
