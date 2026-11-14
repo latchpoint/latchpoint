@@ -3511,8 +3511,9 @@ def retained_marker_event_ids(*, older_than: datetime) -> set[int]:
     (``synced_check_paused``, ``synced_check_unanswered``), plus every
     ``duplicate_retire_pending`` copy retire still pending and its failed tries
     (PR #211 re-review, ``door_codes.pending_copy_retire_event_ids``). And each
-    active code with an ``end_at``'s first ``code_synced`` push per lock and
-    slot, which its retire dates a stranded copy against (issue #212,
+    active code with an ``end_at``'s first ``code_synced`` push per slot on
+    each lock it's still on and not being taken off, which its retire dates a
+    stranded copy against (issue #212,
     ``door_codes.first_push_event_ids_of_dated_codes``).
 
     And an ``off_confirmed`` ``code_synced`` event of an off code with an added
@@ -3576,7 +3577,7 @@ def retained_marker_event_ids(*, older_than: datetime) -> set[int]:
     from locks.use_cases.door_codes import first_push_event_ids_of_dated_codes, pending_copy_retire_event_ids
 
     keep.update(pending_copy_retire_event_ids())
-    keep.update(first_push_event_ids_of_dated_codes())
+    keep.update(first_push_event_ids_of_dated_codes(older_than=older_than))
     flagged_before = DoorCodeLockAssignment.objects.filter(
         door_code=OuterRef("door_code"),
         reconcile_requested_at__isnull=False,

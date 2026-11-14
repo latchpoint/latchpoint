@@ -496,23 +496,33 @@ def _is_stranded_copy(*, original: DoorCode, copy_id: int, lock_entity_id: str, 
     return copy_created_at is not None and copy_created_at > first_push_at
 
 
-def first_push_event_ids_of_dated_codes() -> set[int]:
+def first_push_event_ids_of_dated_codes(*, older_than) -> set[int]:
     """Each active code with an ``end_at``'s first ``code_synced`` push per lock and slot, which event retention keeps.
 
     That push is what :func:`_is_stranded_copy` dates a copy against when the
     code is retired, so pruning it left a stranded copy flagged only and its
     PIN opening the door past the code's ``end_at`` (issue #212). Only active
-    codes with an ``end_at`` are retired, and only the first push per slot is
-    read, so it's a row or two per lock for each of those codes.
+    codes with an ``end_at`` are retired, and only on the locks they're still
+    on, so a lock the code was taken off (or is being taken off) doesn't keep
+    its push. Only pushes older than ``older_than`` are read, since retention
+    leaves the newer ones anyway, and the oldest of those is the first one when
+    there is one. It's a row or two per lock for each of those codes.
     """
+    from locks.use_cases.lock_push import being_removed_q
+
+    still_on_lock = DoorCodeLockAssignment.objects.filter(
+        door_code=OuterRef("door_code"), lock_entity_id=OuterRef("lock_entity_id")
+    ).exclude(being_removed_q())
     first: dict[tuple[int, str, int], int] = {}
     pushes = (
         DoorCodeEvent.objects.filter(
+            created_at__lt=older_than,
             event_type=DoorCodeEvent.EventType.CODE_SYNCED,
             metadata__action="pushed",
             door_code__is_active=True,
             door_code__end_at__isnull=False,
         )
+        .filter(Exists(still_on_lock))
         .order_by("created_at", "id")
         .values_list("id", "door_code_id", "lock_entity_id", "metadata")
     )
@@ -578,22 +588,14 @@ def _retire_synced_copy(*, copy_id: int, original: DoorCode, zwavejs: ZwavejsGat
     instead. ``None`` (falsy) only when the retire raised (logged), so the
     caller can have it tried again.
     """
-    from locks.use_cases.lock_push import decrypt_pin_or_none, has_lock_pushed_by_latchpoint
-
     copy = DoorCode.objects.filter(id=copy_id).first()
     if copy is None:
         return _COPY_GONE
     try:
         with _hold_door_code_locks(code=copy):
-            if has_lock_pushed_by_latchpoint(door_code_id=copy.id):
-                return _COPY_LEFT_ALONE
-            if (
-                copy.source != DoorCode.Source.SYNCED
-                or not copy.is_active
-                or copy.end_at is not None
-                or decrypt_pin_or_none(copy) != decrypt_pin_or_none(original)
-            ):
-                return _COPY_CHANGED
+            not_a_candidate = _copy_not_a_candidate(copy=copy, original=original)
+            if not_a_candidate:
+                return not_a_candidate
             _update_door_code_locked(
                 code=copy,
                 changes={"is_active": False},
@@ -612,6 +614,29 @@ def _retire_synced_copy(*, copy_id: int, original: DoorCode, zwavejs: ZwavejsGat
             exc_info=True,
         )
         return None
+
+
+def _copy_not_a_candidate(*, copy: DoorCode | None, original: DoorCode) -> str | None:
+    """Why ``copy`` isn't a stranded copy to retire any more, or ``None`` when it still is.
+
+    :data:`_COPY_GONE`, :data:`_COPY_LEFT_ALONE` (someone added a lock to it)
+    or :data:`_COPY_CHANGED`, the same checks :func:`_retire_synced_copy`
+    makes under the copy's locks.
+    """
+    from locks.use_cases.lock_push import decrypt_pin_or_none, has_lock_pushed_by_latchpoint
+
+    if copy is None:
+        return _COPY_GONE
+    if has_lock_pushed_by_latchpoint(door_code_id=copy.id):
+        return _COPY_LEFT_ALONE
+    if (
+        copy.source != DoorCode.Source.SYNCED
+        or not copy.is_active
+        or copy.end_at is not None
+        or decrypt_pin_or_none(copy) != decrypt_pin_or_none(original)
+    ):
+        return _COPY_CHANGED
+    return None
 
 
 def _pending_copy_retires() -> list[tuple[DoorCodeEvent, int]]:
@@ -667,7 +692,8 @@ def retry_pending_copy_retires(*, zwavejs: ZwavejsGateway) -> int:
     and a ``duplicate_retire_done`` with ``outcome=gave_up`` (PR #211
     re-review). That count is checked before each try too, so a cap of 1, or
     one lowered below the tries so far, gives up without another try (issue
-    #212). The pending event goes with the retired code if that's
+    #212), but only for a copy that's still one to retire. One gone, changed
+    or added to a lock since gets that outcome instead. The pending event goes with the retired code if that's
     deleted, and event retention keeps it while it's pending
     (:func:`pending_copy_retire_event_ids`). Returns how many it finished
     (retired, gone or changed).
@@ -686,9 +712,14 @@ def retry_pending_copy_retires(*, zwavejs: ZwavejsGateway) -> int:
         # The retire's own try, then one per failed retry.
         tries = 1 + _copy_events_after(event=event, copy_id=copy_id, action=_COPY_RETIRE_FAILED).count()
         if max_attempts > 0 and tries >= max_attempts:
-            _give_up_copy_retire(event=event, copy_id=copy_id, tries=tries, where=where)
-            continue
-        outcome = _retire_synced_copy(copy_id=copy_id, original=event.door_code, zwavejs=zwavejs)
+            # At the cap it only gives up on a copy that's still one to retire,
+            # without a try, so a copy gone or changed meanwhile says so (PR #228 review).
+            outcome = _copy_not_a_candidate(copy=DoorCode.objects.filter(id=copy_id).first(), original=event.door_code)
+            if not outcome:
+                _give_up_copy_retire(event=event, copy_id=copy_id, tries=tries, where=where)
+                continue
+        else:
+            outcome = _retire_synced_copy(copy_id=copy_id, original=event.door_code, zwavejs=zwavejs)
         if outcome == _COPY_LEFT_ALONE:
             # Someone added a lock to it since, so it's not a stranded copy any
             # more (:func:`_is_stranded_copy`) and is only flagged.

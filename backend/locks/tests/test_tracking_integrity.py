@@ -880,6 +880,92 @@ class RetireSyncedCopiesTests(_TrackingTestBase):
         )
         self.assertFalse(DoorCodeEvent.objects.filter(id__in=[event.id for event in pruned]).exists())
 
+    def test_a_lock_the_code_was_taken_off_does_not_keep_its_first_push(self):
+        # PR #228 review: a lock it's no longer on, or is being taken off, has no copy for its retire to date.
+        dated = self._code(
+            slots={self.BACK: 1, self.SIDE: 1}, code_type=DoorCode.CodeType.TEMPORARY, end_at=self._from_now(days=1)
+        )
+        lock_push_uc.record_clear_failure(
+            door_code=dated,
+            lock_entity_id=self.SIDE,
+            slot_index=1,
+            exc=ZwavejsCommandError("driver TimeoutError after 5.0s"),
+            expected_pin=self.PIN,
+            removing=True,
+        )
+
+        def pushed(lock_entity_id: str) -> DoorCodeEvent:
+            return DoorCodeEvent.objects.create(
+                door_code=dated,
+                user=self.user,
+                lock_entity_id=lock_entity_id,
+                event_type=DoorCodeEvent.EventType.CODE_SYNCED,
+                metadata={"action": "pushed", "slot_index": 1},
+            )
+
+        on_lock, being_removed, removed = pushed(self.BACK), pushed(self.SIDE), pushed("lock.garage")
+        recent = pushed(self.BACK)
+        DoorCodeEvent.objects.filter(id__in=[on_lock.id, being_removed.id, removed.id]).update(
+            created_at=timezone.now() - timedelta(days=91)
+        )
+
+        # Only old pushes are read, and only on a lock it's still on.
+        self.assertEqual(
+            door_codes_uc.first_push_event_ids_of_dated_codes(older_than=timezone.now() - timedelta(days=90)),
+            {on_lock.id},
+        )
+        with patch("locks.tasks._get_door_code_event_retention_days", return_value=90):
+            from locks.tasks import cleanup_door_code_events
+
+            cleanup_door_code_events()
+        self.assertEqual(
+            set(DoorCodeEvent.objects.filter(metadata__action="pushed").values_list("id", flat=True)),
+            {on_lock.id, recent.id},
+        )
+
+    def test_a_copy_retire_at_the_cap_says_when_the_copy_was_already_gone_or_changed(self):
+        # PR #228 review: it gave up without looking at the copy.
+        for name, change, outcome in (
+            ("deleted", lambda copy: copy.delete(), "gone"),
+            ("turned off", lambda copy: self._move(copy, is_active=False), "changed"),
+        ):
+            with self.subTest(name):
+                DoorCodeEvent.objects.all().delete()
+                DoorCode.objects.all().delete()
+                original, copy, gateway = self._stranded_copy()
+                self._move(original, end_at=self._ago(minutes=1))
+                with (
+                    patch("locks.tasks._get_push_max_attempts", return_value=5),
+                    patch.object(door_codes_uc, "_retire_synced_copy", return_value=None),
+                ):
+                    self._enforce(gateway)
+                change(copy)
+
+                with (
+                    patch("locks.tasks._get_push_max_attempts", return_value=1),
+                    patch.object(door_codes_uc, "_retire_synced_copy", return_value=None) as retire,
+                ):
+                    self._enforce(gateway)
+
+                retire.assert_not_called()
+                done = DoorCodeEvent.objects.get(door_code=original, metadata__action="duplicate_retire_done")
+                self.assertEqual(done.metadata["outcome"], outcome)
+                self.assertFalse(DoorCodeEvent.objects.filter(metadata__reason="max_attempts_exceeded").exists())
+
+    def test_a_copy_deleted_while_its_retire_waits_for_its_locks_is_gone(self):
+        original, copy, gateway = self._stranded_copy()
+        hold = door_codes_uc._hold_door_code_locks
+
+        def deleted_meanwhile(*, code, **kwargs):
+            DoorCode.objects.filter(id=code.id).delete()
+            return hold(code=code, **kwargs)
+
+        with patch.object(door_codes_uc, "_hold_door_code_locks", side_effect=deleted_meanwhile):
+            outcome = door_codes_uc._retire_synced_copy(copy_id=copy.id, original=original, zwavejs=gateway)
+
+        self.assertEqual(outcome, "gone")
+        self.assertEqual(self._calls(gateway, "clear"), [])
+
     def test_a_copy_retire_with_a_cap_of_one_is_not_tried_again(self):
         original, copy, gateway = self._stranded_copy()
         self._move(original, end_at=self._ago(minutes=1))

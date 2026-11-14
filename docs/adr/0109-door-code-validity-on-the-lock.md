@@ -147,10 +147,11 @@ notifications and retiring used up codes is a separate change.
   slot (a `code_synced` event with `action=pushed` and that `slot_index`) and
   the copy's row was created after the first of those pushes. A lock sync
   having recorded the two as duplicates of each other doesn't count. Event
-  retention keeps each active code with an `end_at`'s first push per lock and
-  slot so that event is still there at the retire (issue #212). With no push
-  event left for the slot anyway (pruned before #212, or while the code was off
-  or had no `end_at`) the copy is only flagged.
+  retention keeps each active code with an `end_at`'s first push per slot on
+  each lock it's still on (and isn't being taken off) so that event is still
+  there at the retire (issue #212). With no push event left for the slot
+  anyway (pruned before #212, or while the code was off or had no `end_at`)
+  the copy is only flagged.
   A synced code latchpoint has pushed to any of its locks, ie one someone added
   a lock to (ADR-0082), is never a stranded copy either, since it's in use on
   purpose and its row's age says nothing about a slot latchpoint pushed it
@@ -169,12 +170,12 @@ notifications and retiring used up codes is a separate change.
   `door_codes.push_max_attempts` tries counting the retire's own, then one
   `max_attempts_exceeded` event. A retry that finds the copy deleted ends with
   `outcome=gone`, and one that finds it off, dated or holding another PIN with
-  `outcome=changed` (issue #212). Event retention keeps the pending event
-  while it's pending. Every other synced code with the PIN is left alone and
-  flagged with a
-  `duplicate_pin_survives_retire` event on the retiring code (the copy's id,
-  lock and slot, never the PIN) and a warning, since it may be someone's own
-  keypad code that happens to share the PIN.
+  `outcome=changed` (issue #212), and so does one at the cap, which only gives
+  up on a copy that's still one to retire. Event retention keeps the pending
+  event while it's pending. Every other synced code with the PIN is left alone
+  and flagged with a `duplicate_pin_survives_retire` event on the retiring
+  code (the copy's id, lock and slot, never the PIN) and a warning, since it
+  may be someone's own keypad code that happens to share the PIN.
 - A synced code with an `end_at` that lock sync turned off can be turned back
   on from latchpoint too, since the row looks the same as a retired one. That
   puts its PIN back on the lock. Lock sync turns a synced code off when its

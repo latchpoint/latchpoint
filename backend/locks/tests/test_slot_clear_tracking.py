@@ -29,6 +29,15 @@ def _slot_fields(entry: dict) -> dict:
     return {key: entry[key] for key in ("lock_entity_id", "slot_index", "pending_removal")}
 
 
+def _without_keys(value, keys: set[str]):
+    """``value`` with ``keys`` dropped from every dict in it, however deep."""
+    if isinstance(value, dict):
+        return {k: _without_keys(v, keys) for k, v in value.items() if k not in keys}
+    if isinstance(value, list):
+        return [_without_keys(v, keys) for v in value]
+    return value
+
+
 def _timeouts(count: int = 3) -> list[Exception]:
     return [ZwavejsCommandError("driver TimeoutError after 5.0s") for _ in range(count)]
 
@@ -483,11 +492,20 @@ class PendingSlotClearsSerializerTests(_SlotClearTestBase, APITestCase):
         )
         # The old PIN only lives in the encrypted event metadata, and the push
         # response has no PIN at all. Ids and timestamps are left out of the
-        # check since their digits can happen to match.
-        noisy = {"id", "user_id", "created_at", "updated_at", "last_push_attempt_at", "last_used_at"}
-        self.assertNotIn(self.PIN, json.dumps({k: v for k, v in data.items() if k not in noisy}))
-        self.assertNotIn(self.PIN, json.dumps({k: v for k, v in push_data.items() if k not in noisy}))
-        self.assertNotIn("5555", json.dumps({k: v for k, v in push_data.items() if k not in noisy}))
+        # check since their digits can happen to match, nested ones too (the
+        # assignment ids in ``lock_assignments`` climb past 4321 on Postgres).
+        noisy = {
+            "id",
+            "user_id",
+            "created_at",
+            "updated_at",
+            "last_push_attempt_at",
+            "push_requested_at",
+            "last_used_at",
+        }
+        self.assertNotIn(self.PIN, json.dumps(_without_keys(data, noisy)))
+        self.assertNotIn(self.PIN, json.dumps(_without_keys(push_data, noisy)))
+        self.assertNotIn("5555", json.dumps(_without_keys(push_data, noisy)))
         self.assertEqual(data["pin"], "5555")
 
     def test_a_save_that_leaves_the_pending_removal_lock_out_keeps_removing_it(self):
