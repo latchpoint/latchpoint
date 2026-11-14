@@ -33,12 +33,22 @@ class LocksConfig(AppConfig):
 
     @staticmethod
     def _connect_user_delete() -> None:
-        """A deleted user's codes keep their ``slot_empty`` markers like a deleted code's (issue #194)."""
+        """A deleted user's codes keep their ``slot_empty`` markers like a deleted code's (issue #194).
+
+        A user with door codes on a lock can't be deleted at all (issue #235).
+        That receiver is connected first, so it refuses before the markers move.
+        """
         from django.contrib.auth import get_user_model
         from django.db.models.signals import pre_delete
 
+        from locks.use_cases.door_codes import refuse_deleting_user_with_door_codes_on_locks
         from locks.use_cases.lock_push import keep_slot_empty_markers_of_deleted_user
 
+        pre_delete.connect(
+            refuse_deleting_user_with_door_codes_on_locks,
+            sender=get_user_model(),
+            dispatch_uid="locks_refuse_deleting_user_with_door_codes_on_locks",
+        )
         pre_delete.connect(
             keep_slot_empty_markers_of_deleted_user,
             sender=get_user_model(),

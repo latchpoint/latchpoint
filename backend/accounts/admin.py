@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from django import forms
-from django.contrib import admin
+from django.contrib import admin, messages
 from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
 
 from .models import (
@@ -73,6 +73,24 @@ class UserAdmin(BaseUserAdmin):
         ),
     )
     readonly_fields = ("last_login", "created_at", "updated_at", "password_updated_at")
+
+    def get_deleted_objects(self, objs, request):
+        """Refuse deleting users who still have door codes on a lock (issue #235).
+
+        Listing their codes as protected makes the delete page, single and bulk
+        "delete selected" alike, refuse without a confirm button, and the error
+        says to delete the codes first. The ORM delete itself raises
+        ``ProtectedError`` (``locks.use_cases.door_codes``).
+        """
+        from locks.use_cases.door_codes import door_codes_on_locks, user_delete_refused_message
+
+        to_delete, model_count, perms_needed, protected = super().get_deleted_objects(objs, request)
+        on_locks = list(door_codes_on_locks(users=objs).select_related("user"))
+        if on_locks:
+            protected = [*protected, *(f"Door code: {code.label or f'#{code.id}'} ({code.user})" for code in on_locks)]
+            users = {code.user for code in on_locks}
+            self.message_user(request, user_delete_refused_message(users), messages.ERROR)
+        return to_delete, model_count, perms_needed, protected
 
 
 @admin.register(Role)
