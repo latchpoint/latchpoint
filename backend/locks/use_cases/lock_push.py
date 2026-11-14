@@ -3023,6 +3023,16 @@ _SYNCED_CHECK_UNANSWERED_ACTION = "synced_check_unanswered"
 _SYNCED_CHECK_PAUSED_ACTION = "synced_check_paused"
 
 
+def _synced_check_pauses(door_code: DoorCode, *, now: datetime | None = None) -> bool:
+    """Whether a copy of ``door_code``'s PIN in an attempt slot waits for a cleanup that clears it (issue #212).
+
+    That's a retire at its ``end_at`` or a withdraw before its ``start_at``. A
+    code with only a ``start_at`` that has passed never gets either, so pausing
+    it would keep lock sync skipping it on that lock until it's deleted.
+    """
+    return door_code.end_at is not None or not is_started(door_code, now=now)
+
+
 def synced_attempt_slots_to_check(*, door_code: DoorCode) -> list[tuple[str, int]]:
     """``(lock_entity_id, slot_index)`` of a synced code's attempts that :func:`check_synced_attempt_slots` reads back.
 
@@ -3038,7 +3048,9 @@ def synced_attempt_slots_to_check(*, door_code: DoorCode) -> list[tuple[str, int
     resolve that failure without clearing it), an attempt whose readbacks
     went unanswered ``door_codes.push_max_attempts`` times (PR #211 review),
     and an attempt a readback already found holding a dated code's PIN
-    (``synced_check_paused``, PR #211 re-review). Empty for a manual code.
+    (``synced_check_paused``, PR #211 re-review) while the code still has an
+    ``end_at`` or a ``start_at`` ahead (:func:`_synced_check_pauses`, issue
+    #212). Empty for a manual code.
     """
     if door_code.source != DoorCode.Source.SYNCED:
         return []
@@ -3069,6 +3081,8 @@ def _synced_attempts_to_check_on_lock(
         f.slot_index for f in unresolved_clear_failures(door_code=door_code) if f.lock_entity_id == lock_entity_id
     }
     claimed = _claimed_slots(lock_entity_id=lock_entity_id, door_code=door_code)
+    # A pause only holds while the code still has a cleanup coming (issue #212).
+    paused = _synced_check_pauses(door_code)
     attempts: dict[int, tuple[int, str | None]] = {}
     for slot_index, (event_id, metadata) in _unsettled_unconfirmed_attempts(
         door_code=door_code, lock_entity_id=lock_entity_id
@@ -3076,13 +3090,16 @@ def _synced_attempts_to_check_on_lock(
         attempted_pin = _decrypt_expected_pin(metadata)
         if slot_index in claimed or slot_index in failing or not (attempted_pin or pin):
             continue
-        if _synced_check_markers(
-            door_code=door_code,
-            lock_entity_id=lock_entity_id,
-            slot_index=slot_index,
-            since_id=event_id,
-            action=_SYNCED_CHECK_PAUSED_ACTION,
-        ).exists():
+        if (
+            paused
+            and _synced_check_markers(
+                door_code=door_code,
+                lock_entity_id=lock_entity_id,
+                slot_index=slot_index,
+                since_id=event_id,
+                action=_SYNCED_CHECK_PAUSED_ACTION,
+            ).exists()
+        ):
             continue
         if max_attempts > 0 and (
             _unanswered_synced_checks(
@@ -3179,10 +3196,12 @@ def check_synced_attempt_slots(
     dates it's settled as ``left_to_lock_sync``: the next sync imports it as its
     own synced code (flagged ``duplicate_pin`` when it's readable), so it's
     tracked by a row and isn't read back every tick for good (PR #211 review).
-    For a code with a ``start_at`` or ``end_at`` it stays unsettled, so its
-    retire or withdraw still finds that slot through the attempt and clears it,
-    and a ``synced_check_paused`` marker stops this check from reading it again
-    (PR #211 re-review). An attempt in the slot
+    For a code with an ``end_at`` or a ``start_at`` still ahead it stays
+    unsettled, so its retire or withdraw still finds that slot through the
+    attempt and clears it, and a ``synced_check_paused`` marker stops this check
+    from reading it again while that's still so (PR #211 re-review). A code
+    with only a ``start_at`` that has passed has neither coming, so it's settled
+    like a code without dates (issue #212). An attempt in the slot
     the code tracks on that lock is settled as ``tracked`` without a readback,
     since lock sync reconciles that slot. A readback with no answer is counted
     (``synced_check_unanswered``) and the attempt is left for the next tick
@@ -3292,7 +3311,7 @@ def _check_synced_attempt_slots_on_lock(
             )
             continue
         if verdict == _HOLDS_OURS:
-            if door_code.start_at is not None or door_code.end_at is not None:
+            if _synced_check_pauses(door_code):
                 # Its retire or withdraw has to clear this copy too, and the
                 # cleanups only find it through the unsettled attempt, so only
                 # this check stops (PR #211 re-review).
@@ -3491,7 +3510,10 @@ def retained_marker_event_ids(*, older_than: datetime) -> set[int]:
     And while an attempt is unsettled, its #180 check markers
     (``synced_check_paused``, ``synced_check_unanswered``), plus every
     ``duplicate_retire_pending`` copy retire still pending and its failed tries
-    (PR #211 re-review, ``door_codes.pending_copy_retire_event_ids``).
+    (PR #211 re-review, ``door_codes.pending_copy_retire_event_ids``). And each
+    active code with an ``end_at``'s first ``code_synced`` push per lock and
+    slot, which its retire dates a stranded copy against (issue #212,
+    ``door_codes.first_push_event_ids_of_dated_codes``).
 
     And an ``off_confirmed`` ``code_synced`` event of an off code with an added
     lock still flagged since before it, since that's what lets the reconcile
@@ -3551,9 +3573,10 @@ def retained_marker_event_ids(*, older_than: datetime) -> set[int]:
                     )
                 )
     keep.update(_slot_empty_markers_disarming(kept_ids=keep, older_than=older_than))
-    from locks.use_cases.door_codes import pending_copy_retire_event_ids
+    from locks.use_cases.door_codes import first_push_event_ids_of_dated_codes, pending_copy_retire_event_ids
 
     keep.update(pending_copy_retire_event_ids())
+    keep.update(first_push_event_ids_of_dated_codes())
     flagged_before = DoorCodeLockAssignment.objects.filter(
         door_code=OuterRef("door_code"),
         reconcile_requested_at__isnull=False,

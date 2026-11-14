@@ -146,8 +146,11 @@ notifications and retiring used up codes is a separate change.
   on one of its locks, where a push of the retiring code landed in that exact
   slot (a `code_synced` event with `action=pushed` and that `slot_index`) and
   the copy's row was created after the first of those pushes. A lock sync
-  having recorded the two as duplicates of each other doesn't count, and with
-  no push event left for the slot (event retention) the copy is only flagged.
+  having recorded the two as duplicates of each other doesn't count. Event
+  retention keeps each active code with an `end_at`'s first push per lock and
+  slot so that event is still there at the retire (issue #212). With no push
+  event left for the slot anyway (pruned before #212, or while the code was off
+  or had no `end_at`) the copy is only flagged.
   A synced code latchpoint has pushed to any of its locks, ie one someone added
   a lock to (ADR-0082), is never a stranded copy either, since it's in use on
   purpose and its row's age says nothing about a slot latchpoint pushed it
@@ -163,9 +166,12 @@ notifications and retiring used up codes is a separate change.
   A stranded copy is turned off through the same locked deactivate, which clears
   its slot, and if that raises it's tried again on each later validity tick
   (`duplicate_retire_pending` until `duplicate_retire_done`), up to
-  `door_codes.push_max_attempts` tries, then one `max_attempts_exceeded`
-  event. Event retention keeps the pending event while it's pending. Every other
-  synced code with the PIN is left alone and flagged with a
+  `door_codes.push_max_attempts` tries counting the retire's own, then one
+  `max_attempts_exceeded` event. A retry that finds the copy deleted ends with
+  `outcome=gone`, and one that finds it off, dated or holding another PIN with
+  `outcome=changed` (issue #212). Event retention keeps the pending event
+  while it's pending. Every other synced code with the PIN is left alone and
+  flagged with a
   `duplicate_pin_survives_retire` event on the retiring code (the copy's id,
   lock and slot, never the PIN) and a warning, since it may be someone's own
   keypad code that happens to share the PIN.
