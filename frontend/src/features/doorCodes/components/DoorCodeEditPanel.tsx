@@ -18,6 +18,11 @@ const SYNCED_LOCKS_COPY =
   'You can add or remove locks, which puts its PIN on them or takes it off. Removing the lock it was synced from turns it into a manual code you can fully edit.'
 // A manual code that's off isn't left on any lock (#222).
 const SYNCED_OFF_COPY = " Since it's off, that also takes its PIN off its other locks."
+// A manual code with no readable PIN, ie a synced code made manual (#222) or a
+// stored PIN that can't be decrypted. Unlike a synced code it can take a new PIN,
+// which is what goes on an added lock, like the backend's 400 says.
+const MANUAL_PIN_UNKNOWN_COPY =
+  "Latchpoint doesn't have a readable PIN for this code, so it can't put it on another lock. Give it a new PIN in the same save and that one goes on the lock. It can still be removed from locks."
 
 function SyncedFieldsWarning({
   validityEditable,
@@ -153,6 +158,12 @@ export function DoorCodeEditPanel({
           pinUnknown={code.pin == null}
           isOff={!code.isActive}
         />
+      )}
+      {/* null only: the push serializer leaves the PIN out, which isn't the same as no readable PIN. */}
+      {!isSynced && code.pin === null && (
+        <Alert variant="warning" layout="inline">
+          <AlertDescription>{MANUAL_PIN_UNKNOWN_COPY}</AlertDescription>
+        </Alert>
       )}
 
       <DoorCodeEditBasicsFields

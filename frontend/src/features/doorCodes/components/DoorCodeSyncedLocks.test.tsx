@@ -259,6 +259,26 @@ describe('edit form for a synced code, locks', () => {
       "Latchpoint doesn't have a readable PIN for this code, either because the lock it was synced from hides its codes or because the stored PIN can't be decrypted, so it can't put it on another lock. It can still be removed from locks.",
     )
     expect(copy).not.toContain('The lock it came from hides its codes')
+    // Its PIN comes from the lock, so a new one isn't the way out.
+    expect(screen.queryByText(/Give it a new PIN in the same save/)).toBeNull()
+  })
+
+  it('tells a manual code with no readable PIN that a new PIN in the same save goes on the lock', () => {
+    // A synced code made manual (#222) keeps whatever PIN it had, none here.
+    renderEditForm(syncedMaster({ source: 'manual', pin: null, pinLength: null }))
+
+    expect(
+      screen.getByText(
+        "Latchpoint doesn't have a readable PIN for this code, so it can't put it on another lock. Give it a new PIN in the same save and that one goes on the lock. It can still be removed from locks.",
+      ),
+    ).toBeTruthy()
+    expect(screen.queryByText(/This code is synced from the lock/)).toBeNull()
+  })
+
+  it('says nothing about the PIN for a manual code that has one', () => {
+    renderEditForm(syncedMaster({ source: 'manual' }))
+
+    expect(screen.queryByText(/doesn't have a readable PIN/)).toBeNull()
   })
 
   it("shows the backend's 400 when the PIN is unknown", async () => {

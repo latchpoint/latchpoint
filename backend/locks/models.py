@@ -160,7 +160,18 @@ class DoorCodeLockAssignment(models.Model):
 
 
 class DoorCodeEvent(models.Model):
-    """Audit log for door code operations."""
+    """Audit log for door code operations.
+
+    Deleting a user keeps their codes' ``slot_empty`` markers through a
+    ``pre_delete`` receiver (``keep_slot_empty_markers_of_deleted_user``) that
+    re-points them before the cascade runs. That only works while Django can
+    fast-delete these rows, ie its cascade is a query run after the
+    ``pre_delete`` signals. A ``pre_delete`` or ``post_delete`` listener on this
+    model, or a foreign key pointing at it with any ``on_delete`` but
+    ``DO_NOTHING`` (``CASCADE``, ``SET_NULL``...), makes Django load the rows
+    before the signals instead and delete the markers anyway. The user-delete
+    test in ``test_masked_slot_trust`` catches that.
+    """
 
     class EventType(models.TextChoices):
         CODE_USED = "code_used", "Code Used"

@@ -496,6 +496,10 @@ describe('DoorCodeCard', () => {
         lockSlotAssignments: [{ lockEntityId: 'lock.front_door', slotIndex: null, pendingRemoval: false, takingPinOff: true }],
       }],
       ['still has a clear owed', { pendingSlotClears: [{ lockEntityId: 'lock.front_door', slotIndex: 3, removing: false }] }],
+      // PR #231 review: no slot and nothing owed, but the lock is still on its way out.
+      ['is still being removed from a lock', {
+        lockSlotAssignments: [{ lockEntityId: 'lock.front_door', slotIndex: null, pendingRemoval: true }],
+      }],
     ])('says nothing when it %s', (_why, overrides) => {
       renderWithProviders(<CardWithRetry code={stuck(overrides)} />)
 

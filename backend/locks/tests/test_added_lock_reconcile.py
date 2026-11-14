@@ -1123,6 +1123,26 @@ class LateWriterTests(_ReconcileTestBase):
         back = self._back(master)
         self.assertEqual((back.slot_index, back.push_attempt_count, back.reconcile_requested_at), (2, 0, None))
 
+    def test_one_gateway_error_on_the_second_read_is_asked_again(self):
+        # PR #231 review: a timeout is no verdict either, so the next read's clear status decides.
+        master, gateway = self._master_on_both()
+        self._pushed_before_0012(master)
+        self._change_front_pin(gateway, self.NEW_PIN)
+        self._sync_front(gateway)
+        gateway._lock_codes[(12, 2)] = gateway._cache_codes[(12, 2)] = self.OLDER_PIN
+        gateway._get_scripts[12] = [
+            {"userIdStatus": 1, "userCode": self.OLDER_PIN},
+            TIMEOUT,
+            {"userIdStatus": 1, "userCode": self.OLDER_PIN},
+        ]
+
+        self._push_requested(gateway)
+
+        self.assertEqual(self._calls(gateway, "clear"), [(12, [2])])
+        self.assertEqual(self._lock_codes(gateway, 12), {1: OTHER_PIN, 2: self.NEW_PIN})
+        back = self._back(master)
+        self.assertEqual((back.slot_index, back.push_attempt_count, back.reconcile_requested_at), (2, 0, None))
+
     def test_turning_a_code_back_on_says_when_another_code_has_its_pin_on_an_added_lock(self):
         master, gateway = self._master_on_both()
         disabled: set[tuple[int, int]] = {(14, 1)}

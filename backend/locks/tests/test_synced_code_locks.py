@@ -32,6 +32,11 @@ PIN_UNKNOWN = (
     "Latchpoint doesn't have a readable PIN for this code, so it can't put it on another lock. "
     "Either the lock it was synced from hides its codes or the stored PIN can't be decrypted."
 )
+# The same for a manual code, which can be given a new PIN in the same save.
+PIN_UNKNOWN_MANUAL = (
+    "Latchpoint doesn't have a readable PIN for this code, so it can't put it on another lock. "
+    "Give it a new PIN in the same save and that one goes on the lock."
+)
 
 
 class _SyncedLocksTestBase(_TrackingTestBase, APITestCase):
@@ -305,7 +310,7 @@ class UnknownPinTests(_SyncedLocksTestBase):
                 response = self._patch_response(master, gateway, {"add_lock_entity_ids": [self.SIDE]})
 
                 self.assertEqual(response.status_code, 400, response.content)
-                self.assertEqual(response.json()["error"]["message"], PIN_UNKNOWN)
+                self.assertEqual(response.json()["error"]["message"], PIN_UNKNOWN_MANUAL)
                 self.assertEqual(gateway.invoke_calls, [])
                 self.assertEqual(self._slots(master), slots)
 
@@ -598,7 +603,7 @@ class UnreadablePinManualCodeTests(_SyncedLocksTestBase):
         response = self._patch_response(code, gateway, {"add_lock_entity_ids": [self.BACK]})
 
         self.assertEqual(response.status_code, 400, response.content)
-        self.assertEqual(response.json()["error"]["message"], PIN_UNKNOWN)
+        self.assertEqual(response.json()["error"]["message"], PIN_UNKNOWN_MANUAL)
         self.assertEqual(gateway.invoke_calls, [])
         self.assertEqual(set(self._slots(code)), {self.SIDE})
 

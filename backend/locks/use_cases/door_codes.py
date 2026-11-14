@@ -1031,9 +1031,14 @@ def _refuse_adding_locks_without_pin(*, code: DoorCode, changes: dict) -> None:
     from locks.use_cases.lock_push import decrypt_pin_or_none
 
     if decrypt_pin_or_none(code) is None:
-        raise DoorCodePinUnknown(
-            "Latchpoint doesn't have a readable PIN for this code, so it can't put it on another lock. "
+        # A synced code's PIN comes from the lock, so only a manual code can be given a new one here.
+        why = (
             "Either the lock it was synced from hides its codes or the stored PIN can't be decrypted."
+            if code.source == DoorCode.Source.SYNCED
+            else "Give it a new PIN in the same save and that one goes on the lock."
+        )
+        raise DoorCodePinUnknown(
+            f"Latchpoint doesn't have a readable PIN for this code, so it can't put it on another lock. {why}"
         )
 
 
