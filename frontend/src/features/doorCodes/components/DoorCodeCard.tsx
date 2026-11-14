@@ -11,6 +11,7 @@ import { DoorCodeEditContainer } from '@/features/doorCodes/components/DoorCodeE
 import { DoorCodePushStatusBadge } from '@/features/doorCodes/components/DoorCodePushStatusBadge'
 import { codeLockEntityIds } from '@/features/doorCodes/utils/codeLocks'
 import { MAX_USES_ENFORCED } from '@/features/doorCodes/utils/maxUses'
+import { isSyncedCodeStuckOff } from '@/features/doorCodes/utils/syncedValidity'
 
 type Props = {
   code: DoorCode
@@ -266,6 +267,12 @@ export function DoorCodeCard({
             {/* Says why an expired code is off; the push badge covers an active one (#145). */}
             {code.validity === 'expired' && !code.isActive ? <Badge variant="outline">Expired</Badge> : null}
           </div>
+          {isSyncedCodeStuckOff(code) ? (
+            <div className="text-sm text-muted-foreground">
+              Lock sync can't turn this code back on, since it no longer has a slot on any lock. Delete it from
+              Edit. If its PIN is typed in at the lock again, the next sync brings it in as a new code.
+            </div>
+          ) : null}
           <div className="flex items-center gap-1 text-sm text-muted-foreground">
             <span>PIN: {pinDisplay}</span>
             {canTogglePin ? (

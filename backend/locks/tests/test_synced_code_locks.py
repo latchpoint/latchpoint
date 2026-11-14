@@ -333,6 +333,40 @@ class UnknownPinTests(_SyncedLocksTestBase):
         self.assertEqual(self._lock_codes(gateway, 12), {1: OTHER_PIN})
 
 
+class ReleasedSlotTests(_SyncedLocksTestBase):
+    """An undated synced code whose only slot lock sync found empty and let go (review leftovers of #223-#230)."""
+
+    def test_nothing_brings_it_back_but_it_can_be_deleted(self):
+        gateway = self._gateway()
+        master = self._master(gateway)
+        del gateway._lock_codes[(14, 1)], gateway._cache_codes[(14, 1)]
+        self._sync(gateway, self.FRONT)
+        master.refresh_from_db()
+        self.assertFalse(master.is_active)
+        self.assertEqual(self._slots(master), {self.FRONT: None})
+
+        # The PIN typed in again comes in as a new code; the old one stays off.
+        gateway._lock_codes[(14, 1)] = gateway._cache_codes[(14, 1)] = self.PIN
+        self._sync(gateway, self.FRONT)
+        master.refresh_from_db()
+        self.assertFalse(master.is_active)
+        self.assertEqual(self._slots(master), {self.FRONT: None})
+        self.assertTrue(
+            DoorCode.objects.exclude(id=master.id).filter(lock_assignments__lock_entity_id=self.FRONT).exists()
+        )
+
+        gateway.invoke_calls.clear()
+        with patch("locks.views.door_codes.default_zwavejs_gateway", gateway):
+            response = self.client.delete(
+                reverse("door-code-detail", args=[master.id]), {"reauth_password": "pass"}, format="json"
+            )
+
+        self.assertEqual(response.status_code, 204, response.content)
+        self.assertFalse(DoorCode.objects.filter(id=master.id).exists())
+        self.assertEqual(self._calls(gateway, "clear"), [])
+        self.assertEqual(self._lock_codes(gateway, 14), {1: self.PIN})
+
+
 class RemoveLockTests(_SyncedLocksTestBase):
     def test_removing_the_added_lock_clears_its_slot(self):
         master, gateway = self._master_on_both()
