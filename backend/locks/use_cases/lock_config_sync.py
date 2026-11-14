@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, time, timedelta, timezone
 from typing import Any
 
+from django.db import Error as DbError
 from django.db import IntegrityError, connection, transaction
 from django.utils import timezone as django_timezone
 
@@ -43,6 +44,10 @@ class SyncInProgress(ConflictError):
 
 class LockBusy(SyncInProgress):
     """Waited too long for another operation on a lock to finish (issue #131)."""
+
+
+class GaveWay(LockBusy):
+    """Stopped waiting for a lock because a door code save is waiting for it too (issue #203)."""
 
 
 @dataclass
@@ -183,21 +188,26 @@ def _release_sync_lock(*, lock_key: str, lock_id: int | None) -> None:
         _in_flight_keys.discard(lock_key)
 
 
-def _acquire_sync_lock_waiting(*, lock_key: str, deadline: float, on_busy=None) -> int | None:
+def _acquire_sync_lock_waiting(*, lock_key: str, deadline: float, on_busy=None, give_way=False) -> int | None:
     """Like :func:`_try_acquire_sync_lock` but retries with backoff until ``deadline`` (monotonic).
 
     Raises :class:`LockBusy` when the lock is still held elsewhere at the
     deadline. ``on_busy`` is called once, the first time the lock is found
-    busy with time left to wait.
+    busy with time left to wait. With ``give_way`` it raises :class:`GaveWay`
+    instead of trying the lock while a save is waiting for it
+    (:func:`lock_waited_for`), before the first try and every one after, so a
+    save that starts waiting while this does still gets the lock first.
     """
+    lock_entity_id = lock_key.removeprefix("lock_sync:")
     delay, max_delay = _SYNC_LOCK_POLL_SECONDS
     while True:
+        if give_way and lock_waited_for(lock_entity_id):
+            raise GaveWay(f"A door code save is waiting for {lock_entity_id}.")
         acquired, lock_id = _try_acquire_sync_lock(lock_key=lock_key)
         if acquired:
             return lock_id
         remaining = deadline - _time.monotonic()
         if remaining <= 0:
-            lock_entity_id = lock_key.removeprefix("lock_sync:")
             raise LockBusy(f"Another operation on {lock_entity_id} is still running. Try again in a moment.")
         if on_busy is not None:
             on_busy()
@@ -261,10 +271,23 @@ def lock_waited_for(lock_entity_id: str) -> bool:
     The queued push task asks before it takes a lock and leaves a lock a
     save is waiting for queued for its next tick, so the save gets the lock
     after the one hold it found instead of after every lock the task has
-    queued. A save that just started waiting can still miss this and wait
-    for that one hold too. Reads ``pg_locks`` on Postgres, so it takes nothing.
+    queued. It asks again on every poll while it waits for a lock someone
+    else holds, so a save that starts waiting meanwhile still goes first.
+    Reads ``pg_locks`` on Postgres, so it takes nothing. A DB error reading it
+    is logged and read as no save waiting, which is how it was before.
     """
-    key = _waiting_key(lock_entity_id)
+    try:
+        return _lock_waited_for(_waiting_key(lock_entity_id))
+    except DbError:
+        logger.warning(
+            "Couldn't tell whether a door code save is waiting for %s; going on as if not",
+            lock_entity_id,
+            exc_info=True,
+        )
+        return False
+
+
+def _lock_waited_for(key: str) -> bool:
     if connection.vendor == "postgresql":
         lock_id = _pg_lock_id(key)
         with connection.cursor() as cursor:
@@ -290,7 +313,9 @@ def sync_lock_deadline(timeout_seconds: float | None = None) -> float:
 
 
 @contextlib.contextmanager
-def hold_lock_sync(lock_entity_ids, *, deadline: float | None = None, announce_wait: bool = False):
+def hold_lock_sync(
+    lock_entity_ids, *, deadline: float | None = None, announce_wait: bool = False, give_way: bool = False
+):
     """Hold ``lock_sync:<lock>`` for every lock in ``lock_entity_ids``, waiting for each (issue #131).
 
     Locks are taken in sorted order so two callers that need overlapping locks
@@ -303,7 +328,9 @@ def hold_lock_sync(lock_entity_ids, *, deadline: float | None = None, announce_w
     With ``announce_wait`` (door code saves), the first lock found busy and
     every lock after it are marked waited for (:func:`lock_waited_for`) until
     they're all held or the wait gives up, so the queued push task doesn't
-    take the ones still free meanwhile (issue #203).
+    take the ones still free meanwhile (issue #203). With ``give_way`` (the
+    queued push task) it raises :class:`GaveWay` with nothing left held rather
+    than take a lock a save is waiting for, checked before every try.
     """
     if deadline is None:
         deadline = sync_lock_deadline()
@@ -322,7 +349,10 @@ def hold_lock_sync(lock_entity_ids, *, deadline: float | None = None, announce_w
         for index, lock_entity_id in enumerate(ordered):
             on_busy = functools.partial(announce, ordered[index:]) if announce_wait and not announced else None
             lock_key = f"lock_sync:{lock_entity_id}"
-            held.append((lock_key, _acquire_sync_lock_waiting(lock_key=lock_key, deadline=deadline, on_busy=on_busy)))
+            lock_id = _acquire_sync_lock_waiting(
+                lock_key=lock_key, deadline=deadline, on_busy=on_busy, give_way=give_way
+            )
+            held.append((lock_key, lock_id))
         # Held now, which keeps the task off them anyway.
         withdraw()
         yield

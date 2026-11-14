@@ -63,11 +63,16 @@ The request saves and returns, and a fast scheduler task makes the push.
   `lock_sync:` lock instead of try-lock-and-fail, is checked again once held,
   and is pushed with `push_requested_by` as the `code_synced` actor. A lock
   still busy after the wait stays queued for the next tick. So does a lock a
-  door code save is waiting for, which the task doesn't take at all (issue
-  #203): a save marks the locks it's still waiting for with a shared advisory
-  lock the task looks for in `pg_locks`, so a save behind a code's queued push
-  waits for one lock's push instead of one per lock. A push already running is
-  never cut short for it, and an added lock's reconcile gives way the same way. A lock dropped
+  door code save is waiting for, which the task doesn't take (issue #203). A
+  save marks the locks it's still waiting for with a shared advisory lock the
+  task looks for in `pg_locks`, before it tries a lock and again before every
+  try while it waits for one, so a save behind a code's queued push waits for
+  one lock's push instead of one per lock. A push already running is never cut
+  short for it, and an added lock's reconcile gives way the same way. Nothing
+  else does. The 300s `push_pending_door_codes` retry and
+  `enforce_door_code_validity` still take a lock a save is waiting for, and the
+  retry's pushes have no budget, so a save that lands behind one of them can
+  still wait past its 45s and get a 409. A lock dropped
   while the task waited sends nothing (`PushSuperseded`) and the code's other
   locks carry on, unless the code itself is gone, off or out of its dates. Each
   code ends with `refresh_push_state`. A run that passes 600s is reported as

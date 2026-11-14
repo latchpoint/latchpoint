@@ -546,6 +546,34 @@ class SaveOutwaitsAQueuedPushTests(_LockingTestBase):
         self.assertFalse(lock_config_sync_uc.lock_waited_for(BACK))
         self.assertFalse(lock_config_sync_uc.lock_waited_for(SIDE))
 
+    def test_a_save_stops_saying_it_waits_before_its_body_runs(self):
+        # Once its locks are held they keep the task off them, so the mark goes (PR #229 review).
+        code = self._pushed_code([BACK, SIDE])
+        back = self._hold_elsewhere(BACK)
+        waiting: list[bool] = []
+
+        def tick(_now):
+            waiting.append(lock_config_sync_uc.lock_waited_for(BACK))
+            back.release()
+
+        self.clock.on_tick = tick
+        real = door_codes_uc._update_door_code_locked
+        seen: list[tuple[bool, bool]] = []
+
+        def body(**kwargs):
+            seen.append((lock_config_sync_uc.lock_waited_for(BACK), lock_config_sync_uc.lock_waited_for(SIDE)))
+            return real(**kwargs)
+
+        with patch.object(door_codes_uc, "_update_door_code_locked", body):
+            door_codes_uc.update_door_code(
+                code=self._fresh(code), changes={"label": "Cleaner"}, actor_user=self.user, zwavejs=self.gateway
+            )
+
+        self.assertEqual(waiting, [True])
+        self.assertEqual(seen, [(False, False)])
+        code.refresh_from_db()
+        self.assertEqual(code.label, "Cleaner")
+
     def test_a_save_that_finds_its_locks_free_says_nothing(self):
         code = self._pushed_code([BACK, SIDE])
         announced: list[str] = []

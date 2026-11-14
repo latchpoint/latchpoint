@@ -27,6 +27,7 @@ from alarm.tests.settings_test_utils import EncryptionTestMixin
 from locks.models import DoorCode, DoorCodeEvent, DoorCodeLockAssignment
 from locks.tests.test_door_code_locking import _free_elsewhere, _OtherHolder, _recording_acquires, _when_waiting_on
 from locks.tests.test_lock_push import FakeGateway
+from locks.use_cases import added_lock_reconcile as reconcile_uc
 from locks.use_cases import door_codes as door_codes_uc
 from locks.use_cases import lock_config_sync as lock_config_sync_uc
 from locks.use_cases import lock_push as lock_push_uc
@@ -957,12 +958,70 @@ class GiveWayToASaveTests(_QueuedPushTestBase):
         DoorCodeLockAssignment.objects.filter(door_code=code).update(reconcile_requested_at=timezone.now())
         self._waiter(SIDE)
 
-        with patch("locks.use_cases.added_lock_reconcile.reconcile_added_lock") as reconcile:
-            _run_reconciles(now=timezone.now(), fresh_only=True)
+        with (
+            _recording_acquires() as acquires,
+            patch.object(reconcile_uc, "_reconcile_locked", return_value=reconcile_uc.NOTHING) as reconcile,
+        ):
+            # Only the one that ran counts (PR #229 review).
+            self.assertEqual(_run_reconciles(now=timezone.now(), fresh_only=True), 1)
 
         self.assertEqual([c.kwargs["lock_entity_id"] for c in reconcile.call_args_list], [BACK])
+        self.assertEqual(acquires, [BACK])
         # Still flagged, so the next tick has it.
         self.assertIsNotNone(self._assignment(code, SIDE).reconcile_requested_at)
+
+    def test_a_reconcile_still_waiting_for_its_lock_doesnt_count_as_run(self):
+        from locks.tasks import _run_reconciles
+
+        code = self._code([BACK])
+        DoorCodeLockAssignment.objects.filter(door_code=code).update(reconcile_requested_at=timezone.now())
+        holder = _OtherHolder(BACK).acquire()
+        self.addCleanup(holder.release)
+
+        with (
+            patch("locks.tasks._QUEUED_PUSH_LOCK_WAIT_SECONDS", 0.05),
+            patch.object(reconcile_uc, "_reconcile_locked") as reconcile,
+        ):
+            self.assertEqual(_run_reconciles(now=timezone.now(), fresh_only=True), 0)
+
+        reconcile.assert_not_called()
+
+    def test_a_save_that_starts_waiting_while_the_task_waits_still_goes_first(self):
+        # The three-party race: something else holds BACK, the task waits for it,
+        # then a save starts waiting too and the holder lets go (PR #229 review).
+        code = self._code([BACK])
+        self._queue(code)
+        holder = _OtherHolder(BACK).acquire()
+        self.addCleanup(holder.release)
+
+        def save_arrives_then_holder_lets_go():
+            self._waiter(BACK)
+            holder.release()
+
+        with _when_waiting_on(BACK, save_arrives_then_holder_lets_go) as waited:
+            self.assertEqual(self._run_task(), 0)
+
+        self.assertTrue(waited)
+        self._assert_no_lock_traffic()
+        self.assertTrue(_free_elsewhere(BACK))
+        queued = lock_push_uc.queued_push_assignments(now=timezone.now(), max_attempts=0)
+        self.assertEqual(list(queued.values_list("lock_entity_id", flat=True)), [BACK])
+
+    def test_a_db_error_reading_the_mark_is_read_as_no_save_waiting(self):
+        from django.db import OperationalError
+
+        code = self._code([BACK])
+        self._queue(code)
+
+        with (
+            patch.object(lock_config_sync_uc, "_lock_waited_for", side_effect=OperationalError("gone")),
+            self.assertLogs("locks.use_cases.lock_config_sync", level="WARNING") as logs,
+        ):
+            self.assertFalse(lock_config_sync_uc.lock_waited_for(BACK))
+            self.assertEqual(self._run_task(), 1)
+
+        self.assertIn("Couldn't tell whether a door code save is waiting for lock.back_door", logs.output[0])
+        self.assertEqual(self._slots(code), {BACK: 1})
 
     def test_another_locks_waiter_changes_nothing(self):
         code = self._code([BACK])
@@ -1099,19 +1158,25 @@ class QueueFailureTests(_QueuedPushTestBase):
         self.assertIn(door_codes_uc._QUEUE_FAILED_ERROR, retried.last_push_error)
 
     def test_an_error_queueing_the_push_keeps_a_locks_own_error(self):
-        code = door_codes_uc.create_door_code(
-            user=self.owner, raw_code=PIN, lock_entity_ids=[BACK], actor_user=self.admin, zwavejs=self.gateway
-        )
-        DoorCodeLockAssignment.objects.filter(door_code=code).update(
-            push_state=PENDING, last_push_error="Lock did not respond"
+        code = self._code([BACK, SIDE])
+        # Both pending, so Retry re-arms neither and queues both; BACK has an error of its own.
+        DoorCodeLockAssignment.objects.filter(door_code=code, lock_entity_id=BACK).update(
+            last_push_error="Lock did not respond"
         )
 
-        with push_task_running(), patch.object(lock_push_uc, "request_push", side_effect=DatabaseError("boom")):
-            door_codes_uc.update_door_code(
-                code=self._fresh(code), changes={"label": "Cleaner"}, actor_user=self.admin, zwavejs=self.gateway
+        with (
+            push_task_running(),
+            patch.object(lock_push_uc, "request_push", side_effect=DatabaseError("boom")) as request_push,
+        ):
+            retried = door_codes_uc.retry_push_door_code(
+                code=self._fresh(code), actor_user=self.admin, zwavejs=self.gateway
             )
 
+        request_push.assert_called_once()
         self.assertEqual(self._assignment(code, BACK).last_push_error, "Lock did not respond")
+        self.assertEqual(self._assignment(code, SIDE).last_push_error, door_codes_uc._QUEUE_FAILED_ERROR)
+        self.assertIn(f"{BACK}: Lock did not respond", retried.last_push_error)
+        self.assertIn(f"{SIDE}: {door_codes_uc._QUEUE_FAILED_ERROR}", retried.last_push_error)
 
     def test_a_programming_error_queueing_the_push_is_raised_in_tests(self):
         with (

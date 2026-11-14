@@ -339,18 +339,20 @@ def reconcile_added_lock(
     actor_user=None,
     timeout_seconds: float = 5.0,
     deadline: float | None = None,
+    give_way: bool = False,
 ) -> str:
     """Bring one flagged added lock in line with its code (module docstring). Returns the outcome.
 
     Waits for the lock's ``lock_sync:`` lock up to ``deadline`` (``LockBusy``
-    past it) and has to run in autocommit, like a push. A run that worked but
+    past it, or ``GaveWay`` with ``give_way`` once a door code save is waiting
+    for it, issue #203) and has to run in autocommit, like a push. A run that worked but
     found the lock flagged again meanwhile (lock sync changed the code while it
     ran) goes again right away, up to :data:`_MAX_PASSES` times, so the change
     doesn't wait for the scheduler's next 300s retry.
     """
     from locks.use_cases.lock_config_sync import hold_lock_sync
 
-    with hold_lock_sync([lock_entity_id], deadline=deadline):
+    with hold_lock_sync([lock_entity_id], deadline=deadline, give_way=give_way):
         for _ in range(_MAX_PASSES):
             outcome = _reconcile_locked(
                 door_code_id=door_code_id,
