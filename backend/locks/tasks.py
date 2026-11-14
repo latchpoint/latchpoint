@@ -259,20 +259,23 @@ def push_pending_door_codes() -> int:
 
 # How long the queued push task waits for a lock someone else holds before moving
 # on. The lock stays queued, so the next 5s tick waits for it again (issue #124).
+# A guess, not timed on the real locks yet (issue #203).
 _QUEUED_PUSH_LOCK_WAIT_SECONDS = 10.0
 
 
 def _run_reconciles(*, now, fresh_only: bool) -> int:
-    """Reconcile the synced codes' added locks lock sync flagged (issue #220). Returns how many it tried.
+    """Reconcile the synced codes' added locks lock sync flagged (issue #220). Returns how many ran.
 
     ``fresh_only`` is the queued push task's share, flagged recently and not
     tried since; ``push_pending_door_codes`` retries the rest under the cap.
     Each lock waits up to ``_QUEUED_PUSH_LOCK_WAIT_SECONDS`` for its
     ``lock_sync:`` lock and runs through a ``BudgetedGateway``. A lock still
-    busy stays flagged. Errors are caught per lock.
+    busy stays flagged, and so does one a save is waiting for, which gets
+    given way to instead (issue #203). Neither counts as run. Errors are
+    caught per lock, and one that ran into one still counts.
     """
     from locks.use_cases.added_lock_reconcile import reconcile_added_lock, reconcile_due
-    from locks.use_cases.lock_config_sync import LockBusy, sync_lock_deadline
+    from locks.use_cases.lock_config_sync import GaveWay, LockBusy, sync_lock_deadline
     from locks.use_cases.lock_push import PUSH_LOCK_BUDGET_SECONDS, BudgetedGateway
 
     due = list(
@@ -280,6 +283,7 @@ def _run_reconciles(*, now, fresh_only: bool) -> int:
         .order_by("door_code_id", "lock_entity_id")
         .values_list("door_code_id", "lock_entity_id")
     )
+    ran = 0
     for door_code_id, lock_entity_id in due:
         try:
             reconcile_added_lock(
@@ -287,12 +291,19 @@ def _run_reconciles(*, now, fresh_only: bool) -> int:
                 lock_entity_id=lock_entity_id,
                 zwavejs=BudgetedGateway(default_zwavejs_gateway, seconds=PUSH_LOCK_BUDGET_SECONDS),
                 deadline=sync_lock_deadline(_QUEUED_PUSH_LOCK_WAIT_SECONDS),
+                give_way=True,
             )
+        except GaveWay:
+            # A save goes first and the lock stays flagged (issue #203).
+            logger.info("Reconcile of door code id=%d on %s is giving way to a save", door_code_id, lock_entity_id)
+            continue
         except LockBusy:
             logger.info("Reconcile of door code id=%d on %s is waiting for the lock", door_code_id, lock_entity_id)
+            continue
         except Exception:
             logger.exception("Unexpected error reconciling door code id=%d on %s", door_code_id, lock_entity_id)
-    return len(due)
+        ran += 1
+    return ran
 
 
 def _pushable_q(now) -> Q:
@@ -337,7 +348,10 @@ def push_requested_door_codes() -> int:
     counting toward the cap. An attempt that ran counts like any other push. A
     lock still busy at the wait stays queued for the next tick, until the
     request lapses after ``PUSH_REQUEST_TTL`` and ``push_pending_door_codes``
-    has it. A push that ran out of budget during the schedule right after its
+    has it. So does a lock a door code save is waiting for (``lock_waited_for``),
+    which the task doesn't take, checked before every try while it waits, so
+    the save waits for one push at most rather than one per lock (issue #203).
+    A push already running is never cut short for it. A push that ran out of budget during the schedule right after its
     ``set`` is queued once more, so the schedule follows on the next tick. A
     lock dropped while the task waited sends nothing and the code's other
     locks carry on, unless the code itself is gone, off or out of its dates. The
@@ -346,7 +360,7 @@ def push_requested_door_codes() -> int:
     per lock and per code. Returns the number of locks it tried.
     """
     from locks.use_cases.added_lock_reconcile import reconcile_due
-    from locks.use_cases.lock_config_sync import LockBusy, hold_lock_sync, sync_lock_deadline
+    from locks.use_cases.lock_config_sync import GaveWay, LockBusy, hold_lock_sync, sync_lock_deadline
     from locks.use_cases.lock_push import (
         PUSH_LOCK_BUDGET_SECONDS,
         BudgetedGateway,
@@ -385,7 +399,9 @@ def push_requested_door_codes() -> int:
             ]
             for lock_entity_id in lock_entity_ids:
                 try:
-                    with hold_lock_sync([lock_entity_id], deadline=sync_lock_deadline(_QUEUED_PUSH_LOCK_WAIT_SECONDS)):
+                    with hold_lock_sync(
+                        [lock_entity_id], deadline=sync_lock_deadline(_QUEUED_PUSH_LOCK_WAIT_SECONDS), give_way=True
+                    ):
                         current = DoorCodeLockAssignment.objects.filter(
                             door_code_id=code_id, lock_entity_id=lock_entity_id
                         ).first()
@@ -401,6 +417,9 @@ def push_requested_door_codes() -> int:
                             zwavejs=BudgetedGateway(default_zwavejs_gateway, seconds=PUSH_LOCK_BUDGET_SECONDS),
                             actor_user=_requester(current),
                         )
+                except GaveWay:
+                    # A save goes first and the lock stays queued for the next tick (issue #203).
+                    logger.info("Queued push of door code id=%d to %s is giving way to a save", code_id, lock_entity_id)
                 except LockBusy:
                     logger.info(
                         "Queued push of door code id=%d to %s is still waiting for the lock", code_id, lock_entity_id

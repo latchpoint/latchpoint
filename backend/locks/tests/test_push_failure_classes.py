@@ -17,11 +17,19 @@ from alarm.models import Entity
 from alarm.tests.settings_test_utils import EncryptionTestMixin
 from locks.models import DoorCode, DoorCodeEvent, DoorCodeLockAssignment
 from locks.tests.test_door_code_lifecycle import _LifecycleTestBase
-from locks.tests.test_door_code_locking import BACK, _FakeClock, _free_elsewhere, _LockingTestBase, _OtherHolder
+from locks.tests.test_door_code_locking import (
+    BACK,
+    SIDE,
+    _FakeClock,
+    _free_elsewhere,
+    _LockingTestBase,
+    _OtherHolder,
+)
 from locks.tests.test_lock_push import FakeGateway
 from locks.use_cases import door_codes as door_codes_uc
 from locks.use_cases import lock_config_sync as lock_config_sync_uc
 from locks.use_cases import lock_push as lock_push_uc
+from locks.use_cases.lock_config_sync import LockBusy
 from locks.use_cases.lock_push import LockPushFailed, LockUnreachable, push_door_code_to_lock
 
 LOCK = "lock.front_door"  # node 7
@@ -469,3 +477,133 @@ class SaveOutwaitsAQueuedPushTests(_LockingTestBase):
         self.assertGreaterEqual(self.clock.now - self.start, self.held_for)
         self.assertEqual(self._lock_codes(12), {})
         self.assertTrue(_free_elsewhere(BACK))
+
+    def _queued_push_of_back_then_side(self) -> dict[str, _OtherHolder]:
+        """The queued push of a code just created on BACK and SIDE: BACK for its whole budget, then SIDE.
+
+        Like ``push_requested_door_codes``, it moves on to SIDE the moment BACK
+        is done, unless a save is waiting for SIDE.
+        """
+        holders = {BACK: self._hold_elsewhere(BACK)}
+        self.held_for = lock_push_uc.PUSH_LOCK_BUDGET_SECONDS + sum(lock_push_uc._READBACK_RETRY_DELAYS_SECONDS) + 10
+
+        def tick(now):
+            if BACK in holders and now - self.start >= self.held_for:
+                holders.pop(BACK).release()
+                if not lock_config_sync_uc.lock_waited_for(SIDE):
+                    holders[SIDE] = self._hold_elsewhere(SIDE)
+            elif SIDE in holders and now - self.start >= 2 * self.held_for:
+                holders.pop(SIDE).release()
+
+        self.clock.on_tick = tick
+        return holders
+
+    def _assert_waited_for_back_only(self, holders: dict[str, _OtherHolder]) -> None:
+        self.assertEqual(holders, {})
+        self.assertGreaterEqual(self.clock.now - self.start, self.held_for)
+        self.assertLess(self.clock.now - self.start, lock_config_sync_uc.SYNC_LOCK_WAIT_SECONDS)
+        for lock_entity_id in (BACK, SIDE):
+            self.assertTrue(_free_elsewhere(lock_entity_id))
+            self.assertFalse(lock_config_sync_uc.lock_waited_for(lock_entity_id))
+
+    def test_an_edit_right_after_a_create_on_two_locks_waits_for_one_push_only(self):
+        code = self._pushed_code([BACK, SIDE])
+        holders = self._queued_push_of_back_then_side()
+
+        door_codes_uc.update_door_code(
+            code=self._fresh(code), changes={"label": "Cleaner"}, actor_user=self.user, zwavejs=self.gateway
+        )
+
+        code.refresh_from_db()
+        self.assertEqual(code.label, "Cleaner")
+        self._assert_waited_for_back_only(holders)
+
+    def test_a_delete_right_after_a_create_on_two_locks_waits_for_one_push_only(self):
+        code = self._pushed_code([BACK, SIDE])
+        holders = self._queued_push_of_back_then_side()
+
+        door_codes_uc.delete_door_code(code=self._fresh(code), actor_user=self.user, zwavejs=self.gateway)
+
+        self.assertFalse(DoorCode.objects.filter(id=code.id).exists())
+        self.assertEqual((self._lock_codes(12), self._lock_codes(13)), ({}, {}))
+        self._assert_waited_for_back_only(holders)
+
+    def test_a_save_that_gives_up_stops_saying_it_waits(self):
+        code = self._pushed_code([BACK, SIDE])
+        self._hold_elsewhere(BACK)
+        seen: list[tuple[bool, bool]] = []
+        self.clock.on_tick = lambda _now: seen.append(
+            (lock_config_sync_uc.lock_waited_for(BACK), lock_config_sync_uc.lock_waited_for(SIDE))
+        )
+
+        with self.assertRaises(LockBusy):
+            door_codes_uc.update_door_code(
+                code=self._fresh(code), changes={"label": "Cleaner"}, actor_user=self.user, zwavejs=self.gateway
+            )
+
+        self.assertTrue(seen)
+        self.assertEqual(set(seen), {(True, True)})
+        self.assertFalse(lock_config_sync_uc.lock_waited_for(BACK))
+        self.assertFalse(lock_config_sync_uc.lock_waited_for(SIDE))
+
+    def test_a_save_stops_saying_it_waits_before_its_body_runs(self):
+        # Once its locks are held they keep the task off them, so the mark goes (PR #229 review).
+        code = self._pushed_code([BACK, SIDE])
+        back = self._hold_elsewhere(BACK)
+        waiting: list[bool] = []
+
+        def tick(_now):
+            waiting.append(lock_config_sync_uc.lock_waited_for(BACK))
+            back.release()
+
+        self.clock.on_tick = tick
+        real = door_codes_uc._update_door_code_locked
+        seen: list[tuple[bool, bool]] = []
+
+        def body(**kwargs):
+            seen.append((lock_config_sync_uc.lock_waited_for(BACK), lock_config_sync_uc.lock_waited_for(SIDE)))
+            return real(**kwargs)
+
+        with patch.object(door_codes_uc, "_update_door_code_locked", body):
+            door_codes_uc.update_door_code(
+                code=self._fresh(code), changes={"label": "Cleaner"}, actor_user=self.user, zwavejs=self.gateway
+            )
+
+        self.assertEqual(waiting, [True])
+        self.assertEqual(seen, [(False, False)])
+        code.refresh_from_db()
+        self.assertEqual(code.label, "Cleaner")
+
+    def test_a_save_that_finds_its_locks_free_says_nothing(self):
+        code = self._pushed_code([BACK, SIDE])
+        announced: list[str] = []
+        real = lock_config_sync_uc._announce_waiting
+
+        def announce(lock_entity_id):
+            announced.append(lock_entity_id)
+            return real(lock_entity_id)
+
+        with patch.object(lock_config_sync_uc, "_announce_waiting", announce):
+            door_codes_uc.update_door_code(
+                code=self._fresh(code), changes={"label": "Cleaner"}, actor_user=self.user, zwavejs=self.gateway
+            )
+
+        self.assertEqual(announced, [])
+
+    def test_a_save_says_it_waits_only_for_the_busy_lock_and_the_ones_after_it(self):
+        code = self._pushed_code([BACK, SIDE])
+        side = self._hold_elsewhere(SIDE)
+        seen: list[tuple[bool, bool]] = []
+
+        def tick(_now):
+            seen.append((lock_config_sync_uc.lock_waited_for(BACK), lock_config_sync_uc.lock_waited_for(SIDE)))
+            side.release()
+
+        self.clock.on_tick = tick
+        door_codes_uc.update_door_code(
+            code=self._fresh(code), changes={"label": "Cleaner"}, actor_user=self.user, zwavejs=self.gateway
+        )
+
+        # BACK is held by then, which keeps the task off it anyway.
+        self.assertEqual(seen, [(False, True)])
+        self.assertFalse(lock_config_sync_uc.lock_waited_for(SIDE))

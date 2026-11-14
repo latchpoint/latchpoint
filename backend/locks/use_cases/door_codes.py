@@ -4,6 +4,8 @@ import contextlib
 import logging
 from typing import TYPE_CHECKING
 
+from django.conf import settings
+from django.db import Error as DbError
 from django.db import transaction
 from django.db.models import Exists, F, OuterRef, Q, QuerySet
 from django.utils import timezone as django_timezone
@@ -24,6 +26,7 @@ _REQUEST_CLEAR_TIMEOUT_SECONDS = 5.0
 
 # How long Retry's clear retries may take in the request, lock waits included.
 # Room for one unconfirmed slot's readback and clear on a slow lock (issue #124).
+# A guess, not timed on the real locks yet (issue #203).
 _RETRY_CLEAR_BUDGET_SECONDS = 15.0
 
 if TYPE_CHECKING:
@@ -273,7 +276,8 @@ def _hold_door_code_locks(*, code: DoorCode, extra_lock_entity_ids=()):
     concurrent save added a lock) they're released and taken again with the
     extra ones, so the order stays sorted. Pushes nested inside stack on these.
     Every wait, retakes included, shares one deadline so the whole request waits
-    at most :data:`SYNC_LOCK_WAIT_SECONDS`.
+    at most :data:`SYNC_LOCK_WAIT_SECONDS`. While it waits, the queued push task
+    leaves these locks alone (``announce_wait``, issue #203).
     Re-reads ``code`` from the DB once held, raising :class:`NotFound` if it's gone.
     """
     from locks.use_cases.lock_config_sync import hold_lock_sync, sync_lock_deadline
@@ -283,7 +287,7 @@ def _hold_door_code_locks(*, code: DoorCode, extra_lock_entity_ids=()):
     extra = set(extra_lock_entity_ids or ())
     wanted = extra | affected_lock_entity_ids(door_code=code)
     while True:
-        with hold_lock_sync(wanted, deadline=deadline):
+        with hold_lock_sync(wanted, deadline=deadline, announce_wait=True):
             needed = extra | affected_lock_entity_ids(door_code=code)
             if needed <= wanted:
                 try:
@@ -1925,19 +1929,45 @@ def _refuse_delete_after_failed_clears(
     raise SlotClearFailed(f"{message}. The door code wasn't deleted and is now off, try again when the lock responds.")
 
 
+# On each pending lock with no error of its own when queueing its push failed (issue #203).
+_QUEUE_FAILED_ERROR = "Couldn't queue the push (see backend logs), the scheduler will retry it"
+
+
 def _request_push_best_effort(*, code: DoorCode, actor_user: User | None) -> None:
     """Queue the code's push (:func:`locks.use_cases.lock_push.request_push`) without raising into the API path.
 
     The save already happened, so a DB error queueing it doesn't fail the
     request, the same as :func:`_push_to_assigned_locks_best_effort`. The locks
-    stay pending for the scheduler's 300s retry (PR #201 review).
+    stay pending for the scheduler's 300s retry (PR #201 review), and each
+    pending one with no error of its own says why in ``last_push_error``. Any
+    other error is a bug, so it's raised in dev and tests like
+    ``PushInTransaction`` and handled the same way in prod (issue #203).
     """
     try:
         from locks.use_cases.lock_push import request_push
 
         request_push(code, actor_user=actor_user)
-    except Exception:
+    except Exception as exc:
+        _raise_unless_db_error_in_prod(exc)
         logger.exception("Couldn't queue the push of door code id=%s; leaving it to the scheduler's retry", code.id)
+    else:
+        return
+    try:
+        from locks.use_cases.lock_push import refresh_push_state
+
+        DoorCodeLockAssignment.objects.filter(
+            door_code_id=code.id, push_state=DoorCode.PushState.PENDING, last_push_error=""
+        ).update(last_push_error=_QUEUE_FAILED_ERROR)
+        refresh_push_state(door_code=code)
+    except Exception as exc:
+        _raise_unless_db_error_in_prod(exc)
+        logger.exception("Couldn't record the failed queue of door code id=%s", code.id)
+
+
+def _raise_unless_db_error_in_prod(exc: Exception) -> None:
+    """Re-raise ``exc`` in dev and tests unless it's a DB error, like ``PushInTransaction`` (issue #203)."""
+    if not isinstance(exc, DbError) and (settings.DEBUG or getattr(settings, "IS_TESTING", False)):
+        raise exc
 
 
 def _push_to_assigned_locks_best_effort(

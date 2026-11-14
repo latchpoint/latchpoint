@@ -164,6 +164,7 @@ class TimeBudgetExceeded(GatewayError):
 
 # How long one lock's push may take, the queued push and the inline fallback alike (issue #124).
 # A slow lock that answers runs out of it and is left pending, uncounted, for the next retry.
+# A guess, not timed on the real locks yet (issue #203).
 PUSH_LOCK_BUDGET_SECONDS = 30.0
 
 # How long lock sync's live readbacks of untracked attempt slots may take together
@@ -4577,11 +4578,17 @@ def _push_schedule_to_slot(
     (``action=schedule_pushed``). Returns the CC 78 weekdays pushed.
 
     With ``requeue_on_budget`` (the schedule right after the ``set``), a push
-    that ran out of its time budget here queues the lock again when it has a
-    live request (:data:`PUSH_REQUEST_TTL`), so the queued push task sends the
-    schedule on its next tick instead of leaving the PIN working around the
-    clock until the 300s retry (PR #201 review). A schedule-only push doesn't,
-    so that's one more try at most.
+    that ran out of its time budget here queues the lock again, so the queued
+    push task sends the schedule on its next tick instead of leaving the PIN
+    working around the clock until the 300s retry (PR #201 review). Only when
+    the lock is still ``pending`` with ``schedule_pending`` and its
+    ``push_requested_at`` is inside :data:`PUSH_REQUEST_TTL`. That's the only
+    check on the request: this push's own attempt has just come after it, so
+    it's moved to just after that attempt. A lock with no request (an inline
+    push) or one that lapsed is left to the 300s retry, and so is a schedule
+    that failed with time left, which counts like any other failure. A
+    schedule-only push doesn't queue again, so that's one more try at most
+    (issue #203).
 
     The slot's ``written_schedule`` is set to unknown before anything is sent
     and only recorded once the whole schedule went out, so a push that stops
@@ -4855,6 +4862,7 @@ PUSH_REQUESTED_TASK = "push_requested_door_codes"
 
 # How long a queued push stays queued. A lock still busy that long is left to
 # push_pending_door_codes, which retries every pending lock every 300s anyway.
+# A guess, not timed on the real locks yet (issue #203).
 PUSH_REQUEST_TTL = timedelta(minutes=10)
 
 
