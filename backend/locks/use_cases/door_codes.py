@@ -1849,11 +1849,15 @@ def _delete_door_code_locked(
             code=code, actor_user=actor_user, cleared=cleared, failures=transient_failures
         )
 
+    from locks.use_cases.lock_push import keep_slot_empty_markers_of_deleted_code
+
     with transaction.atomic():
         # The code row first. code.delete() deletes the assignments before the
         # code row, and the scheduler's cap sweep takes the code row then its
         # assignments, so without this the two can deadlock (PR #195 review).
         DoorCode.objects.select_for_update().filter(id=code.id).first()
+        # Its empty readbacks still drop other codes' masked-slot trust (issue #194).
+        keep_slot_empty_markers_of_deleted_code(door_code=code)
         DoorCodeEvent.objects.create(
             door_code=None,
             user=actor_user,

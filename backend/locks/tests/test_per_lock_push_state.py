@@ -832,9 +832,18 @@ class LockOrderTests(_PerLockTestBase):
         deletes = [index for index, event in enumerate(events) if event[0] == "delete"]
         self.assertEqual(len(deletes), 1)
         lock = max(index for index, event in enumerate(events[: deletes[0]]) if event[:2] == ("lock", DoorCode))
-        # In the same transaction as the delete, with nothing written in between.
+        # In the same transaction as the delete, with nothing written in between. Taking the
+        # code's slot_empty markers off it is the one exception (issue #194): those are rows
+        # the cascade would delete in this transaction anyway, and no assignment is touched.
         self.assertEqual(events[lock][2], events[deletes[0]][2])
-        self.assertEqual([event for event in events[lock + 1 : deletes[0]] if event[0] == "update"], [])
+        self.assertEqual(
+            [
+                event
+                for event in events[lock + 1 : deletes[0]]
+                if event[0] == "update" and event[1] is not DoorCodeEvent
+            ],
+            [],
+        )
 
     def test_the_cap_sweep_takes_the_code_row_before_its_assignments(self):
         code = self._code()

@@ -21,6 +21,7 @@ from integrations_zwavejs.manager import ZwavejsCommandError
 
 from alarm.crypto import SettingsEncryption
 from locks.models import DoorCode, DoorCodeEvent, DoorCodeLockAssignment
+from locks.tests.test_lock_push import AVAILABLE_BEFORE_SET
 from locks.tests.test_synced_code_locks import OTHER_PIN, _SyncedLocksTestBase
 from locks.use_cases import added_lock_reconcile as reconcile_uc
 from locks.use_cases import door_codes as door_codes_uc
@@ -448,7 +449,7 @@ class PinChangeTests(_ReconcileTestBase):
 
     def test_an_unconfirmed_push_to_the_added_lock_has_its_old_pin_cleared(self):
         # Every readback on the Back Door times out, so the PIN is only on record as an attempt in slot 2.
-        gateway = self._gateway(get_responses={12: [TIMEOUT] * 3})
+        gateway = self._gateway(get_responses={12: [AVAILABLE_BEFORE_SET, TIMEOUT, TIMEOUT, TIMEOUT]})
         master = self._master(gateway)
         self._patch(master, gateway, {"add_lock_entity_ids": [self.BACK]})
         self.assertEqual(self._slots(master), {self.FRONT: 1, self.BACK: None})

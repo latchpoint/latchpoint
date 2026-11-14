@@ -26,7 +26,7 @@ from alarm.models import Entity
 from alarm.tests.settings_test_utils import EncryptionTestMixin
 from locks.models import DoorCode, DoorCodeEvent, DoorCodeLockAssignment
 from locks.tests.test_door_code_locking import _free_elsewhere, _OtherHolder, _recording_acquires, _when_waiting_on
-from locks.tests.test_lock_push import FakeGateway
+from locks.tests.test_lock_push import AVAILABLE_BEFORE_SET, FakeGateway
 from locks.use_cases import added_lock_reconcile as reconcile_uc
 from locks.use_cases import door_codes as door_codes_uc
 from locks.use_cases import lock_config_sync as lock_config_sync_uc
@@ -565,12 +565,14 @@ class PushRequestedTaskTests(_QueuedPushTestBase):
         code = self._code([BACK])
         self._queue(code)
 
-        # Value ids, slot count, slot 1's status and the set take 4s; the readback doesn't fit.
-        with patch.object(lock_push_uc, "_time", clock), patch.object(lock_push_uc, "PUSH_LOCK_BUDGET_SECONDS", 3.5):
+        # Value ids, slot count, slot 1's status, its read before the set and the set
+        # take 5s; the readback doesn't fit.
+        with patch.object(lock_push_uc, "_time", clock), patch.object(lock_push_uc, "PUSH_LOCK_BUDGET_SECONDS", 4.5):
             self._run_task(gateway)
 
         self.assertEqual(self._calls(gateway, "set"), [(12, [1, 1, PIN])])
-        self.assertEqual(self._calls(gateway, "get"), [])
+        # Only the read before the set (issue #194).
+        self.assertEqual(self._calls(gateway, "get"), [(12, [1])])
         back = self._assignment(code, BACK)
         self.assertEqual((back.slot_index, back.push_state, back.push_attempt_count), (None, PENDING, 0))
         marker = DoorCodeEvent.objects.get(door_code=code, metadata__action="push_unconfirmed")
@@ -582,7 +584,7 @@ class PushRequestedTaskTests(_QueuedPushTestBase):
         gateway = FakeGateway(
             usersNumber=5,
             cache_updates_on_set=True,
-            get_responses={12: [ZwavejsCommandError("timed out")] * 3},
+            get_responses={12: [AVAILABLE_BEFORE_SET, *[ZwavejsCommandError("timed out")] * 3]},
         )
         code = self._code([BACK])
         self._queue(code)
@@ -597,7 +599,9 @@ class PushRequestedTaskTests(_QueuedPushTestBase):
     def test_a_queued_attempt_counts_like_an_inline_one(self):
         def failing_gateway() -> FakeGateway:
             return FakeGateway(
-                usersNumber=5, cache_updates_on_set=True, get_responses={12: [ZwavejsCommandError("timed out")] * 3}
+                usersNumber=5,
+                cache_updates_on_set=True,
+                get_responses={12: [AVAILABLE_BEFORE_SET, *[ZwavejsCommandError("timed out")] * 3]},
             )
 
         inline = door_codes_uc.create_door_code(
@@ -656,8 +660,8 @@ class PushBudgetEdgeTests(_QueuedPushTestBase):
         code = self._code([BACK])
         self._queue(code)
 
-        # Value ids, slot count and slot 1's status use the 3s up.
-        with patch.object(lock_push_uc, "_time", clock), patch.object(lock_push_uc, "PUSH_LOCK_BUDGET_SECONDS", 3.0):
+        # Value ids, slot count, slot 1's status and its read before the set use the 4s up.
+        with patch.object(lock_push_uc, "_time", clock), patch.object(lock_push_uc, "PUSH_LOCK_BUDGET_SECONDS", 4.0):
             self._run_task(gateway)
 
         self.assertEqual(self._calls(gateway, "set"), [])
@@ -671,10 +675,11 @@ class PushBudgetEdgeTests(_QueuedPushTestBase):
         code = self._code([BACK])
         self._queue(code)
 
-        with patch.object(lock_push_uc, "_time", clock), patch.object(lock_push_uc, "PUSH_LOCK_BUDGET_SECONDS", 4.5):
+        with patch.object(lock_push_uc, "_time", clock), patch.object(lock_push_uc, "PUSH_LOCK_BUDGET_SECONDS", 5.5):
             self._run_task(gateway)
 
-        self.assertEqual(self._calls(gateway, "get"), [(12, [1])])
+        # The read before the set, then the one readback that fits.
+        self.assertEqual(self._calls(gateway, "get"), [(12, [1]), (12, [1])])
         self.assertTrue(self._events(code, "slot_read_back_empty").filter(metadata__slot_index=1).exists())
         marker = self._events(code, "push_unconfirmed").get()
         # Not slot_available, so a delete leaves a masked keypad code typed into slot 1 alone (#193).
@@ -687,8 +692,9 @@ class PushBudgetEdgeTests(_QueuedPushTestBase):
         code = self._code([BACK], days_of_week=0b0000011)
         self._queue(code)
 
-        # Value ids, slot count, status, set and readback take 5s; one of the 2 schedule calls fits.
-        with patch.object(lock_push_uc, "_time", clock), patch.object(lock_push_uc, "PUSH_LOCK_BUDGET_SECONDS", 5.5):
+        # Value ids, slot count, status, the read before the set, set and readback take 6s;
+        # one of the 2 schedule calls fits.
+        with patch.object(lock_push_uc, "_time", clock), patch.object(lock_push_uc, "PUSH_LOCK_BUDGET_SECONDS", 6.5):
             self._run_task(gateway)
 
         back = self._assignment(code, BACK)
@@ -751,10 +757,11 @@ class ScheduleFollowUpRequeueTests(_QueuedPushTestBase):
             if record_hook is not None:
                 record_hook()
 
-        # Value ids, slot count, status, set and readback take 5s; one of the 2 schedule calls fits.
+        # Value ids, slot count, status, the read before the set, set and readback take 6s;
+        # one of the 2 schedule calls fits.
         with (
             patch.object(lock_push_uc, "_time", clock),
-            patch.object(lock_push_uc, "PUSH_LOCK_BUDGET_SECONDS", 5.5),
+            patch.object(lock_push_uc, "PUSH_LOCK_BUDGET_SECONDS", 6.5),
             patch.object(lock_push_uc, "_record_lock_push_failure", record),
         ):
             self._run_task(gateway)
@@ -788,7 +795,7 @@ class ScheduleFollowUpRequeueTests(_QueuedPushTestBase):
             lock_push_uc.push_door_code_to_lock(
                 door_code=self._fresh(code),
                 lock_entity_id=BACK,
-                zwavejs=lock_push_uc.BudgetedGateway(gateway, seconds=5.5),
+                zwavejs=lock_push_uc.BudgetedGateway(gateway, seconds=6.5),
             )
 
         back = self._assignment(code, BACK)

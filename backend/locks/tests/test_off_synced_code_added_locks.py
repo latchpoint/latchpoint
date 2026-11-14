@@ -22,6 +22,7 @@ from django.utils import timezone
 
 from locks.models import DoorCode, DoorCodeEvent, DoorCodeLockAssignment
 from locks.tests.test_added_lock_reconcile import TIMEOUT, _ReconcileTestBase
+from locks.tests.test_lock_push import AVAILABLE_BEFORE_SET
 from locks.tests.test_synced_code_locks import OTHER_PIN
 from locks.use_cases import added_lock_reconcile as reconcile_uc
 from locks.use_cases import lock_push as lock_push_uc
@@ -437,7 +438,7 @@ class TakeOffRaceTests(_OffTestBase):
         # unconfirmed attempt, and the take-off can't read the Back Door either.
         gateway = self._gateway()
         master = self._back_queued(gateway)
-        gateway._get_scripts[12] = [TIMEOUT] * 20
+        gateway._get_scripts[12] = [AVAILABLE_BEFORE_SET, *[TIMEOUT] * 20]
         self._off_at_front_during_back_set(gateway)
 
         with self.assertRaises(lock_push_uc.LockUnreachable):
@@ -505,7 +506,7 @@ class TakeOffRaceTests(_OffTestBase):
 
     def _back_with_only_an_unconfirmed_attempt(self):
         """The master code on both doors, its Back Door push in slot 2 never confirmed."""
-        gateway = self._gateway(get_responses={12: [TIMEOUT] * 20})
+        gateway = self._gateway(get_responses={12: [AVAILABLE_BEFORE_SET, *[TIMEOUT] * 20]})
         master = self._master(gateway)
         self._patch(master, gateway, {"add_lock_entity_ids": [self.BACK]})
         gateway._get_scripts[12] = []

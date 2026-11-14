@@ -31,6 +31,9 @@ from locks.use_cases.lock_push import (
     sanitize_push_error_for_storage,
 )
 
+# What the live read of a freshly picked slot answers before the set (issue #194).
+AVAILABLE_BEFORE_SET = {"userIdStatus": 0, "userCode": ""}
+
 
 def _value_id_key(value_id: dict) -> str:
     return f"{value_id.get('commandClass')}:{value_id.get('property')}:{value_id.get('propertyKey')}"
@@ -54,6 +57,9 @@ class FakeGateway:
     ``get_responses`` scripts the readback: a list (any node) or a dict of
     node_id -> list. Each entry is returned (or raised, if an exception) by one
     ``get`` call, falling back to the lock's real state once the script runs out.
+    A push into a new slot reads that slot once before its ``set`` (issue #194),
+    which takes the first entry, so a script for the readback after that ``set``
+    starts with :data:`AVAILABLE_BEFORE_SET`.
 
     ``admin_code`` / ``master_code`` are what the Z-Wave JS value cache exposes
     as CC 99 ``adminCode`` / ``masterCode``. ``lock_admin_code`` is the admin
@@ -438,7 +444,7 @@ class PushDoorCodeToLockTests(EncryptionTestMixin, TestCase):
     def test_transient_gateway_error_leaves_row_pending_for_retry(self):
         from integrations_zwavejs.manager import ZwavejsCommandError
 
-        # First invoke (the CC 99 set) raises.
+        # Every invoke raises: the read of the slot before the set (issue #194), then the set.
         gateway = FakeGateway(
             usersNumber=3,
             slot_status={1: 0, 2: 0, 3: 0},
@@ -790,9 +796,9 @@ class PushReadbackAndAdminCodeTests(EncryptionTestMixin, TestCase):
         result = self._push(code, gateway)
 
         self.assertEqual(result.slot_index, 2)
-        # Readback of the same slot happens right after the set.
-        self.assertEqual([c["method_name"] for c in gateway.invoke_calls], ["set", "get"])
-        self.assertEqual(self._calls(gateway, "get")[0]["args"], [2])
+        # The slot is read once before the set (issue #194), and read back right after it.
+        self.assertEqual([c["method_name"] for c in gateway.invoke_calls], ["get", "set", "get"])
+        self.assertEqual([c["args"] for c in self._calls(gateway, "get")], [[2], [2]])
         code.refresh_from_db()
         self.assertEqual(code.push_state, DoorCode.PushState.PUSHED)
 
@@ -805,8 +811,8 @@ class PushReadbackAndAdminCodeTests(EncryptionTestMixin, TestCase):
             self._push(code, gateway)
 
         self._assert_terminal_failure(code, error_contains="slot 2 reads back empty")
-        # An empty answer is asked once more before it counts.
-        self.assertEqual(len(self._calls(gateway, "get")), 2)
+        # The read before the set, then an empty answer is asked once more before it counts.
+        self.assertEqual(len(self._calls(gateway, "get")), 3)
         # Best-effort clear in case the lock committed the write late.
         self.assertEqual(self._cleared_slots(gateway), [2])
         # No schedule pushed to a slot the lock doesn't hold.
@@ -817,13 +823,13 @@ class PushReadbackAndAdminCodeTests(EncryptionTestMixin, TestCase):
         gateway = FakeGateway(
             usersNumber=3,
             slot_status={1: 0, 2: 0, 3: 0},
-            get_responses=[{"userIdStatus": 0, "userCode": ""}],
+            get_responses=[AVAILABLE_BEFORE_SET, {"userIdStatus": 0, "userCode": ""}],
         )
         code = self._make_code(pin="4321")
 
         self._push(code, gateway)
 
-        self.assertEqual(len(self._calls(gateway, "get")), 2)
+        self.assertEqual(len(self._calls(gateway, "get")), 3)
         code.refresh_from_db()
         self.assertEqual(code.push_state, DoorCode.PushState.PUSHED)
 
@@ -839,7 +845,7 @@ class PushReadbackAndAdminCodeTests(EncryptionTestMixin, TestCase):
         gateway = FakeGateway(
             usersNumber=3,
             slot_status={1: 0, 2: 0, 3: 0},
-            get_responses=[{"userIdStatus": 0, "userCode": ""}, timeout, timeout],
+            get_responses=[AVAILABLE_BEFORE_SET, {"userIdStatus": 0, "userCode": ""}, timeout, timeout],
         )
         code = self._make_code(pin="4321", push_state=DoorCode.PushState.PENDING)
 
@@ -868,7 +874,7 @@ class PushReadbackAndAdminCodeTests(EncryptionTestMixin, TestCase):
         gateway = FakeGateway(
             usersNumber=3,
             slot_status={1: 0, 2: 0, 3: 0},
-            get_responses=[{"userIdStatus": 2, "userCode": "4321"}],
+            get_responses=[AVAILABLE_BEFORE_SET, {"userIdStatus": 2, "userCode": "4321"}],
         )
         code = self._make_code(pin="4321")
 
@@ -885,7 +891,7 @@ class PushReadbackAndAdminCodeTests(EncryptionTestMixin, TestCase):
         gateway = FakeGateway(
             usersNumber=3,
             slot_status={1: 0, 2: 0, 3: 0},
-            get_responses=[{"userIdStatus": 2, "userCode": "9999"}],
+            get_responses=[AVAILABLE_BEFORE_SET, {"userIdStatus": 2, "userCode": "9999"}],
         )
         code = self._make_code(pin="4321")
 
@@ -899,7 +905,7 @@ class PushReadbackAndAdminCodeTests(EncryptionTestMixin, TestCase):
         gateway = FakeGateway(
             usersNumber=3,
             slot_status={1: 0, 2: 0, 3: 0},
-            get_responses=[{"userIdStatus": 2, "userCode": "****"}],
+            get_responses=[AVAILABLE_BEFORE_SET, {"userIdStatus": 2, "userCode": "****"}],
         )
         code = self._make_code(pin="4321")
 
@@ -928,7 +934,7 @@ class PushReadbackAndAdminCodeTests(EncryptionTestMixin, TestCase):
         gateway = ClearFailsGateway(
             usersNumber=3,
             slot_status={1: 0, 2: 0, 3: 0},
-            get_responses=[{"userIdStatus": 2, "userCode": "4321"}],
+            get_responses=[AVAILABLE_BEFORE_SET, {"userIdStatus": 2, "userCode": "4321"}],
         )
         code = self._make_code(pin="4321")
 
@@ -943,7 +949,7 @@ class PushReadbackAndAdminCodeTests(EncryptionTestMixin, TestCase):
         gateway = FakeGateway(
             usersNumber=3,
             slot_status={1: 0, 2: 0, 3: 0},
-            get_responses=[{"userIdStatus": 1, "userCode": "9999"}],
+            get_responses=[AVAILABLE_BEFORE_SET, {"userIdStatus": 1, "userCode": "9999"}],
         )
         code = self._make_code(pin="4321")
 
@@ -962,14 +968,14 @@ class PushReadbackAndAdminCodeTests(EncryptionTestMixin, TestCase):
         gateway = FakeGateway(
             usersNumber=3,
             slot_status={1: 0, 2: 0, 3: 0},
-            get_responses=[ZwavejsCommandError("driver TimeoutError after 5.0s")],
+            get_responses=[AVAILABLE_BEFORE_SET, ZwavejsCommandError("driver TimeoutError after 5.0s")],
         )
         code = self._make_code(pin="4321")
 
         result = self._push(code, gateway)
 
         self.assertEqual(result.slot_index, 1)
-        self.assertEqual(len(self._calls(gateway, "get")), 2)
+        self.assertEqual(len(self._calls(gateway, "get")), 3)
         code.refresh_from_db()
         self.assertEqual(code.push_state, DoorCode.PushState.PUSHED)
         self.assertEqual(code.last_push_error, "")
@@ -979,13 +985,13 @@ class PushReadbackAndAdminCodeTests(EncryptionTestMixin, TestCase):
         gateway = FakeGateway(
             usersNumber=3,
             slot_status={1: 0, 2: 0, 3: 0},
-            get_responses=[None, {"userIdStatus": 254, "userCode": ""}],
+            get_responses=[AVAILABLE_BEFORE_SET, None, {"userIdStatus": 254, "userCode": ""}],
         )
         code = self._make_code(pin="4321")
 
         self._push(code, gateway)
 
-        self.assertEqual(len(self._calls(gateway, "get")), 3)
+        self.assertEqual(len(self._calls(gateway, "get")), 4)
         code.refresh_from_db()
         self.assertEqual(code.push_state, DoorCode.PushState.PUSHED)
 
@@ -996,14 +1002,15 @@ class PushReadbackAndAdminCodeTests(EncryptionTestMixin, TestCase):
         gateway = FakeGateway(
             usersNumber=3,
             slot_status={1: 0, 2: 0, 3: 0},
-            get_responses=[timeout, timeout, timeout],
+            get_responses=[AVAILABLE_BEFORE_SET, timeout, timeout, timeout],
         )
         code = self._make_code(pin="4321")
 
         with self.assertRaises(LockUnreachable):
             self._push(code, gateway)
 
-        self.assertEqual(len(self._calls(gateway, "get")), 1 + len(lock_push_uc._READBACK_RETRY_DELAYS_SECONDS))
+        # The read before the set, then the readback's tries.
+        self.assertEqual(len(self._calls(gateway, "get")), 2 + len(lock_push_uc._READBACK_RETRY_DELAYS_SECONDS))
         code.refresh_from_db()
         # Same shape as a timed-out set: pending + attempt counted, slot not claimed.
         self.assertEqual(code.push_state, DoorCode.PushState.PENDING)
@@ -1024,7 +1031,7 @@ class PushReadbackAndAdminCodeTests(EncryptionTestMixin, TestCase):
         gateway = FakeGateway(
             usersNumber=3,
             slot_status={1: 0, 2: 0, 3: 0},
-            get_responses=[{"userIdStatus": 1, "userCode": "****"}],
+            get_responses=[AVAILABLE_BEFORE_SET, {"userIdStatus": 1, "userCode": "****"}],
         )
         code = self._make_code(pin="4321")
 
@@ -1037,7 +1044,9 @@ class PushReadbackAndAdminCodeTests(EncryptionTestMixin, TestCase):
 
     def test_readback_without_user_code_field_is_accepted_with_warning(self):
         # A wrong/missing field name must not pass silently.
-        gateway = FakeGateway(usersNumber=3, slot_status={1: 0, 2: 0, 3: 0}, get_responses=[{"userIdStatus": 1}])
+        gateway = FakeGateway(
+            usersNumber=3, slot_status={1: 0, 2: 0, 3: 0}, get_responses=[AVAILABLE_BEFORE_SET, {"userIdStatus": 1}]
+        )
         code = self._make_code(pin="4321")
 
         with self.assertLogs("locks.use_cases.lock_push", level="WARNING") as logs:
@@ -1053,7 +1062,7 @@ class PushReadbackAndAdminCodeTests(EncryptionTestMixin, TestCase):
         result = self._push(code, gateway)
 
         self.assertEqual(result.slot_index, 1)
-        self.assertEqual([c["method_name"] for c in gateway.invoke_calls], ["set", "get"])
+        self.assertEqual([c["method_name"] for c in gateway.invoke_calls], ["get", "set", "get"])
         self.assertEqual(gateway._lock_codes, {(12, 1): "4321"})
         code.refresh_from_db()
         self.assertEqual((code.push_state, code.last_push_error), (DoorCode.PushState.PUSHED, ""))
@@ -1135,7 +1144,7 @@ class PushReadbackAndAdminCodeTests(EncryptionTestMixin, TestCase):
             usersNumber=3,
             slot_status={1: 0, 2: 0, 3: 0},
             admin_code="4321",
-            get_responses=[{"userIdStatus": 1, "userCode": "9999"}],
+            get_responses=[AVAILABLE_BEFORE_SET, {"userIdStatus": 1, "userCode": "9999"}],
         )
         code = self._make_code(pin="4321")
 
@@ -1153,7 +1162,7 @@ class PushReadbackAndAdminCodeTests(EncryptionTestMixin, TestCase):
             usersNumber=3,
             slot_status={1: 0, 2: 0, 3: 0},
             admin_code="4321",
-            get_responses=[{"userIdStatus": 0, "userCode": ""}, timeout, timeout],
+            get_responses=[AVAILABLE_BEFORE_SET, {"userIdStatus": 0, "userCode": ""}, timeout, timeout],
         )
         code = self._make_code(pin="4321")
 
@@ -1185,7 +1194,7 @@ class PushReadbackAndAdminCodeTests(EncryptionTestMixin, TestCase):
             usersNumber=3,
             slot_status={1: 0, 2: 0, 3: 0},
             admin_code="4321",
-            get_responses=[timeout, timeout, timeout],
+            get_responses=[AVAILABLE_BEFORE_SET, timeout, timeout, timeout],
         )
         code = self._make_code(pin="4321")
 
@@ -1267,8 +1276,8 @@ class PushReadbackAndAdminCodeTests(EncryptionTestMixin, TestCase):
 
                 self.assertIn("Supervision reported Fail", str(ctx.exception))
                 self.assertNotIn("admin code", str(ctx.exception))
-                # The lock said no, so nothing is read back or cleared.
-                self.assertEqual([c["method_name"] for c in gateway.invoke_calls], ["set"])
+                # The lock said no, so nothing is read back or cleared after the set.
+                self.assertEqual([c["method_name"] for c in gateway.invoke_calls], ["get", "set"])
                 self._assert_terminal_failure(code, error_contains="Supervision reported Fail")
                 failed = DoorCodeEvent.objects.get(
                     door_code=code, event_type=DoorCodeEvent.EventType.CODE_FAILED, metadata__action="push"
@@ -1305,7 +1314,8 @@ class PushReadbackAndAdminCodeTests(EncryptionTestMixin, TestCase):
         code = self._make_code(pin="4321")
         with self.assertRaises(LockRejectedCode):
             self._push(code, gateway)
-        self.assertEqual(self._calls(gateway, "get"), [])
+        # Only the read before the set (issue #194), no readback after it.
+        self.assertEqual([c["args"] for c in self._calls(gateway, "get")], [[1]])
         gateway.invoke_calls.clear()
         gateway._set_result = None
         return code, gateway
@@ -1392,7 +1402,8 @@ class PushReadbackAndAdminCodeTests(EncryptionTestMixin, TestCase):
         ):
             self._push(code, gateway)
 
-        self.assertEqual(self._calls(gateway, "get"), [])
+        # Only the read before the set (issue #194), no readback after it.
+        self.assertEqual([c["args"] for c in self._calls(gateway, "get")], [[1]])
         self._assert_terminal_failure(code, error_contains="Supervision reported Fail")
         self._assert_admin_code_hint_without_the_code(code, ctx.exception, logs)
 
@@ -1474,7 +1485,7 @@ class PushReadbackAndAdminCodeTests(EncryptionTestMixin, TestCase):
             usersNumber=3,
             slot_status={1: 0, 2: 0, 3: 0},
             admin_code="4321",
-            get_responses=[{"userIdStatus": 0, "userCode": ""}, timeout, timeout],
+            get_responses=[AVAILABLE_BEFORE_SET, {"userIdStatus": 0, "userCode": ""}, timeout, timeout],
         )
         code = self._make_code(pin="4321")
 
@@ -1491,7 +1502,11 @@ class PushReadbackAndAdminCodeTests(EncryptionTestMixin, TestCase):
         from integrations_zwavejs.manager import ZwavejsCommandError
 
         timeout = ZwavejsCommandError("driver TimeoutError after 5.0s")
-        gateway = FakeGateway(usersNumber=3, slot_status={1: 0, 2: 0, 3: 0}, get_responses=[timeout, timeout, timeout])
+        gateway = FakeGateway(
+            usersNumber=3,
+            slot_status={1: 0, 2: 0, 3: 0},
+            get_responses=[AVAILABLE_BEFORE_SET, timeout, timeout, timeout],
+        )
         code = self._make_code(pin="4321")
         with self.assertRaises(LockUnreachable):
             self._push(code, gateway)
@@ -1544,7 +1559,8 @@ class PushReadbackAndAdminCodeTests(EncryptionTestMixin, TestCase):
         code.refresh_from_db()
         self.assertEqual(code.push_state, DoorCode.PushState.FAILED)
         self.assertIn("lock.side_door", code.last_push_error)
-        self.assertEqual([c["node_id"] for c in self._calls(gateway, "get")], [12])
+        # Side's slot is only read before its set (issue #194), never back after the Fail.
+        self.assertEqual([c["node_id"] for c in self._calls(gateway, "get")], [12, 12, 13])
 
     def test_supervision_success_still_reads_back(self):
         gateway = FakeGateway(usersNumber=3, slot_status={1: 0, 2: 0, 3: 0}, set_result={"status": 255})
@@ -1552,7 +1568,7 @@ class PushReadbackAndAdminCodeTests(EncryptionTestMixin, TestCase):
 
         self._push(code, gateway)
 
-        self.assertEqual([c["method_name"] for c in gateway.invoke_calls], ["set", "get"])
+        self.assertEqual([c["method_name"] for c in gateway.invoke_calls], ["get", "set", "get"])
         code.refresh_from_db()
         self.assertEqual(code.push_state, DoorCode.PushState.PUSHED)
 
@@ -1567,7 +1583,7 @@ class PushReadbackAndAdminCodeTests(EncryptionTestMixin, TestCase):
             self._push(code, gateway)
 
         self._assert_terminal_failure(code, error_contains="slot 1 reads back empty")
-        self.assertEqual(len(self._calls(gateway, "get")), 2)
+        self.assertEqual(len(self._calls(gateway, "get")), 3)
         self.assertEqual(self._cleared_slots(gateway), [1])
 
     def test_supervision_success_with_a_masked_readback_is_accepted_like_before(self):
@@ -1575,7 +1591,7 @@ class PushReadbackAndAdminCodeTests(EncryptionTestMixin, TestCase):
             usersNumber=3,
             slot_status={1: 0, 2: 0, 3: 0},
             set_result={"status": 255},
-            get_responses=[{"userIdStatus": 1, "userCode": "****"}],
+            get_responses=[AVAILABLE_BEFORE_SET, {"userIdStatus": 1, "userCode": "****"}],
         )
         code = self._make_code(pin="4321")
 
@@ -1613,7 +1629,7 @@ class PushReadbackAndAdminCodeTests(EncryptionTestMixin, TestCase):
 
                 self._push(code, gateway)
 
-                self.assertEqual([c["method_name"] for c in gateway.invoke_calls], ["set", "get"])
+                self.assertEqual([c["method_name"] for c in gateway.invoke_calls], ["get", "set", "get"])
                 code.refresh_from_db()
                 self.assertEqual(code.push_state, DoorCode.PushState.PUSHED)
                 code.delete()
@@ -1626,7 +1642,7 @@ class PushReadbackAndAdminCodeTests(EncryptionTestMixin, TestCase):
             self._push(code, gateway)
 
         self._assert_terminal_failure(code, error_contains="slot 1 reads back empty")
-        self.assertEqual(len(self._calls(gateway, "get")), 2)
+        self.assertEqual(len(self._calls(gateway, "get")), 3)
 
 
 class MultiLockAndAdoptionTests(EncryptionTestMixin, TestCase):
@@ -1708,7 +1724,7 @@ class MultiLockAndAdoptionTests(EncryptionTestMixin, TestCase):
         timeout = ZwavejsCommandError("driver TimeoutError after 5.0s")
         gateway = FakeGateway(
             usersNumber=3,
-            get_responses={13: [timeout, timeout, timeout]},
+            get_responses={13: [AVAILABLE_BEFORE_SET, timeout, timeout, timeout]},
             cache_updates_on_set=False,
         )
         code = self._make_code(pin="4321", lock_entity_ids=[self.SIDE, self.BACK])
@@ -1745,7 +1761,7 @@ class MultiLockAndAdoptionTests(EncryptionTestMixin, TestCase):
         timeout = ZwavejsCommandError("driver TimeoutError after 5.0s")
         gateway = FakeGateway(
             usersNumber=3,
-            get_responses=[timeout, timeout, timeout],
+            get_responses=[AVAILABLE_BEFORE_SET, timeout, timeout, timeout],
             cache_updates_on_set=False,
         )
         code = self._make_code(pin="4321", lock_entity_ids=[self.BACK], days_of_week=0b1)
@@ -1914,7 +1930,11 @@ class UnconfirmedSlotCleanupTests(EncryptionTestMixin, TestCase):
         "different code": ([{"userIdStatus": 1, "userCode": "9999"}], False),
         # The slot was Available when the push picked it and nothing else claims it (issue #152).
         "masked": ([{"userIdStatus": 1, "userCode": "****"}], True),
-        "empty": ([{"userIdStatus": 0, "userCode": ""}, {"userIdStatus": 0, "userCode": ""}], False),
+        # And on a PIN change, the slot read before the new PIN's set (issue #194).
+        "empty": (
+            [{"userIdStatus": 0, "userCode": ""}, {"userIdStatus": 0, "userCode": ""}, AVAILABLE_BEFORE_SET],
+            False,
+        ),
     }
 
     def setUp(self):
@@ -1935,7 +1955,7 @@ class UnconfirmedSlotCleanupTests(EncryptionTestMixin, TestCase):
         from integrations_zwavejs.manager import ZwavejsCommandError
 
         timeout = ZwavejsCommandError("driver TimeoutError after 5.0s")
-        gateway = FakeGateway(usersNumber=5, get_responses=[timeout, timeout, timeout])
+        gateway = FakeGateway(usersNumber=5, get_responses=[AVAILABLE_BEFORE_SET, timeout, timeout, timeout])
         code = DoorCode.objects.create(
             user=self.user,
             encrypted_pin=SettingsEncryption.get().encrypt(self.PIN),
@@ -2508,7 +2528,7 @@ class LockListChangeTests(EncryptionTestMixin, TestCase):
 
         # BACK's push landed but was never confirmed, and its cleanup readback times out too.
         timeout = ZwavejsCommandError("driver TimeoutError after 5.0s")
-        code, gateway = self._pushed_code([self.BACK], get_responses={12: [timeout] * 6})
+        code, gateway = self._pushed_code([self.BACK], get_responses={12: [AVAILABLE_BEFORE_SET, *[timeout] * 6]})
         DoorCode.objects.filter(id=code.id).update(push_state=DoorCode.PushState.FAILED, last_push_error="old error")
 
         code = self._update(code, gateway, {"lock_entity_ids": []})
@@ -2894,7 +2914,7 @@ class FailedSlotClearTests(_TwoLockUpdateTestBase):
         code, gateway = self._pushed_code([self.BACK, self.SIDE])
         gateway.clear_fails_on = {12}
         timeout = ZwavejsCommandError("driver TimeoutError after 5.0s")
-        gateway._get_scripts = {13: [timeout, timeout, timeout]}
+        gateway._get_scripts = {13: [AVAILABLE_BEFORE_SET, timeout, timeout, timeout]}
 
         code = self._update(code, gateway, {"code": "5555"})
 
@@ -3389,7 +3409,9 @@ class LockListChangeApiTests(_TwoLockUpdateTestBase, APITestCase):
 
         # SIDE's set lands but every readback times out, so its slot is only on record.
         timeout = ZwavejsCommandError("driver TimeoutError after 5.0s")
-        gateway = ClearFailingGateway(usersNumber=5, cache_updates_on_set=True, get_responses={13: [timeout] * 3})
+        gateway = ClearFailingGateway(
+            usersNumber=5, cache_updates_on_set=True, get_responses={13: [AVAILABLE_BEFORE_SET, *[timeout] * 3]}
+        )
         code = door_codes_uc.create_door_code(
             user=self.user,
             raw_code=self.PIN,
@@ -4134,7 +4156,7 @@ class PushSlotClaimRaceTests(EncryptionTestMixin, TestCase):
             slot_status={1: 0, 2: 0, 3: 0},
             cache_updates_on_set=True,
             drops_duplicates=drops_duplicates,
-            get_responses=[self.MASKED] * 20 if masked else None,
+            get_responses=[AVAILABLE_BEFORE_SET, *[self.MASKED] * 20] if masked else None,
         )
         code = self._make_code(pin="1234")
 
@@ -4223,6 +4245,9 @@ class PushSlotClaimRaceTests(EncryptionTestMixin, TestCase):
                 raise ZwavejsCommandError("driver TimeoutError after 5.0s")
             return real_invoke(**kwargs)
 
+        # Slot 1 is read back twice around its failed clear, then slot 2 is read before the new PIN's set.
+        gateway._get_scripts = {None: [*[self.MASKED] * 2, AVAILABLE_BEFORE_SET, *[self.MASKED] * 20]}
+
         with patch.object(gateway, "invoke_cc_api", clear_fails):
             door_codes_uc.update_door_code(code=code, changes={"code": "5678"}, zwavejs=gateway)
 
@@ -4243,8 +4268,12 @@ class PushSlotClaimRaceTests(EncryptionTestMixin, TestCase):
         code = self._make_code(pin="1234")
         self._attempt_on_slot_1(code=code, slot_verified=True)
         DoorCode.objects.filter(id=code.id).update(encrypted_pin=SettingsEncryption.get().encrypt("5678"))
+        # Slot 1 is read back masked for adoption, then slot 2 is read before the set.
         gateway = FakeGateway(
-            usersNumber=3, slot_status={1: 1, 2: 0, 3: 0}, get_responses=[self.MASKED] * 20, cache_updates_on_set=True
+            usersNumber=3,
+            slot_status={1: 1, 2: 0, 3: 0},
+            get_responses=[self.MASKED, AVAILABLE_BEFORE_SET, *[self.MASKED] * 20],
+            cache_updates_on_set=True,
         )
         gateway._lock_codes[(7, 1)] = "1234"
 
@@ -4329,15 +4358,16 @@ class PushSlotClaimRaceTests(EncryptionTestMixin, TestCase):
         )
 
     def test_single_cc_99_get_after_set_is_the_readback(self):
-        # The #107 readback is also the cache refresh #106 added: one get per push,
-        # never a second one after the success stamp (battery locks).
+        # The #107 readback is also the cache refresh #106 added: one get after the
+        # set, never a second one after the success stamp (battery locks). The only
+        # other get is the one read of the slot before the set (issue #194).
         gateway = FakeGateway(usersNumber=3, slot_status={1: 1, 2: 0, 3: 0})
         code = self._make_code(pin="1234")
 
         push_door_code_to_lock(door_code=code, lock_entity_id=self.LOCK_ENTITY_ID, zwavejs=gateway)
 
         cc99 = [(c["method_name"], c["args"]) for c in gateway.invoke_calls if c["command_class"] == 99]
-        self.assertEqual(cc99, [("set", [2, 1, "1234"]), ("get", [2])])
+        self.assertEqual(cc99, [("get", [2]), ("set", [2, 1, "1234"]), ("get", [2])])
 
     def test_failed_readback_get_leaves_push_pending_without_slot(self):
         # Before #107 the get was a best-effort refresh after the success stamp, so
@@ -4368,7 +4398,8 @@ class PushSlotClaimRaceTests(EncryptionTestMixin, TestCase):
             push_door_code_to_lock(door_code=code, lock_entity_id=self.LOCK_ENTITY_ID, zwavejs=gateway)
 
         gets = [c for c in gateway.invoke_calls if c["command_class"] == 99 and c["method_name"] == "get"]
-        self.assertEqual(len(gets), 1 + len(lock_push_uc._READBACK_RETRY_DELAYS_SECONDS))
+        # The read before the set got no answer either, so the set went to the cache's pick (issue #194).
+        self.assertEqual(len(gets), 2 + len(lock_push_uc._READBACK_RETRY_DELAYS_SECONDS))
         self.assertIsNone(self._slot_of(code))
         code.refresh_from_db()
         self.assertEqual(code.push_state, DoorCode.PushState.PENDING)
@@ -4749,7 +4780,9 @@ class TerminalPushErrorRecordingTests(EncryptionTestMixin, TestCase):
         if during == "readback":
             # What reaches this path in prod: invoke_cc_api's own argument checks.
             message = "node_id must be a positive integer."
-            gateway = FakeGateway(usersNumber=3, get_responses=[ZwavejsCommandValidationError(message)])
+            gateway = FakeGateway(
+                usersNumber=3, get_responses=[AVAILABLE_BEFORE_SET, ZwavejsCommandValidationError(message)]
+            )
             code = self._make_code()
         else:
             # Not ZwavejsClientUnavailable, which is transient since issue #191.
@@ -4896,7 +4929,9 @@ class TerminalPushErrorRecordingTests(EncryptionTestMixin, TestCase):
     def test_masked_lock_schedule_timeout_after_the_readback_keeps_the_slot_and_a_delete_clears(self):
         # Issue #123: the slot is tracked before the schedule, so even on a lock
         # that masks PINs the delete clears it without a readback.
-        gateway = self._schedule_times_out_gateway(usersNumber=3, get_responses=[self.MASKED] * 20)
+        gateway = self._schedule_times_out_gateway(
+            usersNumber=3, get_responses=[AVAILABLE_BEFORE_SET, *[self.MASKED] * 20]
+        )
         code = self._scheduled_code()
 
         with self.assertRaises(LockUnreachable):
@@ -4921,7 +4956,7 @@ class TerminalPushErrorRecordingTests(EncryptionTestMixin, TestCase):
         from integrations_zwavejs.manager import ZwavejsCommandError
 
         timeout = ZwavejsCommandError("driver TimeoutError after 5.0s")
-        gateway = FakeGateway(usersNumber=3, get_responses=[timeout, timeout, timeout])
+        gateway = FakeGateway(usersNumber=3, get_responses=[AVAILABLE_BEFORE_SET, timeout, timeout, timeout])
         code = self._make_code()
 
         with (
@@ -5063,7 +5098,7 @@ class MaskedUnconfirmedSlotTests(EncryptionTestMixin, TestCase):
             usersNumber=3,
             cache_updates_on_set=True,
             drops_duplicates=drops_duplicates,
-            get_responses=self._timeouts(),
+            get_responses=[AVAILABLE_BEFORE_SET, *self._timeouts()],
         )
         code = self._make_code()
         with self.assertRaises(LockUnreachable):
@@ -5107,6 +5142,8 @@ class MaskedUnconfirmedSlotTests(EncryptionTestMixin, TestCase):
         # Issue #152: the cleanup used to settle the masked slot as not holding the
         # PIN, so 1234 stayed in slot 1 and the code showed pushed.
         code, gateway = self._unconfirmed_push()
+        # The cleanup's readback, then the cleared slot read before the new PIN's set.
+        gateway._get_scripts = {None: [self.MASKED, AVAILABLE_BEFORE_SET, *[self.MASKED] * 20]}
 
         door_codes_uc.update_door_code(code=code, changes={"code": "5678"}, zwavejs=gateway)
 
@@ -5122,6 +5159,8 @@ class MaskedUnconfirmedSlotTests(EncryptionTestMixin, TestCase):
 
         code, gateway = self._unconfirmed_push(gateway_class=ClearFailingGateway)
         gateway.clear_fails_on = {7}
+        # Slot 1 is read back twice around its failed clear, then slot 2 is read before the new PIN's set.
+        gateway._get_scripts = {None: [*[self.MASKED] * 2, AVAILABLE_BEFORE_SET, *[self.MASKED] * 20]}
 
         door_codes_uc.update_door_code(code=code, changes={"code": "5678"}, zwavejs=gateway)
 
@@ -5280,7 +5319,11 @@ class MaskedUnconfirmedSlotTests(EncryptionTestMixin, TestCase):
                 DoorCode.objects.filter(id=other.id).delete()
 
     def test_a_readback_that_answered_empty_once_isnt_tagged(self):
-        gateway = FakeGateway(usersNumber=3, cache_updates_on_set=True, get_responses=[self.EMPTY, *self._timeouts(2)])
+        gateway = FakeGateway(
+            usersNumber=3,
+            cache_updates_on_set=True,
+            get_responses=[AVAILABLE_BEFORE_SET, self.EMPTY, *self._timeouts(2)],
+        )
         code = self._make_code()
         with self.assertRaises(LockUnreachable):
             push_door_code_to_lock(door_code=code, lock_entity_id=self.LOCK_ENTITY_ID, zwavejs=gateway)
@@ -5374,6 +5417,8 @@ class MaskedUnconfirmedSlotTests(EncryptionTestMixin, TestCase):
         # The attempt sent 1234 and the code's PIN is 5678 now, so slot 1 may hold the old PIN.
         code, gateway = self._unconfirmed_push(drops_duplicates=False)
         DoorCode.objects.filter(id=code.id).update(encrypted_pin=SettingsEncryption.get().encrypt("5678"))
+        # Slot 1 read back masked, then slot 2 read before the set.
+        gateway._get_scripts = {None: [self.MASKED, AVAILABLE_BEFORE_SET, *[self.MASKED] * 20]}
 
         result = push_door_code_to_lock(door_code=code, lock_entity_id=self.LOCK_ENTITY_ID, zwavejs=gateway)
 
@@ -5431,7 +5476,10 @@ class MaskedUnconfirmedSlotTests(EncryptionTestMixin, TestCase):
         # PR #193 review P2: the PIN change's cleanup readback answers empty once, then gets no answer.
         code, gateway = self._unconfirmed_push()
         del gateway._lock_codes[(7, 1)]  # the Z-Wave JS cache still says slot 1 is taken
-        gateway._get_scripts = {None: [self.EMPTY, *self._timeouts(2), *[self.MASKED] * 20]}
+        # The cleanup's readback and one more read of slot 1, then slot 2 read before the new PIN's set.
+        gateway._get_scripts = {
+            None: [self.EMPTY, *self._timeouts(2), self.MASKED, AVAILABLE_BEFORE_SET, *[self.MASKED] * 20]
+        }
 
         door_codes_uc.update_door_code(code=code, changes={"code": "5678"}, zwavejs=gateway)
 
@@ -5582,7 +5630,10 @@ class MaskedUnconfirmedSlotTests(EncryptionTestMixin, TestCase):
         lock_push_uc._record_unconfirmed_slot_attempt(
             door_code=other, lock_entity_id=self.LOCK_ENTITY_ID, slot_index=1, reason="timeout", pin="5555"
         )
-        gateway._get_scripts = {None: [self.EMPTY, *self._timeouts(2), *[self.MASKED] * 20]}
+        # The cleanup's readback and one more read of slot 1, then slot 2 read before the new PIN's set.
+        gateway._get_scripts = {
+            None: [self.EMPTY, *self._timeouts(2), self.MASKED, AVAILABLE_BEFORE_SET, *[self.MASKED] * 20]
+        }
         door_codes_uc.update_door_code(code=other, changes={"code": "6666"}, zwavejs=gateway)
         self.assertEqual(self._slot_of(other), 2)
         self._keypad_code_lands_in_slot_1(gateway)

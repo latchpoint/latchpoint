@@ -30,6 +30,7 @@ from integrations_zwavejs.manager import (
     ZwavejsClientUnavailable,
     ZwavejsCommandValidationError,
     ZwavejsNotConfigured,
+    ZwavejsNotConnected,
 )
 
 from alarm.crypto import InvalidToken, SettingsEncryption
@@ -379,6 +380,77 @@ def _enumerate_free_slot(
             return slot_index
 
     raise LockSlotsFull("No user-code slot on this lock is Available.")
+
+
+def _pick_free_slot_read_live(
+    *,
+    zwavejs: ZwavejsGateway,
+    node_id: int,
+    timeout_seconds: float,
+    value_ids: object,
+    claimed_slots: set[int] | frozenset[int] = frozenset(),
+) -> tuple[int, bool]:
+    """Pick a free slot like :func:`_enumerate_free_slot` and read it back live once before the ``set`` (issue #194).
+
+    Returns ``(slot_index, read_available)``. The value cache can say Available
+    for a slot someone programmed at the keypad, and an unconfirmed ``set``
+    into a slot is only tagged ``slot_available`` when that slot was really
+    Available, so the picked slot is asked with one CC 99 ``get``:
+
+    * Available: ``read_available`` is ``True``.
+    * occupied, disabled or lock config: the slot isn't free, so the next one
+      the cache calls Available is taken instead. That ``get`` also refreshed
+      the cache for the slot. The second pick isn't read again, so a push costs
+      one ``get`` at most, and it's ``False``.
+    * no answer, or no verdict (0xfe, no report): the cache's pick is kept, as
+      before this check, and it's ``False``.
+
+    Out of time (:class:`TimeBudgetExceeded`) and the Z-Wave JS errors that
+    aren't the lock not answering propagate, so nothing is sent.
+    """
+    slot_index = _enumerate_free_slot(
+        zwavejs=zwavejs,
+        node_id=node_id,
+        timeout_seconds=timeout_seconds,
+        value_ids=value_ids,
+        claimed_slots=claimed_slots,
+    )
+    try:
+        response = _refresh_user_code_slot(
+            zwavejs=zwavejs, node_id=node_id, slot_index=slot_index, timeout_seconds=timeout_seconds
+        )
+    except (
+        TimeBudgetExceeded,
+        ZwavejsNotConfigured,
+        ZwavejsCommandValidationError,
+        ZwavejsClientUnavailable,
+        ZwavejsNotConnected,
+    ):
+        raise
+    except GatewayError:
+        logger.warning(
+            "Couldn't read slot %d on node %d before the set; going by the cache", slot_index, node_id, exc_info=True
+        )
+        return slot_index, False
+    if isinstance(response, dict) and "response" in response:
+        response = response["response"]
+    status = response.get("userIdStatus") if isinstance(response, dict) else None
+    if _is_confirmed_empty_status(status):
+        return slot_index, True
+    occupied, _is_active = _parse_user_code_status(status)
+    if not occupied and _coerce_int(status) not in _USER_ID_STATUS_CONFIG_USES:
+        return slot_index, False
+    logger.info(
+        "Slot %d on node %d isn't Available any more (the cache was stale); picking another", slot_index, node_id
+    )
+    slot_index = _enumerate_free_slot(
+        zwavejs=zwavejs,
+        node_id=node_id,
+        timeout_seconds=timeout_seconds,
+        value_ids=value_ids,
+        claimed_slots={*claimed_slots, slot_index},
+    )
+    return slot_index, False
 
 
 def _refresh_user_code_slot(
@@ -858,6 +930,20 @@ def _record_slot_read_back_empty(*, door_code: DoorCode, lock_entity_id: str, sl
         event_type=DoorCodeEvent.EventType.CODE_REMOVED,
         metadata={"action": _SLOT_SEEN_EMPTY_ACTION, "slot_index": int(slot_index), _SLOT_EMPTY_KEY: True},
     )
+
+
+def keep_slot_empty_markers_of_deleted_code(*, door_code: DoorCode) -> int:
+    """Take the code's ``slot_empty`` markers off it right before it's deleted, so they outlive it (issue #194).
+
+    ``DoorCodeEvent.door_code`` is nullable, so this needs no migration. Its
+    ``CASCADE`` only takes the events still pointing at the code, and the
+    markers are what drop another code's masked-slot trust in that slot
+    (:func:`_masked_trust_dropped`), which counts every marker for the lock and
+    slot whoever's it was. Retention keeps them while they're newer than a kept
+    tagged record on their slot (:func:`_slot_empty_markers_disarming`). They
+    hold no PIN. Returns how many were kept.
+    """
+    return _slot_empty_marker_events().filter(door_code=door_code).update(door_code=None)
 
 
 def _slot_read_back_empty_since_last_push(*, door_code: DoorCode, lock_entity_id: str, slot_index: int) -> bool:
@@ -3507,6 +3593,10 @@ def retained_marker_event_ids(*, older_than: datetime) -> set[int]:
     still has an unsettled attempt or an open unconfirmed clear failure there,
     since those are what keep a new attempt on that slot from being tagged
     ``slot_available`` (issue #194, :func:`_slot_read_back_empty_since_last_push`).
+    The newest of those per slot is kept even when the marker settled
+    everything there, so a new pick of the slot before the code's next push to
+    the lock still isn't tagged (:func:`_newest_own_slot_empty_markers_since_last_push`).
+    Markers a deleted code left behind count through the rule above only.
 
     And while an attempt is unsettled, its #180 check markers
     (``synced_check_paused``, ``synced_check_unanswered``), plus every
@@ -3574,6 +3664,7 @@ def retained_marker_event_ids(*, older_than: datetime) -> set[int]:
                         after_id=last_pushed_id,
                     )
                 )
+        keep.update(_newest_own_slot_empty_markers_since_last_push(door_code=door_code))
     keep.update(_slot_empty_markers_disarming(kept_ids=keep, older_than=older_than))
     from locks.use_cases.door_codes import first_push_event_ids_of_dated_codes, pending_copy_retire_event_ids
 
@@ -3621,6 +3712,34 @@ def _open_clear_failure_event_ids(*, door_code: DoorCode) -> dict[tuple[str, int
         else:
             open_failures.pop(key, None)
     return open_failures
+
+
+def _newest_own_slot_empty_markers_since_last_push(*, door_code: DoorCode) -> set[int]:
+    """Ids of the code's newest ``slot_empty`` marker per lock and slot since its last push to that lock (issue #194).
+
+    A marker that settled every attempt on its slot leaves nothing unsettled
+    there, so the rule above doesn't keep it, and once it was pruned a new pick
+    of that slot before the code's next push there got ``slot_available``
+    again (:func:`_slot_read_back_empty_since_last_push`). Only whether there is
+    one after a given event is ever asked, so the newest per slot is enough.
+    """
+    newest: dict[tuple[str, int], int] = {}
+    markers = _slot_empty_marker_events().filter(door_code=door_code).values_list("id", "lock_entity_id", "metadata")
+    for event_id, lock_entity_id, metadata in markers:
+        slot_index = _coerce_int(metadata.get("slot_index")) if isinstance(metadata, dict) else None
+        if slot_index is None:
+            continue
+        key = (lock_entity_id, slot_index)
+        newest[key] = max(newest.get(key, event_id), event_id)
+    last_pushed: dict[str, int | None] = {}
+    keep: set[int] = set()
+    for (lock_entity_id, _slot_index), event_id in newest.items():
+        if lock_entity_id not in last_pushed:
+            last_pushed[lock_entity_id] = _last_pushed_event_id(door_code=door_code, lock_entity_id=lock_entity_id)
+        since_id = last_pushed[lock_entity_id]
+        if since_id is None or event_id > since_id:
+            keep.add(event_id)
+    return keep
 
 
 def _slot_empty_markers_disarming(*, kept_ids: set[int], older_than: datetime) -> set[int]:
@@ -4133,8 +4252,13 @@ def push_door_code_to_lock(
             slot_index, resend_to_attempted_slot = adoptable if adoptable is not None else (None, False)
             # A resend goes through the set and readback like a new slot (issue #128).
             adopted_existing_slot = slot_index is not None and not resend_to_attempted_slot
+            # Whether the slot the set goes into was Available when it was picked,
+            # which is what lets an unconfirmed set there be tagged slot_available.
+            # A resend keeps the trust of the tagged attempt it goes to (issue #128).
+            picked_available = resend_to_attempted_slot
             if slot_index is None:
-                slot_index = _enumerate_free_slot(
+                # Read once live, since the value cache can miss a keypad code (issue #194).
+                slot_index, picked_available = _pick_free_slot_read_live(
                     zwavejs=zwavejs,
                     node_id=node_id,
                     timeout_seconds=timeout_seconds,
@@ -4370,8 +4494,9 @@ def push_door_code_to_lock(
                 # this push accepted the slot (an adopted slot). Since the schedule
                 # moved after the slot write that can't happen here any more, but
                 # the rule stands. Otherwise the set went into a slot that was Available when it was
-                # picked (enumerated, or a resend to a slot_available attempt), so
-                # it's slot_available unless a readback answered empty (issue #128).
+                # picked (a live read said so, or a resend to a slot_available attempt), so
+                # it's slot_available unless a readback answered empty (issue #128). A pick
+                # only the cache called Available isn't tagged (issue #194).
                 _record_unconfirmed_slot_attempt(
                     door_code=door_code,
                     lock_entity_id=lock_entity_id,
@@ -4379,7 +4504,8 @@ def push_door_code_to_lock(
                     reason=error_message,
                     pin=pin,
                     slot_verified=slot_accepted,
-                    slot_available=not slot_accepted
+                    slot_available=picked_available
+                    and not slot_accepted
                     and not adopted_existing_slot
                     and not (isinstance(exc, LockCodeUnverified) and exc.read_back_empty),
                 )

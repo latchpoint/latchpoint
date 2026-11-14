@@ -19,7 +19,7 @@ from rest_framework.test import APITestCase
 from accounts.models import User
 from alarm.crypto import SettingsEncryption
 from locks.models import DoorCode, DoorCodeEvent, DoorCodeLockAssignment
-from locks.tests.test_lock_push import ClearFailingGateway
+from locks.tests.test_lock_push import AVAILABLE_BEFORE_SET, ClearFailingGateway
 from locks.tests.test_tracking_integrity import _TrackingTestBase
 from locks.use_cases import door_codes as door_codes_uc
 from locks.use_cases import lock_config_sync as lock_config_sync_uc
@@ -144,7 +144,9 @@ class AddLockTests(_SyncedLocksTestBase):
 
     def test_an_unconfirmed_push_to_the_added_lock_is_adopted_and_never_imported(self):
         # Every readback on the Back Door times out, so the slot is only on record as an attempt.
-        gateway = self._gateway(get_responses={12: [ZwavejsCommandError("driver TimeoutError after 5.0s")] * 3})
+        gateway = self._gateway(
+            get_responses={12: [AVAILABLE_BEFORE_SET, *[ZwavejsCommandError("driver TimeoutError after 5.0s")] * 3]}
+        )
         master = self._master(gateway)
 
         self._patch(master, gateway, {"add_lock_entity_ids": [self.BACK]})
@@ -896,7 +898,7 @@ class DeleteTests(_SyncedLocksTestBase):
     def test_an_unconfirmed_slot_on_the_added_lock_that_cant_be_checked_refuses_the_delete(self):
         # Scenario A: every readback on the Back Door times out, the push's and the delete's.
         timeouts = [ZwavejsCommandError("driver TimeoutError after 5.0s")] * 20
-        gateway = self._gateway(get_responses={12: timeouts})
+        gateway = self._gateway(get_responses={12: [AVAILABLE_BEFORE_SET, *timeouts]})
         master = self._master(gateway)
         self._patch(master, gateway, {"add_lock_entity_ids": [self.BACK]})
         self.assertEqual(self._slots(master), {self.FRONT: 1, self.BACK: None})
@@ -972,7 +974,7 @@ class DeleteTests(_SyncedLocksTestBase):
         # didn't answer. Only the Front Door's unstamped assignment is left, but
         # the Back Door's slot is still on record.
         timeouts = [ZwavejsCommandError("driver TimeoutError after 5.0s")] * 40
-        gateway = self._gateway(get_responses={12: timeouts})
+        gateway = self._gateway(get_responses={12: [AVAILABLE_BEFORE_SET, *timeouts]})
         master = self._master(gateway)
         self._patch(master, gateway, {"add_lock_entity_ids": [self.BACK]})
         self._patch(master, gateway, {"remove_lock_entity_ids": [self.BACK]})
