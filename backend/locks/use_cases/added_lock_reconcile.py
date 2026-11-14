@@ -40,11 +40,13 @@ the import lock's sync.
 from __future__ import annotations
 
 import logging
+import time as _time
 from datetime import datetime
 
 from django.db import transaction
 from django.db.models import Exists, F, OuterRef, Q
 from django.utils import timezone as django_timezone
+from integrations_zwavejs.manager import ZwavejsNotConfigured
 
 from alarm.crypto import SettingsEncryption
 from config.domain_exceptions import GatewayError
@@ -671,9 +673,11 @@ def _read_tracked_slot(
     """
     from locks.use_cases.lock_config_sync import _coerce_int
     from locks.use_cases.lock_push import (
+        _READBACK_RETRY_DELAYS_SECONDS,
         _USER_ID_STATUS_CONFIG_USES,
         LockCodeUnverified,
         LockRejectedCode,
+        TimeBudgetExceeded,
         _refresh_user_code_slot,
         _verify_user_code_slot,
     )
@@ -686,19 +690,29 @@ def _read_tracked_slot(
 
         Latchpoint's (stale) only when the lock positively reports a user code,
         enabled or disabled. Lock config (messaging or passage mode) is let go,
-        and anything else, a 254, no report or an answer that doesn't say, is
-        no verdict, so nothing is cleared on it.
+        and anything else, a 254, no report, no answer or an answer that doesn't
+        say, is no verdict. That's asked again with the first read's delays, so
+        one stray answer doesn't cost a counted attempt, and nothing is cleared
+        when none of them says. Running out of time isn't asked again.
         """
-        response = _refresh_user_code_slot(
-            zwavejs=zwavejs, node_id=node_id, slot_index=slot_index, timeout_seconds=timeout_seconds
-        )
-        if isinstance(response, dict) and "response" in response:
-            response = response["response"]
-        status = _coerce_int(response.get("userIdStatus")) if isinstance(response, dict) else None
-        if status in (_USER_ID_STATUS_ENABLED, _USER_ID_STATUS_DISABLED):
-            return _STALE
-        if status in _USER_ID_STATUS_CONFIG_USES:
-            return _OTHER
+        for attempt in range(len(_READBACK_RETRY_DELAYS_SECONDS) + 1):
+            if attempt:
+                _time.sleep(_READBACK_RETRY_DELAYS_SECONDS[attempt - 1])
+            try:
+                response = _refresh_user_code_slot(
+                    zwavejs=zwavejs, node_id=node_id, slot_index=slot_index, timeout_seconds=timeout_seconds
+                )
+            except (ZwavejsNotConfigured, TimeBudgetExceeded):
+                raise
+            except GatewayError:
+                continue
+            if isinstance(response, dict) and "response" in response:
+                response = response["response"]
+            status = _coerce_int(response.get("userIdStatus")) if isinstance(response, dict) else None
+            if status in (_USER_ID_STATUS_ENABLED, _USER_ID_STATUS_DISABLED):
+                return _STALE
+            if status in _USER_ID_STATUS_CONFIG_USES:
+                return _OTHER
         raise _Transient(f"Slot {slot_index} gave no clear status on a second read")
 
     def holds(candidate: str) -> bool:

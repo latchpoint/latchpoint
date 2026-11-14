@@ -447,6 +447,23 @@ class PinChangeTests(_ReconcileTestBase):
         self.assertEqual(self._calls(gateway, "clear"), [])
         self.assertNotEqual(self._back(master).slot_index, 2)
 
+    def test_a_disabled_pin_in_a_slot_pushed_before_0012_is_cleared_too(self):
+        # M6 from the #223 review: the second read's disabled user code is latchpoint's like an enabled one.
+        master, gateway = self._master_on_both()
+        self._pushed_before_0012(master)
+        gateway._lock_codes[(12, 2)] = gateway._cache_codes[(12, 2)] = self.OLDER_PIN
+        disabled: set[tuple[int, int]] = {(12, 2)}
+        self._disable_slots(gateway, disabled)
+        self._before_call(gateway, node_id=12, command_class=99, method_name="clear", hook=disabled.clear)
+        self._change_front_pin(gateway, self.NEW_PIN)
+
+        self._sync_front(gateway)
+        self._push_requested(gateway)
+
+        self.assertEqual(self._calls(gateway, "clear"), [(12, [2])])
+        self.assertEqual(self._lock_codes(gateway, 12), {1: OTHER_PIN, 2: self.NEW_PIN})
+        self.assertEqual(self._back(master).reconcile_requested_at, None)
+
     def test_an_unconfirmed_push_to_the_added_lock_has_its_old_pin_cleared(self):
         # Every readback on the Back Door times out, so the PIN is only on record as an attempt in slot 2.
         gateway = self._gateway(get_responses={12: [AVAILABLE_BEFORE_SET, TIMEOUT, TIMEOUT, TIMEOUT]})
@@ -965,6 +982,31 @@ class GuardTests(_ReconcileTestBase):
         self.assertEqual(flagged, [])
         self.assertIsNone(self._back(master).reconcile_requested_at)
 
+    def test_a_lock_flagged_while_the_push_waited_doesnt_stop_the_codes_other_locks(self):
+        # M3 from the #223 review: ReconcilePending skips that lock only, and the rollup still runs.
+        gateway = self._gateway()
+        code = self._code(pin=self.NEW_PIN, slots={self.BACK: None, self.SIDE: None}, push_state="pending")
+        try_acquire = lock_push_uc._try_acquire_sync_lock
+
+        def flag_back_first(*, lock_key: str):
+            if lock_key == f"lock_sync:{self.BACK}":
+                DoorCodeLockAssignment.objects.filter(door_code=code, lock_entity_id=self.BACK).update(
+                    reconcile_requested_at=timezone.now(), last_push_error=reconcile_uc.WAITING_ERROR
+                )
+            return try_acquire(lock_key=lock_key)
+
+        with patch.object(lock_push_uc, "_try_acquire_sync_lock", flag_back_first):
+            successes, failures = lock_push_uc.push_door_code_to_assigned_locks(
+                door_code=DoorCode.objects.get(id=code.id), zwavejs=gateway
+            )
+
+        self.assertEqual(([s.lock_entity_id for s in successes], failures), ([self.SIDE], []))
+        self.assertEqual(self._calls(gateway, "set"), [(13, [1, 1, self.NEW_PIN])])
+        self.assertEqual(self._slots(code), {self.BACK: None, self.SIDE: 1})
+        code.refresh_from_db()
+        self.assertEqual(code.push_state, DoorCode.PushState.PENDING)
+        self.assertEqual(code.last_push_error, f"{self.BACK}: {reconcile_uc.WAITING_ERROR}")
+
 
 class LateWriterTests(_ReconcileTestBase):
     """Review 4 of PR #223."""
@@ -1033,9 +1075,10 @@ class LateWriterTests(_ReconcileTestBase):
         self.assertEqual(self._lock_codes(gateway, 12), {1: OTHER_PIN, 2: self.PIN})
 
     def _unclear_second_read(self, gateway) -> None:
-        """Back Door slot 2 reads back with another PIN, then with no clear status."""
+        """Back Door slot 2 reads back with another PIN, then with no clear status however often it's asked."""
         gateway._lock_codes[(12, 2)] = gateway._cache_codes[(12, 2)] = self.OLDER_PIN
-        gateway._get_scripts[12] = [{"userIdStatus": 1, "userCode": self.OLDER_PIN}, {"userIdStatus": 254}]
+        unclear = [{"userIdStatus": 254}] * (len(lock_push_uc._READBACK_RETRY_DELAYS_SECONDS) + 1)
+        gateway._get_scripts[12] = [{"userIdStatus": 1, "userCode": self.OLDER_PIN}, *unclear]
 
     def test_an_unclear_second_read_clears_nothing_on_reconcile(self):
         # Item 3.
@@ -1063,6 +1106,42 @@ class LateWriterTests(_ReconcileTestBase):
         self.assertNotEqual(response.status_code, 204, response.content)
         self.assertEqual(self._lock_codes(gateway, 12), {1: OTHER_PIN, 2: self.OLDER_PIN})
         self.assertTrue(DoorCode.objects.filter(id=master.id).exists())
+
+    def test_one_stray_254_on_the_second_read_is_asked_again(self):
+        # The second read is retried like the first, so one 254 doesn't cost a counted attempt.
+        master, gateway = self._master_on_both()
+        self._pushed_before_0012(master)
+        self._change_front_pin(gateway, self.NEW_PIN)
+        self._sync_front(gateway)
+        gateway._lock_codes[(12, 2)] = gateway._cache_codes[(12, 2)] = self.OLDER_PIN
+        gateway._get_scripts[12] = [{"userIdStatus": 1, "userCode": self.OLDER_PIN}, {"userIdStatus": 254}]
+
+        self._push_requested(gateway)
+
+        self.assertEqual(self._calls(gateway, "clear"), [(12, [2])])
+        self.assertEqual(self._lock_codes(gateway, 12), {1: OTHER_PIN, 2: self.NEW_PIN})
+        back = self._back(master)
+        self.assertEqual((back.slot_index, back.push_attempt_count, back.reconcile_requested_at), (2, 0, None))
+
+    def test_one_gateway_error_on_the_second_read_is_asked_again(self):
+        # PR #231 review: a timeout is no verdict either, so the next read's clear status decides.
+        master, gateway = self._master_on_both()
+        self._pushed_before_0012(master)
+        self._change_front_pin(gateway, self.NEW_PIN)
+        self._sync_front(gateway)
+        gateway._lock_codes[(12, 2)] = gateway._cache_codes[(12, 2)] = self.OLDER_PIN
+        gateway._get_scripts[12] = [
+            {"userIdStatus": 1, "userCode": self.OLDER_PIN},
+            TIMEOUT,
+            {"userIdStatus": 1, "userCode": self.OLDER_PIN},
+        ]
+
+        self._push_requested(gateway)
+
+        self.assertEqual(self._calls(gateway, "clear"), [(12, [2])])
+        self.assertEqual(self._lock_codes(gateway, 12), {1: OTHER_PIN, 2: self.NEW_PIN})
+        back = self._back(master)
+        self.assertEqual((back.slot_index, back.push_attempt_count, back.reconcile_requested_at), (2, 0, None))
 
     def test_turning_a_code_back_on_says_when_another_code_has_its_pin_on_an_added_lock(self):
         master, gateway = self._master_on_both()
@@ -1114,6 +1193,33 @@ class LateWriterTests(_ReconcileTestBase):
         )
         self._sync_front(gateway)
         self.assertIsNotNone(self._back(master).reconcile_requested_at)
+
+    def test_turning_an_off_code_on_flags_a_lock_that_lost_its_slot(self):
+        # M12 from the #223 review: what's recorded is the code's PIN and schedule, but there's no slot any more.
+        master, gateway = self._master_on_both()
+        back = self._back(master)
+        self.assertEqual(SettingsEncryption.get().decrypt(back.written_pin), self.PIN)
+        self.assertEqual(back.written_schedule, lock_push_uc.code_schedule_fingerprint(master))
+        DoorCode.objects.filter(id=master.id).update(is_active=False)
+        DoorCodeLockAssignment.objects.filter(id=back.id).update(slot_index=None)
+
+        self._sync_front(gateway)
+
+        self.assertTrue(DoorCode.objects.get(id=master.id).is_active)
+        self.assertIsNotNone(self._back(master).reconcile_requested_at)
+
+    def test_turning_a_code_on_from_latchpoint_wakes_the_task_for_a_flagged_lock(self):
+        # M9 from the #223 review: the flagged lock is the only thing to push, so its wake is the only one.
+        master, gateway = self._master_on_both()
+        self._change_front_pin(gateway, self.NEW_PIN)
+        self._sync_front(gateway)
+        self._old_flag(master)
+
+        with patch("scheduler.runner.wake_task") as wake, self.captureOnCommitCallbacks(execute=True):
+            stamped = lock_push_uc.request_push(DoorCode.objects.get(id=master.id))
+
+        self.assertEqual(stamped, [])
+        self.assertEqual([call.args[0] for call in wake.call_args_list], ["push_requested_door_codes"])
 
     def test_turning_a_code_on_from_latchpoint_takes_up_an_old_flag(self):
         # #189: request_push, which turning a code on queues, flags its waiting added locks again from now.
@@ -1216,3 +1322,44 @@ class Migration0012Tests(TransactionTestCase):
         row = old.get_model("locks", "DoorCodeLockAssignment").objects.get(id=assignment.id)
         self.assertEqual(row.slot_index, 2)
         self._migrate(self.AFTER)
+
+    def test_an_insert_without_the_new_columns_still_works(self):
+        # On the 0012 schema itself, like 0011's test (#229 review).
+        new = self._migrate(self.AFTER)
+        user = new.get_model("accounts", "User").objects.create(email="u@example.com", password="x")
+        code = new.get_model("locks", "DoorCode").objects.create(user_id=user.id, code_type="permanent")
+        Assignment = new.get_model("locks", "DoorCodeLockAssignment")
+        now = connection.ops.adapt_datetimefield_value(timezone.now())
+        qn = connection.ops.quote_name
+        # Every column code from before 0012 writes, 0009's and 0011's included.
+        columns = (
+            "door_code_id",
+            "lock_entity_id",
+            "slot_index",
+            "push_state",
+            "push_attempt_count",
+            "last_push_attempt_at",
+            "last_push_error",
+            "schedule_pending",
+            "push_requested_at",
+            "push_requested_by_id",
+            "created_at",
+            "updated_at",
+        )
+        self.assertEqual(
+            set(columns) | {"id", "written_pin", "written_schedule", "reconcile_requested_at"},
+            {field.column for field in Assignment._meta.concrete_fields},
+        )
+
+        with connection.cursor() as cursor:
+            cursor.execute(
+                f"INSERT INTO {qn(Assignment._meta.db_table)} ({', '.join(qn(c) for c in columns)}) "
+                f"VALUES ({', '.join(['%s'] * len(columns))})",
+                [code.id, "lock.back_door", None, "pending", 0, None, "", False, None, None, now, now],
+            )
+
+        assignment = Assignment.objects.get(door_code_id=code.id)
+        self.assertEqual(
+            (assignment.written_pin, assignment.written_schedule, assignment.reconcile_requested_at),
+            (None, None, None),
+        )

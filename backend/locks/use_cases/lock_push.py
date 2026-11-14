@@ -998,6 +998,17 @@ def keep_slot_empty_markers_of_deleted_code(*, door_code: DoorCode) -> int:
     return _slot_empty_marker_events().filter(door_code=door_code).update(door_code=None)
 
 
+def keep_slot_empty_markers_of_deleted_user(sender, instance, **kwargs) -> None:  # noqa: ARG001
+    """``pre_delete`` receiver for ``User``: :func:`keep_slot_empty_markers_of_deleted_code` for each of their codes.
+
+    Deleting a user (Django admin has the only way) cascades their door codes
+    without :func:`locks.use_cases.door_codes.delete_door_code`, so this takes
+    the markers off them first. The cascade's delete of the codes' events
+    is a query run after the ``pre_delete`` signals, so it no longer matches them.
+    """
+    _slot_empty_marker_events().filter(door_code__user=instance).update(door_code=None)
+
+
 def _slot_read_back_empty_since_last_push(*, door_code: DoorCode, lock_entity_id: str, slot_index: int) -> bool:
     """Whether a readback of this slot by ``door_code`` came back empty since its last successful push to the lock.
 

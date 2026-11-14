@@ -475,6 +475,44 @@ describe('DoorCodeCard', () => {
     expect(screen.queryByRole('button', { name: /Retry/ })).toBeNull()
   })
 
+  describe('a synced code lock sync let go of', () => {
+    const STUCK = /Lock sync can't turn this code back on/
+    // Off with no end date, and its slot read empty so lock sync released it.
+    const stuck = (overrides: Partial<DoorCode> = {}) =>
+      makeCode({ source: 'synced', isActive: false, pushState: 'pushed', lastPushError: '', ...overrides })
+
+    it('says deleting it is the way out', () => {
+      renderWithProviders(<CardWithRetry code={stuck()} />)
+
+      expect(screen.getByText(STUCK)).toBeTruthy()
+      expect(screen.getByText(/Delete it from Edit/)).toBeTruthy()
+    })
+
+    it.each<[string, Partial<DoorCode>]>([
+      ['still has a slot', { lockSlotAssignments: [{ lockEntityId: 'lock.front_door', slotIndex: 3, pendingRemoval: false }] }],
+      ['is on', { isActive: true }],
+      ['has an end date, so it can be turned on', { endAt: '2026-12-02T12:00:00Z' }],
+      ['is still having its PIN taken off a lock', {
+        lockSlotAssignments: [{ lockEntityId: 'lock.front_door', slotIndex: null, pendingRemoval: false, takingPinOff: true }],
+      }],
+      ['still has a clear owed', { pendingSlotClears: [{ lockEntityId: 'lock.front_door', slotIndex: 3, removing: false }] }],
+      // PR #231 review: no slot and nothing owed, but the lock is still on its way out.
+      ['is still being removed from a lock', {
+        lockSlotAssignments: [{ lockEntityId: 'lock.front_door', slotIndex: null, pendingRemoval: true }],
+      }],
+    ])('says nothing when it %s', (_why, overrides) => {
+      renderWithProviders(<CardWithRetry code={stuck(overrides)} />)
+
+      expect(screen.queryByText(STUCK)).toBeNull()
+    })
+
+    it('says nothing for a manual code', () => {
+      renderWithProviders(<CardWithRetry code={stuck({ source: 'manual' })} />)
+
+      expect(screen.queryByText(STUCK)).toBeNull()
+    })
+  })
+
   describe('per-lock chips', () => {
     const lockNames = new Map([
       ['lock.back_door', 'Back Door'],

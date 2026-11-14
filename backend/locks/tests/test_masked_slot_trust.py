@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
+from accounts.models import User
 from locks.models import DoorCode, DoorCodeEvent, DoorCodeLockAssignment
 from locks.tests.test_tracking_integrity import EMPTY, MASKED, _Clock, _SlowGateway, _timeouts, _TrackingTestBase
 from locks.use_cases import door_codes as door_codes_uc
@@ -407,6 +408,20 @@ class DeletedCodeSlotEmptyMarkerTests(_MaskedSlotTrustTestBase):
         self.assertFalse(DoorCode.objects.filter(id=other.id).exists())
         self.assertEqual(self._available(code), set())
         # Only the slot_empty markers outlive it.
+        self.assertFalse(
+            DoorCodeEvent.objects.filter(door_code__isnull=True, metadata__action="push_unconfirmed").exists()
+        )
+
+    def test_deleting_the_other_codes_user_keeps_its_empty_readback_counting(self):
+        # Deleting a user (Django admin) cascades their codes, and used to take the markers with them.
+        code, other = self._other_code_saw_the_slot_empty()
+        owner = User.objects.create_user(email="owner@example.com", password="pass")
+        DoorCode.objects.filter(id=other.id).update(user=owner)
+
+        owner.delete()
+
+        self.assertFalse(DoorCode.objects.filter(id=other.id).exists())
+        self.assertEqual(self._available(code), set())
         self.assertFalse(
             DoorCodeEvent.objects.filter(door_code__isnull=True, metadata__action="push_unconfirmed").exists()
         )
