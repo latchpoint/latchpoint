@@ -19,6 +19,7 @@ from rest_framework.test import APITestCase
 
 from accounts.models import User
 from locks.models import DoorCode, DoorCodeEvent, DoorCodeLockAssignment
+from locks.tests.test_lock_push import AVAILABLE_BEFORE_SET
 from locks.tests.test_tracking_integrity import (
     EMPTY,
     MASKED,
@@ -312,7 +313,7 @@ class ManualCodeSyncTests(_TrackingTestBase, APITestCase):
         self.assertLess(marker.id, released.id)
 
         # The re-push goes into slot 1 (Available, as the sync saw) and none of its readbacks answer.
-        gateway._get_scripts = {None: _timeouts(3)}
+        gateway._get_scripts = {None: [AVAILABLE_BEFORE_SET, *_timeouts(3)]}
         self._push_pending(gateway)
 
         self.assertEqual(self._unsettled_slots(code), [1])

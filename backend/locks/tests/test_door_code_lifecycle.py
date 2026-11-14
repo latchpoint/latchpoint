@@ -21,7 +21,7 @@ from alarm.crypto import SettingsEncryption
 from locks.models import DoorCode, DoorCodeEvent, DoorCodeLockAssignment
 from locks.serializers import DoorCodeCreateSerializer, DoorCodeSerializer, DoorCodeUpdateSerializer
 from locks.tests.test_door_code_locking import _OtherHolder, _when_waiting_on
-from locks.tests.test_lock_push import ClearFailingGateway, FakeGateway, _TwoLockUpdateTestBase
+from locks.tests.test_lock_push import AVAILABLE_BEFORE_SET, ClearFailingGateway, FakeGateway, _TwoLockUpdateTestBase
 from locks.use_cases import door_codes as door_codes_uc
 from locks.use_cases import lock_config_sync as lock_config_sync_uc
 from locks.use_cases import lock_push as lock_push_uc
@@ -219,7 +219,9 @@ class ExpiryTests(_LifecycleTestBase):
         self.assertEqual(self._calls(gateway, "set"), [])
 
     def test_an_unconfirmed_slot_is_read_back_and_cleared(self):
-        gateway = ClearFailingGateway(usersNumber=5, cache_updates_on_set=True, get_responses={13: _timeouts()})
+        gateway = ClearFailingGateway(
+            usersNumber=5, cache_updates_on_set=True, get_responses={13: [AVAILABLE_BEFORE_SET, *_timeouts()]}
+        )
         code = door_codes_uc.create_door_code(
             user=self.user,
             raw_code=self.PIN,
@@ -679,7 +681,9 @@ class StartTests(_LifecycleTestBase):
         held.assert_not_called()
 
     def test_a_scheduled_code_with_only_settled_unconfirmed_attempts_is_not_withdrawn_again(self):
-        gateway = ClearFailingGateway(usersNumber=5, cache_updates_on_set=True, get_responses={13: _timeouts()})
+        gateway = ClearFailingGateway(
+            usersNumber=5, cache_updates_on_set=True, get_responses={13: [AVAILABLE_BEFORE_SET, *_timeouts()]}
+        )
         code = door_codes_uc.create_door_code(
             user=self.user,
             raw_code=self.PIN,
@@ -787,7 +791,9 @@ class StartAtUpdateTests(_LifecycleTestBase, APITestCase):
         self.assertEqual(self._slots(started), {self.SIDE: 1})
 
     def test_moving_start_at_into_the_future_clears_an_unconfirmed_slot(self):
-        gateway = ClearFailingGateway(usersNumber=5, cache_updates_on_set=True, get_responses={13: _timeouts()})
+        gateway = ClearFailingGateway(
+            usersNumber=5, cache_updates_on_set=True, get_responses={13: [AVAILABLE_BEFORE_SET, *_timeouts()]}
+        )
         code = door_codes_uc.create_door_code(
             user=self.user,
             raw_code=self.PIN,

@@ -25,7 +25,7 @@ from locks.tests.test_door_code_locking import (
     _LockingTestBase,
     _OtherHolder,
 )
-from locks.tests.test_lock_push import FakeGateway
+from locks.tests.test_lock_push import AVAILABLE_BEFORE_SET, FakeGateway
 from locks.use_cases import door_codes as door_codes_uc
 from locks.use_cases import lock_config_sync as lock_config_sync_uc
 from locks.use_cases import lock_push as lock_push_uc
@@ -179,7 +179,8 @@ class ClientUnavailableIsTransientTests(EncryptionTestMixin, TestCase):
 
     def test_client_unavailable_from_the_set_itself_leaves_no_marker(self):
         # Nothing went out, like the budget refusing the set, and like PR #192's terminal case did.
-        gateway = FakeGateway(usersNumber=3, invoke_raises=_unavailable(), invoke_raises_after=0)
+        # The read of the slot before the set answers, then the client goes (issue #194).
+        gateway = FakeGateway(usersNumber=3, invoke_raises=_unavailable(), invoke_raises_after=1)
         code = self._make_code()
 
         with self.assertRaises(LockUnreachable):
@@ -192,7 +193,7 @@ class ClientUnavailableIsTransientTests(EncryptionTestMixin, TestCase):
     def test_client_unavailable_during_the_readback_keeps_the_slot_on_record_for_a_delete(self):
         # The set returned, so the PIN may be in the slot: a marker like PR #192's
         # terminal case left, now a timeout-like one since the readback saw no empty answer.
-        gateway = FakeGateway(usersNumber=3, get_responses=[_unavailable() for _ in range(3)])
+        gateway = FakeGateway(usersNumber=3, get_responses=[AVAILABLE_BEFORE_SET, *[_unavailable() for _ in range(3)]])
         code = self._make_code()
 
         with self.assertRaises(LockUnreachable):
@@ -217,7 +218,7 @@ class ClientUnavailableIsTransientTests(EncryptionTestMixin, TestCase):
         # PR #193: a readback that answered empty once leaves its marker and the attempt isn't slot_available.
         gateway = FakeGateway(
             usersNumber=3,
-            get_responses=[{"userIdStatus": 0, "userCode": ""}, _unavailable(), _unavailable()],
+            get_responses=[AVAILABLE_BEFORE_SET, {"userIdStatus": 0, "userCode": ""}, _unavailable(), _unavailable()],
         )
         code = self._make_code()
 
@@ -261,13 +262,16 @@ class ClientUnavailableIsTransientTests(EncryptionTestMixin, TestCase):
 
     def test_not_configured_during_the_readback_stays_terminal(self):
         # The readback lets it through instead of asking again, so the lock fails for good.
-        gateway = FakeGateway(usersNumber=3, get_responses=[ZwavejsNotConfigured("Z-Wave JS ws_url not set.")])
+        gateway = FakeGateway(
+            usersNumber=3, get_responses=[AVAILABLE_BEFORE_SET, ZwavejsNotConfigured("Z-Wave JS ws_url not set.")]
+        )
         code = self._make_code()
 
         with self.assertRaises(LockPushFailed):
             self._push(code, gateway)
 
-        self.assertEqual(self._cc(gateway, 99, "get"), [[1]])
+        # The read before the set, then the readback.
+        self.assertEqual(self._cc(gateway, 99, "get"), [[1], [1]])
         assignment = self._assignment(code)
         self.assertEqual((assignment.push_state, assignment.slot_index), (DoorCode.PushState.FAILED, None))
         # The set went out, so the slot is on record untagged (PR #192).

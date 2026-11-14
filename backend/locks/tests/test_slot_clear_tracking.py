@@ -17,7 +17,7 @@ from alarm.models import Entity
 from locks.models import DoorCode, DoorCodeEvent, DoorCodeLockAssignment
 from locks.serializers import DoorCodePushSerializer, DoorCodeSerializer
 from locks.tests.test_door_code_locking import _recording_acquires
-from locks.tests.test_lock_push import ClearFailingGateway, FakeGateway, _TwoLockUpdateTestBase
+from locks.tests.test_lock_push import AVAILABLE_BEFORE_SET, ClearFailingGateway, FakeGateway, _TwoLockUpdateTestBase
 from locks.use_cases import door_codes as door_codes_uc
 from locks.use_cases import lock_push as lock_push_uc
 from locks.use_cases.lock_config_sync import LockBusy
@@ -60,7 +60,9 @@ class _SlotClearTestBase(_TwoLockUpdateTestBase):
 
     def _code_with_side_unconfirmed(self) -> tuple[DoorCode, ClearFailingGateway]:
         """A code on Back and Side whose PIN landed on Side but every readback there timed out."""
-        gateway = ClearFailingGateway(usersNumber=5, cache_updates_on_set=True, get_responses={13: _timeouts()})
+        gateway = ClearFailingGateway(
+            usersNumber=5, cache_updates_on_set=True, get_responses={13: [AVAILABLE_BEFORE_SET, *_timeouts()]}
+        )
         code = door_codes_uc.create_door_code(
             user=self.user,
             raw_code=self.PIN,
