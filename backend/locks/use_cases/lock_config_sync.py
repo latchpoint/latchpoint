@@ -14,6 +14,7 @@ from typing import Any
 
 from django.db import Error as DbError
 from django.db import IntegrityError, connection, transaction
+from django.db.models import Q
 from django.utils import timezone as django_timezone
 
 from accounts.models import User
@@ -941,9 +942,9 @@ _WARN_TAKING_OFF_OTHER_LOCKS = "taking_off_other_locks"
 # An untracked slot matched back to the off synced code whose slot here lock
 # sync let go of, instead of being imported as a new "Slot N" code (issue #233).
 _WARN_RELINKED = "relinked"
-# The ``reason`` on the ``code_updated`` event of a delete that was refused and
-# turned the code off instead (``door_codes._refuse_delete_after_failed_clears``).
-_DELETE_REFUSED_REASON = "delete_refused"
+# The ``code_synced`` actions of lock sync letting go of a synced code's import
+# slot it read empty, turning the code off or keeping it off (issue #233).
+_RELEASE_ACTIONS = ("deactivated", "slot_released")
 
 
 def _has_outstanding_slot_cleanup(*, door_code: DoorCode, lock_entity_id: str) -> bool:
@@ -1689,8 +1690,11 @@ def _released_import_codes_by_pin(*, lock_entity_id: str) -> dict[str, list[Door
     row lock sync made when it imported the code, after a sync read its slot
     empty, turned it off and released it. Lock sync only finds a code by its
     slot, so nothing else would bring one of these back. A code with a start or
-    end date, or no readable PIN, isn't one.
+    end date, or no readable PIN, isn't one, and neither is one that's used up
+    (``exhausted_q``): retiring it at its last use takes its slot the same way,
+    and turning it back on would only have it retired again (#145).
     """
+    from locks.use_cases.code_lifecycle import exhausted_q
     from locks.use_cases.lock_push import decrypt_pin_or_none
 
     codes = (
@@ -1705,6 +1709,7 @@ def _released_import_codes_by_pin(*, lock_entity_id: str) -> dict[str, list[Door
             lock_assignments__last_push_attempt_at__isnull=True,
             lock_assignments__push_requested_at__isnull=True,
         )
+        .exclude(exhausted_q())
         .distinct()
         .order_by("id")
     )
@@ -1724,11 +1729,14 @@ def _relink_allowed(*, code: DoorCode, lock_entity_id: str) -> bool:
       ``push_requested_at`` was stamped (which looks the same) doesn't make it ambiguous
     - nothing is left to clear for it and no push of it is unconfirmed here
       (:func:`_has_outstanding_slot_cleanup`), the same thing that has the sync skip a tracked slot
-    - a delete of it wasn't refused, since someone wanted it gone
+    - a delete of it was never refused, since someone wanted it gone
+    - it was lock sync that turned it off here (:func:`_turned_off_by_lock_sync`),
+      not latchpoint retiring it or refusing its delete
     - no other code holds the PIN on this lock, in a slot or active and waiting
       for its push (issue #188), the rule turning a code on uses
     """
     from locks.use_cases.added_lock_reconcile import pin_held_by_another_code
+    from locks.use_cases.door_codes import DELETE_REFUSED_REASON
     from locks.use_cases.lock_push import import_lock_entity_ids
 
     if import_lock_entity_ids(door_code=code) != [lock_entity_id]:
@@ -1738,10 +1746,94 @@ def _relink_allowed(*, code: DoorCode, lock_entity_id: str) -> bool:
     if DoorCodeEvent.objects.filter(
         door_code=code,
         event_type=DoorCodeEvent.EventType.CODE_UPDATED,
-        metadata__reason=_DELETE_REFUSED_REASON,
+        metadata__reason=DELETE_REFUSED_REASON,
     ).exists():
         return False
+    if not _turned_off_by_lock_sync(code=code, lock_entity_id=lock_entity_id):
+        return False
     return pin_held_by_another_code(door_code=code, lock_entity_id=lock_entity_id) is None
+
+
+def _release_marker_q() -> Q:
+    """``DoorCodeEvent`` rows of lock sync letting go of a synced code's import slot it read empty (issue #233).
+
+    A ``code_synced`` ``deactivated`` or ``slot_released`` without a
+    ``reason``. A ``slot_released`` with one is a slot latchpoint pushed that
+    it'll push again (:func:`_release_manual_slot`), not an import slot.
+    """
+    return Q(event_type=DoorCodeEvent.EventType.CODE_SYNCED, metadata__action__in=list(_RELEASE_ACTIONS)) & ~Q(
+        metadata__has_key="reason"
+    )
+
+
+def _latchpoint_off_marker_q() -> Q:
+    """``DoorCodeEvent`` rows of latchpoint turning a code off or keeping it off (issue #233).
+
+    A ``code_updated`` with a ``reason``: retired as expired or used up, retired
+    as a stranded copy of a retired code (``duplicate_of_retired_code``), or a
+    refused delete (``delete_refused``). A synced code without dates can't be
+    turned off from the edit form, so those are the ways latchpoint does it.
+    """
+    return Q(event_type=DoorCodeEvent.EventType.CODE_UPDATED, metadata__has_key="reason")
+
+
+def _turned_off_by_lock_sync(*, code: DoorCode, lock_entity_id: str) -> bool:
+    """Whether the last thing that turned ``code`` off was lock sync letting go of its slot on this lock (issue #233).
+
+    That's its newest :func:`_release_marker_q` event on this lock, with no
+    :func:`_latchpoint_off_marker_q` event after it. Latchpoint retiring it or
+    refusing its delete takes the import slot as well and leaves the same
+    released row, but the PIN typed in again mustn't undo that. With no release
+    event at all it's ``False``, so a match is only made on a record of it.
+    Event retention keeps both (:func:`relink_marker_event_ids`).
+    """
+    newest = (
+        DoorCodeEvent.objects.filter(door_code=code)
+        .filter((_release_marker_q() & Q(lock_entity_id=lock_entity_id)) | _latchpoint_off_marker_q())
+        .order_by("-id")
+        .only("event_type")
+        .first()
+    )
+    return newest is not None and newest.event_type == DoorCodeEvent.EventType.CODE_SYNCED
+
+
+def relink_marker_event_ids(*, older_than: datetime) -> set[int]:
+    """Ids of events older than ``older_than`` that event retention must keep for the relink (issue #233).
+
+    Every refused delete's ``code_updated`` event (the code still exists, or it
+    would be gone with it), and for each off synced code without dates its
+    newest latchpoint turn-off and its newest lock sync release on each lock,
+    since :func:`_turned_off_by_lock_sync` compares those. Pruning the release
+    would only stop a match, pruning the turn-off after it would allow a wrong one.
+    """
+    from locks.use_cases.door_codes import DELETE_REFUSED_REASON
+
+    old = DoorCodeEvent.objects.filter(created_at__lt=older_than, door_code__isnull=False)
+    keep = set(
+        old.filter(event_type=DoorCodeEvent.EventType.CODE_UPDATED, metadata__reason=DELETE_REFUSED_REASON).values_list(
+            "id", flat=True
+        )
+    )
+    markers_q = _release_marker_q() | _latchpoint_off_marker_q()
+    codes = DoorCode.objects.filter(
+        source=DoorCode.Source.SYNCED,
+        is_active=False,
+        start_at__isnull=True,
+        end_at__isnull=True,
+        id__in=old.filter(markers_q).values("door_code_id"),
+    )
+    for code_id in codes.values_list("id", flat=True):
+        newest_per_kind: dict[tuple[str, str], int] = {}
+        for event_id, event_type, lock_entity_id in (
+            DoorCodeEvent.objects.filter(door_code_id=code_id)
+            .filter(markers_q)
+            .order_by("-id")
+            .values_list("id", "event_type", "lock_entity_id")
+        ):
+            kind = (event_type, lock_entity_id if event_type == DoorCodeEvent.EventType.CODE_SYNCED else "")
+            newest_per_kind.setdefault(kind, event_id)
+        keep.update(newest_per_kind.values())
+    return keep
 
 
 def _relink_verdicts(

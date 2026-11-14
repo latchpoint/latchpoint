@@ -508,6 +508,12 @@ describe('DoorCodeCard', () => {
       expect(screen.queryByText(STUCK)).toBeNull()
     })
 
+    it('still says it for a readable PIN with a start date, which lock sync never matches back', () => {
+      renderWithProviders(<CardWithRetry code={stuck({ pin: '4321', startAt: '2026-11-01T12:00:00Z' })} />)
+
+      expect(screen.getByText(STUCK)).toBeTruthy()
+    })
+
     it('says nothing for a manual code', () => {
       renderWithProviders(<CardWithRetry code={stuck({ source: 'manual' })} />)
 

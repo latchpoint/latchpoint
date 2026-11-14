@@ -17,12 +17,16 @@ from datetime import timedelta
 
 from django.db import transaction
 from django.utils import timezone
+from integrations_zwavejs.manager import ZwavejsCommandError
 
 from locks.models import DoorCode, DoorCodeEvent, DoorCodeLockAssignment
+from locks.tests.test_added_lock_reconcile import TIMEOUT
 from locks.tests.test_off_synced_code_added_locks import _OffTestBase
 from locks.tests.test_synced_code_locks import OTHER_PIN
 from locks.use_cases import added_lock_reconcile as reconcile_uc
+from locks.use_cases import door_codes as door_codes_uc
 from locks.use_cases import lock_config_sync as lock_config_sync_uc
+from locks.use_cases import lock_push as lock_push_uc
 
 
 class _RelinkTestBase(_OffTestBase):
@@ -140,7 +144,9 @@ class RelinkTests(_RelinkTestBase):
         result = self._sync_front(gateway)
 
         row = self._slot_row(result, 3)
-        self.assertEqual((row.door_code_id, result.created), (master.id, 0))
+        # Nothing on the code changed, but its row got the slot back.
+        self.assertEqual((row.action, row.door_code_id), ("updated", master.id))
+        self.assertEqual((result.created, result.updated, result.unchanged), (0, 1, 0))
         self.assertIn("relinked", row.warnings)
         master.refresh_from_db()
         self.assertFalse(master.is_active)
@@ -234,14 +240,144 @@ class NoRelinkTests(_RelinkTestBase):
 
         self._assert_imported_as_new(master, self._sync_front(gateway), 3)
 
-    def test_a_code_whose_delete_was_refused_imports_a_new_code(self):
+    def test_a_code_with_a_start_date_imports_a_new_code(self):
         master, gateway = self._released()
-        DoorCodeEvent.objects.create(
+        DoorCode.objects.filter(id=master.id).update(start_at=timezone.now() - timedelta(days=1))
+        self._type_at_front(gateway, 3)
+
+        self._assert_imported_as_new(master, self._sync_front(gateway), 3)
+
+    def test_a_clear_still_owed_imports_a_new_code(self):
+        # It's what has the sync skip a tracked slot too: the code's PIN may still be somewhere.
+        master, gateway = self._released()
+        lock_push_uc.record_clear_failure(
             door_code=master,
-            user=self.user,
-            event_type=DoorCodeEvent.EventType.CODE_UPDATED,
-            metadata={"updated_fields": ["is_active"], "reason": "delete_refused"},
+            lock_entity_id=self.BACK,
+            slot_index=2,
+            exc=ZwavejsCommandError("driver TimeoutError after 5.0s"),
+            expected_pin=self.PIN,
         )
+        self.assertTrue(lock_push_uc.unresolved_clear_failures(door_code=master))
+        self._type_at_front(gateway, 3)
+
+        self._assert_imported_as_new(master, self._sync_front(gateway), 3)
+
+    def test_with_no_record_of_lock_sync_letting_go_it_imports_a_new_code(self):
+        # Only a turn-off on record as lock sync's can be undone by typing the PIN again.
+        master, gateway = self._released()
+        DoorCodeEvent.objects.filter(door_code=master, metadata__action="deactivated").delete()
+        self._type_at_front(gateway, 3)
+
+        self._assert_imported_as_new(master, self._sync_front(gateway), 3)
+
+    def test_event_retention_keeps_what_the_match_goes_by(self):
+        master, gateway = self._released()
+        self._run_retention(DoorCodeEvent.objects.filter(door_code=master))
+        self.assertTrue(DoorCodeEvent.objects.filter(door_code=master, metadata__action="deactivated").exists())
+        self._type_at_front(gateway, 3)
+
+        self.assertEqual(self._sync_front(gateway).created, 0)
+        self.assertTrue(DoorCode.objects.get(id=master.id).is_active)
+
+
+class UsedUpTests(_RelinkTestBase):
+    """A code retired at its last use (#145) is let go of the same way, but stays off."""
+
+    def _used_up(self) -> tuple[DoorCode, object]:
+        gateway = self._gateway()
+        master = self._master(gateway)
+        DoorCode.objects.filter(id=master.id).update(max_uses=3, uses_count=3)
+        retired = door_codes_uc.retire_door_code(
+            code=DoorCode.objects.get(id=master.id), reason="exhausted", zwavejs=gateway
+        )
+        self.assertIsNotNone(retired)
+        master.refresh_from_db()
+        self.assertFalse(master.is_active)
+        # It looks like a slot lock sync let go of.
+        self.assertEqual(self._slots(master), {self.FRONT: None})
+        self.assertEqual(self._lock_codes(gateway, 14), {})
+        gateway.invoke_calls.clear()
+        return master, gateway
+
+    def test_its_pin_typed_in_again_is_a_new_code(self):
+        master, gateway = self._used_up()
+        self._type_at_front(gateway, 1)
+
+        self._assert_imported_as_new(master, self._sync_front(gateway), 1)
+        # Its next validity tick has nothing to retire, so the PIN stays on the lock.
+        self.assertEqual(self._lock_codes(gateway, 14), {1: self.PIN})
+
+    def test_nor_once_it_has_uses_left_again(self):
+        # No longer used up, but latchpoint turned it off after lock sync last let go of it.
+        master, gateway = self._used_up()
+        DoorCode.objects.filter(id=master.id).update(max_uses=10)
+        self._type_at_front(gateway, 1)
+
+        self._assert_imported_as_new(master, self._sync_front(gateway), 1)
+
+    def test_nor_after_event_retention_when_lock_sync_let_go_of_it_before(self):
+        # Released by lock sync and matched back once, then retired at its last use.
+        master, gateway = self._released()
+        self._type_at_front(gateway, 3)
+        self._sync_front(gateway)
+        self.assertTrue(DoorCode.objects.get(id=master.id).is_active)
+        DoorCode.objects.filter(id=master.id).update(max_uses=3, uses_count=3)
+        door_codes_uc.retire_door_code(code=DoorCode.objects.get(id=master.id), reason="exhausted", zwavejs=gateway)
+        self.assertEqual(self._slots(master), {self.FRONT: None})
+        DoorCode.objects.filter(id=master.id).update(max_uses=10)
+        # Retention keeps the newest of each, so the retire still comes after the release.
+        self._run_retention(DoorCodeEvent.objects.filter(door_code=master))
+        self.assertTrue(DoorCodeEvent.objects.filter(door_code=master, metadata__reason="exhausted").exists())
+        self._type_at_front(gateway, 4)
+
+        self._assert_imported_as_new(master, self._sync_front(gateway), 4)
+
+
+class RefusedDeleteTests(_RelinkTestBase):
+    """Someone wanted the code gone, so its PIN typed in again is never matched back to it."""
+
+    def _refuse_delete(self, master: DoorCode, gateway) -> None:
+        gateway._get_scripts[12] = [TIMEOUT] * 20
+        response = self._delete(master, gateway)
+        self.assertEqual(response.status_code, 502, response.content)
+        self.assertIn("wasn't deleted", response.json()["error"]["message"])
+        # The Back Door answers again and the scheduler finishes its clear, so nothing is owed.
+        gateway._get_scripts[12] = []
+        self._push_pending(gateway)
+        self.assertEqual(lock_push_uc.unresolved_clear_failures(door_code=master), [])
+        self.assertEqual(self._lock_codes(gateway, 12), {1: OTHER_PIN})
+        gateway.invoke_calls.clear()
+
+    def _refused_events(self, master: DoorCode):
+        return DoorCodeEvent.objects.filter(door_code=master, metadata__reason=door_codes_uc.DELETE_REFUSED_REASON)
+
+    def test_a_code_that_was_on(self):
+        master, gateway = self._master_on_both()
+        self._refuse_delete(master, gateway)
+        master.refresh_from_db()
+        self.assertFalse(master.is_active)
+        self.assertEqual(self._slots(master), {self.FRONT: None, self.BACK: None})
+        self.assertEqual(self._refused_events(master).get().metadata["updated_fields"], ["is_active"])
+        self._type_at_front(gateway, 3)
+
+        self._assert_imported_as_new(master, self._sync_front(gateway), 3)
+
+    def test_a_code_lock_sync_had_already_turned_off(self):
+        # Off at the Front Door already, its PIN still waiting to come off the Back Door.
+        master, gateway = self._master_on_both()
+        master = self._release_front(master, gateway)
+        self._refuse_delete(master, gateway)
+        self.assertEqual(self._refused_events(master).get().metadata["updated_fields"], [])
+        self._type_at_front(gateway, 3)
+
+        self._assert_imported_as_new(master, self._sync_front(gateway), 3)
+
+    def test_after_event_retention(self):
+        master, gateway = self._master_on_both()
+        master = self._release_front(master, gateway)
+        self._refuse_delete(master, gateway)
+        self._run_retention(DoorCodeEvent.objects.filter(door_code=master))
+        self.assertTrue(self._refused_events(master).exists())
         self._type_at_front(gateway, 3)
 
         self._assert_imported_as_new(master, self._sync_front(gateway), 3)
@@ -310,6 +446,41 @@ class AddedLockTests(_RelinkTestBase):
         self.assertIsNone(back.reconcile_requested_at)
         master.refresh_from_db()
         self.assertEqual((master.push_state, master.last_push_error), (DoorCode.PushState.PUSHED, ""))
+
+    def test_a_schedule_only_the_value_cache_has_isnt_taken(self):
+        # The cache says Mon-Fri for the slot, a live CC 78 read says there's none (#220's rule).
+        master, gateway = self._released_on_both()
+        live: list = [None]
+        self._front_schedule_from_cache(gateway, live)
+        self._type_at_front(gateway, 1)
+
+        row = self._slot_row(self._sync_front(gateway, days=self.WEEKDAYS), 1)
+
+        self.assertEqual(row.door_code_id, master.id)
+        self.assertIn("relinked", row.warnings)
+        self.assertIn("schedule_change_unconfirmed", row.warnings)
+        master.refresh_from_db()
+        self.assertTrue(master.is_active)
+        self.assertIsNone(master.days_of_week)
+        self._push_requested(gateway)
+        self.assertEqual(self._back(master).written_schedule, "")
+
+    def test_a_schedule_the_lock_confirms_is_taken_and_sent_on(self):
+        master, gateway = self._released_on_both()
+        live: list = [(self.WEEKDAYS, (8, 0), (18, 0))]
+        self._front_schedule_from_cache(gateway, live)
+        self._type_at_front(gateway, 1)
+
+        row = self._slot_row(self._sync_front(gateway, days=self.WEEKDAYS), 1)
+
+        self.assertEqual(row.door_code_id, master.id)
+        self.assertNotIn("schedule_change_unconfirmed", row.warnings)
+        self.assertIn("sent_to_other_locks", row.warnings)
+        master.refresh_from_db()
+        self.assertTrue(master.is_active)
+        self.assertEqual(master.days_of_week, self.WEEKDAYS)
+        self._push_requested(gateway)
+        self.assertEqual(self._back(master).written_schedule, "31|08:00|18:00")
 
     def test_a_take_off_still_waiting_stops_and_the_pin_stays_on_the_added_lock(self):
         # #226: the Back Door is flagged to have the PIN taken off, but the reconcile hasn't run yet.
