@@ -62,7 +62,12 @@ The request saves and returns, and a fast scheduler task makes the push.
   came after, plus `locks_to_push`'s rule. Each lock waits up to 10s for its
   `lock_sync:` lock instead of try-lock-and-fail, is checked again once held,
   and is pushed with `push_requested_by` as the `code_synced` actor. A lock
-  still busy after the wait stays queued for the next tick. A lock dropped
+  still busy after the wait stays queued for the next tick. So does a lock a
+  door code save is waiting for, which the task doesn't take at all (issue
+  #203): a save marks the locks it's still waiting for with a shared advisory
+  lock the task looks for in `pg_locks`, so a save behind a code's queued push
+  waits for one lock's push instead of one per lock. A push already running is
+  never cut short for it, and an added lock's reconcile gives way the same way. A lock dropped
   while the task waited sends nothing (`PushSuperseded`) and the code's other
   locks carry on, unless the code itself is gone, off or out of its dates. Each
   code ends with `refresh_push_state`. A run that passes 600s is reported as
@@ -87,7 +92,9 @@ The request saves and returns, and a fast scheduler task makes the push.
   lock (ADR-0112). Otherwise (`SCHEDULER_ENABLED=False`, tests) they push
   inline like before, with the same 30s per lock, and
   don't stamp anything. A DB error while queueing is logged and doesn't fail a
-  save that already happened. Update still clears under its `lock_sync:` hold, but
+  save that already happened, and each pending lock with no error of its own
+  says so in `last_push_error`. Any other error there is a bug, so it's raised
+  in dev and tests like `PushInTransaction` (issue #203). Update still clears under its `lock_sync:` hold, but
   queues the push there and makes an inline one only after letting go. Retry
   keeps its checks, 409s, reset, re-arm and clear retries in the request,
   then queues the push. Its clear retries share a 15s budget, lock waits
@@ -133,6 +140,10 @@ The request saves and returns, and a fast scheduler task makes the push.
   budget, so its attempts count and the cap still applies. A lock that times
   out on its first calls counts from the queue too.
 - The idle tick adds one cheap query every 5s.
+- The 30s per lock budget, the 10s lock wait, Retry's 15s clear budget and
+  the 10 minute TTL are guesses, not timed on the Yales. So is update and
+  delete's 45s lock wait, which is built on the 30s. Timing them needs QA on
+  the real locks (issue #203).
 - An inactive code's Retry still clears in the request without a budget, and
   so do update and delete.
 
