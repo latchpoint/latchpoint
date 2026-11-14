@@ -2,7 +2,6 @@ import { FormField } from '@/components/ui/form-field'
 import { Input } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
 import type { DoorCodeTypeOption } from '@/features/doorCodes/components/DoorCodeCreateForm'
-import { MAX_USES_ENFORCED } from '@/features/doorCodes/utils/maxUses'
 
 type Props = {
   codeType: DoorCodeTypeOption
@@ -62,19 +61,17 @@ export function DoorCodeCreateBasicsFields({
         />
       </FormField>
 
-      {MAX_USES_ENFORCED ? (
-        <FormField label="Max uses (optional)" htmlFor="door-code-create-max-uses" help="Leave blank for unlimited uses.">
-          <Input
-            id="door-code-create-max-uses"
-            type="number"
-            min={1}
-            step={1}
-            value={maxUses}
-            onChange={(e) => onMaxUsesChange(e.target.value)}
-            disabled={isBusy}
-          />
-        </FormField>
-      ) : null}
+      <FormField label="Max uses (optional)" htmlFor="door-code-create-max-uses" help="Leave blank for unlimited uses.">
+        <Input
+          id="door-code-create-max-uses"
+          type="number"
+          min={1}
+          step={1}
+          value={maxUses}
+          onChange={(e) => onMaxUsesChange(e.target.value)}
+          disabled={isBusy}
+        />
+      </FormField>
     </div>
   )
 }

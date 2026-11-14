@@ -118,11 +118,12 @@ export function DoorCodePushStatusBadge({ code, lockNameByEntityId, canRetry, is
       </div>
     )
   }
-  if (code.isActive && code.validity === 'expired') {
+  // A used up code is retired the same way, within moments of its last use.
+  if (code.isActive && (code.validity === 'expired' || code.validity === 'exhausted')) {
     return (
       <div className="flex items-center gap-2">
         <Badge variant="outline" title={code.lastPushError || undefined}>
-          Expired
+          {code.validity === 'expired' ? 'Expired' : 'Used up'}
         </Badge>
         <span className="text-xs text-muted-foreground">
           {`(removing from ${multiLock ? 'its locks' : 'lock'})`}

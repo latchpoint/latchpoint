@@ -9,10 +9,11 @@ from rest_framework import serializers
 from alarm.crypto import SettingsEncryption
 
 from .models import DoorCode, DoorCodeLockAssignment
-from .use_cases.code_lifecycle import ended_by, validity
+from .use_cases.code_lifecycle import ended_by, use_limit_for, validity
 
 _END_AT_IN_PAST = "end_at must be in the future."
 _ACTIVE_WHEN_EXPIRED = "This code has expired. Set a later end_at to turn it back on."
+_ACTIVE_WHEN_USED_UP = "This code is used up. Raise max_uses above its uses to turn it back on."
 # end_at is exclusive, so a code that ends when it starts is never valid (issue #145).
 _END_AT_NOT_AFTER_START = "end_at must be after start_at."
 # A synced code's dates are only editable while it has an end_at, so clearing it
@@ -515,6 +516,12 @@ class DoorCodeUpdateSerializer(serializers.Serializer):
             raise serializers.ValidationError({"end_at": _END_AT_IN_PAST})
         if attrs.get("is_active") is True and ended_by(attrs.get("end_at", instance.end_at), now=now):
             raise serializers.ValidationError({"is_active": _ACTIVE_WHEN_EXPIRED})
+        # A used up code stays off until max_uses is raised past its count, in
+        # the same save or before it. Lowering max_uses to the count or below is
+        # fine, the update retires the code (issue #145).
+        limit = use_limit_for(code_type=instance.code_type, max_uses=attrs.get("max_uses", instance.max_uses))
+        if attrs.get("is_active") is True and limit is not None and (instance.uses_count or 0) >= limit:
+            raise serializers.ValidationError({"is_active": _ACTIVE_WHEN_USED_UP})
 
         updates_time_range = any(
             key in attrs for key in ["start_at", "end_at", "days_of_week", "window_start", "window_end"]

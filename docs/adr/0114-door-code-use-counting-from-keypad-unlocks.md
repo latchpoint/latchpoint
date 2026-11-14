@@ -28,7 +28,7 @@ sends one unlock twice.
 ## Decision
 
 Count uses from those events on the existing bridge, and only count. Turning a
-used up code off is the next change.
+used up code off was the next change, see Consequences.
 
 - **Parser.** `locks/keypad_events.py` `parse_keypad_unlock` is pure. It
   returns `KeypadUnlock(node_id, slot, event)` only for ccId 113, type 6, event
@@ -99,8 +99,17 @@ used up code off is the next change.
   records an unmatched use.
 - The INFO log also has CC 113 events from other devices, ie sensors that
   report through the Notification CC.
-- A used up code keeps working. The next change retires it through
-  `enforce_door_code_validity` and shows the limit in the UI.
+- A used up code is retired (issue #145 part 2b, see the update in ADR-0109).
+  `record_keypad_use` wakes `enforce_door_code_validity` with
+  `transaction.on_commit` when the use it counted reaches the code's limit,
+  and that task's exhausted pass retires it through `retire_door_code`. The
+  counting thread still turns nothing off and does no Z-Wave I/O, so ADR-0100
+  holds. The listener and the task both run in the process with the runtime
+  lock (ADR-0112), so the wake reaches it there. A missed wake only means
+  waiting for the next 60s tick.
+- Every writer of a code besides the count still leaves `uses_count`,
+  `last_used_at` and `last_used_lock` alone, the retire included, since it
+  goes through the same `_save_unless_deleted`.
 
 ## Related ADRs
 

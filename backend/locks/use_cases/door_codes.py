@@ -15,7 +15,7 @@ from accounts.policies import is_admin
 from alarm.crypto import SettingsEncryption
 from config.domain_exceptions import ConflictError, ForbiddenError, GatewayError, NotFoundError, ValidationError
 from locks.models import DoorCode, DoorCodeEvent, DoorCodeLockAssignment
-from locks.use_cases.code_lifecycle import is_expired, is_started, starts_by
+from locks.use_cases.code_lifecycle import is_exhausted, is_expired, is_started, starts_by
 
 logger = logging.getLogger(__name__)
 
@@ -310,7 +310,10 @@ def update_door_code(
 
     Waits for a push or config sync already running on one of those locks, and
     raises :class:`LockBusy` (409) without changing anything when one is still
-    running at the wait limit. See :func:`_update_door_code_locked`.
+    running at the wait limit. See :func:`_update_door_code_locked`. An active
+    code the update leaves used up (``max_uses`` lowered to its count or below)
+    is retired right after (:func:`retire_door_code`), or by the scheduler when
+    that fails.
 
     Its push isn't made while those locks are held (issue #124): it's queued
     for the scheduler, or where that doesn't run in this process it goes out
@@ -322,12 +325,34 @@ def update_door_code(
         code, push_inline = _update_door_code_locked(
             code=code, changes=changes, actor_user=actor_user, zwavejs=zwavejs, convert_without_import_lock=True
         )
+    if zwavejs is not None and code.is_active and is_exhausted(code):
+        # Its max_uses was lowered to its count or below (issue #145). Nothing
+        # pushes a used up code, so it's retired now the way the scheduler would.
+        try:
+            retired = retire_door_code(code=code, reason="exhausted", zwavejs=zwavejs)
+        except Exception:
+            logger.warning(
+                "Couldn't retire used up door code id=%d after its update; leaving it to the scheduler",
+                code.id,
+                exc_info=True,
+            )
+            retired = None
+        if retired is not None:
+            return retired
     if push_inline and zwavejs is not None:
         fresh = DoorCode.objects.prefetch_related("lock_assignments").filter(id=code.id).first()
         if fresh is not None:
             _push_to_assigned_locks_best_effort(code=fresh, zwavejs=zwavejs, actor_user=actor_user)
             code = fresh
     return code
+
+
+# What a retire checks again on the fresh row, by its reason (issue #145). A code
+# that no longer meets it (a later end_at, a higher max_uses) is left alone.
+_RETIRE_CHECKS = {
+    "expired": lambda code, now: is_expired(code, now=now),
+    "exhausted": lambda code, now: is_exhausted(code),
+}
 
 
 def retire_door_code(
@@ -337,11 +362,13 @@ def retire_door_code(
     zwavejs: ZwavejsGateway,
     now=None,
 ) -> DoorCode | None:
-    """Turn off a code that's past its ``end_at`` and take it off its locks (issue #145).
+    """Turn off a code that's past its ``end_at`` or used up and take it off its locks (issue #145).
 
+    ``reason`` is ``expired`` or ``exhausted`` (see :data:`_RETIRE_CHECKS`).
     Holds the ``lock_sync:`` locks like an update (:func:`_hold_door_code_locks`),
-    then checks the row it read again once they're held: a code turned off,
-    given a later ``end_at`` or deleted while this waited is left alone. Anything
+    then checks the row it read again for that reason once they're held: a code
+    turned off, given a later ``end_at`` or a higher ``max_uses``, or deleted
+    while this waited is left alone. Anything
     else goes through the same locked update a user's deactivate does, so its
     tracked and unconfirmed slots get cleared and a clear that fails is recorded
     for the scheduler's retries, attempt cap and #167 inactive clear. ``reason``
@@ -361,10 +388,13 @@ def retire_door_code(
     on this code and a warning, since it may be someone's own keypad code that
     happens to share the PIN (PR #211 review).
     """
+    still_due = _RETIRE_CHECKS.get(reason)
+    if still_due is None:
+        raise ValueError(f"Unknown retire reason {reason!r}")
     try:
         with _hold_door_code_locks(code=code):
             check_at = now if now is not None else django_timezone.now()
-            if not code.is_active or not is_expired(code, now=check_at):
+            if not code.is_active or not still_due(code, check_at):
                 return None
             copies = [
                 (
@@ -2083,8 +2113,8 @@ def retry_push_door_code(
     only retried when it has clears outstanding (a clear failure on record, or a
     slot it may still hold), which are retried and withdrawn without pushing it,
     and it gets a 409 when there's nothing to clear. An active code past its
-    ``end_at`` that the scheduler hasn't turned off yet is retired right away
-    (:func:`retire_door_code`) instead of being retried (PR #183 review).
+    ``end_at`` or used up that the scheduler hasn't turned off yet is retired
+    right away (:func:`retire_door_code`) instead of being retried (PR #183 review).
 
     The clear retries run in the request but only for
     :data:`_RETRY_CLEAR_BUDGET_SECONDS` together; the ones that don't fit stay
@@ -2112,12 +2142,13 @@ def retry_push_door_code(
         # Deleted while the Retry ran is a 404, not a DoesNotExist 500 (issue #189).
         return get_door_code_for_read(code_id=code.id)
 
-    if code.is_active and is_expired(code):
+    retire_reason = "expired" if is_expired(code) else "exhausted" if is_exhausted(code) else None
+    if code.is_active and retire_reason is not None:
         # Resetting a failed push to pending here would zero the attempt cap and
         # could mark it pushed, so take it off its locks now like the scheduler would.
-        if retire_door_code(code=code, reason="expired", zwavejs=zwavejs) is not None:
+        if retire_door_code(code=code, reason=retire_reason, zwavejs=zwavejs) is not None:
             return fresh()
-        # Left alone: turned off, given a later end_at or deleted meanwhile.
+        # Left alone: turned off, given a later end_at or max_uses, or deleted meanwhile.
         try:
             code.refresh_from_db()
         except DoorCode.DoesNotExist as exc:

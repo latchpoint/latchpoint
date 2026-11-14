@@ -5,7 +5,7 @@ import { DoorCodeEditPanel } from '@/features/doorCodes/components/DoorCodeEditP
 import { toDatetimeLocalValue, toUtcIsoFromDatetimeLocal } from '@/features/codes/utils/datetimeLocal'
 import { daysMaskToSet, daysSetToMask } from '@/features/codes/utils/daysOfWeek'
 import { parseOptionalTimeWindow, validateDigitsPin } from '@/features/codes/utils/validation'
-import { parseOptionalMaxUses } from '@/features/doorCodes/utils/maxUses'
+import { limitOfUses, parseOptionalMaxUses } from '@/features/doorCodes/utils/maxUses'
 import { isSyncedValidityEditable } from '@/features/doorCodes/utils/syncedValidity'
 
 type Props = {
@@ -222,6 +222,11 @@ export function DoorCodeEditContainer({ code, locks, locksIsLoading, locksError,
   const isExpired = dateRangeField.isEdited
     ? editedEndAt != null && new Date(editedEndAt).getTime() <= rangeEditedAt
     : code.validity === 'expired'
+  // Used up with the max uses the save would send (#145). A max uses that
+  // doesn't parse is left to the save's own error.
+  const editedMaxUses = parseOptionalMaxUses(editMaxUses)
+  const editedLimit = limitOfUses(code.codeType, editedMaxUses.error ? code.maxUses : editedMaxUses.value)
+  const isUsedUp = editedLimit != null && code.usesCount >= editedLimit
 
   const resolvedLockEntityIds = useMemo(() => {
     const locksFromPicker = Array.from(editSelectedLocks)
@@ -385,6 +390,7 @@ export function DoorCodeEditContainer({ code, locks, locksIsLoading, locksError,
       editIsActive={editIsActive}
       onEditIsActiveChange={setEditIsActive}
       isExpired={isExpired}
+      isUsedUp={isUsedUp}
       editStartAtLocal={editDateRange.start}
       editEndAtLocal={editDateRange.end}
       onActiveWindowChange={(next) => {

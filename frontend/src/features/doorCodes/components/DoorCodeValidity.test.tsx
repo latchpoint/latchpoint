@@ -199,6 +199,17 @@ describe('push status badge', () => {
     expect(screen.getByText('Not on lock')).toBeTruthy()
   })
 
+  it('says a used up code that is still on is coming off, without Retry', () => {
+    renderBadge(
+      makeCode({ validity: 'exhausted', maxUses: 1, usesCount: 1, pushState: 'pushed', lockSlotAssignments: onSlot }),
+    )
+
+    expect(screen.getByText('Used up')).toBeTruthy()
+    expect(screen.getByText('(removing from lock)')).toBeTruthy()
+    expect(screen.queryByText(/On lock/)).toBeNull()
+    expect(screen.queryByRole('button', { name: /Retry/ })).toBeNull()
+  })
+
   it('keeps the existing states for a valid code', () => {
     renderBadge(makeCode({ validity: 'valid', pushState: 'pushed', lockSlotAssignments: onSlot }))
 
@@ -215,17 +226,49 @@ describe('card', () => {
     expect(screen.getByText('Expired')).toBeTruthy()
   })
 
-  it("says max uses isn't enforced on a code that has one", () => {
-    renderCard(makeCode({ maxUses: 3 }))
+  it('shows uses out of the max on a code that has one', () => {
+    renderCard(makeCode({ maxUses: 3, usesCount: 1 }))
 
-    expect(screen.getByText(/Max uses: 3/)).toBeTruthy()
-    expect(screen.getByText("Max uses isn't enforced yet")).toBeTruthy()
+    expect(screen.getByText(/Uses: 1 of 3/)).toBeTruthy()
+    expect(screen.queryByText(/isn't enforced/)).toBeNull()
   })
 
-  it("doesn't mention max uses on a code without one", () => {
-    renderCard(makeCode())
+  it('shows just the uses on a code without a max', () => {
+    renderCard(makeCode({ usesCount: 4 }))
 
+    expect(screen.getByText(/Uses: 4/)).toBeTruthy()
+    expect(screen.queryByText(/ of /)).toBeNull()
     expect(screen.queryByText(/Max uses/)).toBeNull()
+  })
+
+  it('counts a one-time code out of one', () => {
+    renderCard(makeCode({ codeType: 'one_time', daysOfWeek: null }))
+
+    expect(screen.getByText(/Uses: 0 of 1/)).toBeTruthy()
+  })
+
+  it('says why a used up code is off', () => {
+    renderCard(
+      makeCode({
+        validity: 'exhausted',
+        isActive: false,
+        maxUses: 2,
+        usesCount: 2,
+        pushState: 'pushed',
+        lockSlotAssignments: noSlot,
+      }),
+    )
+
+    expect(screen.getByText('Inactive')).toBeTruthy()
+    expect(screen.getByText('Used up')).toBeTruthy()
+    expect(screen.getByText(/Uses: 2 of 2/)).toBeTruthy()
+    expect(screen.queryByText('Expired')).toBeNull()
+  })
+
+  it("doesn't say used up on a code that's off but has uses left", () => {
+    renderCard(makeCode({ isActive: false, maxUses: 2, usesCount: 1, pushState: 'pushed', lockSlotAssignments: noSlot }))
+
+    expect(screen.queryByText('Used up')).toBeNull()
   })
 })
 
@@ -239,10 +282,57 @@ describe('edit form', () => {
       endAt: '2026-10-02T12:00:00Z',
     })
 
-  it('hides max uses', () => {
+  it('shows max uses', () => {
     renderEditForm(makeCode({ maxUses: 3 }))
 
-    expect(screen.queryByLabelText('Max uses (optional)')).toBeNull()
+    expect(screen.getByLabelText('Max uses (optional)')).toHaveValue(3)
+  })
+
+  const usedUpOff = () =>
+    makeCode({ validity: 'exhausted', isActive: false, maxUses: 2, usesCount: 2, pushState: 'pushed' })
+
+  it("won't turn a used up code back on and says why", () => {
+    renderEditForm(usedUpOff())
+
+    expect(activeSwitch()).toBeDisabled()
+    expect(screen.getByText('(Used up, raise Max uses above its uses to turn it on)')).toBeTruthy()
+  })
+
+  it('keeps the toggle disabled while max uses is still at or below the uses', () => {
+    renderEditForm(usedUpOff())
+
+    fireEvent.change(screen.getByLabelText('Max uses (optional)'), { target: { value: '1' } })
+
+    expect(activeSwitch()).toBeDisabled()
+  })
+
+  it('lets a used up code be turned on once max uses is raised', async () => {
+    const onUpdate = renderEditForm(usedUpOff())
+
+    fireEvent.change(screen.getByLabelText('Max uses (optional)'), { target: { value: '5' } })
+    expect(activeSwitch()).not.toBeDisabled()
+    fireEvent.click(activeSwitch())
+    fireEvent.change(screen.getByLabelText(/Re-authenticate/), { target: { value: 'pw' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => expect(onUpdate).toHaveBeenCalledTimes(1))
+    expect(onUpdate.mock.calls[0][1]).toEqual({ reauthPassword: 'pw', isActive: true, maxUses: 5 })
+  })
+
+  it('lets a used up code be turned on once max uses is cleared', () => {
+    renderEditForm(usedUpOff())
+
+    fireEvent.change(screen.getByLabelText('Max uses (optional)'), { target: { value: '' } })
+
+    expect(activeSwitch()).not.toBeDisabled()
+  })
+
+  it('keeps a used one-time code off until it gets a max uses', () => {
+    renderEditForm(makeCode({ ...usedUpOff(), codeType: 'one_time', daysOfWeek: null, maxUses: null, usesCount: 1 }))
+
+    expect(activeSwitch()).toBeDisabled()
+    fireEvent.change(screen.getByLabelText('Max uses (optional)'), { target: { value: '2' } })
+    expect(activeSwitch()).not.toBeDisabled()
   })
 
   it("won't turn an expired code back on and says why", () => {
@@ -501,6 +591,15 @@ describe('isDoorCodeSettling', () => {
       true,
     )
     expect(isDoorCodeSettling(makeCode({ validity: 'expired', pushState: 'failed' }))).toBe(true)
+  })
+
+  it('polls while a used up code is still on, until the scheduler retires it', () => {
+    expect(isDoorCodeSettling(makeCode({ validity: 'exhausted', pushState: 'pushed', lockSlotAssignments: onSlot }))).toBe(
+      true,
+    )
+    expect(
+      isDoorCodeSettling(makeCode({ validity: 'exhausted', isActive: false, pushState: 'pushed', lockSlotAssignments: noSlot })),
+    ).toBe(false)
   })
 
   it("doesn't poll for an expired code that's off and cleared", () => {
