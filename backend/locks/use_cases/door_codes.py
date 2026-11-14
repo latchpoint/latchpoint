@@ -1658,15 +1658,22 @@ def _update_door_code_locked(
     return code, push_inline
 
 
-def door_codes_on_locks(*, users) -> QuerySet[DoorCode]:
-    """The ``users``' door codes that are on a lock, ie have a lock assignment (issue #235).
+def door_codes_on_locks(*, users) -> list[DoorCode]:
+    """The ``users``' door codes that may be on a lock (issue #235), with ``user`` loaded.
 
     Deleting a user cascades their door codes without :func:`delete_door_code`,
     so nothing clears them off the locks and their PINs keep opening the doors
     untracked. These codes keep the user from being deleted until they're
-    deleted the normal way. A code with no assignment can still cascade.
+    deleted the normal way. A code may be on a lock when
+    :func:`~locks.use_cases.lock_push.affected_lock_entity_ids` has one for it,
+    the locks its delete works from: an assigned lock, or one it was dropped
+    from with a clear failure or an unconfirmed push still open (PR #236
+    review). Any other code can still cascade.
     """
-    return DoorCode.objects.filter(user__in=users, lock_assignments__isnull=False).distinct().order_by("id")
+    from locks.use_cases.lock_push import affected_lock_entity_ids
+
+    codes = DoorCode.objects.filter(user__in=users).select_related("user").order_by("id")
+    return [code for code in codes if affected_lock_entity_ids(door_code=code)]
 
 
 def user_delete_refused_message(users) -> str:
@@ -1688,7 +1695,7 @@ def refuse_deleting_user_with_door_codes_on_locks(sender, instance, **kwargs) ->
     breaks it unless the delete has its own ``atomic``. The Django admin
     refuses before it gets here (``accounts.admin.UserAdmin``).
     """
-    codes = list(door_codes_on_locks(users=[instance]))
+    codes = door_codes_on_locks(users=[instance])
     if codes:
         raise ProtectedError(user_delete_refused_message([instance]), set(codes))
 

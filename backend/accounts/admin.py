@@ -85,7 +85,7 @@ class UserAdmin(BaseUserAdmin):
         from locks.use_cases.door_codes import door_codes_on_locks, user_delete_refused_message
 
         to_delete, model_count, perms_needed, protected = super().get_deleted_objects(objs, request)
-        on_locks = list(door_codes_on_locks(users=objs).select_related("user"))
+        on_locks = door_codes_on_locks(users=objs)
         if on_locks:
             protected = [*protected, *(f"Door code: {code.label or f'#{code.id}'} ({code.user})" for code in on_locks)]
             users = {code.user for code in on_locks}

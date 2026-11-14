@@ -7,14 +7,21 @@ Deleting the codes first clears them off the locks the normal way.
 
 from __future__ import annotations
 
+from unittest.mock import patch
+
+from django.core.management import call_command
+from django.core.management.base import CommandError
 from django.db import transaction
 from django.db.models import ProtectedError
 from django.urls import reverse
 
 from accounts.models import User
+from alarm.models import Entity
 from locks.models import DoorCode, DoorCodeLockAssignment
-from locks.tests.test_lock_push import ClearFailingGateway, _TwoLockUpdateTestBase
+from locks.tests.test_lock_push import AVAILABLE_BEFORE_SET, ClearFailingGateway, _TwoLockUpdateTestBase
+from locks.tests.test_tracking_integrity import _holding, _timeouts
 from locks.use_cases import door_codes as door_codes_uc
+from locks.use_cases import lock_push as lock_push_uc
 
 REFUSED = "Delete their door codes first"
 
@@ -39,10 +46,10 @@ class _UserDeleteTestBase(_TwoLockUpdateTestBase):
         """(node, slot) of every slot holding a PIN on the fake locks, without the PINs."""
         return sorted(self.gateway._lock_codes)
 
-    def _assert_nothing_deleted(self, code: DoorCode) -> None:
+    def _assert_nothing_deleted(self, code: DoorCode, *, assigned: bool = True) -> None:
         self.assertTrue(User.objects.filter(id=self.member.id).exists())
         self.assertTrue(DoorCode.objects.filter(id=code.id).exists())
-        self.assertTrue(DoorCodeLockAssignment.objects.filter(door_code=code).exists())
+        self.assertEqual(DoorCodeLockAssignment.objects.filter(door_code=code).exists(), assigned)
 
 
 class OrmUserDeleteTests(_UserDeleteTestBase):
@@ -98,6 +105,87 @@ class OrmUserDeleteTests(_UserDeleteTestBase):
         self.assertFalse(User.objects.filter(id=self.member.id).exists())
 
 
+class DroppedLockUserDeleteTests(_UserDeleteTestBase):
+    """A code dropped from its only lock can still hold its PIN there with no assignment left (PR #236 review)."""
+
+    def _code_dropped_from_side(self, *, drop_readback: list) -> DoorCode:
+        """A code whose push to Side landed but every readback timed out, then dropped from Side.
+
+        ``drop_readback`` is what Side answers when the drop reads the slot back.
+        """
+        self.gateway._get_scripts = {13: [AVAILABLE_BEFORE_SET, *_timeouts()]}
+        code = self._member_code([self.SIDE])
+        self.assertEqual(self._slots(code), {self.SIDE: None})
+        self.assertEqual(self._slots_held(), [(13, 1)])
+        self.gateway._get_scripts = {13: list(drop_readback)}
+
+        door_codes_uc.update_door_code(
+            code=door_codes_uc.get_door_code_for_read(code_id=code.id),
+            changes={"lock_entity_ids": []},
+            actor_user=self.user,
+            zwavejs=self.gateway,
+        )
+
+        self.assertFalse(DoorCodeLockAssignment.objects.filter(door_code=code).exists())
+        self.assertEqual(self._slots_held(), [(13, 1)])
+        return code
+
+    # A real drop leaves both an unconfirmed attempt and a clear failure on Side,
+    # so each of the next two tests hides the other one to check its own alone.
+
+    def test_an_unconfirmed_push_on_a_dropped_lock_blocks_the_delete(self):
+        code = self._code_dropped_from_side(drop_readback=_timeouts())
+        self.assertEqual(lock_push_uc.unconfirmed_attempt_lock_entity_ids(door_code=code), [self.SIDE])
+
+        with (
+            patch.object(lock_push_uc, "unresolved_clear_failures", return_value=[]),
+            self.assertRaises(ProtectedError) as ctx,
+            transaction.atomic(),
+        ):
+            self.member.delete()
+
+        self.assertEqual(set(ctx.exception.protected_objects), {code})
+        self._assert_nothing_deleted(code, assigned=False)
+
+    def test_an_open_clear_failure_on_a_dropped_lock_blocks_the_delete(self):
+        # Side answers the drop's readback with the PIN, but the clear times out.
+        self.gateway.clear_fails_on = {13}
+        code = self._code_dropped_from_side(drop_readback=[_holding(self.PIN)])
+        self.assertEqual(
+            [f.lock_entity_id for f in lock_push_uc.unresolved_clear_failures(door_code=code)], [self.SIDE]
+        )
+
+        with (
+            patch.object(lock_push_uc, "unconfirmed_attempt_lock_entity_ids", return_value=[]),
+            self.assertRaises(ProtectedError) as ctx,
+            transaction.atomic(),
+        ):
+            self.member.delete()
+
+        self.assertEqual(set(ctx.exception.protected_objects), {code})
+        self._assert_nothing_deleted(code, assigned=False)
+
+    def test_the_admin_refuses_a_code_left_on_a_dropped_lock(self):
+        code = self._code_dropped_from_side(drop_readback=_timeouts())
+        self.client.force_login(self.user)
+
+        response = self.client.post(reverse("admin:accounts_user_delete", args=[self.member.pk]), {"post": "yes"})
+
+        self.assertContains(response, REFUSED)
+        self._assert_nothing_deleted(code, assigned=False)
+
+    def test_once_deleting_the_code_clears_the_dropped_lock_the_user_can_be_deleted(self):
+        code = self._code_dropped_from_side(drop_readback=_timeouts())
+        self.gateway._get_scripts = {13: [_holding(self.PIN)]}
+
+        door_codes_uc.delete_door_code(code=code, actor_user=self.user, zwavejs=self.gateway)
+        self.assertEqual(self._slots_held(), [])
+
+        self.member.delete()
+
+        self.assertFalse(User.objects.filter(id=self.member.id).exists())
+
+
 class AdminUserDeleteTests(_UserDeleteTestBase):
     def setUp(self):
         super().setUp()
@@ -128,10 +216,20 @@ class AdminUserDeleteTests(_UserDeleteTestBase):
         self._assert_nothing_deleted(code)
         self.assertEqual(self._slots_held(), [(12, 1)])
 
+    def test_a_code_on_two_locks_is_listed_once(self):
+        self._member_code([self.BACK, self.SIDE], label="Front gate")
+
+        response = self.client.get(self._delete_url(self.member))
+
+        self.assertEqual(len(response.context["protected"]), 1)
+        self.assertIn("Front gate", response.context["protected"][0])
+
     def test_bulk_delete_selected_is_refused_with_the_message(self):
         code = self._member_code([self.BACK])
-        other = User.objects.create_user(email="other@example.com", password="pass")
-        selected = {"action": "delete_selected", "_selected_action": [self.member.pk, other.pk]}
+        # Sorts before member@ in the admin's email ordering, so a check of only
+        # the first selected user would miss the one with the code.
+        other = User.objects.create_user(email="another@example.com", password="pass")
+        selected = {"action": "delete_selected", "_selected_action": [other.pk, self.member.pk]}
         url = reverse("admin:accounts_user_changelist")
 
         for data in (selected, {**selected, "post": "yes"}):
@@ -151,3 +249,25 @@ class AdminUserDeleteTests(_UserDeleteTestBase):
         self.assertEqual(response.status_code, 302)
         self.assertFalse(User.objects.filter(id=self.member.id).exists())
         self.assertFalse(DoorCode.objects.filter(id=code.id).exists())
+
+
+class SeedTestHomeUserDeleteTests(_UserDeleteTestBase):
+    def test_seeding_over_a_code_on_a_lock_fails_with_the_message_and_deletes_nothing(self):
+        from alarm.management.commands import seed_test_home
+
+        code = self._member_code([self.BACK])
+        entities = Entity.objects.count()
+        config = seed_test_home.SeedEntitiesConfig(
+            entry_entity_id="binary_sensor.front", motion_entity_id="binary_sensor.hall", extra_entity_ids=[]
+        )
+
+        with (
+            patch.object(seed_test_home, "_load_entities_config", return_value=config),
+            patch.object(seed_test_home.home_assistant, "get_status"),
+            self.assertRaises(CommandError) as ctx,
+        ):
+            call_command("seed_test_home", no_ha_sync=True)
+
+        self.assertIn(REFUSED, str(ctx.exception))
+        self._assert_nothing_deleted(code)
+        self.assertEqual(Entity.objects.count(), entities)

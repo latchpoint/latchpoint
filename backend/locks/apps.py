@@ -36,7 +36,8 @@ class LocksConfig(AppConfig):
         """A deleted user's codes keep their ``slot_empty`` markers like a deleted code's (issue #194).
 
         A user with door codes on a lock can't be deleted at all (issue #235).
-        That receiver is connected first, so it refuses before the markers move.
+        Its ``ProtectedError`` rolls back the delete's transaction, which undoes
+        anything the other receiver did whichever runs first.
         """
         from django.contrib.auth import get_user_model
         from django.db.models.signals import pre_delete
