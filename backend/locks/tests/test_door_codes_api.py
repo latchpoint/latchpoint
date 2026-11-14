@@ -6,6 +6,7 @@ from django.urls import reverse
 from rest_framework.test import APITestCase
 
 from accounts.models import User
+from alarm.crypto import SettingsEncryption
 from alarm.models import Entity
 from alarm.tests.settings_test_utils import EncryptionTestMixin
 from locks.models import DoorCode, DoorCodeEvent, DoorCodeLockAssignment
@@ -230,7 +231,8 @@ class DoorCodesApiTests(EncryptionTestMixin, APITestCase):
     def test_admin_can_update_door_code_lock_assignments(self):
         code = DoorCode.objects.create(
             user=self.user,
-            encrypted_pin="not-used-here",
+            # Readable, since adding a lock to a code without one is refused.
+            encrypted_pin=SettingsEncryption.get().encrypt("1234"),
             label="User code",
             code_type=DoorCode.CodeType.PERMANENT,
             pin_length=4,
@@ -547,7 +549,8 @@ class DoorCodesApiTests(EncryptionTestMixin, APITestCase):
     def test_manual_code_still_allows_all_fields(self):
         code = DoorCode.objects.create(
             user=self.user,
-            encrypted_pin="not-used-here",
+            # Readable, since adding a lock to a code without one is refused.
+            encrypted_pin=SettingsEncryption.get().encrypt("1234"),
             label="Manual code",
             code_type=DoorCode.CodeType.PERMANENT,
             pin_length=4,

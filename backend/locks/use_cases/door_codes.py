@@ -1017,15 +1017,16 @@ def _added_locks(*, code: DoorCode, changes: dict) -> list[str]:
 
 
 def _refuse_adding_locks_without_pin(*, code: DoorCode, changes: dict) -> None:
-    """Raise :class:`DoorCodePinUnknown` when this save adds a lock to a synced code without a readable PIN.
+    """Raise :class:`DoorCodePinUnknown` when this save adds a lock to a code without a readable PIN.
 
     A synced code imported from a lock that masks its codes has no stored PIN,
     and one whose stored PIN can't be decrypted is no better, so there's
-    nothing to push to the new lock. Removing locks is still fine, since a
-    clear doesn't need the PIN. Manual codes always get a PIN when they're
-    made, so they're left as they were.
+    nothing to push to the new lock. That goes for any source: a synced code
+    made manual once it lost its import lock (issue #222) keeps whatever PIN it
+    had. A new PIN in the same save is the one pushed, so that's fine. Removing
+    locks is still fine, since a clear doesn't need the PIN.
     """
-    if code.source != DoorCode.Source.SYNCED or not _added_locks(code=code, changes=changes):
+    if changes.get("code") or not _added_locks(code=code, changes=changes):
         return
     from locks.use_cases.lock_push import decrypt_pin_or_none
 

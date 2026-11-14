@@ -291,6 +291,34 @@ class UnknownPinTests(_SyncedLocksTestBase):
         self.assertEqual(response.status_code, 400, response.content)
         self.assertEqual(response.json()["error"]["message"], PIN_UNKNOWN)
 
+    def test_a_code_made_manual_without_a_readable_pin_is_refused_too(self):
+        # A synced code made manual by losing its import lock (#225) keeps whatever PIN it had.
+        master, gateway = self._master_on_both()
+        self._patch(master, gateway, {"remove_lock_entity_ids": [self.FRONT]})
+        self.assertEqual(DoorCode.objects.get(id=master.id).source, DoorCode.Source.MANUAL)
+        slots = self._slots(master)
+        for encrypted_pin in (None, "not-a-token"):
+            with self.subTest(encrypted_pin=encrypted_pin):
+                DoorCode.objects.filter(id=master.id).update(encrypted_pin=encrypted_pin)
+                gateway.invoke_calls.clear()
+
+                response = self._patch_response(master, gateway, {"add_lock_entity_ids": [self.SIDE]})
+
+                self.assertEqual(response.status_code, 400, response.content)
+                self.assertEqual(response.json()["error"]["message"], PIN_UNKNOWN)
+                self.assertEqual(gateway.invoke_calls, [])
+                self.assertEqual(self._slots(master), slots)
+
+    def test_a_manual_code_given_a_new_pin_in_the_same_save_can_add_a_lock(self):
+        gateway = self._gateway()
+        code = self._code(pin="2468", slots={self.SIDE: None})
+        DoorCode.objects.filter(id=code.id).update(encrypted_pin="not-a-token")
+
+        data = self._patch(code, gateway, {"code": "9753", "add_lock_entity_ids": [self.BACK]})
+
+        self.assertEqual(data["lock_entity_ids"], [self.BACK, self.SIDE])
+        self.assertIn("9753", self._lock_codes(gateway, 12).values())
+
     def test_removing_a_lock_still_works(self):
         master, gateway = self._masked_master()
         DoorCodeLockAssignment.objects.create(
@@ -521,9 +549,9 @@ class StrandedCopyRuleTests(_SyncedLocksTestBase):
         self.assertEqual(DoorCodeEvent.objects.filter(metadata__action="duplicate_retire_done").count(), 1)
 
 
-class UnreadablePinStillRefusedOnlyForSyncedTests(_SyncedLocksTestBase):
-    def test_a_manual_code_with_an_unreadable_pin_can_still_get_a_lock(self):
-        # Manual codes are left as they were: the push records the bad PIN on the lock.
+class UnreadablePinManualCodeTests(_SyncedLocksTestBase):
+    def test_a_manual_code_with_an_unreadable_pin_is_refused_a_lock_too(self):
+        # Since the #223-#230 review leftovers: any code, not only a synced one, rather than failing the push.
         gateway = self._gateway()
         code = DoorCode.objects.create(
             user=self.user,
@@ -533,10 +561,12 @@ class UnreadablePinStillRefusedOnlyForSyncedTests(_SyncedLocksTestBase):
         )
         DoorCodeLockAssignment.objects.create(door_code=code, lock_entity_id=self.SIDE)
 
-        self._patch(code, gateway, {"add_lock_entity_ids": [self.BACK]})
+        response = self._patch_response(code, gateway, {"add_lock_entity_ids": [self.BACK]})
 
-        self.assertEqual(self._calls(gateway, "set"), [])
-        self.assertEqual(set(self._slots(code)), {self.SIDE, self.BACK})
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertEqual(response.json()["error"]["message"], PIN_UNKNOWN)
+        self.assertEqual(gateway.invoke_calls, [])
+        self.assertEqual(set(self._slots(code)), {self.SIDE})
 
 
 class StaleCacheSyncTests(_SyncedLocksTestBase):
