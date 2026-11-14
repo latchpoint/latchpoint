@@ -500,6 +500,8 @@ describe('DoorCodeCard', () => {
       ['is still being removed from a lock', {
         lockSlotAssignments: [{ lockEntityId: 'lock.front_door', slotIndex: null, pendingRemoval: true }],
       }],
+      // #233: lock sync matches its PIN typed in again back to it.
+      ['has a PIN latchpoint can read', { pin: '4321' }],
     ])('says nothing when it %s', (_why, overrides) => {
       renderWithProviders(<CardWithRetry code={stuck(overrides)} />)
 

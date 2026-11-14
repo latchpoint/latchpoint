@@ -139,6 +139,16 @@ describe('LockConfigSyncCard', () => {
     expect(screen.getByText("Lock didn't confirm the slot is disabled, keeping the code on")).toBeTruthy()
   })
 
+  it('labels a slot matched back to the synced code that had its PIN (#233)', async () => {
+    await syncWith([
+      slotOf({ slotIndex: 1, action: 'updated', warnings: ['relinked'] }),
+      slotOf({ slotIndex: 2, action: 'skipped', warnings: ['relink_not_confirmed'] }),
+    ])
+
+    expect(screen.getByText('Matched back to the code that had this PIN')).toHaveAttribute('title', 'relinked')
+    expect(screen.getByText("Lock didn't confirm the PIN, not matched back to its code yet")).toBeTruthy()
+  })
+
   it('names the door codes a duplicate PIN points at', async () => {
     await syncWith([
       slotOf({ slotIndex: 1, action: 'created', warnings: ['duplicate_pin'], duplicatePinDoorCodeIds: [12] }),
