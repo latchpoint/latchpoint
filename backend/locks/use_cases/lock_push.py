@@ -30,7 +30,6 @@ from integrations_zwavejs.manager import (
     ZwavejsClientUnavailable,
     ZwavejsCommandValidationError,
     ZwavejsNotConfigured,
-    ZwavejsNotConnected,
 )
 
 from alarm.crypto import InvalidToken, SettingsEncryption
@@ -140,6 +139,15 @@ class LockCodeUnverified(GatewayError):
     def __init__(self, message: str, *, read_back_empty: bool = False):
         super().__init__(message)
         self.read_back_empty = read_back_empty
+
+
+class SlotUnreadBeforeSet(GatewayError):
+    """The slot picked from the value cache gave no verdict when read before the ``set`` (issue #194).
+
+    Transient and counted like a ``set`` that timed out; nothing was sent.
+    """
+
+    gateway_name = "zwavejs"
 
 
 class PushSuperseded(LockUnreachable):
@@ -402,11 +410,16 @@ def _pick_free_slot_read_live(
       the cache calls Available is taken instead. That ``get`` also refreshed
       the cache for the slot. The second pick isn't read again, so a push costs
       one ``get`` at most, and it's ``False``.
-    * no answer, or no verdict (0xfe, no report): the cache's pick is kept, as
-      before this check, and it's ``False``.
+    * no answer, or no verdict (0xfe, no report): nothing is sent. A gateway
+      error propagates as it is and no verdict raises
+      :class:`SlotUnreadBeforeSet`, so the push takes its transient path and
+      the attempt counts toward ``door_codes.push_max_attempts`` like a ``set``
+      that timed out, and a lock that never answers reaches the cap. Sending
+      the ``set`` anyway would queue it behind a ``get`` the driver may still
+      be waiting on (issue #199).
 
-    Out of time (:class:`TimeBudgetExceeded`) and the Z-Wave JS errors that
-    aren't the lock not answering propagate, so nothing is sent.
+    Out of time (:class:`TimeBudgetExceeded`) propagates too, and isn't counted
+    like any other call the budget refuses.
     """
     slot_index = _enumerate_free_slot(
         zwavejs=zwavejs,
@@ -415,23 +428,9 @@ def _pick_free_slot_read_live(
         value_ids=value_ids,
         claimed_slots=claimed_slots,
     )
-    try:
-        response = _refresh_user_code_slot(
-            zwavejs=zwavejs, node_id=node_id, slot_index=slot_index, timeout_seconds=timeout_seconds
-        )
-    except (
-        TimeBudgetExceeded,
-        ZwavejsNotConfigured,
-        ZwavejsCommandValidationError,
-        ZwavejsClientUnavailable,
-        ZwavejsNotConnected,
-    ):
-        raise
-    except GatewayError:
-        logger.warning(
-            "Couldn't read slot %d on node %d before the set; going by the cache", slot_index, node_id, exc_info=True
-        )
-        return slot_index, False
+    response = _refresh_user_code_slot(
+        zwavejs=zwavejs, node_id=node_id, slot_index=slot_index, timeout_seconds=timeout_seconds
+    )
     if isinstance(response, dict) and "response" in response:
         response = response["response"]
     status = response.get("userIdStatus") if isinstance(response, dict) else None
@@ -439,7 +438,7 @@ def _pick_free_slot_read_live(
         return slot_index, True
     occupied, _is_active = _parse_user_code_status(status)
     if not occupied and _coerce_int(status) not in _USER_ID_STATUS_CONFIG_USES:
-        return slot_index, False
+        raise SlotUnreadBeforeSet(f"Could not read slot {slot_index} before the set (userIdStatus {status!r}).")
     logger.info(
         "Slot %d on node %d isn't Available any more (the cache was stale); picking another", slot_index, node_id
     )

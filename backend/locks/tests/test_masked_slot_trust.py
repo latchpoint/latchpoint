@@ -201,26 +201,44 @@ class FreshReadBeforeSetTests(_MaskedSlotTrustTestBase):
         self.assertEqual(self._ops(gateway), [("get", 1), ("set", 1), ("get", 1), ("get", 1), ("get", 1)])
         self.assertIs(self._newest_attempt(code).get("slot_available"), True)
 
-    def test_no_answer_before_the_set_falls_back_to_the_cache_without_the_tag(self):
+    def test_no_answer_before_the_set_sends_nothing_and_counts_like_a_set_that_timed_out(self):
         for name, answer in (
             ("timeout", _timeouts(1)[0]),
             ("status not available", {"userIdStatus": 254, "userCode": ""}),
+            ("no report", None),
         ):
             with self.subTest(fresh_read=name):
                 DoorCodeEvent.objects.all().delete()
                 DoorCode.objects.all().delete()
                 code = self._pending_code()
                 gateway = self._gateway()
-                gateway._get_scripts = {None: [answer, *_timeouts(3)]}
+                gateway._get_scripts = {None: [answer]}
 
                 with self.assertRaises(LockUnreachable):
                     self._push(code, gateway)
 
-                # The set still goes to the slot the cache picked.
-                self.assertEqual(self._ops(gateway)[:2], [("get", 1), ("set", 1)])
-                marker = self._newest_attempt(code)
-                self.assertEqual(marker["slot_index"], 1)
-                self.assertNotIn("slot_available", marker)
+                # Nothing goes out after it (issue #199), and nothing is on record for the slot.
+                self.assertEqual(self._ops(gateway), [("get", 1)])
+                self.assertEqual(self._lock_codes(gateway, 12), {})
+                self.assertIsNone(self._newest_attempt(code))
+                assignment = DoorCodeLockAssignment.objects.get(door_code=code)
+                self.assertEqual(
+                    (assignment.slot_index, assignment.push_state, assignment.push_attempt_count),
+                    (None, DoorCode.PushState.PENDING, 1),
+                )
+
+    def test_a_lock_that_never_answers_the_read_fails_at_the_attempt_cap(self):
+        code = self._pending_code()
+        DoorCodeLockAssignment.objects.filter(door_code=code).update(push_attempt_count=23)
+        gateway = self._gateway()
+        gateway._get_scripts = {None: _timeouts(1)}
+
+        self._push_pending(gateway)
+
+        assignment = DoorCodeLockAssignment.objects.get(door_code=code)
+        self.assertEqual(self._ops(gateway), [("get", 1)])
+        self.assertEqual(assignment.push_attempt_count, 24)
+        self.assertEqual(assignment.push_state, DoorCode.PushState.FAILED)
 
     def test_the_second_pick_after_an_occupied_answer_is_not_tagged(self):
         code = self._pending_code()

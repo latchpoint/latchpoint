@@ -4384,7 +4384,12 @@ class PushSlotClaimRaceTests(EncryptionTestMixin, TestCase):
                     args=args,
                     timeout_seconds=timeout_seconds,
                 )
-                if command_class == 99 and method_name == "get":
+                # Every get after the set fails; the read before it (issue #194) answers.
+                if (
+                    command_class == 99
+                    and method_name == "get"
+                    and any(c["method_name"] == "set" for c in self.invoke_calls)
+                ):
                     raise ZwavejsCommandError("driver TimeoutError after 5.0s")
                 return result
 
@@ -4398,7 +4403,7 @@ class PushSlotClaimRaceTests(EncryptionTestMixin, TestCase):
             push_door_code_to_lock(door_code=code, lock_entity_id=self.LOCK_ENTITY_ID, zwavejs=gateway)
 
         gets = [c for c in gateway.invoke_calls if c["command_class"] == 99 and c["method_name"] == "get"]
-        # The read before the set got no answer either, so the set went to the cache's pick (issue #194).
+        # The read before the set, then the readback's tries.
         self.assertEqual(len(gets), 2 + len(lock_push_uc._READBACK_RETRY_DELAYS_SECONDS))
         self.assertIsNone(self._slot_of(code))
         code.refresh_from_db()
@@ -5019,7 +5024,7 @@ class TerminalPushErrorRecordingTests(EncryptionTestMixin, TestCase):
         gateway._reject_pins = {7: {"1234"}}
         empty = {"userIdStatus": 0, "userCode": ""}
         timeout = ZwavejsCommandError("driver TimeoutError after 5.0s")
-        gateway._get_scripts = {None: [empty, empty, timeout, timeout, timeout]}
+        gateway._get_scripts = {None: [empty, empty, AVAILABLE_BEFORE_SET, timeout, timeout, timeout]}
         with (
             patch.object(lock_push_uc, "_READBACK_RETRY_DELAYS_SECONDS", (0.0, 0.0)),
             self.assertRaises(LockUnreachable),
@@ -5347,7 +5352,7 @@ class MaskedUnconfirmedSlotTests(EncryptionTestMixin, TestCase):
         gateway._lock_codes.clear()
         gateway._cache_codes.clear()
         gateway._reject_pins = {7: {"1234"}}
-        gateway._get_scripts = {None: [self.EMPTY, self.EMPTY, *self._timeouts()]}
+        gateway._get_scripts = {None: [self.EMPTY, self.EMPTY, AVAILABLE_BEFORE_SET, *self._timeouts()]}
         with self.assertRaises(LockUnreachable):
             push_door_code_to_lock(door_code=code, lock_entity_id=self.LOCK_ENTITY_ID, zwavejs=gateway)
         self.assertEqual(self._calls(gateway, "set"), [1])

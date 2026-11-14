@@ -90,7 +90,15 @@ The request saves and returns, and a fast scheduler task makes the push.
   `set`, the lock is `schedule_pending` and its live request is stamped again,
   so the next tick sends only the schedule instead of leaving the PIN working
   around the clock until the 300s retry. A schedule-only push doesn't stamp it
-  again, so that's one more try at most.
+  again, so that's one more try at most. Since issue #194 a push into a new
+  slot also reads that slot once with CC 99 `get` before the `set`, since the
+  value cache the slot is picked from can miss a keypad code. It comes out of
+  the same 30s, so a lock that answers spends one more round trip, and one
+  that doesn't answer it gets nothing sent. That's a counted transient failure
+  like a `set` that timed out, so a lock that never answers reaches the cap,
+  and sending the `set` anyway would queue it behind that `get` in the driver
+  (issue #199). Running out of the budget on it isn't counted, like any other
+  call the budget refuses.
 - **Callers.** Create, update and Retry call `request_push` when
   `push_task_running()` says the task's loop is alive in this process, ie the
   thing `wake_task` reaches, or this process is a standby under the runtime
