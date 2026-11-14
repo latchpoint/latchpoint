@@ -390,33 +390,51 @@ def _enumerate_free_slot(
     raise LockSlotsFull("No user-code slot on this lock is Available.")
 
 
+@dataclass(frozen=True)
+class _PickedSlot:
+    """The slot :func:`_pick_free_slot_read_live` picked, and what its read before the ``set`` found."""
+
+    slot_index: int
+    # The read answered Available, so an unconfirmed set there can be tagged slot_available.
+    read_available: bool = False
+    # The read showed this code's own PIN, readable and enabled, so the slot is adopted without a set.
+    holds_pin: bool = False
+
+
 def _pick_free_slot_read_live(
     *,
     zwavejs: ZwavejsGateway,
     node_id: int,
+    pin: str,
     timeout_seconds: float,
     value_ids: object,
     claimed_slots: set[int] | frozenset[int] = frozenset(),
-) -> tuple[int, bool]:
+) -> _PickedSlot:
     """Pick a free slot like :func:`_enumerate_free_slot` and read it back live once before the ``set`` (issue #194).
 
-    Returns ``(slot_index, read_available)``. The value cache can say Available
-    for a slot someone programmed at the keypad, and an unconfirmed ``set``
-    into a slot is only tagged ``slot_available`` when that slot was really
-    Available, so the picked slot is asked with one CC 99 ``get``:
+    The value cache can say Available for a slot someone programmed at the
+    keypad, and an unconfirmed ``set`` into a slot is only tagged
+    ``slot_available`` when that slot was really Available, so the picked slot
+    is asked with one CC 99 ``get``:
 
-    * Available: ``read_available`` is ``True``.
-    * occupied, disabled or lock config: the slot isn't free, so the next one
-      the cache calls Available is taken instead. That ``get`` also refreshed
-      the cache for the slot. The second pick isn't read again, so a push costs
-      one ``get`` at most, and it's ``False``.
-    * no answer, or no verdict (0xfe, no report): nothing is sent. A gateway
-      error propagates as it is and no verdict raises
-      :class:`SlotUnreadBeforeSet`, so the push takes its transient path and
-      the attempt counts toward ``door_codes.push_max_attempts`` like a ``set``
-      that timed out, and a lock that never answers reaches the cap. Sending
-      the ``set`` anyway would queue it behind a ``get`` the driver may still
-      be waiting on (issue #199).
+    * Available: ``read_available``.
+    * this code's PIN, readable and enabled: ``holds_pin``, and the push adopts
+      the slot like an attempt slot that reads back with the PIN. Moving on
+      would leave the PIN there untracked, and a lock that drops duplicate PINs
+      would turn the second slot's ``set`` down (PR #230 review). A masked code
+      isn't taken as ours, since it may be a keypad code.
+    * anything else occupied, disabled, lock config, or a status that's no
+      verdict (0xfe): the slot isn't one to write to, so the next one the cache
+      calls Available is taken instead. That ``get`` also refreshed the cache
+      for the slot. The second pick isn't read again, so a push costs one
+      ``get`` at most, and it's neither. A slot that always answers 0xfe so
+      doesn't hold up the push while other slots are free (PR #230 review).
+    * no answer, or no report: nothing is sent. A gateway error propagates as
+      it is and a missing report raises :class:`SlotUnreadBeforeSet`, so the
+      push takes its transient path and the attempt counts toward
+      ``door_codes.push_max_attempts`` like a ``set`` that timed out, and a lock
+      that never answers reaches the cap. Sending the ``set`` anyway would
+      queue it behind a ``get`` the driver may still be waiting on (issue #199).
 
     Out of time (:class:`TimeBudgetExceeded`) propagates too, and isn't counted
     like any other call the budget refuses.
@@ -434,13 +452,19 @@ def _pick_free_slot_read_live(
     if isinstance(response, dict) and "response" in response:
         response = response["response"]
     status = response.get("userIdStatus") if isinstance(response, dict) else None
+    if status is None:
+        raise SlotUnreadBeforeSet(f"Could not read slot {slot_index} before the set (no user code report).")
     if _is_confirmed_empty_status(status):
-        return slot_index, True
-    occupied, _is_active = _parse_user_code_status(status)
-    if not occupied and _coerce_int(status) not in _USER_ID_STATUS_CONFIG_USES:
-        raise SlotUnreadBeforeSet(f"Could not read slot {slot_index} before the set (userIdStatus {status!r}).")
+        return _PickedSlot(slot_index=slot_index, read_available=True)
+    occupied, is_active = _parse_user_code_status(status)
+    if occupied and is_active:
+        known, stored = _normalize_pin(response.get("userCode"))
+        if known and stored == pin:
+            return _PickedSlot(slot_index=slot_index, holds_pin=True)
     logger.info(
-        "Slot %d on node %d isn't Available any more (the cache was stale); picking another", slot_index, node_id
+        "Slot %d on node %d isn't Available (the cache was stale or the lock gave no verdict); picking another",
+        slot_index,
+        node_id,
     )
     slot_index = _enumerate_free_slot(
         zwavejs=zwavejs,
@@ -449,7 +473,7 @@ def _pick_free_slot_read_live(
         value_ids=value_ids,
         claimed_slots={*claimed_slots, slot_index},
     )
-    return slot_index, False
+    return _PickedSlot(slot_index=slot_index)
 
 
 def _refresh_user_code_slot(
@@ -924,6 +948,35 @@ def _record_slot_read_back_empty(*, door_code: DoorCode, lock_entity_id: str, sl
     """Record a readback of the slot that answered empty once before it got no answer (PR #193 review)."""
     DoorCodeEvent.objects.create(
         door_code=door_code,
+        user=door_code.user,
+        lock_entity_id=lock_entity_id,
+        event_type=DoorCodeEvent.EventType.CODE_REMOVED,
+        metadata={"action": _SLOT_SEEN_EMPTY_ACTION, "slot_index": int(slot_index), _SLOT_EMPTY_KEY: True},
+    )
+
+
+def _record_pre_read_empty_for_other_codes(*, door_code: DoorCode, lock_entity_id: str, slot_index: int) -> None:
+    """Record that the read before a ``set`` found the slot Available while another code has a record there.
+
+    PR #230 review.
+
+    Another code's unsettled attempt or open unconfirmed clear failure on the
+    slot didn't leave its PIN there, so its masked-slot trust drops
+    (:func:`_masked_trust_dropped`). Without this, deleting or retrying that
+    code would take a masked readback of the PIN this push is about to write
+    as its own. The marker is a ``slot_read_back_empty`` with no door code, so
+    it settles nothing and doesn't count as this code's own empty readback,
+    which would untag its own attempt (:func:`_slot_read_back_empty_since_last_push`).
+    """
+    others = [
+        code
+        for code, _newest_id in _unconfirmed_records_on_slot(lock_entity_id=lock_entity_id, slot_index=slot_index)
+        if code.id != door_code.id
+    ]
+    if not others:
+        return
+    DoorCodeEvent.objects.create(
+        door_code=None,
         user=door_code.user,
         lock_entity_id=lock_entity_id,
         event_type=DoorCodeEvent.EventType.CODE_REMOVED,
@@ -4257,13 +4310,22 @@ def push_door_code_to_lock(
             picked_available = resend_to_attempted_slot
             if slot_index is None:
                 # Read once live, since the value cache can miss a keypad code (issue #194).
-                slot_index, picked_available = _pick_free_slot_read_live(
+                picked = _pick_free_slot_read_live(
                     zwavejs=zwavejs,
                     node_id=node_id,
+                    pin=pin,
                     timeout_seconds=timeout_seconds,
                     value_ids=get_value_ids(),
                     claimed_slots=claimed_slots,
                 )
+                slot_index = picked.slot_index
+                picked_available = picked.read_available
+                # The slot already shows this code's PIN, so it's adopted without a set (PR #230 review).
+                adopted_existing_slot = picked.holds_pin
+                if picked.read_available:
+                    _record_pre_read_empty_for_other_codes(
+                        door_code=door_code, lock_entity_id=lock_entity_id, slot_index=slot_index
+                    )
         except (ZwavejsNotConfigured, ZwavejsCommandValidationError) as exc:
             # ZwavejsClientUnavailable takes the transient path below, so the
             # scheduler retries the lock under its cap (issue #191). The manager

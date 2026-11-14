@@ -204,8 +204,8 @@ class FreshReadBeforeSetTests(_MaskedSlotTrustTestBase):
     def test_no_answer_before_the_set_sends_nothing_and_counts_like_a_set_that_timed_out(self):
         for name, answer in (
             ("timeout", _timeouts(1)[0]),
-            ("status not available", {"userIdStatus": 254, "userCode": ""}),
             ("no report", None),
+            ("a report without a status", {"userCode": ""}),
         ):
             with self.subTest(fresh_read=name):
                 DoorCodeEvent.objects.all().delete()
@@ -226,6 +226,56 @@ class FreshReadBeforeSetTests(_MaskedSlotTrustTestBase):
                     (assignment.slot_index, assignment.push_state, assignment.push_attempt_count),
                     (None, DoorCode.PushState.PENDING, 1),
                 )
+
+    def test_a_slot_that_answers_status_not_available_is_passed_over_untagged(self):
+        # PR #230 review: a slot that always answers 0xfe would fail the push at the cap every time.
+        code = self._pending_code()
+        gateway = self._gateway()
+        gateway._get_scripts = {None: [{"userIdStatus": 0xFE, "userCode": ""}, *_timeouts(3)]}
+
+        with self.assertRaises(LockUnreachable):
+            self._push(code, gateway)
+
+        self.assertEqual(self._ops(gateway)[:2], [("get", 1), ("set", 2)])
+        marker = self._newest_attempt(code)
+        self.assertEqual(marker["slot_index"], 2)
+        self.assertNotIn("slot_available", marker)
+
+    def test_a_slot_the_cache_calls_available_that_shows_this_codes_pin_is_adopted(self):
+        # PR #230 review: moving on left the PIN in slot 1 untracked, and a lock
+        # that drops duplicates turned the second slot's set down.
+        for drops_duplicates in (True, False):
+            with self.subTest(drops_duplicates=drops_duplicates):
+                DoorCodeEvent.objects.all().delete()
+                DoorCode.objects.all().delete()
+                code = self._pending_code()
+                gateway = self._gateway({1: self.PIN})
+                gateway._drops_duplicates = drops_duplicates
+
+                self._push(code, gateway)
+
+                self.assertEqual(self._ops(gateway), [("get", 1)])
+                self.assertEqual(self._slots(code), {self.BACK: 1})
+                self.assertEqual(self._lock_codes(gateway, 12), {1: self.PIN})
+                synced = DoorCodeEvent.objects.get(door_code=code, event_type=DoorCodeEvent.EventType.CODE_SYNCED)
+                self.assertIs(synced.metadata.get("adopted_existing_slot"), True)
+                code.refresh_from_db()
+                self.assertEqual(code.push_state, DoorCode.PushState.PUSHED)
+
+    def test_a_masked_or_disabled_copy_of_this_codes_pin_is_not_taken_as_ours(self):
+        for name, answer in (("masked", MASKED), ("disabled", {"userIdStatus": 2, "userCode": "4321"})):
+            with self.subTest(read=name):
+                DoorCodeEvent.objects.all().delete()
+                DoorCode.objects.all().delete()
+                code = self._pending_code()
+                gateway = self._gateway({1: self.PIN})
+                gateway._drops_duplicates = False
+                gateway._get_scripts = {None: [answer]}
+
+                self._push(code, gateway)
+
+                self.assertEqual(self._ops(gateway), [("get", 1), ("set", 2), ("get", 2)])
+                self.assertEqual(self._slots(code), {self.BACK: 2})
 
     def test_a_lock_that_never_answers_the_read_fails_at_the_attempt_cap(self):
         code = self._pending_code()
@@ -276,6 +326,64 @@ class FreshReadBeforeSetTests(_MaskedSlotTrustTestBase):
 
         self.assertEqual(self._slots(code), {self.BACK: 2})
         self.assertEqual(self._ops(gateway), [("get", 2)])
+
+
+class PreReadSlotEmptyMarkerTests(_MaskedSlotTrustTestBase):
+    """PR #230 review: the read before a set that finds the slot Available drops another code's trust there."""
+
+    OTHER_PIN = "5555"
+
+    def _y_lands_where_xs_set_never_did(self) -> tuple[DoorCode, DoorCode, object]:
+        """X's tagged set into slot 1 never landed. Y picks slot 1, reads it Available, lands, then times out."""
+        x = self._code(pin=self.OTHER_PIN, push_state=DoorCode.PushState.PENDING)
+        self._attempt(x, 1, pin=self.OTHER_PIN, slot_available=True)
+        self.assertEqual(self._available(x), {1})
+        y = self._code(push_state=DoorCode.PushState.PENDING)
+        gateway = self._gateway()
+        gateway._get_scripts = {None: [EMPTY, *_timeouts(3)]}
+
+        with self.assertRaises(LockUnreachable):
+            self._push(y, gateway)
+
+        self.assertEqual(self._lock_codes(gateway, 12), {1: self.PIN})
+        # Y's own attempt keeps its trust, and X's is gone.
+        self.assertIs(self._newest_attempt(y).get("slot_available"), True)
+        self.assertEqual(self._available(y), {1})
+        self.assertEqual(self._available(x), set())
+        # The lock masks codes from here on.
+        gateway._get_scripts = {None: [MASKED] * 20}
+        gateway.invoke_calls.clear()
+        return x, y, gateway
+
+    def test_deleting_the_other_code_leaves_this_codes_pin(self):
+        x, _y, gateway = self._y_lands_where_xs_set_never_did()
+
+        door_codes_uc.delete_door_code(code=x, actor_user=self.user, zwavejs=gateway)
+
+        self.assertFalse(DoorCode.objects.filter(id=x.id).exists())
+        self.assertEqual(self._calls(gateway, "clear"), [])
+        self.assertEqual(self._lock_codes(gateway, 12), {1: self.PIN})
+
+    def test_retrying_the_other_code_doesnt_write_over_this_codes_pin(self):
+        x, _y, gateway = self._y_lands_where_xs_set_never_did()
+        gateway._drops_duplicates = False
+
+        self._push(x, gateway)
+
+        self.assertNotIn([1, 1, self.OTHER_PIN], [args for _node, args in self._calls(gateway, "set")])
+        self.assertEqual(self._lock_codes(gateway, 12)[1], self.PIN)
+        self.assertEqual(self._slots(x), {self.BACK: 2})
+
+    def test_nothing_is_recorded_when_no_other_code_has_a_record_on_the_slot(self):
+        code = self._code(push_state=DoorCode.PushState.PENDING)
+        gateway = self._gateway()
+        gateway._get_scripts = {None: [EMPTY, *_timeouts(3)]}
+
+        with self.assertRaises(LockUnreachable):
+            self._push(code, gateway)
+
+        self.assertFalse(lock_push_uc._slot_empty_markers(lock_entity_id=self.BACK, slot_index=1))
+        self.assertIs(self._newest_attempt(code).get("slot_available"), True)
 
 
 class DeletedCodeSlotEmptyMarkerTests(_MaskedSlotTrustTestBase):

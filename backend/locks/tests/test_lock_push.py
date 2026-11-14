@@ -5536,10 +5536,14 @@ class MaskedUnconfirmedSlotTests(EncryptionTestMixin, TestCase):
         gateway._cache_codes.clear()
         other = self._make_code(pin="5555")
         gateway._reject_pins = {7: {"5555"}}
-        gateway._get_scripts = {None: [self.EMPTY, self.EMPTY]}
+        gateway._get_scripts = {None: [AVAILABLE_BEFORE_SET, self.EMPTY, self.EMPTY]}
         with self.assertRaises(LockRejectedCode):
             push_door_code_to_lock(door_code=other, lock_entity_id=self.LOCK_ENTITY_ID, zwavejs=gateway)
         self.assertEqual(self._calls(gateway, "set"), [1])
+        # Y's own readback left its marker, on top of the one its read before the set left (PR #230 review).
+        self.assertTrue(
+            lock_push_uc._slot_empty_markers(lock_entity_id=self.LOCK_ENTITY_ID, slot_index=1, door_code=other)
+        )
         gateway._reject_pins = {}
         self._keypad_code_lands_in_slot_1(gateway)
 
@@ -5597,10 +5601,14 @@ class MaskedUnconfirmedSlotTests(EncryptionTestMixin, TestCase):
         gateway._cache_codes.clear()
         other = self._make_code(pin="5555")
         gateway._reject_pins = {7: {"5555"}}
-        gateway._get_scripts = {None: list(get_responses)}
+        gateway._get_scripts = {None: [AVAILABLE_BEFORE_SET, *get_responses]}
         with self.assertRaises(expected_error):
             push_door_code_to_lock(door_code=other, lock_entity_id=self.LOCK_ENTITY_ID, zwavejs=gateway)
         self.assertEqual(self._calls(gateway, "set"), [1])
+        # Y's own readback left its marker, on top of the one its read before the set left (PR #230 review).
+        self.assertTrue(
+            lock_push_uc._slot_empty_markers(lock_entity_id=self.LOCK_ENTITY_ID, slot_index=1, door_code=other)
+        )
         gateway._reject_pins = {}
         self._keypad_code_lands_in_slot_1(gateway)
         return code, gateway
