@@ -341,7 +341,10 @@ class UnknownPinTests(_SyncedLocksTestBase):
 class ReleasedSlotTests(_SyncedLocksTestBase):
     """An undated synced code whose only slot lock sync found empty and let go (review leftovers of #223-#230)."""
 
-    def test_nothing_brings_it_back_but_it_can_be_deleted(self):
+    OTHER_KEYPAD_PIN = "5555"
+
+    def test_another_pin_in_its_old_slot_is_a_new_code_and_it_can_still_be_deleted(self):
+        # Its own PIN typed in again brings it back (issue #233, test_relink_released_synced_code).
         gateway = self._gateway()
         master = self._master(gateway)
         del gateway._lock_codes[(14, 1)], gateway._cache_codes[(14, 1)]
@@ -350,8 +353,8 @@ class ReleasedSlotTests(_SyncedLocksTestBase):
         self.assertFalse(master.is_active)
         self.assertEqual(self._slots(master), {self.FRONT: None})
 
-        # The PIN typed in again comes in as a new code; the old one stays off.
-        gateway._lock_codes[(14, 1)] = gateway._cache_codes[(14, 1)] = self.PIN
+        # Another PIN typed into its old slot comes in as a new code; the old one stays off.
+        gateway._lock_codes[(14, 1)] = gateway._cache_codes[(14, 1)] = self.OTHER_KEYPAD_PIN
         self._sync(gateway, self.FRONT)
         master.refresh_from_db()
         self.assertFalse(master.is_active)
@@ -369,7 +372,7 @@ class ReleasedSlotTests(_SyncedLocksTestBase):
         self.assertEqual(response.status_code, 204, response.content)
         self.assertFalse(DoorCode.objects.filter(id=master.id).exists())
         self.assertEqual(self._calls(gateway, "clear"), [])
-        self.assertEqual(self._lock_codes(gateway, 14), {1: self.PIN})
+        self.assertEqual(self._lock_codes(gateway, 14), {1: self.OTHER_KEYPAD_PIN})
 
 
 class RemoveLockTests(_SyncedLocksTestBase):

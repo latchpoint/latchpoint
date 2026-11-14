@@ -14,6 +14,7 @@ from typing import Any
 
 from django.db import Error as DbError
 from django.db import IntegrityError, connection, transaction
+from django.db.models import Q
 from django.utils import timezone as django_timezone
 
 from accounts.models import User
@@ -908,6 +909,11 @@ _SKIP_PIN_IN_ANOTHER_SLOT = "pin_in_another_slot"
 _SKIP_PIN_MAY_BE_IN_HIDDEN_SLOT = "pin_may_be_in_hidden_slot"
 # A synced code's added lock flagged to be brought in line with the code (issue #220).
 _SKIP_UPDATE_PENDING = "update_pending"
+# An untracked slot holding the PIN of an off synced code whose slot here lock
+# sync let go of, when the code is on other locks too and a live readback didn't
+# confirm the PIN. Neither matched back to it nor imported, and the next sync
+# tries again (issue #233).
+_SKIP_RELINK_NOT_CONFIRMED = "relink_not_confirmed"
 _WARN_DUPLICATE_PIN = "duplicate_pin"
 # An active manual code whose slot holds its PIN but reads Occupied/Disabled.
 # Latchpoint owns a manual code, so the sync doesn't turn it off (issue #166).
@@ -933,6 +939,12 @@ _WARN_OFF_CHANGE_UNCONFIRMED = "off_change_unconfirmed"
 # This slot was confirmed disabled (or empty) by two live reads, so the code is
 # off and its PIN is being taken off the code's other locks (issue #221).
 _WARN_TAKING_OFF_OTHER_LOCKS = "taking_off_other_locks"
+# An untracked slot matched back to the off synced code whose slot here lock
+# sync let go of, instead of being imported as a new "Slot N" code (issue #233).
+_WARN_RELINKED = "relinked"
+# The ``code_synced`` actions of lock sync letting go of a synced code's import
+# slot it read empty, turning the code off or keeping it off (issue #233).
+_RELEASE_ACTIONS = ("deactivated", "slot_released")
 
 
 def _has_outstanding_slot_cleanup(*, door_code: DoorCode, lock_entity_id: str) -> bool:
@@ -1670,6 +1682,273 @@ def _send_import_change_to_other_locks(
     return [lock for lock in flagged if lock not in held], held
 
 
+def _released_import_codes_by_pin(*, lock_entity_id: str) -> dict[str, list[DoorCode]]:
+    """Off undated synced codes whose slot on this lock lock sync let go of, by PIN (issue #233).
+
+    That's a code whose row here has no slot and was never pushed or queued by
+    latchpoint (no ``last_push_attempt_at`` or ``push_requested_at``), ie the
+    row lock sync made when it imported the code, after a sync read its slot
+    empty, turned it off and released it. Lock sync only finds a code by its
+    slot, so nothing else would bring one of these back. A code with a start or
+    end date, or no readable PIN, isn't one, and neither is one that's used up
+    (``exhausted_q``): retiring it at its last use takes its slot the same way,
+    and turning it back on would only have it retired again (#145).
+    """
+    from locks.use_cases.code_lifecycle import exhausted_q
+    from locks.use_cases.lock_push import decrypt_pin_or_none
+
+    codes = (
+        DoorCode.objects.filter(
+            source=DoorCode.Source.SYNCED,
+            is_active=False,
+            start_at__isnull=True,
+            end_at__isnull=True,
+            # One filter call, so it's all the same row.
+            lock_assignments__lock_entity_id=lock_entity_id,
+            lock_assignments__slot_index__isnull=True,
+            lock_assignments__last_push_attempt_at__isnull=True,
+            lock_assignments__push_requested_at__isnull=True,
+        )
+        .exclude(exhausted_q())
+        .distinct()
+        .order_by("id")
+    )
+    by_pin: dict[str, list[DoorCode]] = {}
+    for code in codes:
+        pin = decrypt_pin_or_none(code)
+        if pin:
+            by_pin.setdefault(pin, []).append(code)
+    return by_pin
+
+
+def _relink_allowed(*, code: DoorCode, lock_entity_id: str) -> bool:
+    """Whether the one released code with a slot's PIN may be matched back to that slot (issue #233).
+
+    - this lock is its only import lock (:func:`~locks.use_cases.lock_push.import_lock_entity_ids`),
+      so it isn't being dropped from it, and a lock added to it before
+      ``push_requested_at`` was stamped (which looks the same) doesn't make it ambiguous
+    - nothing is left to clear for it and no push of it is unconfirmed here
+      (:func:`_has_outstanding_slot_cleanup`), the same thing that has the sync skip a tracked slot
+    - a delete of it was never refused, since someone wanted it gone
+    - it was lock sync that turned it off here (:func:`_turned_off_by_lock_sync`),
+      not latchpoint retiring it or refusing its delete
+    - no other code holds the PIN on this lock, in a slot or active and waiting
+      for its push (issue #188), the rule turning a code on uses
+    """
+    from locks.use_cases.added_lock_reconcile import pin_held_by_another_code
+    from locks.use_cases.door_codes import DELETE_REFUSED_REASON
+    from locks.use_cases.lock_push import import_lock_entity_ids
+
+    if import_lock_entity_ids(door_code=code) != [lock_entity_id]:
+        return False
+    if _has_outstanding_slot_cleanup(door_code=code, lock_entity_id=lock_entity_id):
+        return False
+    if DoorCodeEvent.objects.filter(
+        door_code=code,
+        event_type=DoorCodeEvent.EventType.CODE_UPDATED,
+        metadata__reason=DELETE_REFUSED_REASON,
+    ).exists():
+        return False
+    if not _turned_off_by_lock_sync(code=code, lock_entity_id=lock_entity_id):
+        return False
+    return pin_held_by_another_code(door_code=code, lock_entity_id=lock_entity_id) is None
+
+
+def _release_marker_q() -> Q:
+    """``DoorCodeEvent`` rows of lock sync letting go of a synced code's import slot it read empty (issue #233).
+
+    A ``code_synced`` ``deactivated`` or ``slot_released`` without a
+    ``reason``. A ``slot_released`` with one is a slot latchpoint pushed that
+    it'll push again (:func:`_release_manual_slot`), not an import slot.
+    """
+    return Q(event_type=DoorCodeEvent.EventType.CODE_SYNCED, metadata__action__in=list(_RELEASE_ACTIONS)) & ~Q(
+        metadata__has_key="reason"
+    )
+
+
+def _latchpoint_off_marker_q() -> Q:
+    """``DoorCodeEvent`` rows of latchpoint turning a code off or keeping it off (issue #233).
+
+    A ``code_updated`` with a ``reason``: retired as expired or used up, retired
+    as a stranded copy of a retired code (``duplicate_of_retired_code``), or a
+    refused delete (``delete_refused``). A synced code without dates can't be
+    turned off from the edit form, so those are the ways latchpoint does it.
+    """
+    return Q(event_type=DoorCodeEvent.EventType.CODE_UPDATED, metadata__has_key="reason")
+
+
+def _turned_off_by_lock_sync(*, code: DoorCode, lock_entity_id: str) -> bool:
+    """Whether the last thing that turned ``code`` off was lock sync letting go of its slot on this lock (issue #233).
+
+    That's its newest :func:`_release_marker_q` event on this lock, with no
+    :func:`_latchpoint_off_marker_q` event after it. Latchpoint retiring it or
+    refusing its delete takes the import slot as well and leaves the same
+    released row, but the PIN typed in again mustn't undo that. With no release
+    event at all it's ``False``, so a match is only made on a record of it.
+    Event retention keeps both (:func:`relink_marker_event_ids`).
+    """
+    newest = (
+        DoorCodeEvent.objects.filter(door_code=code)
+        .filter((_release_marker_q() & Q(lock_entity_id=lock_entity_id)) | _latchpoint_off_marker_q())
+        .order_by("-id")
+        .only("event_type")
+        .first()
+    )
+    return newest is not None and newest.event_type == DoorCodeEvent.EventType.CODE_SYNCED
+
+
+def relink_marker_event_ids(*, older_than: datetime) -> set[int]:
+    """Ids of events older than ``older_than`` that event retention must keep for the relink (issue #233).
+
+    Every refused delete's ``code_updated`` event (the code still exists, or it
+    would be gone with it), and for each off synced code without dates its
+    newest latchpoint turn-off and its newest lock sync release on each lock,
+    since :func:`_turned_off_by_lock_sync` compares those. Pruning the release
+    would only stop a match, pruning the turn-off after it would allow a wrong one.
+    """
+    from locks.use_cases.door_codes import DELETE_REFUSED_REASON
+
+    old = DoorCodeEvent.objects.filter(created_at__lt=older_than, door_code__isnull=False)
+    keep = set(
+        old.filter(event_type=DoorCodeEvent.EventType.CODE_UPDATED, metadata__reason=DELETE_REFUSED_REASON).values_list(
+            "id", flat=True
+        )
+    )
+    markers_q = _release_marker_q() | _latchpoint_off_marker_q()
+    codes = DoorCode.objects.filter(
+        source=DoorCode.Source.SYNCED,
+        is_active=False,
+        start_at__isnull=True,
+        end_at__isnull=True,
+        id__in=old.filter(markers_q).values("door_code_id"),
+    )
+    for code_id in codes.values_list("id", flat=True):
+        newest_per_kind: dict[tuple[str, str], int] = {}
+        for event_id, event_type, lock_entity_id in (
+            DoorCodeEvent.objects.filter(door_code_id=code_id)
+            .filter(markers_q)
+            .order_by("-id")
+            .values_list("id", "event_type", "lock_entity_id")
+        ):
+            kind = (event_type, lock_entity_id if event_type == DoorCodeEvent.EventType.CODE_SYNCED else "")
+            newest_per_kind.setdefault(kind, event_id)
+        keep.update(newest_per_kind.values())
+    return keep
+
+
+def _relink_verdicts(
+    *,
+    lock_entity_id: str,
+    node_id: int,
+    occupied_slots: set[int],
+    pin_by_slot: dict[int, str | None],
+    schedule_by_slot: dict[int, dict[str, Any] | None],
+    unsupported_schedule_by_slot: dict[int, str],
+    schedule_read_live: bool,
+    zwavejs: ZwavejsGateway | None,
+) -> dict[int, tuple[int, bool, bool]]:
+    """Which untracked occupied slots here go back to the code that had their PIN (issue #233).
+
+    An undated synced code whose slot here read empty is turned off and loses the
+    slot, and lock sync only finds a code by its slot. So when that PIN is typed
+    in again it would come in as a new "Slot N" and the old code would stay off
+    for good. Instead, a slot nobody tracks holding a readable PIN, that no other
+    slot here holds too, goes back to the code when exactly one released code has
+    that PIN (:func:`_released_import_codes_by_pin`) and it passes
+    :func:`_relink_allowed`. None or more than one, and the slot is imported as
+    before. A lock that hides its codes gives no PIN, so it never matches.
+
+    The slot reading comes from the cache, like any import. A code that's on
+    other locks too gets its PIN put back on them once it's on, so like a new
+    PIN taken for one (:func:`_import_changes_confirmed`) a live CC 99 ``get``
+    has to report the PIN, and a schedule other than the code's a live CC 78
+    read. Maps slot -> ``(door code id, pin_ok, schedule_ok)``. Read only, and
+    run before the sync writes anything. ``zwavejs`` is ``None`` for a dry run,
+    which reads nothing back and counts everything as confirmed, like
+    the dry run of a tracked slot.
+    """
+    tracked = set(
+        DoorCodeLockAssignment.objects.filter(lock_entity_id=lock_entity_id, slot_index__isnull=False).values_list(
+            "slot_index", flat=True
+        )
+    )
+    readable = {slot: pin_by_slot.get(slot) for slot in sorted(occupied_slots - tracked) if pin_by_slot.get(slot)}
+    if not readable:
+        return {}
+    pin_counts: dict[str, int] = {}
+    for pin in pin_by_slot.values():
+        if pin:
+            pin_counts[pin] = pin_counts.get(pin, 0) + 1
+    by_pin = _released_import_codes_by_pin(lock_entity_id=lock_entity_id)
+    verdicts: dict[int, tuple[int, bool, bool]] = {}
+    for slot_index, pin in readable.items():
+        candidates = by_pin.get(pin, [])
+        if pin_counts.get(pin) != 1 or len(candidates) != 1:
+            continue
+        code = candidates[0]
+        if not _relink_allowed(code=code, lock_entity_id=lock_entity_id):
+            continue
+        if zwavejs is None or not _other_lock_assignments(code=code, lock_entity_id=lock_entity_id).exists():
+            verdicts[slot_index] = (code.id, True, True)
+            continue
+        pin_ok = _import_pin_confirmed(zwavejs=zwavejs, node_id=node_id, slot_index=slot_index, new_pin=pin)
+        expected = _schedule_from_lock(schedule_by_slot.get(slot_index))
+        schedule_ok = (
+            slot_index in unsupported_schedule_by_slot or schedule_read_live or _code_schedule(code) == expected
+        )
+        if pin_ok and not schedule_ok:
+            schedule_ok = _import_schedule_confirmed(
+                zwavejs=zwavejs, node_id=node_id, slot_index=slot_index, expected=expected
+            )
+        verdicts[slot_index] = (code.id, pin_ok, schedule_ok)
+    return verdicts
+
+
+def _relink_import_slot(*, code_id: int, lock_entity_id: str, slot_index: int) -> DoorCodeLockAssignment | None:
+    """Give the released import row of ``code_id`` on this lock ``slot_index`` back (issue #233).
+
+    The row goes ``pushed`` like a slot lock sync imports. The code row is taken
+    first, like every writer of both, and the row is only changed while it's
+    still the released one :func:`_relink_verdicts` found. Returns it, or
+    ``None`` when it isn't any more or the slot was claimed meanwhile, so the
+    caller imports the slot as before.
+    """
+    if (
+        DoorCode.objects.select_for_update().filter(id=code_id, source=DoorCode.Source.SYNCED, is_active=False).first()
+        is None
+    ):
+        return None
+    try:
+        # A savepoint, so the import below can still run after a clash.
+        with transaction.atomic():
+            updated = DoorCodeLockAssignment.objects.filter(
+                door_code_id=code_id,
+                lock_entity_id=lock_entity_id,
+                slot_index__isnull=True,
+                last_push_attempt_at__isnull=True,
+                push_requested_at__isnull=True,
+            ).update(
+                slot_index=slot_index,
+                push_state=DoorCode.PushState.PUSHED,
+                push_attempt_count=0,
+                last_push_error="",
+                schedule_pending=False,
+                updated_at=django_timezone.now(),
+            )
+    except IntegrityError:
+        return None
+    if not updated:
+        return None
+    logger.info(
+        "Slot %d on %s holds the PIN of released door code id=%d: matched back", slot_index, lock_entity_id, code_id
+    )
+    return (
+        DoorCodeLockAssignment.objects.select_related("door_code")
+        .filter(door_code_id=code_id, lock_entity_id=lock_entity_id)
+        .first()
+    )
+
+
 def _record_sync_skip(
     *, code: DoorCode, actor_user: User, lock_entity_id: str, slot_index: int, reason: str, pin_known: bool
 ) -> DoorCodeEvent:
@@ -1884,7 +2163,24 @@ def _sync_lock_config_atomically(
         # Whether each import lock slot that would turn a synced code on other
         # locks off was confirmed empty or disabled live (issue #221).
         off_verdicts: dict[int, bool] = {}
-        if not dry_run:
+        # Untracked slots that go back to the off synced code that had their PIN
+        # here before lock sync let go of its slot (issue #233).
+        relink_verdicts: dict[int, tuple[int, bool, bool]] = {}
+        relink_kwargs: dict[str, Any] = {
+            "lock_entity_id": lock_entity_id,
+            "node_id": node_id,
+            "occupied_slots": occupied_slots,
+            "pin_by_slot": pin_by_slot,
+            "schedule_by_slot": schedule_by_slot,
+            "unsupported_schedule_by_slot": unsupported_schedule_by_slot,
+            # The cache-less fallback of _extract_weekday_schedule_windows reads the lock live.
+            "schedule_read_live": not any(
+                isinstance(vid, dict) and vid.get("commandClass") == CC_SCHEDULE_ENTRY_LOCK for vid in value_ids
+            ),
+        }
+        if dry_run:
+            relink_verdicts = _relink_verdicts(**relink_kwargs, zwavejs=None)
+        else:
             from locks.use_cases.lock_push import (
                 SYNC_ATTEMPT_READBACK_RESERVE_SECONDS,
                 SYNC_READBACK_BUDGET_SECONDS,
@@ -1923,6 +2219,8 @@ def _sync_lock_config_atomically(
                 pin_by_slot=pin_by_slot,
                 zwavejs=readback_gateway,
             )
+            # A code matched back gets its PIN put back on its other locks, so it goes with them.
+            relink_verdicts = _relink_verdicts(**relink_kwargs, zwavejs=readback_gateway)
             # Then the manual codes' tracked slots, which stop the reserve short of
             # the end when an untracked slot has an attempt to read back (issue #215).
             manual_gateway = readback_gateway
@@ -2055,6 +2353,34 @@ def _sync_lock_config_atomically(
                     warnings=warnings,
                 )
                 continue
+
+            # An untracked slot holding the PIN of an off synced code whose slot
+            # here was let go of goes back to that code instead of becoming a
+            # new "Slot N", and is then synced like the code's own (issue #233).
+            relinked = False
+            if existing is None and slot_index in relink_verdicts:
+                relink_code_id, relink_pin_ok, relink_schedule_ok = relink_verdicts[slot_index]
+                relink_code = DoorCode.objects.filter(id=relink_code_id).first() if not relink_pin_ok else None
+                if relink_code is not None:
+                    skip_slot(
+                        code=relink_code,
+                        slot_index=slot_index,
+                        reason=_SKIP_RELINK_NOT_CONFIRMED,
+                        pin_known=pin_known,
+                        is_active=is_active,
+                        warnings=warnings,
+                    )
+                    continue
+                if relink_pin_ok:
+                    existing = _relink_import_slot(
+                        code_id=relink_code_id, lock_entity_id=lock_entity_id, slot_index=slot_index
+                    )
+                    if existing is not None:
+                        relinked = True
+                        warnings.append(_WARN_RELINKED)
+                        touched_code_ids.add(existing.door_code_id)
+                        # Confirmed above; the readbacks before didn't know the slot was its.
+                        import_verdicts[slot_index] = (True, relink_schedule_ok)
 
             if existing and latchpoint_slot:
                 # An active manual code whose slot holds its PIN or a masked one
@@ -2215,6 +2541,7 @@ def _sync_lock_config_atomically(
                 if updated_fields:
                     code.save(update_fields=[*set(updated_fields), "updated_at"])
                     touched_code_ids.add(code.id)
+                if updated_fields or relinked:
                     action = "updated"
                     result.updated += 1
                     logger.info("Slot %d on %s: updated (fields: %s)", slot_index, lock_entity_id, updated_fields)
@@ -2276,6 +2603,7 @@ def _sync_lock_config_atomically(
                         "pin_known": pin_known,
                         "schedule_applied": schedule_applied,
                         "schedule_unsupported": schedule_unsupported,
+                        **({_WARN_RELINKED: True} if relinked else {}),
                         **({"sent_to_lock_entity_ids": sent_to} if sent_to else {}),
                         **({"pin_held_on_lock_entity_ids": held_on} if held_on else {}),
                         **({_WARN_PIN_CHANGE_UNCONFIRMED: True} if _WARN_PIN_CHANGE_UNCONFIRMED in warnings else {}),

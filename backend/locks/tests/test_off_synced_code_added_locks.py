@@ -368,6 +368,17 @@ class OffCodeLeftoverTests(_OffTestBase):
 
         self.assertTrue(DoorCodeEvent.objects.filter(id=event.id).exists())
         DoorCodeLockAssignment.objects.filter(door_code=master).update(reconcile_requested_at=None)
+        # Still kept as the code's newest release on the Front Door, which a PIN
+        # typed in again is matched back by (issue #233)...
+        self._run_retention(DoorCodeEvent.objects.filter(id=event.id))
+        self.assertTrue(DoorCodeEvent.objects.filter(id=event.id).exists())
+        # ...until a newer one replaces it.
+        DoorCodeEvent.objects.create(
+            door_code=master,
+            lock_entity_id=self.FRONT,
+            event_type=DoorCodeEvent.EventType.CODE_SYNCED,
+            metadata={"slot_index": 1, "action": "slot_released"},
+        )
         self._run_retention(DoorCodeEvent.objects.filter(id=event.id))
         self.assertFalse(DoorCodeEvent.objects.filter(id=event.id).exists())
 

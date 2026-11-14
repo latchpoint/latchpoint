@@ -3675,6 +3675,11 @@ def retained_marker_event_ids(*, older_than: datetime) -> set[int]:
     And an ``off_confirmed`` ``code_synced`` event of an off code with an added
     lock still flagged since before it, since that's what lets the reconcile
     take the PIN off that lock (issue #221, ``added_lock_reconcile.off_clear_q``).
+
+    And what lock sync needs to tell whether an off synced code may get a PIN
+    typed in again matched back to it: every refused delete's event, and each
+    such code's newest turn-off and release markers (issue #233,
+    ``lock_config_sync.relink_marker_event_ids``).
     """
     old = DoorCodeEvent.objects.filter(created_at__lt=older_than, door_code__isnull=False)
     old_markers = old.filter(
@@ -3735,6 +3740,9 @@ def retained_marker_event_ids(*, older_than: datetime) -> set[int]:
 
     keep.update(pending_copy_retire_event_ids())
     keep.update(first_push_event_ids_of_dated_codes(older_than=older_than))
+    from locks.use_cases.lock_config_sync import relink_marker_event_ids
+
+    keep.update(relink_marker_event_ids(older_than=older_than))
     flagged_before = DoorCodeLockAssignment.objects.filter(
         door_code=OuterRef("door_code"),
         reconcile_requested_at__isnull=False,

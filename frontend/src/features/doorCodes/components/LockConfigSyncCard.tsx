@@ -51,6 +51,8 @@ const SLOT_WARNING_LABELS: Record<string, string> = {
     'New PIN is already another code on another lock, so this code is off that lock until that code is removed',
   off_change_unconfirmed: "Lock didn't confirm the slot is disabled, keeping the code on",
   taking_off_other_locks: 'Code is off, taking it off the other locks',
+  relinked: 'Matched back to the code that had this PIN',
+  relink_not_confirmed: "Lock didn't confirm the PIN, not matched back to its code yet",
 }
 
 function slotWarningLabel(warning: string): string {

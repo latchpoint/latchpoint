@@ -500,10 +500,18 @@ describe('DoorCodeCard', () => {
       ['is still being removed from a lock', {
         lockSlotAssignments: [{ lockEntityId: 'lock.front_door', slotIndex: null, pendingRemoval: true }],
       }],
+      // #233: lock sync matches its PIN typed in again back to it.
+      ['has a PIN latchpoint can read', { pin: '4321' }],
     ])('says nothing when it %s', (_why, overrides) => {
       renderWithProviders(<CardWithRetry code={stuck(overrides)} />)
 
       expect(screen.queryByText(STUCK)).toBeNull()
+    })
+
+    it('still says it for a readable PIN with a start date, which lock sync never matches back', () => {
+      renderWithProviders(<CardWithRetry code={stuck({ pin: '4321', startAt: '2026-11-01T12:00:00Z' })} />)
+
+      expect(screen.getByText(STUCK)).toBeTruthy()
     })
 
     it('says nothing for a manual code', () => {
