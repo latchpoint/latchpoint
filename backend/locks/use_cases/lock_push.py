@@ -3677,7 +3677,7 @@ def retained_marker_event_ids(*, older_than: datetime) -> set[int]:
     take the PIN off that lock (issue #221, ``added_lock_reconcile.off_clear_q``).
 
     And what lock sync needs to tell whether an off synced code may get a PIN
-    typed in again matched back to it: every refused delete's event, and each
+    typed in again matched back to it: every refused delete's event of a synced code, and each
     such code's newest turn-off and release markers (issue #233,
     ``lock_config_sync.relink_marker_event_ids``).
     """

@@ -279,6 +279,34 @@ class NoRelinkTests(_RelinkTestBase):
         self.assertEqual(self._sync_front(gateway).created, 0)
         self.assertTrue(DoorCode.objects.get(id=master.id).is_active)
 
+    def _copy_retire_of(self, master: DoorCode, *, done: bool) -> None:
+        """Another code with the PIN was retired and its retire couldn't finish retiring ``master`` as a copy (#185)."""
+        original = self._code(is_active=False, slots={self.BACK: None}, label="Original")
+        where = {"original": original, "copy_id": master.id, "lock_entity_id": self.FRONT, "slot_index": 1}
+        door_codes_uc._record_copy_event(action=door_codes_uc._COPY_RETIRE_PENDING, **where)
+        if done:
+            door_codes_uc._record_copy_event(action=door_codes_uc._COPY_RETIRE_DONE, outcome="changed", **where)
+
+    def test_a_code_a_retire_still_has_to_retire_as_a_copy_imports_a_new_code(self):
+        # The validity task's retry would retire it again and clear the PIN just typed in.
+        master, gateway = self._released()
+        self._copy_retire_of(master, done=False)
+        self._type_at_front(gateway, 3)
+
+        self._assert_imported_as_new(master, self._sync_front(gateway), 3)
+
+        # And that retry has nothing to do to it then.
+        door_codes_uc.retry_pending_copy_retires(zwavejs=gateway)
+        self.assertEqual(self._lock_codes(gateway, 14), {3: self.PIN})
+
+    def test_once_that_retire_is_done_with_it_the_pin_matches(self):
+        master, gateway = self._released()
+        self._copy_retire_of(master, done=True)
+        self._type_at_front(gateway, 3)
+
+        self.assertEqual(self._sync_front(gateway).created, 0)
+        self.assertEqual(self._slots(master), {self.FRONT: 3})
+
 
 class UsedUpTests(_RelinkTestBase):
     """A code retired at its last use (#145) is let go of the same way, but stays off."""
@@ -306,6 +334,19 @@ class UsedUpTests(_RelinkTestBase):
         self._assert_imported_as_new(master, self._sync_front(gateway), 1)
         # Its next validity tick has nothing to retire, so the PIN stays on the lock.
         self.assertEqual(self._lock_codes(gateway, 14), {1: self.PIN})
+
+    def test_nor_when_lock_sync_let_go_of_it_before_the_validity_tick(self):
+        # Its last use, then its PIN deleted at the Front Door and the Front Door
+        # synced before the validity tick retired it, so latchpoint never
+        # recorded turning it off. Only it being used up keeps it from matching.
+        gateway = self._gateway()
+        master = self._master(gateway)
+        DoorCode.objects.filter(id=master.id).update(max_uses=3, uses_count=3)
+        master = self._release_front(DoorCode.objects.get(id=master.id), gateway)
+        self.assertFalse(DoorCodeEvent.objects.filter(door_code=master, metadata__has_key="reason").exists())
+        self._type_at_front(gateway, 1)
+
+        self._assert_imported_as_new(master, self._sync_front(gateway), 1)
 
     def test_nor_once_it_has_uses_left_again(self):
         # No longer used up, but latchpoint turned it off after lock sync last let go of it.

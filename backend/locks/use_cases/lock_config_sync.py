@@ -1734,6 +1734,7 @@ def _relink_allowed(*, code: DoorCode, lock_entity_id: str) -> bool:
       not latchpoint retiring it or refusing its delete
     - no other code holds the PIN on this lock, in a slot or active and waiting
       for its push (issue #188), the rule turning a code on uses
+    - no retire still has it to retire as a copy (:func:`_copy_retire_pending`)
     """
     from locks.use_cases.added_lock_reconcile import pin_held_by_another_code
     from locks.use_cases.door_codes import DELETE_REFUSED_REASON
@@ -1751,7 +1752,21 @@ def _relink_allowed(*, code: DoorCode, lock_entity_id: str) -> bool:
         return False
     if not _turned_off_by_lock_sync(code=code, lock_entity_id=lock_entity_id):
         return False
-    return pin_held_by_another_code(door_code=code, lock_entity_id=lock_entity_id) is None
+    if pin_held_by_another_code(door_code=code, lock_entity_id=lock_entity_id) is not None:
+        return False
+    return not _copy_retire_pending(code_id=code.id)
+
+
+def _copy_retire_pending(*, code_id: int) -> bool:
+    """Whether a retired code's retire still has ``code_id`` to retire as a stranded copy of its PIN (#185, #212).
+
+    The validity task tries it again each tick (``door_codes.retry_pending_copy_retires``),
+    so a code matched back and turned on meanwhile would be retired by it and
+    the PIN just typed in cleared again.
+    """
+    from locks.use_cases.door_codes import _pending_copy_retires
+
+    return any(copy_id == code_id for _event, copy_id in _pending_copy_retires())
 
 
 def _release_marker_q() -> Q:
@@ -1800,8 +1815,8 @@ def _turned_off_by_lock_sync(*, code: DoorCode, lock_entity_id: str) -> bool:
 def relink_marker_event_ids(*, older_than: datetime) -> set[int]:
     """Ids of events older than ``older_than`` that event retention must keep for the relink (issue #233).
 
-    Every refused delete's ``code_updated`` event (the code still exists, or it
-    would be gone with it), and for each off synced code without dates its
+    Every refused delete's ``code_updated`` event of a synced code (the code
+    still exists, or it would be gone with it), and for each off synced code without dates its
     newest latchpoint turn-off and its newest lock sync release on each lock,
     since :func:`_turned_off_by_lock_sync` compares those. Pruning the release
     would only stop a match, pruning the turn-off after it would allow a wrong one.
@@ -1810,9 +1825,12 @@ def relink_marker_event_ids(*, older_than: datetime) -> set[int]:
 
     old = DoorCodeEvent.objects.filter(created_at__lt=older_than, door_code__isnull=False)
     keep = set(
-        old.filter(event_type=DoorCodeEvent.EventType.CODE_UPDATED, metadata__reason=DELETE_REFUSED_REASON).values_list(
-            "id", flat=True
-        )
+        old.filter(
+            event_type=DoorCodeEvent.EventType.CODE_UPDATED,
+            metadata__reason=DELETE_REFUSED_REASON,
+            # Only a synced code can be matched back to.
+            door_code__source=DoorCode.Source.SYNCED,
+        ).values_list("id", flat=True)
     )
     markers_q = _release_marker_q() | _latchpoint_off_marker_q()
     codes = DoorCode.objects.filter(
