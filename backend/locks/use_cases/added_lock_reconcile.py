@@ -51,7 +51,7 @@ from integrations_zwavejs.manager import ZwavejsNotConfigured
 from alarm.crypto import SettingsEncryption
 from config.domain_exceptions import GatewayError
 from locks.models import DoorCode, DoorCodeEvent, DoorCodeLockAssignment
-from locks.use_cases.code_lifecycle import belongs_on_lock, expired_q, started_q
+from locks.use_cases.code_lifecycle import belongs_on_lock, exhausted_q, expired_q, started_q
 
 logger = logging.getLogger(__name__)
 
@@ -308,7 +308,7 @@ def run_reconciles_inline(*, door_code: DoorCode, lock_entity_ids: list[str], zw
 def reconcile_due(*, now: datetime, max_attempts: int, fresh_only: bool):
     """Flagged locks to reconcile at ``now``, as a ``DoorCodeLockAssignment`` queryset.
 
-    On a code that's active, started and not expired, or off with its off
+    On a code that's active, started, not expired and not used up, or off with its off
     confirmed at the import lock (:func:`off_clear_q`, issue #221). Not
     ``failed``, under the attempt cap and not being dropped. ``fresh_only`` is
     the queued push task's share, like a queued push: flagged within
@@ -317,7 +317,7 @@ def reconcile_due(*, now: datetime, max_attempts: int, fresh_only: bool):
     """
     from locks.use_cases.lock_push import PUSH_REQUEST_TTL, being_removed_q
 
-    pushable = DoorCode.objects.filter(is_active=True).filter(started_q(now) & ~expired_q(now))
+    pushable = DoorCode.objects.filter(is_active=True).filter(started_q(now) & ~expired_q(now) & ~exhausted_q())
     due = (
         DoorCodeLockAssignment.objects.filter(reconcile_requested_at__isnull=False)
         .filter(Q(door_code__in=pushable) | off_clear_q())

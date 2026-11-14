@@ -3,8 +3,8 @@
 A :class:`~locks.keypad_events.KeypadUnlock` says which node opened and from
 which CC 99 slot. :func:`handle_keypad_unlock` maps that to the code assigned
 to the slot and :func:`record_keypad_use` counts it. Uses are one total across
-all of a code's locks. This only counts. It doesn't turn off a used up code or
-wake anything, that's the next PR.
+all of a code's locks. This only counts. A use that leaves a code used up wakes
+``enforce_door_code_validity``, which retires it.
 
 DB only, no Z-Wave I/O. The locks runtime runs it on its own worker thread
 (``locks.runtime``), never on the ``zwavejs-events`` thread (ADR-0100).
@@ -33,6 +33,10 @@ logger = logging.getLogger(__name__)
 DEDUPE_WINDOW = timedelta(seconds=10)
 
 _SOURCE = "zwavejs"
+
+# Woken once a use leaves a code used up, so it comes off its locks in seconds
+# rather than at the next 60s tick (issue #145).
+VALIDITY_TASK = "enforce_door_code_validity"
 
 # ``stale_reason`` on a use that wasn't counted because the slot may still hold
 # an older PIN of the code, or the code is off and its PIN shouldn't be there.
@@ -229,7 +233,8 @@ def record_keypad_use(
     ``code_used`` event with ``stale_slot`` and isn't counted. Anything else adds
     one to ``uses_count`` with ``F()`` and sets ``last_used_at`` and
     ``last_used_lock``. ``over_limit`` in the event is whether this use went past
-    the code's limit. Nothing is turned off here.
+    the code's limit. Nothing is turned off here, but a use that reaches the
+    limit wakes ``enforce_door_code_validity`` once it commits, which retires it.
     """
     now = now if now is not None else django_timezone.now()
     base = _base_metadata(slot_index=slot_index, notification_event=notification_event)
@@ -292,7 +297,16 @@ def record_keypad_use(
                 "over_limit": limit is not None and uses_count > limit,
             },
         )
+        if limit is not None and uses_count >= limit:
+            # Used up: the validity task retires it once this commits (ADR-0114).
+            transaction.on_commit(_wake_validity_task, robust=True)
     return UseOutcome.COUNTED
+
+
+def _wake_validity_task() -> None:
+    from scheduler.runner import wake_task
+
+    wake_task(VALIDITY_TASK)
 
 
 def handle_keypad_unlock(unlock: KeypadUnlock, *, home_id: int | None, now: datetime | None = None) -> UseOutcome:

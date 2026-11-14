@@ -94,7 +94,9 @@ export function isLockAwaitingPush(code: DoorCode, assignment: DoorCodeLockSlotA
 export function isLockQueued(code: DoorCode, assignment: DoorCodeLockSlotAssignment): boolean {
   if (assignment.pushQueued != null) return assignment.pushQueued
   if (!assignment.pushRequestedAt || assignment.pushState !== 'pending') return false
-  if (!code.isActive || code.validity === 'scheduled' || code.validity === 'expired') return false
+  if (!code.isActive || code.validity === 'scheduled' || code.validity === 'expired' || code.validity === 'exhausted') {
+    return false
+  }
   if (!isLockAwaitingPush(code, assignment)) return false
   if (!assignment.lastPushAttemptAt) return true
   return Date.parse(assignment.lastPushAttemptAt) < Date.parse(assignment.pushRequestedAt)
@@ -120,16 +122,16 @@ export function hasQueuedPush(code: DoorCode | undefined): boolean {
  * save or Retry (#124) is one of those, since it's pending and needs a push. A
  * failed code with no lock left waiting isn't, since only a Retry moves it. Nor is a
  * pending code the scheduler never picks up, like one lock sync created or an
- * active one with no locks. An active code that's expired is, since the
- * scheduler turns it off and clears it within a minute. A scheduled one is
+ * active one with no locks. An active code that's expired or used up is,
+ * since the scheduler turns it off and clears it within a minute. A scheduled one is
  * while it still holds a slot or has a clear outstanding, since the scheduler
  * takes it off its locks until its start, and isn't once that's done, since it
  * only waits on the clock then. A scheduled code whose clear hit the attempt
  * cap isn't either, since only a Retry moves it (#145).
  */
 export function isDoorCodeSettling(code: DoorCode): boolean {
-  // Retired whatever its push state.
-  if (code.isActive && code.validity === 'expired') return true
+  // Retired whatever its push state, and so is a used up one.
+  if (code.isActive && (code.validity === 'expired' || code.validity === 'exhausted')) return true
   const hasPendingClears = (code.pendingSlotClears?.length ?? 0) > 0
   if (code.isActive && code.validity === 'scheduled') {
     if (code.pushState === 'failed' && hasPendingClears) return false

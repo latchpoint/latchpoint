@@ -60,6 +60,8 @@ type Props = {
   onEditIsActiveChange: (next: boolean) => void
   /** Whether the code would be expired with the active window end being saved. */
   isExpired?: boolean
+  /** Whether the code would be used up with the max uses being saved. */
+  isUsedUp?: boolean
 
   editStartAtLocal: string
   editEndAtLocal: string
@@ -114,6 +116,7 @@ export function DoorCodeEditPanel({
   editIsActive,
   onEditIsActiveChange,
   isExpired = false,
+  isUsedUp = false,
   editStartAtLocal,
   editEndAtLocal,
   onActiveWindowChange,
@@ -143,8 +146,12 @@ export function DoorCodeEditPanel({
   const activeLocked = isSynced && !syncedValidityEditable
   // The backend won't turn on an expired code, and moving its end later doesn't
   // turn it back on by itself (#145). A code that's still on can be turned off
-  // and back again, since that only undoes the edit.
-  const blockTurningOn = isExpired && !code.isActive && !editIsActive
+  // and back again, since that only undoes the edit. The same goes for a used
+  // up code until its max uses is raised past its uses.
+  const blockTurningOn = (isExpired || isUsedUp) && !code.isActive && !editIsActive
+  const blockedHint = isExpired
+    ? 'Expired, set a later end for the active window to turn it on'
+    : 'Used up, raise Max uses above its uses to turn it on'
   const isTemporary = code.codeType === 'temporary'
   // A one-time code's dates come from the API, and once it's past its end only
   // a later end turns it back on, so the window is on the form for it too (#184).
@@ -219,7 +226,7 @@ export function DoorCodeEditPanel({
         checked={editIsActive}
         onCheckedChange={activeLocked ? undefined : onEditIsActiveChange}
         disabled={isBusy || activeLocked || blockTurningOn}
-        hint={activeLocked ? 'Controlled by lock sync' : blockTurningOn ? 'Expired, set a later end for the active window to turn it on' : undefined}
+        hint={activeLocked ? 'Controlled by lock sync' : blockTurningOn ? blockedHint : undefined}
       />
 
       <ReauthPasswordField

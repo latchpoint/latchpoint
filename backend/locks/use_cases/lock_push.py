@@ -35,7 +35,7 @@ from integrations_zwavejs.manager import (
 from alarm.crypto import InvalidToken, SettingsEncryption
 from config.domain_exceptions import ConflictError, GatewayError, ValidationError
 from locks.models import DoorCode, DoorCodeEvent, DoorCodeLockAssignment
-from locks.use_cases.code_lifecycle import belongs_on_lock, expired_q, is_started, started_q
+from locks.use_cases.code_lifecycle import belongs_on_lock, exhausted_q, expired_q, is_started, started_q
 from locks.use_cases.lock_config_sync import (
     CC_SCHEDULE_ENTRY_LOCK,
     CC_USER_CODE,
@@ -275,8 +275,9 @@ def _check_no_outer_transaction(*, door_code: DoorCode, lock_entity_id: str) -> 
 
 # DoorCode fields a push writes to the lock, re-read once the push holds the lock.
 _PUSHED_FIELDS = ["encrypted_pin", "is_active", "days_of_week", "window_start", "window_end"]
-# Never sent to the lock, but a code is only pushed between them (issue #145), so re-read too.
-_VALIDITY_FIELDS = ["start_at", "end_at"]
+# Never sent to the lock, but a code is only pushed between its dates and while
+# it isn't used up (issue #145), so re-read too.
+_VALIDITY_FIELDS = ["start_at", "end_at", "code_type", "max_uses", "uses_count"]
 
 
 @dataclass
@@ -2091,8 +2092,8 @@ def sweep_push_cap(*, now: datetime, max_attempts: int) -> int:
     its count already at or over the cap without being tried: counts aren't
     reset by another lock's success, ``door_codes.push_max_attempts`` can be
     lowered, and the push arm only picks locks under it (PR #195 review). Only
-    for codes the scheduler pushes, ie active, started and not expired at the
-    tick's ``now``, so it errs toward ``pending``. A lock keeps its own error
+    for codes the scheduler pushes, ie active, started, not expired and not used
+    up at the tick's ``now``, so it errs toward ``pending``. A lock keeps its own error
     and count and gets a ``max_attempts_exceeded`` event, locks being dropped
     are left alone, and the code is refreshed. One transaction per code, taking
     the code row first like :func:`_delete_door_code_locked` does, so the two
@@ -2100,7 +2101,7 @@ def sweep_push_cap(*, now: datetime, max_attempts: int) -> int:
     """
     if max_attempts <= 0:
         return 0
-    pushable = DoorCode.objects.filter(is_active=True).filter(started_q(now) & ~expired_q(now))
+    pushable = DoorCode.objects.filter(is_active=True).filter(started_q(now) & ~expired_q(now) & ~exhausted_q())
     over_cap = DoorCodeLockAssignment.objects.filter(
         door_code__in=pushable, push_state=DoorCode.PushState.PENDING, push_attempt_count__gte=max_attempts
     ).filter(Q(slot_index__isnull=True) | Q(schedule_pending=True))
@@ -4251,8 +4252,10 @@ def push_door_code_to_lock(
         if assignment.reconcile_requested_at is not None and not for_reconcile:
             raise ReconcilePending("This lock is waiting for its reconcile; nothing was pushed.")
         if not belongs_on_lock(door_code):
-            # Its start_at moved into the future or it expired while the push waited (issue #145).
-            raise PushSuperseded("Door code isn't valid right now (not started or expired); nothing was pushed.")
+            # Its start_at moved into the future, or it expired or got used up while the push waited (issue #145).
+            raise PushSuperseded(
+                "Door code isn't valid right now (not started, expired or used up); nothing was pushed."
+            )
         if lock_entity_id in _locks_being_removed(door_code=door_code):
             # Being dropped from this lock while its clear keeps failing (issue #151).
             raise PushSuperseded("Door code is being removed from this lock; nothing was pushed.")
@@ -4975,7 +4978,7 @@ def push_door_code_to_assigned_locks(
         logger.info("Not pushing inactive door code id=%s", door_code.id)
         return successes, failures
     if not belongs_on_lock(door_code):
-        logger.info("Not pushing door code id=%s outside its start_at/end_at", door_code.id)
+        logger.info("Not pushing door code id=%s outside its start_at/end_at or used up", door_code.id)
         return successes, failures
     # Sorted in Python so the prefetch is kept and the push order is deterministic.
     # It may be stale (the scheduler loaded it earlier), which is fine:
@@ -5137,14 +5140,14 @@ def queued_push_assignments(*, now: datetime, max_attempts: int):
     """The locks :data:`PUSH_REQUESTED_TASK` pushes at ``now``, as a ``DoorCodeLockAssignment`` queryset (issue #124).
 
     ``pending`` and needing a ``set`` or a schedule, not being dropped, under
-    the cap, on a code that's active, started and not expired, and with a
+    the cap, on a code that's active, started, not expired and not used up, and with a
     ``push_requested_at`` inside :data:`PUSH_REQUEST_TTL` that no push attempt
     on that lock has come after. Any attempt counts, the scheduler's 300s retry
     and an inline push included, so a request is used up by the first push that
     gets to the lock. :func:`locks_to_push` has the rest of the rule (a slot
     with a clear outstanding), which needs the code's events.
     """
-    pushable = DoorCode.objects.filter(is_active=True).filter(started_q(now) & ~expired_q(now))
+    pushable = DoorCode.objects.filter(is_active=True).filter(started_q(now) & ~expired_q(now) & ~exhausted_q())
     queued = (
         DoorCodeLockAssignment.objects.filter(
             door_code__in=pushable,
@@ -5179,7 +5182,7 @@ def push_queued(
     attempt on the lock came after (compared as datetimes, so the schedule
     re-queue's 1µs counts), the lock ``pending`` and still needing its ``set``
     or schedule, under the cap when there is one, not being dropped, not on a
-    slot with a clear outstanding, and the code active, started and not expired.
+    slot with a clear outstanding, and the code active, started, not expired and not used up.
     """
     requested = assignment.push_requested_at
     if requested is None or requested <= now - PUSH_REQUEST_TTL or assignment.reconcile_requested_at is not None:

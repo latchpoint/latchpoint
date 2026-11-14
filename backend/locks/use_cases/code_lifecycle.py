@@ -12,7 +12,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal
 
-from django.db.models import Q
+from django.db.models import F, Q
 from django.utils import timezone as django_timezone
 
 from locks.models import DoorCode
@@ -44,19 +44,23 @@ def is_expired(code: DoorCode, *, now: datetime | None = None) -> bool:
     return ended_by(code.end_at, now=now)
 
 
+def use_limit_for(*, code_type: str, max_uses: int | None) -> int | None:
+    """:func:`use_limit` for a code with this type and ``max_uses``, ie one an update is about to save."""
+    if max_uses is None and code_type == DoorCode.CodeType.ONE_TIME:
+        return 1
+    return max_uses
+
+
 def use_limit(code: DoorCode) -> int | None:
     """How many uses ``code`` gets: ``max_uses`` when set, one for a one-time code, else no limit."""
-    limit = code.max_uses
-    if limit is None and code.code_type == DoorCode.CodeType.ONE_TIME:
-        limit = 1
-    return limit
+    return use_limit_for(code_type=code.code_type, max_uses=code.max_uses)
 
 
 def is_exhausted(code: DoorCode) -> bool:
     """Whether ``code`` has used up its uses (:func:`use_limit`).
 
-    Keypad uses are counted (``locks.use_cases.code_usage``, ADR-0114), but
-    nothing retires an exhausted code yet, so it stays on its locks.
+    Keypad uses are counted (``locks.use_cases.code_usage``, ADR-0114), and
+    ``enforce_door_code_validity`` retires an active code that's used up.
     """
     limit = use_limit(code)
     return limit is not None and (code.uses_count or 0) >= limit
@@ -75,9 +79,9 @@ def validity(code: DoorCode, *, now: datetime | None = None) -> Validity:
 
 
 def belongs_on_lock(code: DoorCode, *, now: datetime | None = None) -> bool:
-    """Whether ``code``'s dates allow its PIN on a lock at ``now``: started and not expired."""
+    """Whether ``code``'s PIN belongs on a lock at ``now``: started, not expired and not used up."""
     now = _now(now)
-    return is_started(code, now=now) and not is_expired(code, now=now)
+    return is_started(code, now=now) and not is_expired(code, now=now) and not is_exhausted(code)
 
 
 def started_q(now: datetime) -> Q:
@@ -88,3 +92,10 @@ def started_q(now: datetime) -> Q:
 def expired_q(now: datetime) -> Q:
     """:func:`is_expired` as a ``DoorCode`` filter."""
     return Q(end_at__isnull=False, end_at__lte=now)
+
+
+def exhausted_q() -> Q:
+    """:func:`is_exhausted` as a ``DoorCode`` filter."""
+    return Q(max_uses__isnull=False, uses_count__gte=F("max_uses")) | Q(
+        max_uses__isnull=True, code_type=DoorCode.CodeType.ONE_TIME, uses_count__gte=1
+    )
